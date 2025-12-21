@@ -1,6 +1,6 @@
 module github.com/luxfi/precompiles
 
-go 1.23.4
+go 1.25.5
 
 require (
 	github.com/holiman/uint256 v1.3.2
