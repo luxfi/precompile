@@ -12,7 +12,6 @@ import (
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/geth/core/tracing"
 	ethtypes "github.com/luxfi/geth/core/types"
-	"github.com/luxfi/geth/params"
 	"github.com/luxfi/precompiles/precompileconfig"
 )
 
@@ -51,24 +50,21 @@ type StateDB interface {
 	RevertToSnapshot(int)
 }
 
-// PrecompileEnvironment is the interface for precompile execution environment.
-// This is defined locally to avoid import cycles with geth/core/vm.
-// Implementations should provide access to the EVM execution context.
+// PrecompileEnvironment provides the execution environment for a precompile
+// This interface is defined locally to avoid import cycles with geth/core/vm
 type PrecompileEnvironment interface {
-	// BlockNumber returns the current block number
-	BlockNumber() *big.Int
-	// BlockTime returns the current block timestamp
-	BlockTime() uint64
-	// ReadOnly returns whether the environment is read-only
+	// StateDB returns the statedb for the current execution
+	StateDB() StateDB
+	// Addresses returns the caller, address of the precompile, and origin
+	Addresses() (caller common.Address, address common.Address, origin common.Address)
+	// BlockContext returns context about the current block
+	BlockContext() BlockContext
+	// Rules returns the EVM rules for this execution
+	Rules() interface{}
+	// ReadOnly returns whether the execution is read-only
 	ReadOnly() bool
-	// ChainConfig returns the chain config
-	ChainConfig() *params.ChainConfig
-	// StateDB returns the state database (generic interface)
-	StateDB() interface{}
-	// Gas returns the available gas
-	Gas() uint64
-	// UseGas deducts gas from the available gas
-	UseGas(gas uint64) bool
+	// ChainConfig returns the chain configuration
+	ChainConfig() precompileconfig.ChainConfig
 }
 
 // AccessibleState defines the interface exposed to stateful precompile contracts
