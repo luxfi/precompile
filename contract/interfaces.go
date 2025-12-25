@@ -51,20 +51,12 @@ type StateDB interface {
 }
 
 // PrecompileEnvironment provides the execution environment for a precompile
-// This interface is defined locally to avoid import cycles with geth/core/vm
+// This interface is defined locally to avoid import cycles with geth/core/vm.
+// It mirrors the key methods from geth's PrecompileEnvironment without creating
+// a hard dependency.
 type PrecompileEnvironment interface {
-	// StateDB returns the statedb for the current execution
-	StateDB() StateDB
-	// Addresses returns the caller, address of the precompile, and origin
-	Addresses() (caller common.Address, address common.Address, origin common.Address)
-	// BlockContext returns context about the current block
-	BlockContext() BlockContext
-	// Rules returns the EVM rules for this execution
-	Rules() interface{}
 	// ReadOnly returns whether the execution is read-only
 	ReadOnly() bool
-	// ChainConfig returns the chain configuration
-	ChainConfig() precompileconfig.ChainConfig
 }
 
 // AccessibleState defines the interface exposed to stateful precompile contracts
