@@ -13,8 +13,7 @@ import (
 	"github.com/luxfi/geth/accounts/abi"
 )
 
-// ErrOutOfGas is returned when there's not enough gas to execute the precompile.
-// This mirrors geth/core/vm.ErrOutOfGas to avoid import cycle.
+// ErrOutOfGas is returned when the gas is exhausted
 var ErrOutOfGas = errors.New("out of gas")
 
 // Gas costs for stateful precompiles
