@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"hash"
-	"math/big"
 
 	"github.com/luxfi/crypto/secp256k1"
 	"github.com/luxfi/geth/common"
@@ -260,7 +259,7 @@ func (p *eciesPrecompile) encrypt(curveID byte, input []byte) ([]byte, error) {
 	// Key derivation using Concat KDF (NIST SP 800-56A)
 	keyLen := 32 // AES-256
 	macKeyLen := 32
-	derivedKey := concatKDF(sha256.New(), sharedSecret, s1, keyLen+macKeyLen)
+	derivedKey := concatKDF(sha256.New, sharedSecret, s1, keyLen+macKeyLen)
 
 	encKey := derivedKey[:keyLen]
 	macKey := derivedKey[keyLen:]
@@ -364,7 +363,7 @@ func (p *eciesPrecompile) decrypt(curveID byte, input []byte) ([]byte, error) {
 	// Key derivation
 	keyLen := 32
 	macKeyLen := 32
-	derivedKey := concatKDF(sha256.New(), sharedSecret, s1, keyLen+macKeyLen)
+	derivedKey := concatKDF(sha256.New, sharedSecret, s1, keyLen+macKeyLen)
 
 	encKey := derivedKey[:keyLen]
 	macKey := derivedKey[keyLen:]
