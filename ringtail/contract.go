@@ -13,11 +13,10 @@ import (
 	"github.com/luxfi/precompiles/contract"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v6/ring"
-	"github.com/luxfi/lattice/v6/utils/sampling"
 	"github.com/luxfi/lattice/v6/utils/structs"
 
-	"ringtail/sign"
-	"ringtail/utils"
+	"github.com/luxfi/ringtail/sign"
+	"github.com/luxfi/ringtail/utils"
 )
 
 var (
