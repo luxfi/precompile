@@ -13,8 +13,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
-	"github.com/crate-crypto/go-kzg-4844"
+	gokzg4844 "github.com/crate-crypto/go-kzg-4844"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompiles/contract"
 )
@@ -29,7 +28,7 @@ var (
 	_ contract.StatefulPrecompiledContract = &kzg4844Precompile{}
 
 	// Trusted setup context (initialized once)
-	kzgContext *kzg.Context
+	kzgContext *gokzg4844.Context
 
 	ErrInvalidInput       = errors.New("invalid KZG4844 input")
 	ErrInvalidBlob        = errors.New("invalid blob data")
@@ -75,7 +74,7 @@ const (
 func init() {
 	// Initialize trusted setup from embedded parameters
 	var err error
-	kzgContext, err = kzg.NewContext4096Secure()
+	kzgContext, err = gokzg4844.NewContext4096Secure()
 	if err != nil {
 		// Will fail on operations if not initialized
 		kzgContext = nil
@@ -189,10 +188,10 @@ func (p *kzg4844Precompile) blobToCommitment(input []byte) ([]byte, error) {
 		return nil, ErrInvalidBlob
 	}
 
-	var blob kzg.Blob
+	var blob gokzg4844.Blob
 	copy(blob[:], input[:BlobSize])
 
-	commitment, err := kzgContext.BlobToKZGCommitment(blob, 0)
+	commitment, err := kzgContext.BlobToKZGCommitment(&blob, 0)
 	if err != nil {
 		return nil, fmt.Errorf("commitment failed: %w", err)
 	}
@@ -206,15 +205,15 @@ func (p *kzg4844Precompile) computeProof(input []byte) ([]byte, error) {
 		return nil, ErrInvalidInput
 	}
 
-	var blob kzg.Blob
+	var blob gokzg4844.Blob
 	copy(blob[:], input[:BlobSize])
 
 	// Parse evaluation point
-	var z fr.Element
-	z.SetBytes(input[BlobSize : BlobSize+FieldElementSize])
+	var z gokzg4844.Scalar
+	copy(z[:], input[BlobSize:BlobSize+FieldElementSize])
 
 	// Compute proof
-	proof, y, err := kzgContext.ComputeKZGProof(blob, z, 0)
+	proof, y, err := kzgContext.ComputeKZGProof(&blob, z, 0)
 	if err != nil {
 		return nil, fmt.Errorf("proof computation failed: %w", err)
 	}
@@ -222,8 +221,7 @@ func (p *kzg4844Precompile) computeProof(input []byte) ([]byte, error) {
 	// Return proof || y
 	result := make([]byte, ProofSize+FieldElementSize)
 	copy(result, proof[:])
-	yBytes := y.Bytes()
-	copy(result[ProofSize:], yBytes[:])
+	copy(result[ProofSize:], y[:])
 
 	return result, nil
 }
@@ -236,14 +234,14 @@ func (p *kzg4844Precompile) verifyProof(input []byte) ([]byte, error) {
 		return nil, ErrInvalidInput
 	}
 
-	var commitment kzg.KZGCommitment
+	var commitment gokzg4844.KZGCommitment
 	copy(commitment[:], input[:CommitmentSize])
 
-	var z, y fr.Element
-	z.SetBytes(input[CommitmentSize : CommitmentSize+FieldElementSize])
-	y.SetBytes(input[CommitmentSize+FieldElementSize : CommitmentSize+2*FieldElementSize])
+	var z, y gokzg4844.Scalar
+	copy(z[:], input[CommitmentSize:CommitmentSize+FieldElementSize])
+	copy(y[:], input[CommitmentSize+FieldElementSize:CommitmentSize+2*FieldElementSize])
 
-	var proof kzg.KZGProof
+	var proof gokzg4844.KZGProof
 	copy(proof[:], input[CommitmentSize+2*FieldElementSize:])
 
 	err := kzgContext.VerifyKZGProof(commitment, z, y, proof)
@@ -262,16 +260,16 @@ func (p *kzg4844Precompile) verifyBlobProof(input []byte) ([]byte, error) {
 		return nil, ErrInvalidInput
 	}
 
-	var blob kzg.Blob
+	var blob gokzg4844.Blob
 	copy(blob[:], input[:BlobSize])
 
-	var commitment kzg.KZGCommitment
+	var commitment gokzg4844.KZGCommitment
 	copy(commitment[:], input[BlobSize:BlobSize+CommitmentSize])
 
-	var proof kzg.KZGProof
+	var proof gokzg4844.KZGProof
 	copy(proof[:], input[BlobSize+CommitmentSize:])
 
-	err := kzgContext.VerifyBlobKZGProof(blob, commitment, proof)
+	err := kzgContext.VerifyBlobKZGProof(&blob, commitment, proof)
 	if err != nil {
 		return []byte{0x00}, nil
 	}
@@ -299,19 +297,19 @@ func (p *kzg4844Precompile) batchVerifyProofs(input []byte) ([]byte, error) {
 		return nil, ErrInvalidInput
 	}
 
-	commitments := make([]kzg.KZGCommitment, numProofs)
-	zs := make([]fr.Element, numProofs)
-	ys := make([]fr.Element, numProofs)
-	proofs := make([]kzg.KZGProof, numProofs)
+	commitments := make([]gokzg4844.KZGCommitment, numProofs)
+	zs := make([]gokzg4844.Scalar, numProofs)
+	ys := make([]gokzg4844.Scalar, numProofs)
+	proofs := make([]gokzg4844.KZGProof, numProofs)
 
 	for i := 0; i < numProofs; i++ {
 		copy(commitments[i][:], input[offset:offset+CommitmentSize])
 		offset += CommitmentSize
 
-		zs[i].SetBytes(input[offset : offset+FieldElementSize])
+		copy(zs[i][:], input[offset:offset+FieldElementSize])
 		offset += FieldElementSize
 
-		ys[i].SetBytes(input[offset : offset+FieldElementSize])
+		copy(ys[i][:], input[offset:offset+FieldElementSize])
 		offset += FieldElementSize
 
 		copy(proofs[i][:], input[offset:offset+ProofSize])
@@ -337,13 +335,12 @@ func (p *kzg4844Precompile) computeChallenge(input []byte) ([]byte, error) {
 
 	// Simple challenge: hash the commitment
 	// In practice, would include more context
-	var commitment kzg.KZGCommitment
+	var commitment gokzg4844.KZGCommitment
 	copy(commitment[:], input[:CommitmentSize])
 
 	// Use commitment hash as challenge (simplified)
-	var challenge fr.Element
-	challenge.SetBytes(commitment[:32])
+	var challenge gokzg4844.Scalar
+	copy(challenge[:], commitment[:32])
 
-	challengeBytes := challenge.Bytes()
-	return challengeBytes[:], nil
+	return challenge[:], nil
 }
