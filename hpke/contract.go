@@ -292,7 +292,8 @@ func (p *hpkePrecompile) singleShotSeal(input []byte) ([]byte, error) {
 	plaintext := input[offset:]
 
 	// Parse public key
-	pk, err := suite.KEM.Scheme().UnmarshalBinaryPublicKey(recipientPk)
+	kem, _, _ := suite.Params()
+	pk, err := kem.Scheme().UnmarshalBinaryPublicKey(recipientPk)
 	if err != nil {
 		return nil, fmt.Errorf("invalid public key: %w", err)
 	}
@@ -391,7 +392,8 @@ func (p *hpkePrecompile) singleShotOpen(input []byte) ([]byte, error) {
 	ciphertext := input[offset:]
 
 	// Parse secret key
-	sk, err := suite.KEM.Scheme().UnmarshalBinaryPrivateKey(recipientSk)
+	kem, _, _ := suite.Params()
+	sk, err := kem.Scheme().UnmarshalBinaryPrivateKey(recipientSk)
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key: %w", err)
 	}
