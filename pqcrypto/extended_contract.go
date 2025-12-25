@@ -11,9 +11,8 @@ import (
 	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/crypto/mlkem"
 	"github.com/luxfi/crypto/slhdsa"
-	"github.com/luxfi/precompiles/contract"
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/geth/core/vm"
+	"github.com/luxfi/precompiles/contract"
 )
 
 const (
@@ -52,7 +51,7 @@ func (p *pqCryptoPrecompile) mldsaSign(input []byte) ([]byte, uint64, error) {
 	message := input[3+privKeyLen:]
 
 	// Reconstruct private key
-	privKey, err := mldsa.PrivateKeyFromBytes(privKeyBytes, mode)
+	privKey, err := mldsa.PrivateKeyFromBytes(mode, privKeyBytes)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -84,7 +83,7 @@ func (p *pqCryptoPrecompile) slhdsaSign(input []byte) ([]byte, uint64, error) {
 	message := input[3+privKeyLen:]
 
 	// Reconstruct private key
-	privKey, err := slhdsa.PrivateKeyFromBytes(privKeyBytes, mode)
+	privKey, err := slhdsa.PrivateKeyFromBytes(mode, privKeyBytes)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -136,15 +135,14 @@ func (p *pqCryptoPrecompile) mlkemGenKey(input []byte) ([]byte, uint64, error) {
 
 	mode := mlkem.Mode(input[0])
 
-	// Generate key pair - returns (privKey, pubKey, error)
-	privKey, _, err := mlkem.GenerateKeyPair(rand.Reader, mode)
+	// Generate key pair - returns (pubKey, privKey, error)
+	pubKey, privKey, err := mlkem.GenerateKeyPair(rand.Reader, mode)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Serialize keys - extract public key from private key
+	// Serialize keys
 	privBytes := privKey.Bytes()
-	pubKey := privKey.PublicKey
 	pubBytes := pubKey.Bytes()
 
 	// Output format: [privkey_len(2)] [privkey] [pubkey]
@@ -225,7 +223,7 @@ func (p *pqCryptoPrecompile) ExtendedRun(accessibleState contract.AccessibleStat
 	}
 
 	if suppliedGas < requiredGas {
-		return nil, 0, vm.ErrOutOfGas
+		return nil, 0, contract.ErrOutOfGas
 	}
 	remainingGas = suppliedGas - requiredGas
 
