@@ -4,14 +4,18 @@
 package contract
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/accounts/abi"
-	"github.com/luxfi/geth/core/vm"
 )
+
+// ErrOutOfGas is returned when there's not enough gas to execute the precompile.
+// This mirrors geth/core/vm.ErrOutOfGas to avoid import cycle.
+var ErrOutOfGas = errors.New("out of gas")
 
 // Gas costs for stateful precompiles
 const (
@@ -43,7 +47,7 @@ func CalculateFunctionSelector(functionSignature string) []byte {
 // DeductGas checks if [suppliedGas] is sufficient against [requiredGas] and deducts [requiredGas] from [suppliedGas].
 func DeductGas(suppliedGas uint64, requiredGas uint64) (uint64, error) {
 	if suppliedGas < requiredGas {
-		return 0, vm.ErrOutOfGas
+		return 0, ErrOutOfGas
 	}
 	return suppliedGas - requiredGas, nil
 }
