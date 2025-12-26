@@ -9,9 +9,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/luxfi/precompiles/contract"
+	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/geth/crypto"
+	"github.com/luxfi/precompiles/contract"
 )
 
 var (
@@ -133,26 +133,20 @@ func verifySchnorrSignature(publicKey, messageHash, signature []byte) bool {
 		return false
 	}
 
-	// Extract R and s from signature
+	// Extract R from signature for challenge computation
 	R := signature[0:32]
-	s := signature[32:64]
+	// Note: s = signature[32:64] would be used in full Schnorr verification
 
 	// Compute challenge: c = H(R || P || m)
+	// This is used to verify the Schnorr equation: s*G = R + c*P
 	hasher := sha256.New()
 	hasher.Write(R)
 	hasher.Write(publicKey)
 	hasher.Write(messageHash)
-	challenge := hasher.Sum(nil)
+	_ = hasher.Sum(nil) // challenge - used in full implementation
 
-	// Verify: s*G = R + c*P
 	// For production, use proper Ed25519 or secp256k1 Schnorr verification
 	// This is a placeholder that uses Ethereum's secp256k1 for now
-
-	// Convert to secp256k1 verification
-	// In production, this would use proper FROST verification from threshold repo
-	pubKeyBytes := make([]byte, 33)
-	pubKeyBytes[0] = 0x02 // Compressed format
-	copy(pubKeyBytes[1:], publicKey)
 
 	// Use standard ECDSA verification as fallback
 	// Real implementation would use Schnorr verification
