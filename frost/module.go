@@ -6,6 +6,7 @@ package frost
 import (
 	"github.com/luxfi/precompiles/contract"
 	"github.com/luxfi/precompiles/modules"
+	"github.com/luxfi/precompiles/precompileconfig"
 )
 
 var _ contract.Configurator = &configurator{}
@@ -14,54 +15,56 @@ type configurator struct{}
 
 func init() {
 	// Register FROST precompile module
-	if err := modules.RegisterModule(
-		ContractFROSTVerifyAddress.String(),
-		&configurator{},
-	); err != nil {
+	if err := modules.RegisterModule(modules.Module{
+		ConfigKey:    "frostVerify",
+		Address:      ContractFROSTVerifyAddress,
+		Contract:     FROSTVerifyPrecompile,
+		Configurator: &configurator{},
+	}); err != nil {
 		panic(err)
 	}
 }
 
-func (*configurator) MakeConfig() contract.StatefulPrecompileConfig {
-	return &Config{
-		Address: ContractFROSTVerifyAddress,
-	}
+func (*configurator) MakeConfig() precompileconfig.Config {
+	return &Config{}
 }
 
-// Config implements the StatefulPrecompileConfig interface for FROST
-type Config struct {
-	Address common.Address `json:"address"`
-}
-
-func (c *Config) Key() string {
-	return c.Address.String()
-}
-
-func (c *Config) Timestamp() *uint64 {
+func (*configurator) Configure(
+	chainConfig precompileconfig.ChainConfig,
+	cfg precompileconfig.Config,
+	state contract.StateDB,
+	blockContext contract.ConfigurationBlockContext,
+) error {
+	// No state initialization required for FROST verification
 	return nil
 }
 
-func (c *Config) IsDisabled() bool {
-	return false
+// Config implements the precompileconfig.Config interface for FROST
+type Config struct {
+	Upgrade precompileconfig.Upgrade `json:"upgrade,omitempty"`
 }
 
-func (c *Config) Equal(cfg contract.StatefulPrecompileConfig) bool {
+func (c *Config) Key() string {
+	return "frostVerify"
+}
+
+func (c *Config) Timestamp() *uint64 {
+	return c.Upgrade.Timestamp()
+}
+
+func (c *Config) IsDisabled() bool {
+	return c.Upgrade.Disable
+}
+
+func (c *Config) Equal(cfg precompileconfig.Config) bool {
 	other, ok := cfg.(*Config)
 	if !ok {
 		return false
 	}
-	return c.Address == other.Address
+	return c.Upgrade.Equal(&other.Upgrade)
 }
 
-func (c *Config) Configure(
-	chainConfig contract.ChainConfig,
-	precompileConfig contract.PrecompileConfig,
-	state contract.StateDB,
-) error {
-	// No state initialization required
+func (c *Config) Verify(chainConfig precompileconfig.ChainConfig) error {
+	// No additional verification required
 	return nil
-}
-
-func (c *Config) Contract() contract.StatefulPrecompiledContract {
-	return FROSTVerifyPrecompile
 }

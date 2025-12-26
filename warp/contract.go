@@ -9,12 +9,12 @@ import (
 	"fmt"
 
 	consensuscontext "github.com/luxfi/consensus/context"
-	"github.com/luxfi/evm/accounts/abi"
-	"github.com/luxfi/precompiles/contract"
+	"github.com/luxfi/geth/accounts/abi"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/geth/common/math"
 	"github.com/luxfi/geth/core/types"
 	"github.com/luxfi/geth/core/vm"
+	"github.com/luxfi/precompiles/contract"
 	"github.com/luxfi/warp"
 	"github.com/luxfi/warp/payload"
 )
@@ -47,7 +47,7 @@ var (
 	//go:embed contract.abi
 	WarpRawABI string
 
-	WarpABI = contract.ParseABI(WarpRawABI)
+	WarpABI = ParseABI(WarpRawABI)
 
 	WarpPrecompile = createWarpPrecompile()
 )
@@ -267,7 +267,7 @@ func sendWarpMessage(accessibleState contract.AccessibleState, caller common.Add
 	}
 	unsignedWarpMessage, err := warp.NewUnsignedMessage(
 		consensuscontext.GetNetworkID(ctx),
-		sourceChainID[:],
+		sourceChainID,
 		addressedPayload.Bytes(),
 	)
 	if err != nil {

@@ -6,83 +6,65 @@ package ringtailthreshold
 import (
 	"github.com/luxfi/precompiles/contract"
 	"github.com/luxfi/precompiles/modules"
-	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompiles/precompileconfig"
 )
 
 var _ contract.Configurator = &configurator{}
 
-// ConfigKey is the key used in the precompile config file to configure this precompile
-const ConfigKey = "ringtailThresholdConfig"
-
 type configurator struct{}
 
-// NewConfigurator creates a new configurator for the Ringtail threshold signature precompile
-func NewConfigurator() contract.Configurator {
-	return &configurator{}
+func init() {
+	// Register Ringtail threshold precompile module
+	if err := modules.RegisterModule(modules.Module{
+		ConfigKey:    "ringtailThreshold",
+		Address:      ContractRingtailThresholdAddress,
+		Contract:     RingtailThresholdPrecompile,
+		Configurator: &configurator{},
+	}); err != nil {
+		panic(err)
+	}
 }
 
-// MakeConfig returns a new Ringtail threshold config instance
-func (c *configurator) MakeConfig() contract.Config {
+func (*configurator) MakeConfig() precompileconfig.Config {
 	return &Config{}
 }
 
-// Configure configures the Ringtail threshold signature precompile
-func (c *configurator) Configure(
-	chainConfig contract.ChainConfig,
-	cfg contract.Config,
+func (*configurator) Configure(
+	chainConfig precompileconfig.ChainConfig,
+	cfg precompileconfig.Config,
 	state contract.StateDB,
-	blockContext contract.BlockContext,
+	blockContext contract.ConfigurationBlockContext,
 ) error {
-	// No special configuration needed for Ringtail threshold
-	// The precompile is stateless and requires no initialization
+	// No state initialization required for Ringtail threshold verification
 	return nil
 }
 
-// Config implements the StatefulPrecompileConfig interface
+// Config implements the precompileconfig.Config interface for Ringtail
 type Config struct {
-	contract.UpgradeableConfig
+	Upgrade precompileconfig.Upgrade `json:"upgrade,omitempty"`
 }
 
-// Address returns the address of the Ringtail threshold signature precompile
-func (c *Config) Address() common.Address {
-	return ContractRingtailThresholdAddress
+func (c *Config) Key() string {
+	return "ringtailThreshold"
 }
 
-// Contract returns the precompile contract instance
-func (c *Config) Contract() contract.StatefulPrecompiledContract {
-	return RingtailThresholdPrecompile
+func (c *Config) Timestamp() *uint64 {
+	return c.Upgrade.Timestamp()
 }
 
-// Configure implements the StatefulPrecompileConfig interface
-func (c *Config) Configure(
-	chainConfig contract.ChainConfig,
-	cfg contract.Config,
-	state contract.StateDB,
-	blockContext contract.BlockContext,
-) error {
-	return NewConfigurator().Configure(chainConfig, cfg, state, blockContext)
+func (c *Config) IsDisabled() bool {
+	return c.Upgrade.Disable
 }
 
-// Equal returns true if the two configs are equal
-func (c *Config) Equal(other contract.Config) bool {
-	otherConfig, ok := other.(*Config)
+func (c *Config) Equal(cfg precompileconfig.Config) bool {
+	other, ok := cfg.(*Config)
 	if !ok {
 		return false
 	}
-	return c.UpgradeableConfig.Equal(&otherConfig.UpgradeableConfig)
+	return c.Upgrade.Equal(&other.Upgrade)
 }
 
-// String returns a string representation of the config
-func (c *Config) String() string {
-	return "RingtailThresholdConfig"
-}
-
-// Key returns the config key
-func (c *Config) Key() string {
-	return ConfigKey
-}
-
-func init() {
-	// Register the Ringtail threshold precompile module
-	modules.RegisterModule(ConfigKey, NewConfigurator())
+func (c *Config) Verify(chainConfig precompileconfig.ChainConfig) error {
+	// No additional verification required
+	return nil
 }

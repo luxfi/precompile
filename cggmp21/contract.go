@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/big"
 
 	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
@@ -147,15 +146,14 @@ func verifyECDSASignature(publicKeyBytes, messageHash, signatureBytes []byte) (b
 		return false, fmt.Errorf("%w: %v", ErrInvalidPublicKey, err)
 	}
 
-	// Extract r, s, v from signature
-	r := new(big.Int).SetBytes(signatureBytes[0:32])
-	s := new(big.Int).SetBytes(signatureBytes[32:64])
+	// Extract v from signature (r and s are at positions 0:32 and 32:64)
 	v := signatureBytes[64]
 
 	// Normalize v (should be 27 or 28, or 0 or 1)
 	if v >= 27 {
 		v -= 27
 	}
+	_ = v // v is used in recovery below
 
 	// Verify signature
 	// CGGMP21 produces standard ECDSA signatures that can be verified normally
