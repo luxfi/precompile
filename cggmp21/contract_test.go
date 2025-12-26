@@ -9,8 +9,8 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/geth/crypto"
 	"github.com/stretchr/testify/require"
 )
 

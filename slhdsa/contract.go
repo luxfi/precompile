@@ -15,7 +15,7 @@ import (
 
 var (
 	// ContractSLHDSAVerifyAddress is the address of the SLH-DSA verify precompile
-	ContractSLHDSAVerifyAddress = common.HexToAddress("0x0200000000000000000000000000000000000007")
+	ContractSLHDSAVerifyAddress = common.HexToAddress("0x0200000000000000000000000000000000000009")
 
 	// Singleton instance
 	SLHDSAVerifyPrecompile = &slhdsaVerifyPrecompile{}
