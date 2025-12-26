@@ -6,11 +6,10 @@ package warp
 import (
 	"fmt"
 
+	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompiles/contract"
 	"github.com/luxfi/precompiles/modules"
 	"github.com/luxfi/precompiles/precompileconfig"
-
-	"github.com/luxfi/geth/common"
 )
 
 var _ contract.Configurator = (*configurator)(nil)
