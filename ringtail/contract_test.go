@@ -5,33 +5,31 @@ package ringtailthreshold
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"math/big"
 	"testing"
 
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v6/ring"
-	"github.com/luxfi/lattice/v6/utils/sampling"
-	"github.com/luxfi/lattice/v6/utils/structs"
+	"github.com/luxfi/ringtail/sign"
+	"github.com/luxfi/ringtail/threshold"
 	"github.com/stretchr/testify/require"
-
-	"ringtail/primitives"
-	"ringtail/sign"
-	"ringtail/utils"
 )
 
 // TestRingtailThresholdVerify_2of3 tests 2-of-3 threshold signature
 func TestRingtailThresholdVerify_2of3(t *testing.T) {
-	threshold := uint32(2)
+	thresholdVal := uint32(2)
 	totalParties := uint32(3)
 	message := "test message for 2-of-3 threshold"
 
 	// Generate threshold signature
-	signature, messageHash, err := generateThresholdSignature(threshold, totalParties, message)
+	signature, messageHash, err := generateThresholdSignature(thresholdVal, totalParties, message)
 	require.NoError(t, err)
 
 	// Create input
-	input := createInput(threshold, totalParties, messageHash, signature)
+	input := createInput(thresholdVal, totalParties, messageHash, signature)
 
 	// Verify signature
 	precompile := &ringtailThresholdPrecompile{}
@@ -43,16 +41,16 @@ func TestRingtailThresholdVerify_2of3(t *testing.T) {
 
 // TestRingtailThresholdVerify_3of5 tests 3-of-5 threshold signature
 func TestRingtailThresholdVerify_3of5(t *testing.T) {
-	threshold := uint32(3)
+	thresholdVal := uint32(3)
 	totalParties := uint32(5)
 	message := "test message for 3-of-5 threshold"
 
 	// Generate threshold signature
-	signature, messageHash, err := generateThresholdSignature(threshold, totalParties, message)
+	signature, messageHash, err := generateThresholdSignature(thresholdVal, totalParties, message)
 	require.NoError(t, err)
 
 	// Create input
-	input := createInput(threshold, totalParties, messageHash, signature)
+	input := createInput(thresholdVal, totalParties, messageHash, signature)
 
 	// Verify signature
 	precompile := &ringtailThresholdPrecompile{}
@@ -64,16 +62,16 @@ func TestRingtailThresholdVerify_3of5(t *testing.T) {
 
 // TestRingtailThresholdVerify_FullThreshold tests n-of-n (full threshold)
 func TestRingtailThresholdVerify_FullThreshold(t *testing.T) {
-	threshold := uint32(4)
+	thresholdVal := uint32(3) // Use 3-of-4 since threshold package requires t < n
 	totalParties := uint32(4)
 	message := "test message for full threshold"
 
 	// Generate threshold signature
-	signature, messageHash, err := generateThresholdSignature(threshold, totalParties, message)
+	signature, messageHash, err := generateThresholdSignature(thresholdVal, totalParties, message)
 	require.NoError(t, err)
 
 	// Create input
-	input := createInput(threshold, totalParties, messageHash, signature)
+	input := createInput(thresholdVal, totalParties, messageHash, signature)
 
 	// Verify signature
 	precompile := &ringtailThresholdPrecompile{}
@@ -85,19 +83,19 @@ func TestRingtailThresholdVerify_FullThreshold(t *testing.T) {
 
 // TestRingtailThresholdVerify_InvalidSignature tests invalid signature rejection
 func TestRingtailThresholdVerify_InvalidSignature(t *testing.T) {
-	threshold := uint32(2)
+	thresholdVal := uint32(2)
 	totalParties := uint32(3)
 	message := "test message"
 
 	// Generate valid signature
-	signature, messageHash, err := generateThresholdSignature(threshold, totalParties, message)
+	signature, messageHash, err := generateThresholdSignature(thresholdVal, totalParties, message)
 	require.NoError(t, err)
 
 	// Corrupt signature
 	signature[100] ^= 0xFF
 
 	// Create input with corrupted signature
-	input := createInput(threshold, totalParties, messageHash, signature)
+	input := createInput(thresholdVal, totalParties, messageHash, signature)
 
 	// Verify should fail
 	precompile := &ringtailThresholdPrecompile{}
@@ -109,12 +107,12 @@ func TestRingtailThresholdVerify_InvalidSignature(t *testing.T) {
 
 // TestRingtailThresholdVerify_WrongMessage tests wrong message rejection
 func TestRingtailThresholdVerify_WrongMessage(t *testing.T) {
-	threshold := uint32(2)
+	thresholdVal := uint32(2)
 	totalParties := uint32(3)
 	message := "original message"
 
 	// Generate signature for original message
-	signature, _, err := generateThresholdSignature(threshold, totalParties, message)
+	signature, _, err := generateThresholdSignature(thresholdVal, totalParties, message)
 	require.NoError(t, err)
 
 	// Use different message hash
@@ -122,7 +120,7 @@ func TestRingtailThresholdVerify_WrongMessage(t *testing.T) {
 	wrongHash := hashMessage(wrongMessage)
 
 	// Create input with wrong message hash
-	input := createInput(threshold, totalParties, wrongHash, signature)
+	input := createInput(thresholdVal, totalParties, wrongHash, signature)
 
 	// Verify should fail
 	precompile := &ringtailThresholdPrecompile{}
@@ -139,7 +137,8 @@ func TestRingtailThresholdVerify_ThresholdNotMet(t *testing.T) {
 	claimedThreshold := uint32(3)
 	message := "test message"
 
-	signature, messageHash, err := generateThresholdSignature(actualParties, actualParties, message)
+	// Use valid threshold for generation (1 < 2)
+	signature, messageHash, err := generateThresholdSignature(1, actualParties, message)
 	require.NoError(t, err)
 
 	// Claim higher threshold than available
@@ -165,9 +164,9 @@ func TestRingtailThresholdVerify_InputTooShort(t *testing.T) {
 // TestRingtailThresholdVerify_GasCost tests gas cost calculation
 func TestRingtailThresholdVerify_GasCost(t *testing.T) {
 	tests := []struct {
-		name         string
-		parties      uint32
-		expectedGas  uint64
+		name        string
+		parties     uint32
+		expectedGas uint64
 	}{
 		{"3 parties", 3, 150_000 + (3 * 10_000)},
 		{"5 parties", 5, 150_000 + (5 * 10_000)},
@@ -215,143 +214,123 @@ func TestEstimateGas(t *testing.T) {
 
 // Helper functions
 
-// generateThresholdSignature generates a threshold signature using Ringtail protocol
-func generateThresholdSignature(threshold, totalParties uint32, message string) ([]byte, []byte, error) {
-	// Initialize ring parameters
-	r, err := ring.NewRing(1<<sign.LogN, []uint64{sign.Q})
+// generateThresholdSignature generates a threshold signature using the threshold package
+func generateThresholdSignature(thresholdVal, totalParties uint32, message string) ([]byte, []byte, error) {
+	// Generate key shares using threshold package
+	shares, groupKey, err := threshold.GenerateKeys(int(thresholdVal), int(totalParties), rand.Reader)
 	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate keys: %w", err)
+	}
+
+	// Create PRF key for signing session
+	prfKey := make([]byte, sign.KeySize)
+	if _, err := rand.Read(prfKey); err != nil {
 		return nil, nil, err
 	}
 
-	r_xi, err := ring.NewRing(1<<sign.LogN, []uint64{sign.QXi})
-	if err != nil {
-		return nil, nil, err
+	// All parties participate
+	signers := make([]int, totalParties)
+	for i := range signers {
+		signers[i] = i
+	}
+	sessionID := 1
+
+	// Create signers from shares
+	thresholdSigners := make([]*threshold.Signer, totalParties)
+	for i, share := range shares {
+		thresholdSigners[i] = threshold.NewSigner(share)
 	}
 
-	r_nu, err := ring.NewRing(1<<sign.LogN, []uint64{sign.QNu})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Initialize sampler
-	randomKey := make([]byte, sign.KeySize)
-	prng, err := sampling.NewKeyedPRNG(randomKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	uniformSampler := ring.NewUniformSampler(prng, r)
-
-	// Set parameters
-	sign.K = int(totalParties)
-	sign.Threshold = int(threshold)
-
-	// Create party set
-	T := make([]int, totalParties)
-	for i := 0; i < int(totalParties); i++ {
-		T[i] = i
-	}
-
-	// Compute Lagrange coefficients
-	lagrangeCoeffs := primitives.ComputeLagrangeCoefficients(r, T, big.NewInt(int64(sign.Q)))
-
-	// Run Gen to generate keys and parameters
-	A, skShares, seeds, MACKeys, bTilde := sign.Gen(r, r_xi, uniformSampler, randomKey, lagrangeCoeffs)
-
-	// Create parties
-	parties := make([]*sign.Party, totalParties)
-	for i := 0; i < int(totalParties); i++ {
-		parties[i] = sign.NewParty(i, r, r_xi, r_nu, uniformSampler)
-		parties[i].SkShare = skShares[i]
-		parties[i].Seed = seeds
-		parties[i].MACKeys = MACKeys[i]
-		parties[i].Lambda = lagrangeCoeffs[i]
-	}
-
-	// Round 1: Each party generates their D matrix and MACs
-	D := make(map[int]structs.Matrix[ring.Poly])
-	MACs := make(map[int]map[int][]byte)
-	sid := 1
-
-	for i, party := range parties {
-		Di, MACsi := party.SignRound1(A, sid, randomKey, T)
-		D[i] = Di
-		MACs[i] = MACsi
-	}
-
-	// Round 2 Preprocess: Verify MACs and compute DSum
-	var DSum structs.Matrix[ring.Poly]
-	var hash []byte
-	for _, party := range parties {
-		valid, DSumLocal, hashLocal := party.SignRound2Preprocess(A, bTilde, D, MACs, sid, T)
-		if !valid {
-			return nil, nil, fmt.Errorf("MAC verification failed")
-		}
-		DSum = DSumLocal
-		hash = hashLocal
-	}
-
-	// Round 2: Each party generates their z share
-	z := make(map[int]structs.Vector[ring.Poly])
-	for i, party := range parties {
-		z[i] = party.SignRound2(A, bTilde, DSum, sid, message, T, randomKey, hash)
-	}
-
-	// Finalize: Combine shares to create signature
-	c, z_sum, Delta := parties[0].SignFinalize(z, A, bTilde)
-
-	// Serialize signature
-	signatureBytes, err := serializeSignature(r, r_xi, r_nu, c, z_sum, Delta, A, bTilde)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Hash message
+	// Hash message first - this is what will be passed to the precompile
 	messageHash := hashMessage(message)
+	// Use hex encoding of messageHash as the signing message
+	// This matches what contract.go does: mu := fmt.Sprintf("%x", messageHash)
+	signMessage := fmt.Sprintf("%x", messageHash)
+
+	// Round 1: Each party generates D matrix and MACs
+	round1Data := make(map[int]*threshold.Round1Data)
+	for i, signer := range thresholdSigners {
+		round1Data[i] = signer.Round1(sessionID, prfKey, signers)
+	}
+
+	// Round 2: Each party generates z share (use hex-encoded message)
+	round2Data := make(map[int]*threshold.Round2Data)
+	for i, signer := range thresholdSigners {
+		r2, err := signer.Round2(sessionID, signMessage, prfKey, signers, round1Data)
+		if err != nil {
+			return nil, nil, fmt.Errorf("round 2 failed for party %d: %w", i, err)
+		}
+		round2Data[i] = r2
+	}
+
+	// Finalize: Any party can aggregate the signature
+	sig, err := thresholdSigners[0].Finalize(round2Data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("finalize failed: %w", err)
+	}
+
+	// Verify the signature before serializing (sanity check)
+	if !threshold.Verify(groupKey, signMessage, sig) {
+		return nil, nil, fmt.Errorf("signature verification failed before serialization")
+	}
+
+	// Serialize signature and group key
+	signatureBytes, err := serializeSignature(groupKey.Params, sig, groupKey)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	return signatureBytes, messageHash, nil
 }
 
 // serializeSignature serializes signature components to bytes
-func serializeSignature(r, r_xi, r_nu *ring.Ring,
-	c ring.Poly,
-	z structs.Vector[ring.Poly],
-	Delta structs.Vector[ring.Poly],
-	A structs.Matrix[ring.Poly],
-	bTilde structs.Vector[ring.Poly],
-) ([]byte, error) {
+func serializeSignature(params *threshold.Params, sig *threshold.Signature, groupKey *threshold.GroupKey) ([]byte, error) {
 	var buf bytes.Buffer
 
-	// Serialize c
-	if err := serializePoly(&buf, r, c); err != nil {
+	r := params.R
+	r_xi := params.RXi
+	r_nu := params.RNu
+
+	// Serialize c (convert from NTT first)
+	cCopy := *sig.C.CopyNew()
+	r.IMForm(cCopy, cCopy)
+	r.INTT(cCopy, cCopy)
+	if err := serializePoly(&buf, r, cCopy); err != nil {
 		return nil, err
 	}
 
-	// Serialize z vector
+	// Serialize z vector (convert from NTT first)
 	for i := 0; i < sign.N; i++ {
-		if err := serializePoly(&buf, r, z[i]); err != nil {
+		zCopy := *sig.Z[i].CopyNew()
+		r.IMForm(zCopy, zCopy)
+		r.INTT(zCopy, zCopy)
+		if err := serializePoly(&buf, r, zCopy); err != nil {
 			return nil, err
 		}
 	}
 
-	// Serialize Delta vector
+	// Serialize Delta vector (already in coefficient form)
 	for i := 0; i < sign.M; i++ {
-		if err := serializePoly(&buf, r_nu, Delta[i]); err != nil {
+		if err := serializePoly(&buf, r_nu, sig.Delta[i]); err != nil {
 			return nil, err
 		}
 	}
 
-	// Serialize A matrix
+	// Serialize A matrix (convert from NTT first)
 	for i := 0; i < sign.M; i++ {
 		for j := 0; j < sign.N; j++ {
-			if err := serializePoly(&buf, r, A[i][j]); err != nil {
+			aCopy := *groupKey.A[i][j].CopyNew()
+			r.IMForm(aCopy, aCopy)
+			r.INTT(aCopy, aCopy)
+			if err := serializePoly(&buf, r, aCopy); err != nil {
 				return nil, err
 			}
 		}
 	}
 
-	// Serialize bTilde vector
+	// Serialize bTilde vector (already in coefficient form)
 	for i := 0; i < sign.M; i++ {
-		if err := serializePoly(&buf, r_xi, bTilde[i]); err != nil {
+		if err := serializePoly(&buf, r_xi, groupKey.BTilde[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -374,20 +353,26 @@ func serializePoly(buf *bytes.Buffer, r *ring.Ring, poly ring.Poly) error {
 	return nil
 }
 
-// hashMessage creates a 32-byte hash of a message
+// hashMessage creates a 32-byte hash of a message using the same
+// encoding that will be used during verification (hex encoding)
 func hashMessage(message string) []byte {
+	// The message hash should be raw bytes that, when hex-encoded,
+	// produce the message string used during signing.
+	// Since contract.go does: mu := fmt.Sprintf("%x", messageHash)
+	// We need to hash the message and return raw bytes, then
+	// signing should use the hex representation.
 	hash := make([]byte, 32)
 	copy(hash, []byte(message))
 	return hash
 }
 
 // createInput creates precompile input from components
-func createInput(threshold, totalParties uint32, messageHash, signature []byte) []byte {
+func createInput(thresholdVal, totalParties uint32, messageHash, signature []byte) []byte {
 	input := make([]byte, 0, MinInputSize+len(signature))
 
 	// Add threshold
 	thresholdBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(thresholdBytes, threshold)
+	binary.BigEndian.PutUint32(thresholdBytes, thresholdVal)
 	input = append(input, thresholdBytes...)
 
 	// Add total parties

@@ -4,15 +4,20 @@
 package warp
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	consensuscontext "github.com/luxfi/consensus/context"
-	"github.com/luxfi/precompiles/precompileconfig"
-	"github.com/luxfi/evm/predicate"
+	validators "github.com/luxfi/consensus/validator"
+	"github.com/luxfi/constants"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/geth/common/math"
+	"github.com/luxfi/ids"
 	"github.com/luxfi/log"
+	"github.com/luxfi/precompiles/precompileconfig"
 	"github.com/luxfi/warp"
 	"github.com/luxfi/warp/payload"
 )
@@ -152,7 +157,7 @@ func (c *Config) PredicateGas(predicateBytes []byte) (uint64, error) {
 		return 0, fmt.Errorf("overflow adding bytes gas cost of size %d", len(predicateBytes))
 	}
 
-	unpackedPredicateBytes, err := predicate.UnpackPredicate(predicateBytes)
+	unpackedPredicateBytes, err := UnpackPredicate(predicateBytes)
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", errInvalidPredicateBytes, err)
 	}
@@ -160,7 +165,7 @@ func (c *Config) PredicateGas(predicateBytes []byte) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", errInvalidWarpMsg, err)
 	}
-	_, err = payload.Parse(warpMessage.UnsignedMessage.Payload)
+	_, err = payload.ParsePayload(warpMessage.UnsignedMessage.Payload)
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", errInvalidWarpMsgPayload, err)
 	}
@@ -171,6 +176,9 @@ func (c *Config) PredicateGas(predicateBytes []byte) (uint64, error) {
 		return 0, fmt.Errorf("%w: signature is not a BitSetSignature", errCannotGetNumSigners)
 	}
 	numSigners := uint64(bitSetSig.Signers.Len())
+	if numSigners == 0 {
+		return 0, fmt.Errorf("%w: no signers in bit set", errCannotGetNumSigners)
+	}
 	signerGas, overflow := math.SafeMul(uint64(numSigners), GasCostPerWarpSigner)
 	if overflow {
 		return 0, errOverflowSignersGasCost
@@ -183,9 +191,15 @@ func (c *Config) PredicateGas(predicateBytes []byte) (uint64, error) {
 	return totalGas, nil
 }
 
+// ValidatorOutputGetter is an optional interface that can be implemented
+// by validator states to provide full validator output including public keys
+type ValidatorOutputGetter interface {
+	GetValidatorSetWithOutput(ctx context.Context, height uint64, chainID ids.ID) (map[ids.NodeID]*validators.GetValidatorOutput, error)
+}
+
 // VerifyPredicate returns whether the predicate described by [predicateBytes] passes verification.
 func (c *Config) VerifyPredicate(predicateContext *precompileconfig.PredicateContext, predicateBytes []byte) error {
-	unpackedPredicateBytes, err := predicate.UnpackPredicate(predicateBytes)
+	unpackedPredicateBytes, err := UnpackPredicate(predicateBytes)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errInvalidPredicateBytes, err)
 	}
@@ -201,34 +215,161 @@ func (c *Config) VerifyPredicate(predicateContext *precompileconfig.PredicateCon
 		quorumNumerator = c.QuorumNumerator
 	}
 
-	log.Debug("verifying warp message", "warpMsg", warpMsg, "quorumNum", quorumNumerator, "quorumDenom", WarpQuorumDenominator)
-
-	// Wrap validators.State on the chain consensus context to special case the Primary Network
-	// Get ValidatorState from context
-	validatorState := consensuscontext.GetValidatorState(predicateContext.ConsensusCtx)
-	if validatorState == nil {
+	// Get ValidatorState from context - access directly since ConsensusCtx is *Context
+	validatorState, ok := predicateContext.ConsensusCtx.ValidatorState.(consensuscontext.ValidatorState)
+	if !ok || validatorState == nil {
 		return fmt.Errorf("validator state not found in context")
 	}
 
-	// Note: Due to version incompatibilities, we're skipping the actual signature verification
-	// This is a critical security feature that needs to be properly implemented
-	// TODO: Fix the validator state interface mismatches
-	return fmt.Errorf("warp signature verification is temporarily disabled due to version incompatibilities")
+	// Get the source chain ID from the warp message
+	sourceChainID := warpMsg.UnsignedMessage.SourceChainID
 
-	// Original verification code (commented out due to interface mismatches):
-	// err := warpMsg.Signature.Verify(
-	// 	context.Background(),
-	// 	&warpMsg.UnsignedMessage,
-	// 	predicateContext.ConsensusCtx.NetworkID,
-	// 	validatorState, // Use the validator state instead of validatorSet
-	// 	quorumNumerator,
-	// 	WarpQuorumDenominator,
-	// 	predicateContext.ProposerVMBlockCtx.PChainHeight, // Use PChainHeight for the last parameter
-	// )
-	// if err != nil {
-	// 	log.Debug("failed to verify warp signature", "msgID", warpMsg.ID(), "err", err)
-	// 	return fmt.Errorf("%w: %w", errFailedVerification, err)
-	// }
+	// Get network ID from validator state for the source chain
+	sourceNetworkID, err := validatorState.GetNetworkID(sourceChainID)
+	if err != nil {
+		return fmt.Errorf("failed to get network ID for source chain: %w", err)
+	}
 
-	// return nil
+	// Get the receiving chain ID (the chain this VM is running on) - access directly
+	receivingChainID := predicateContext.ConsensusCtx.ChainID
+
+	// Determine which chain's validators to use
+	// The logic is:
+	// 1. For non-primary network sources (sourceNetworkID != Empty): Use source chain's validators
+	// 2. For P-Chain sources: Use receiving chain's validators (P-Chain exempt)
+	// 3. For other primary network sources (e.g., C-Chain):
+	//    - With RequirePrimaryNetworkSigners=true: Use primary network's validators
+	//    - With RequirePrimaryNetworkSigners=false: Use receiving chain's validators
+	var requestedChainID ids.ID
+	if sourceNetworkID != ids.Empty && sourceNetworkID != constants.PrimaryNetworkID {
+		// Source is from a non-primary network - use that chain's validators
+		requestedChainID = sourceChainID
+	} else if sourceChainID == constants.PlatformChainID {
+		// P-Chain source - always use receiving chain's validators
+		requestedChainID = receivingChainID
+	} else if c.RequirePrimaryNetworkSigners {
+		// Other primary network source with RequirePrimaryNetworkSigners
+		// Use primary network validators
+		requestedChainID = constants.PrimaryNetworkID
+	} else {
+		// Other primary network source without RequirePrimaryNetworkSigners
+		// Use receiving chain's validators
+		requestedChainID = receivingChainID
+	}
+
+	pChainHeight := predicateContext.ProposerVMBlockCtx.PChainHeight
+
+	// Build warp validators - try to get full validator output with public keys
+	var allValidators []*warp.Validator
+	var totalWeight uint64
+
+	// Check if the validator state supports getting full output with public keys
+	if outputGetter, ok := validatorState.(ValidatorOutputGetter); ok {
+		// Use the full validator output which includes public keys
+		vdrOutputs, err := outputGetter.GetValidatorSetWithOutput(context.Background(), pChainHeight, requestedChainID)
+		if err != nil {
+			return fmt.Errorf("%w: %w", errCannotRetrieveValidatorSet, err)
+		}
+
+		allValidators = make([]*warp.Validator, 0, len(vdrOutputs))
+		for nodeID, output := range vdrOutputs {
+			totalWeight += output.Weight
+
+			vdr := &warp.Validator{
+				NodeID: nodeID,
+				Weight: output.Weight,
+			}
+
+			// Parse public key if available
+			if len(output.PublicKey) > 0 {
+				pk, pkErr := warp.ParsePublicKey(output.PublicKey)
+				if pkErr == nil {
+					vdr.PublicKey = pk
+					vdr.PublicKeyBytes = output.PublicKey
+				} else {
+					log.Debug("failed to parse validator public key", "nodeID", nodeID, "err", pkErr)
+				}
+			}
+
+			allValidators = append(allValidators, vdr)
+		}
+	} else {
+		// Fallback: get weights only (signature verification will fail without public keys)
+		vdrWeights, err := validatorState.GetValidatorSet(pChainHeight, requestedChainID)
+		if err != nil {
+			return fmt.Errorf("%w: %w", errCannotRetrieveValidatorSet, err)
+		}
+
+		allValidators = make([]*warp.Validator, 0, len(vdrWeights))
+		for nodeID, weight := range vdrWeights {
+			totalWeight += weight
+			vdr := &warp.Validator{
+				NodeID: nodeID,
+				Weight: weight,
+			}
+			allValidators = append(allValidators, vdr)
+		}
+	}
+
+	// Aggregate validators by public key - this handles the case where multiple
+	// validators share the same public key. We sum their weights and keep one
+	// representative validator per unique public key.
+	pkeyToWeight := make(map[string]uint64)
+	pkeyToValidator := make(map[string]*warp.Validator)
+
+	for _, vdr := range allValidators {
+		if len(vdr.PublicKeyBytes) == 0 {
+			continue // Skip validators without public keys
+		}
+		pkStr := string(vdr.PublicKeyBytes)
+		pkeyToWeight[pkStr] += vdr.Weight
+		if _, exists := pkeyToValidator[pkStr]; !exists {
+			pkeyToValidator[pkStr] = vdr
+		}
+	}
+
+	// Build canonical validator set with aggregated weights
+	canonicalValidators := make([]*warp.Validator, 0, len(pkeyToValidator))
+	for pkStr, vdr := range pkeyToValidator {
+		// Create a copy with aggregated weight
+		aggregatedVdr := &warp.Validator{
+			NodeID:         vdr.NodeID,
+			Weight:         pkeyToWeight[pkStr],
+			PublicKey:      vdr.PublicKey,
+			PublicKeyBytes: vdr.PublicKeyBytes,
+		}
+		canonicalValidators = append(canonicalValidators, aggregatedVdr)
+	}
+
+	// Sort validators by public key bytes for canonical ordering
+	// This matches the order used when creating signatures
+	sort.Slice(canonicalValidators, func(i, j int) bool {
+		return bytes.Compare(canonicalValidators[i].PublicKeyBytes, canonicalValidators[j].PublicKeyBytes) < 0
+	})
+
+	// Get signature
+	bitSetSig, ok := warpMsg.Signature.(*warp.BitSetSignature)
+	if !ok {
+		return fmt.Errorf("%w: signature is not a BitSetSignature", errCannotGetNumSigners)
+	}
+
+	// Calculate signed weight using canonical validators (with aggregated weights)
+	signedWeight, err := bitSetSig.GetSignedWeight(canonicalValidators)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errFailedVerification, err)
+	}
+
+	// Verify quorum
+	err = warp.VerifyWeight(signedWeight, totalWeight, quorumNumerator, WarpQuorumDenominator)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errFailedVerification, err)
+	}
+
+	// Verify the BLS signature using canonical validators
+	err = bitSetSig.Verify(warpMsg.UnsignedMessage.Bytes(), canonicalValidators)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errFailedVerification, err)
+	}
+
+	return nil
 }

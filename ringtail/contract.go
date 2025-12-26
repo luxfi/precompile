@@ -10,13 +10,12 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/luxfi/precompiles/contract"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v6/ring"
 	"github.com/luxfi/lattice/v6/utils/structs"
-
+	"github.com/luxfi/precompiles/contract"
 	"github.com/luxfi/ringtail/sign"
-	"github.com/luxfi/ringtail/utils"
+	"github.com/luxfi/ringtail/threshold"
 )
 
 var (
@@ -38,7 +37,7 @@ var (
 const (
 	// Gas costs for Ringtail threshold signature verification
 	// Based on lattice operations being more expensive than elliptic curve
-	RingtailThresholdBaseGas    uint64 = 150_000 // Base cost for threshold verification
+	RingtailThresholdBaseGas     uint64 = 150_000 // Base cost for threshold verification
 	RingtailThresholdPerPartyGas uint64 = 10_000  // Cost per party in threshold
 
 	// Input format constants
@@ -114,14 +113,14 @@ func (p *ringtailThresholdPrecompile) Run(
 	}
 
 	// Parse threshold parameters
-	threshold := binary.BigEndian.Uint32(input[0:ThresholdSize])
+	thresholdVal := binary.BigEndian.Uint32(input[0:ThresholdSize])
 	totalParties := binary.BigEndian.Uint32(input[ThresholdSize : ThresholdSize+TotalPartiesSize])
 	messageHash := input[ThresholdSize+TotalPartiesSize : ThresholdSize+TotalPartiesSize+MessageHashSize]
 
 	// Validate threshold
-	if threshold == 0 || threshold > totalParties {
+	if thresholdVal == 0 || thresholdVal > totalParties {
 		return nil, suppliedGas - gasCost, fmt.Errorf("%w: t=%d, n=%d",
-			ErrInvalidThreshold, threshold, totalParties)
+			ErrInvalidThreshold, thresholdVal, totalParties)
 	}
 
 	// Extract signature bytes
@@ -132,7 +131,7 @@ func (p *ringtailThresholdPrecompile) Run(
 	}
 
 	// Verify the threshold signature
-	valid, err := verifyThresholdSignature(threshold, totalParties, messageHash, signatureBytes)
+	valid, err := verifyThresholdSignature(thresholdVal, totalParties, messageHash, signatureBytes)
 	if err != nil {
 		return nil, suppliedGas - gasCost, fmt.Errorf("verification error: %w", err)
 	}
@@ -147,25 +146,15 @@ func (p *ringtailThresholdPrecompile) Run(
 }
 
 // verifyThresholdSignature verifies a Ringtail threshold signature
-func verifyThresholdSignature(threshold, totalParties uint32, messageHash, signatureBytes []byte) (bool, error) {
-	// Initialize ring parameters (from sign/config.go)
-	r, err := ring.NewRing(1<<sign.LogN, []uint64{sign.Q})
+func verifyThresholdSignature(thresholdVal, totalParties uint32, messageHash, signatureBytes []byte) (bool, error) {
+	// Initialize ring parameters using threshold package
+	params, err := threshold.NewParams()
 	if err != nil {
-		return false, fmt.Errorf("failed to create ring: %w", err)
-	}
-
-	r_xi, err := ring.NewRing(1<<sign.LogN, []uint64{sign.QXi})
-	if err != nil {
-		return false, fmt.Errorf("failed to create r_xi ring: %w", err)
-	}
-
-	r_nu, err := ring.NewRing(1<<sign.LogN, []uint64{sign.QNu})
-	if err != nil {
-		return false, fmt.Errorf("failed to create r_nu ring: %w", err)
+		return false, fmt.Errorf("failed to create params: %w", err)
 	}
 
 	// Deserialize signature components from bytes
-	c, z, Delta, A, bTilde, err := deserializeSignature(r, r_xi, r_nu, signatureBytes)
+	sig, groupKey, err := deserializeSignature(params, signatureBytes)
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", ErrDeserializationFailed, err)
 	}
@@ -173,65 +162,88 @@ func verifyThresholdSignature(threshold, totalParties uint32, messageHash, signa
 	// Convert message hash to string for verification (matching sign.Verify interface)
 	mu := fmt.Sprintf("%x", messageHash)
 
-	// Verify using the Ringtail threshold signature verification
-	// This uses the same Verify function from ringtail/sign/sign.go
-	valid := sign.Verify(r, r_xi, r_nu, z, A, mu, bTilde, c, Delta)
+	// Verify using the threshold package's Verify function
+	valid := threshold.Verify(groupKey, mu, sig)
 
 	return valid, nil
 }
 
 // deserializeSignature deserializes threshold signature components from bytes
-func deserializeSignature(r, r_xi, r_nu *ring.Ring, data []byte) (
-	c ring.Poly,
-	z structs.Vector[ring.Poly],
-	Delta structs.Vector[ring.Poly],
-	A structs.Matrix[ring.Poly],
-	bTilde structs.Vector[ring.Poly],
-	err error,
+func deserializeSignature(params *threshold.Params, data []byte) (
+	*threshold.Signature,
+	*threshold.GroupKey,
+	error,
 ) {
+	r := params.R
+	r_xi := params.RXi
+	r_nu := params.RNu
+
 	buf := bytes.NewReader(data)
 
 	// Deserialize c (challenge polynomial)
-	c = r.NewPoly()
-	if err = deserializePoly(buf, r, c); err != nil {
-		return
+	c := r.NewPoly()
+	if err := deserializePoly(buf, r, c); err != nil {
+		return nil, nil, fmt.Errorf("deserialize c: %w", err)
 	}
+	// c must be in NTT form for VectorPolyMul
+	r.NTT(c, c)
+	r.MForm(c, c)
 
 	// Deserialize z vector (N polynomials)
-	z = utils.InitializeVector(r, sign.N)
+	z := initializeVector(r, sign.N)
 	for i := 0; i < sign.N; i++ {
-		if err = deserializePoly(buf, r, z[i]); err != nil {
-			return
+		if err := deserializePoly(buf, r, z[i]); err != nil {
+			return nil, nil, fmt.Errorf("deserialize z[%d]: %w", i, err)
 		}
+		// z must be in NTT form for MatrixVectorMul
+		r.NTT(z[i], z[i])
+		r.MForm(z[i], z[i])
 	}
 
 	// Deserialize Delta vector (M polynomials in r_nu ring)
-	Delta = utils.InitializeVector(r_nu, sign.M)
+	// Delta stays in coefficient form (used after rounding)
+	Delta := initializeVector(r_nu, sign.M)
 	for i := 0; i < sign.M; i++ {
-		if err = deserializePoly(buf, r_nu, Delta[i]); err != nil {
-			return
+		if err := deserializePoly(buf, r_nu, Delta[i]); err != nil {
+			return nil, nil, fmt.Errorf("deserialize Delta[%d]: %w", i, err)
 		}
 	}
 
 	// Deserialize A matrix (M x N)
-	A = utils.InitializeMatrix(r, sign.M, sign.N)
+	A := initializeMatrix(r, sign.M, sign.N)
 	for i := 0; i < sign.M; i++ {
 		for j := 0; j < sign.N; j++ {
-			if err = deserializePoly(buf, r, A[i][j]); err != nil {
-				return
+			if err := deserializePoly(buf, r, A[i][j]); err != nil {
+				return nil, nil, fmt.Errorf("deserialize A[%d][%d]: %w", i, j, err)
 			}
+			// A must be in NTT form for MatrixVectorMul
+			r.NTT(A[i][j], A[i][j])
+			r.MForm(A[i][j], A[i][j])
 		}
 	}
 
 	// Deserialize bTilde vector (M polynomials in r_xi ring)
-	bTilde = utils.InitializeVector(r_xi, sign.M)
+	// bTilde stays in coefficient form (used after rounding)
+	bTilde := initializeVector(r_xi, sign.M)
 	for i := 0; i < sign.M; i++ {
-		if err = deserializePoly(buf, r_xi, bTilde[i]); err != nil {
-			return
+		if err := deserializePoly(buf, r_xi, bTilde[i]); err != nil {
+			return nil, nil, fmt.Errorf("deserialize bTilde[%d]: %w", i, err)
 		}
 	}
 
-	return
+	sig := &threshold.Signature{
+		C:     c,
+		Z:     z,
+		Delta: Delta,
+	}
+
+	groupKey := &threshold.GroupKey{
+		A:      A,
+		BTilde: bTilde,
+		Params: params,
+	}
+
+	return sig, groupKey, nil
 }
 
 // deserializePoly deserializes a polynomial from binary data
@@ -246,8 +258,29 @@ func deserializePoly(buf *bytes.Reader, r *ring.Ring, poly ring.Poly) error {
 	}
 
 	// Convert big.Int coefficients to ring polynomial
-	r.SetCoefficientsBigint(poly, coeffs)
+	r.SetCoefficientsBigint(coeffs, poly)
 	return nil
+}
+
+// initializeVector creates a vector of polynomials
+func initializeVector(r *ring.Ring, size int) structs.Vector[ring.Poly] {
+	vec := make(structs.Vector[ring.Poly], size)
+	for i := range vec {
+		vec[i] = r.NewPoly()
+	}
+	return vec
+}
+
+// initializeMatrix creates a matrix of polynomials
+func initializeMatrix(r *ring.Ring, rows, cols int) structs.Matrix[ring.Poly] {
+	mat := make(structs.Matrix[ring.Poly], rows)
+	for i := range mat {
+		mat[i] = make([]ring.Poly, cols)
+		for j := range mat[i] {
+			mat[i][j] = r.NewPoly()
+		}
+	}
+	return mat
 }
 
 // EstimateGas estimates gas for a given number of parties
