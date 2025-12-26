@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/luxfi/precompiles/contract"
 	"github.com/luxfi/geth/common"
 	"github.com/stretchr/testify/require"
 )
