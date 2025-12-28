@@ -4,7 +4,7 @@
 package secp256r1
 
 import (
-	"github.com/ethereum/go-ethereum/common"
+	"github.com/luxfi/geth/common"
 )
 
 // Module provides the secp256r1 precompile module information
