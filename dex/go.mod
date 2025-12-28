@@ -10,6 +10,7 @@ require (
 
 require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	golang.org/x/crypto v0.43.0 // indirect
-	golang.org/x/sys v0.37.0 // indirect
+	github.com/zeebo/assert v1.3.0 // indirect
+	golang.org/x/crypto v0.46.0 // indirect
+	golang.org/x/sys v0.39.0 // indirect
 )
