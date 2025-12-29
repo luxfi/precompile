@@ -9,18 +9,18 @@ import (
 	"math/big"
 	"sync"
 
-	"github.com/luxfi/tfhe"
+	"github.com/luxfi/fhe"
 )
 
 var (
 	// Singleton TFHE components
 	tfheOnce  sync.Once
-	evaluator *tfhe.BitwiseEvaluator
-	encryptor *tfhe.BitwiseEncryptor
-	decryptor *tfhe.BitwiseDecryptor
-	secretKey *tfhe.SecretKey
-	publicKey *tfhe.PublicKey
-	params    tfhe.Parameters
+	evaluator *fhe.BitwiseEvaluator
+	encryptor *fhe.BitwiseEncryptor
+	decryptor *fhe.BitwiseDecryptor
+	secretKey *fhe.SecretKey
+	publicKey *fhe.PublicKey
+	params    fhe.Parameters
 	initErr   error
 )
 
@@ -30,52 +30,52 @@ func initTFHE() error {
 		var err error
 
 		// Create parameters
-		params, err = tfhe.NewParametersFromLiteral(tfhe.PN10QP27)
+		params, err = fhe.NewParametersFromLiteral(fhe.PN10QP27)
 		if err != nil {
 			initErr = err
 			return
 		}
 
 		// Generate keys
-		kg := tfhe.NewKeyGenerator(params)
+		kg := fhe.NewKeyGenerator(params)
 		secretKey, publicKey = kg.GenKeyPair()
 		bsk := kg.GenBootstrapKey(secretKey)
 
 		// Create operators
-		encryptor = tfhe.NewBitwiseEncryptor(params, secretKey)
-		decryptor = tfhe.NewBitwiseDecryptor(params, secretKey)
-		evaluator = tfhe.NewBitwiseEvaluator(params, bsk, secretKey)
+		encryptor = fhe.NewBitwiseEncryptor(params, secretKey)
+		decryptor = fhe.NewBitwiseDecryptor(params, secretKey)
+		evaluator = fhe.NewBitwiseEvaluator(params, bsk, secretKey)
 	})
 
 	return initErr
 }
 
 // fheTypeToTFHEType converts FHE type constant to TFHE FheUintType
-func fheTypeToTFHEType(fheType uint8) tfhe.FheUintType {
+func fheTypeToTFHEType(fheType uint8) fhe.FheUintType {
 	switch fheType {
 	case TypeEbool:
-		return tfhe.FheBool
+		return fhe.FheBool
 	case TypeEuint8:
-		return tfhe.FheUint8
+		return fhe.FheUint8
 	case TypeEuint16:
-		return tfhe.FheUint16
+		return fhe.FheUint16
 	case TypeEuint32:
-		return tfhe.FheUint32
+		return fhe.FheUint32
 	case TypeEuint64:
-		return tfhe.FheUint64
+		return fhe.FheUint64
 	case TypeEuint128:
-		return tfhe.FheUint128
+		return fhe.FheUint128
 	case TypeEuint256:
-		return tfhe.FheUint256
+		return fhe.FheUint256
 	case TypeEaddress:
-		return tfhe.FheUint160
+		return fhe.FheUint160
 	default:
-		return tfhe.FheUint32
+		return fhe.FheUint32
 	}
 }
 
 // serializeBitCiphertext converts BitCiphertext to bytes
-func serializeBitCiphertext(ct *tfhe.BitCiphertext) []byte {
+func serializeBitCiphertext(ct *fhe.BitCiphertext) []byte {
 	if ct == nil {
 		return nil
 	}
@@ -87,11 +87,11 @@ func serializeBitCiphertext(ct *tfhe.BitCiphertext) []byte {
 }
 
 // deserializeBitCiphertext converts bytes to BitCiphertext
-func deserializeBitCiphertext(data []byte) *tfhe.BitCiphertext {
+func deserializeBitCiphertext(data []byte) *fhe.BitCiphertext {
 	if len(data) == 0 {
 		return nil
 	}
-	ct := new(tfhe.BitCiphertext)
+	ct := new(fhe.BitCiphertext)
 	if err := ct.UnmarshalBinary(data); err != nil {
 		return nil
 	}
@@ -99,7 +99,7 @@ func deserializeBitCiphertext(data []byte) *tfhe.BitCiphertext {
 }
 
 // serializeCiphertext converts a single Ciphertext (encrypted bit) to bytes
-func serializeCiphertext(ct *tfhe.Ciphertext) []byte {
+func serializeCiphertext(ct *fhe.Ciphertext) []byte {
 	if ct == nil {
 		return nil
 	}
@@ -111,11 +111,11 @@ func serializeCiphertext(ct *tfhe.Ciphertext) []byte {
 }
 
 // deserializeCiphertext converts bytes to a single Ciphertext (encrypted bit)
-func deserializeCiphertext(data []byte) *tfhe.Ciphertext {
+func deserializeCiphertext(data []byte) *fhe.Ciphertext {
 	if len(data) == 0 {
 		return nil
 	}
-	ct := new(tfhe.Ciphertext)
+	ct := new(fhe.Ciphertext)
 	if err := ct.UnmarshalBinary(data); err != nil {
 		return nil
 	}
@@ -347,8 +347,8 @@ func tfheNe(lhs, rhs []byte, fheType uint8) []byte {
 	}
 
 	// Wrap single bits in BitCiphertext for OR operation
-	ltBits := tfhe.WrapBoolCiphertext(ltResult)
-	gtBits := tfhe.WrapBoolCiphertext(gtResult)
+	ltBits := fhe.WrapBoolCiphertext(ltResult)
+	gtBits := fhe.WrapBoolCiphertext(gtResult)
 
 	neResult, err := evaluator.Or(ltBits, gtBits)
 	if err != nil {
@@ -602,7 +602,7 @@ func tfheRandom(fheType uint8, seed uint64) []byte {
 	seedBytes := make([]byte, 32)
 	binary.BigEndian.PutUint64(seedBytes[24:], seed)
 
-	rng := tfhe.NewFheRNG(params, secretKey, seedBytes)
+	rng := fhe.NewFheRNG(params, secretKey, seedBytes)
 	ct := rng.RandomUint(targetType)
 
 	return serializeBitCiphertext(ct)

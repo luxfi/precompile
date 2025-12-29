@@ -5,19 +5,13 @@ go 1.25.5
 require (
 	github.com/cloudflare/circl v1.6.2-0.20251204010831-23491bd573cf
 	github.com/crate-crypto/go-kzg-4844 v1.1.0
-	github.com/ethereum/go-ethereum v1.16.7
 	github.com/holiman/uint256 v1.3.2
 	github.com/luxfi/consensus v1.22.44
-	github.com/luxfi/constants v1.2.4
 	github.com/luxfi/crypto v1.17.26
-	github.com/luxfi/evm v0.8.21
+	github.com/luxfi/fhe v1.2.0
 	github.com/luxfi/geth v1.16.64
-	github.com/luxfi/ids v1.2.5
 	github.com/luxfi/lattice/v6 v6.1.2
-	github.com/luxfi/log v1.1.26
-	github.com/luxfi/math v1.1.1
 	github.com/luxfi/ringtail v0.1.2
-	github.com/luxfi/tfhe v1.0.0
 	github.com/luxfi/warp v1.18.0
 	github.com/stretchr/testify v1.11.1
 )
@@ -65,13 +59,14 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/luxfi/cache v1.1.0 // indirect
-	github.com/luxfi/codec v1.0.4 // indirect
 	github.com/luxfi/database v1.2.15 // indirect
+	github.com/luxfi/ids v1.2.5 // indirect
+	github.com/luxfi/log v1.1.26 // indirect
+	github.com/luxfi/math v1.1.1 // indirect
 	github.com/luxfi/metric v1.4.8 // indirect
 	github.com/luxfi/mock v0.1.0 // indirect
 	github.com/luxfi/node v1.22.44 // indirect
 	github.com/luxfi/p2p v1.18.1 // indirect
-	github.com/luxfi/units v1.0.0 // indirect
 	github.com/luxfi/utils v1.1.0 // indirect
 	github.com/luxfi/vm v1.0.1 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
