@@ -11,7 +11,7 @@ import (
 	"github.com/luxfi/precompiles/contract"
 )
 
-// Ciphertext type constants - must match github.com/luxfi/tfhe FheUintType
+// Ciphertext type constants - must match github.com/luxfi/fhe FheUintType
 const (
 	TypeEbool    uint8 = 0  // FheBool - 1 bit
 	TypeEuint4   uint8 = 1  // FheUint4 - 4 bits
