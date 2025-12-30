@@ -14,7 +14,7 @@ import (
 // Test helpers
 var (
 	testYieldToken     = common.HexToAddress("0x1111111111111111111111111111111111111111")
-	testSyntheticToken = common.HexToAddress("0x2222222222222222222222222222222222222222")
+	testLiquidToken = common.HexToAddress("0x2222222222222222222222222222222222222222")
 	testUser1          = common.HexToAddress("0x3333333333333333333333333333333333333333")
 	testUser2          = common.HexToAddress("0x4444444444444444444444444444444444444444")
 	testUnderlying     = Currency{Address: common.HexToAddress("0x5555555555555555555555555555555555555555")}
@@ -33,30 +33,30 @@ func setBalance(stateDB *MockStateDB, addr common.Address, amount *big.Int) {
 }
 
 // =========================================================================
-// Alchemist Tests
+// Liquid Tests
 // =========================================================================
 
-func TestAlchemist_NewAlchemist(t *testing.T) {
+func TestLiquid_NewLiquid(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 
 	if alchemist == nil {
-		t.Fatal("NewAlchemist returned nil")
+		t.Fatal("NewLiquid returned nil")
 	}
 	if alchemist.yieldTokens == nil {
 		t.Fatal("yieldTokens map not initialized")
 	}
-	if alchemist.synthetics == nil {
-		t.Fatal("synthetics map not initialized")
+	if alchemist.liquidTokens == nil {
+		t.Fatal("liquidTokens map not initialized")
 	}
 	if alchemist.accounts == nil {
 		t.Fatal("accounts map not initialized")
 	}
 }
 
-func TestAlchemist_AddYieldToken(t *testing.T) {
+func TestLiquid_AddYieldToken(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	stateDB := NewMockStateDB()
 
 	// Add yield token
@@ -85,31 +85,31 @@ func TestAlchemist_AddYieldToken(t *testing.T) {
 	}
 }
 
-func TestAlchemist_AddSyntheticToken(t *testing.T) {
+func TestLiquid_AddLiquidToken(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	stateDB := NewMockStateDB()
 
-	// Add synthetic token
+	// Add liquid token
 	debtCeiling := bigInt("1000000000000000000000000") // 1M tokens
-	err := alchemist.AddSyntheticToken(stateDB, testSyntheticToken, testUnderlying, debtCeiling)
+	err := alchemist.AddLiquidToken(stateDB, testLiquidToken, testUnderlying, debtCeiling)
 	if err != nil {
-		t.Fatalf("AddSyntheticToken failed: %v", err)
+		t.Fatalf("AddLiquidToken failed: %v", err)
 	}
 
 	// Verify it was added
-	st := alchemist.synthetics[testSyntheticToken]
+	st := alchemist.liquidTokens[testLiquidToken]
 	if st == nil {
-		t.Fatal("synthetic token not found in map")
+		t.Fatal("liquid token not found in map")
 	}
 	if st.DebtCeiling.Cmp(debtCeiling) != 0 {
 		t.Fatal("debt ceiling mismatch")
 	}
 }
 
-func TestAlchemist_Deposit(t *testing.T) {
+func TestLiquid_Deposit(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	stateDB := NewMockStateDB()
 
 	// Setup
@@ -145,16 +145,16 @@ func TestAlchemist_Deposit(t *testing.T) {
 	}
 }
 
-func TestAlchemist_Mint_MaxLTV(t *testing.T) {
+func TestLiquid_Mint_MaxLTV(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	stateDB := NewMockStateDB()
 
 	// Setup
 	yieldPerBlock := bigInt("1000000000000000")
 	debtCeiling := bigInt("1000000000000000000000000")
 	alchemist.AddYieldToken(stateDB, testYieldToken, testUnderlying, yieldPerBlock)
-	alchemist.AddSyntheticToken(stateDB, testSyntheticToken, testUnderlying, debtCeiling)
+	alchemist.AddLiquidToken(stateDB, testLiquidToken, testUnderlying, debtCeiling)
 
 	// Deposit collateral
 	setBalance(stateDB, testUser1, bigInt("1000000000000000000000"))
@@ -166,7 +166,7 @@ func TestAlchemist_Mint_MaxLTV(t *testing.T) {
 	maxMintable.Div(maxMintable, big.NewInt(LTVPrecision))
 
 	// Mint at max LTV
-	err := alchemist.Mint(stateDB, testUser1, testYieldToken, testSyntheticToken, maxMintable)
+	err := alchemist.Mint(stateDB, testUser1, testYieldToken, testLiquidToken, maxMintable)
 	if err != nil {
 		t.Fatalf("Mint at max LTV failed: %v", err)
 	}
@@ -184,22 +184,22 @@ func TestAlchemist_Mint_MaxLTV(t *testing.T) {
 	}
 
 	// Try to mint more - should fail
-	err = alchemist.Mint(stateDB, testUser1, testYieldToken, testSyntheticToken, big.NewInt(1))
+	err = alchemist.Mint(stateDB, testUser1, testYieldToken, testLiquidToken, big.NewInt(1))
 	if err != ErrMaxLTVExceeded {
 		t.Fatalf("expected ErrMaxLTVExceeded, got %v", err)
 	}
 }
 
-func TestAlchemist_Burn(t *testing.T) {
+func TestLiquid_Burn(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	stateDB := NewMockStateDB()
 
 	// Setup
 	yieldPerBlock := bigInt("1000000000000000")
 	debtCeiling := bigInt("1000000000000000000000000")
 	alchemist.AddYieldToken(stateDB, testYieldToken, testUnderlying, yieldPerBlock)
-	alchemist.AddSyntheticToken(stateDB, testSyntheticToken, testUnderlying, debtCeiling)
+	alchemist.AddLiquidToken(stateDB, testLiquidToken, testUnderlying, debtCeiling)
 
 	// Deposit and mint
 	setBalance(stateDB, testUser1, bigInt("1000000000000000000000"))
@@ -207,7 +207,7 @@ func TestAlchemist_Burn(t *testing.T) {
 	alchemist.Deposit(stateDB, testUser1, testYieldToken, depositAmount)
 
 	mintAmount := bigInt("50000000000000000000") // 50 tokens (50% LTV)
-	alchemist.Mint(stateDB, testUser1, testYieldToken, testSyntheticToken, mintAmount)
+	alchemist.Mint(stateDB, testUser1, testYieldToken, testLiquidToken, mintAmount)
 
 	// Get initial debt
 	account := alchemist.GetAccount(stateDB, testUser1, testYieldToken)
@@ -215,7 +215,7 @@ func TestAlchemist_Burn(t *testing.T) {
 
 	// Burn half
 	burnAmount := bigInt("20000000000000000000") // 20 tokens
-	err := alchemist.Burn(stateDB, testUser1, testYieldToken, testSyntheticToken, burnAmount)
+	err := alchemist.Burn(stateDB, testUser1, testYieldToken, testLiquidToken, burnAmount)
 	if err != nil {
 		t.Fatalf("Burn failed: %v", err)
 	}
@@ -233,16 +233,16 @@ func TestAlchemist_Burn(t *testing.T) {
 	}
 }
 
-func TestAlchemist_Withdraw_WithDebt(t *testing.T) {
+func TestLiquid_Withdraw_WithDebt(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	stateDB := NewMockStateDB()
 
 	// Setup
 	yieldPerBlock := bigInt("1000000000000000")
 	debtCeiling := bigInt("1000000000000000000000000")
 	alchemist.AddYieldToken(stateDB, testYieldToken, testUnderlying, yieldPerBlock)
-	alchemist.AddSyntheticToken(stateDB, testSyntheticToken, testUnderlying, debtCeiling)
+	alchemist.AddLiquidToken(stateDB, testLiquidToken, testUnderlying, debtCeiling)
 
 	// Deposit and mint at 50% LTV
 	setBalance(stateDB, testUser1, bigInt("1000000000000000000000"))
@@ -250,7 +250,7 @@ func TestAlchemist_Withdraw_WithDebt(t *testing.T) {
 	alchemist.Deposit(stateDB, testUser1, testYieldToken, depositAmount)
 
 	mintAmount := bigInt("50000000000000000000") // 50 tokens (50% LTV)
-	alchemist.Mint(stateDB, testUser1, testYieldToken, testSyntheticToken, mintAmount)
+	alchemist.Mint(stateDB, testUser1, testYieldToken, testLiquidToken, mintAmount)
 
 	// Try to withdraw too much (would breach 90% LTV)
 	// With 50 debt and 90% max LTV, need at least 55.56 collateral
@@ -276,16 +276,16 @@ func TestAlchemist_Withdraw_WithDebt(t *testing.T) {
 	}
 }
 
-func TestAlchemist_GetMaxMintable(t *testing.T) {
+func TestLiquid_GetMaxMintable(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	stateDB := NewMockStateDB()
 
 	// Setup
 	yieldPerBlock := bigInt("1000000000000000")
 	debtCeiling := bigInt("1000000000000000000000000")
 	alchemist.AddYieldToken(stateDB, testYieldToken, testUnderlying, yieldPerBlock)
-	alchemist.AddSyntheticToken(stateDB, testSyntheticToken, testUnderlying, debtCeiling)
+	alchemist.AddLiquidToken(stateDB, testLiquidToken, testUnderlying, debtCeiling)
 
 	// Deposit
 	setBalance(stateDB, testUser1, bigInt("1000000000000000000000"))
@@ -303,7 +303,7 @@ func TestAlchemist_GetMaxMintable(t *testing.T) {
 
 	// Mint some
 	mintAmount := bigInt("50000000000000000000")
-	alchemist.Mint(stateDB, testUser1, testYieldToken, testSyntheticToken, mintAmount)
+	alchemist.Mint(stateDB, testUser1, testYieldToken, testLiquidToken, mintAmount)
 
 	// Check max mintable reduced
 	maxMintable = alchemist.GetMaxMintable(stateDB, testUser1, testYieldToken)
@@ -313,16 +313,16 @@ func TestAlchemist_GetMaxMintable(t *testing.T) {
 	}
 }
 
-func TestAlchemist_GetTimeToRepayment(t *testing.T) {
+func TestLiquid_GetTimeToRepayment(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	stateDB := NewMockStateDB()
 
 	// Setup with known yield rate
 	yieldPerBlock := bigInt("1000000000000000") // 0.001 per block per unit
 	debtCeiling := bigInt("1000000000000000000000000")
 	alchemist.AddYieldToken(stateDB, testYieldToken, testUnderlying, yieldPerBlock)
-	alchemist.AddSyntheticToken(stateDB, testSyntheticToken, testUnderlying, debtCeiling)
+	alchemist.AddLiquidToken(stateDB, testLiquidToken, testUnderlying, debtCeiling)
 
 	// Deposit 100 tokens
 	setBalance(stateDB, testUser1, bigInt("1000000000000000000000"))
@@ -331,7 +331,7 @@ func TestAlchemist_GetTimeToRepayment(t *testing.T) {
 
 	// Mint 90 tokens (90% LTV)
 	mintAmount := bigInt("90000000000000000000")
-	alchemist.Mint(stateDB, testUser1, testYieldToken, testSyntheticToken, mintAmount)
+	alchemist.Mint(stateDB, testUser1, testYieldToken, testLiquidToken, mintAmount)
 
 	// Calculate expected time to repayment
 	// Yield per block = collateral * yieldPerBlock / 1e18 = 100e18 * 1e15 / 1e18 = 1e17
@@ -350,7 +350,7 @@ func TestAlchemist_GetTimeToRepayment(t *testing.T) {
 
 func TestTransmuter_NewTransmuter(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	transmuter := NewTransmuter(alchemist)
 
 	if transmuter == nil {
@@ -366,21 +366,21 @@ func TestTransmuter_NewTransmuter(t *testing.T) {
 
 func TestTransmuter_InitializeTransmuter(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	transmuter := NewTransmuter(alchemist)
 	stateDB := NewMockStateDB()
 
-	err := transmuter.InitializeTransmuter(stateDB, testSyntheticToken, testUnderlying)
+	err := transmuter.InitializeTransmuter(stateDB, testLiquidToken, testUnderlying)
 	if err != nil {
 		t.Fatalf("InitializeTransmuter failed: %v", err)
 	}
 
-	state := transmuter.GetTransmuterState(testSyntheticToken)
+	state := transmuter.GetLiquidFXState(testLiquidToken)
 	if state == nil {
 		t.Fatal("transmuter state not found")
 	}
-	if state.SyntheticToken != testSyntheticToken {
-		t.Fatal("synthetic token mismatch")
+	if state.LiquidToken != testLiquidToken {
+		t.Fatal("liquid token mismatch")
 	}
 	if state.ExchangeBuffer.Sign() != 0 {
 		t.Fatal("exchange buffer should start at 0")
@@ -389,23 +389,23 @@ func TestTransmuter_InitializeTransmuter(t *testing.T) {
 
 func TestTransmuter_Stake(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	transmuter := NewTransmuter(alchemist)
 	stateDB := NewMockStateDB()
 
 	// Setup
-	transmuter.InitializeTransmuter(stateDB, testSyntheticToken, testUnderlying)
+	transmuter.InitializeTransmuter(stateDB, testLiquidToken, testUnderlying)
 	setBalance(stateDB, testUser1, bigInt("1000000000000000000000"))
 
 	// Stake
 	stakeAmount := bigInt("100000000000000000000")
-	err := transmuter.Stake(stateDB, testUser1, testSyntheticToken, stakeAmount)
+	err := transmuter.Stake(stateDB, testUser1, testLiquidToken, stakeAmount)
 	if err != nil {
 		t.Fatalf("Stake failed: %v", err)
 	}
 
 	// Check stake
-	stake := transmuter.GetStake(stateDB, testUser1, testSyntheticToken)
+	stake := transmuter.GetStake(stateDB, testUser1, testLiquidToken)
 	if stake == nil {
 		t.Fatal("stake not found")
 	}
@@ -414,7 +414,7 @@ func TestTransmuter_Stake(t *testing.T) {
 	}
 
 	// Check total staked
-	state := transmuter.GetTransmuterState(testSyntheticToken)
+	state := transmuter.GetLiquidFXState(testLiquidToken)
 	if state.TotalStaked.Cmp(stakeAmount) != 0 {
 		t.Fatal("total staked mismatch")
 	}
@@ -422,31 +422,31 @@ func TestTransmuter_Stake(t *testing.T) {
 
 func TestTransmuter_Deposit_And_Claim(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	transmuter := NewTransmuter(alchemist)
 	stateDB := NewMockStateDB()
 
 	// Setup
-	transmuter.InitializeTransmuter(stateDB, testSyntheticToken, testUnderlying)
+	transmuter.InitializeTransmuter(stateDB, testLiquidToken, testUnderlying)
 	setBalance(stateDB, testUser1, bigInt("1000000000000000000000"))
 	setBalance(stateDB, transmuterAddr, bigInt("1000000000000000000000")) // Give transmuter some underlying
 
-	// User stakes synthetic
+	// User stakes liquid
 	stakeAmount := bigInt("100000000000000000000")
-	transmuter.Stake(stateDB, testUser1, testSyntheticToken, stakeAmount)
+	transmuter.Stake(stateDB, testUser1, testLiquidToken, stakeAmount)
 
 	// Deposit underlying into transmuter (simulating yield flow)
 	depositAmount := bigInt("50000000000000000000") // 50% of staked
-	transmuter.Deposit(stateDB, testSyntheticToken, depositAmount)
+	transmuter.Deposit(stateDB, testLiquidToken, depositAmount)
 
 	// Check claimable
-	claimable := transmuter.GetClaimable(stateDB, testUser1, testSyntheticToken)
+	claimable := transmuter.GetClaimable(stateDB, testUser1, testLiquidToken)
 	if claimable.Cmp(depositAmount) != 0 {
 		t.Fatalf("claimable mismatch: got %s, want %s", claimable, depositAmount)
 	}
 
 	// Claim
-	claimed, err := transmuter.Claim(stateDB, testUser1, testSyntheticToken)
+	claimed, err := transmuter.Claim(stateDB, testUser1, testLiquidToken)
 	if err != nil {
 		t.Fatalf("Claim failed: %v", err)
 	}
@@ -454,8 +454,8 @@ func TestTransmuter_Deposit_And_Claim(t *testing.T) {
 		t.Fatalf("claimed amount mismatch: got %s, want %s", claimed, depositAmount)
 	}
 
-	// Check stake reduced (synthetics converted)
-	stake := transmuter.GetStake(stateDB, testUser1, testSyntheticToken)
+	// Check stake reduced (liquidTokens converted)
+	stake := transmuter.GetStake(stateDB, testUser1, testLiquidToken)
 	expectedRemaining := new(big.Int).Sub(stakeAmount, depositAmount)
 	if stake.StakedAmount.Cmp(expectedRemaining) != 0 {
 		t.Fatalf("remaining stake mismatch: got %s, want %s", stake.StakedAmount, expectedRemaining)
@@ -464,27 +464,27 @@ func TestTransmuter_Deposit_And_Claim(t *testing.T) {
 
 func TestTransmuter_Unstake(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	transmuter := NewTransmuter(alchemist)
 	stateDB := NewMockStateDB()
 
 	// Setup
-	transmuter.InitializeTransmuter(stateDB, testSyntheticToken, testUnderlying)
+	transmuter.InitializeTransmuter(stateDB, testLiquidToken, testUnderlying)
 	setBalance(stateDB, testUser1, bigInt("1000000000000000000000"))
 
 	// Stake
 	stakeAmount := bigInt("100000000000000000000")
-	transmuter.Stake(stateDB, testUser1, testSyntheticToken, stakeAmount)
+	transmuter.Stake(stateDB, testUser1, testLiquidToken, stakeAmount)
 
 	// Unstake half
 	unstakeAmount := bigInt("50000000000000000000")
-	err := transmuter.Unstake(stateDB, testUser1, testSyntheticToken, unstakeAmount)
+	err := transmuter.Unstake(stateDB, testUser1, testLiquidToken, unstakeAmount)
 	if err != nil {
 		t.Fatalf("Unstake failed: %v", err)
 	}
 
 	// Check remaining stake
-	stake := transmuter.GetStake(stateDB, testUser1, testSyntheticToken)
+	stake := transmuter.GetStake(stateDB, testUser1, testLiquidToken)
 	expectedRemaining := new(big.Int).Sub(stakeAmount, unstakeAmount)
 	if stake.StakedAmount.Cmp(expectedRemaining) != 0 {
 		t.Fatalf("remaining stake mismatch: got %s, want %s", stake.StakedAmount, expectedRemaining)
@@ -493,32 +493,32 @@ func TestTransmuter_Unstake(t *testing.T) {
 
 func TestTransmuter_MultipleStakers(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	transmuter := NewTransmuter(alchemist)
 	stateDB := NewMockStateDB()
 
 	// Setup
-	transmuter.InitializeTransmuter(stateDB, testSyntheticToken, testUnderlying)
+	transmuter.InitializeTransmuter(stateDB, testLiquidToken, testUnderlying)
 	setBalance(stateDB, testUser1, bigInt("1000000000000000000000"))
 	setBalance(stateDB, testUser2, bigInt("1000000000000000000000"))
 	setBalance(stateDB, transmuterAddr, bigInt("1000000000000000000000"))
 
 	// User1 stakes 100
 	user1Stake := bigInt("100000000000000000000")
-	transmuter.Stake(stateDB, testUser1, testSyntheticToken, user1Stake)
+	transmuter.Stake(stateDB, testUser1, testLiquidToken, user1Stake)
 
 	// User2 stakes 200
 	user2Stake := bigInt("200000000000000000000")
-	transmuter.Stake(stateDB, testUser2, testSyntheticToken, user2Stake)
+	transmuter.Stake(stateDB, testUser2, testLiquidToken, user2Stake)
 
 	// Deposit 150 underlying (should split proportionally)
 	depositAmount := bigInt("150000000000000000000")
-	transmuter.Deposit(stateDB, testSyntheticToken, depositAmount)
+	transmuter.Deposit(stateDB, testLiquidToken, depositAmount)
 
 	// User1 should get 1/3 = 50
 	// User2 should get 2/3 = 100
-	claimable1 := transmuter.GetClaimable(stateDB, testUser1, testSyntheticToken)
-	claimable2 := transmuter.GetClaimable(stateDB, testUser2, testSyntheticToken)
+	claimable1 := transmuter.GetClaimable(stateDB, testUser1, testLiquidToken)
+	claimable2 := transmuter.GetClaimable(stateDB, testUser2, testLiquidToken)
 
 	expectedUser1 := bigInt("50000000000000000000")
 	expectedUser2 := bigInt("100000000000000000000")
@@ -535,9 +535,9 @@ func TestTransmuter_MultipleStakers(t *testing.T) {
 // Integration Tests
 // =========================================================================
 
-func TestAlchemist_FullFlow(t *testing.T) {
+func TestLiquid_FullFlow(t *testing.T) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	transmuter := NewTransmuter(alchemist)
 	stateDB := NewMockStateDB()
 
@@ -545,17 +545,17 @@ func TestAlchemist_FullFlow(t *testing.T) {
 	yieldPerBlock := bigInt("1000000000000000")
 	debtCeiling := bigInt("1000000000000000000000000")
 	alchemist.AddYieldToken(stateDB, testYieldToken, testUnderlying, yieldPerBlock)
-	alchemist.AddSyntheticToken(stateDB, testSyntheticToken, testUnderlying, debtCeiling)
-	transmuter.InitializeTransmuter(stateDB, testSyntheticToken, testUnderlying)
+	alchemist.AddLiquidToken(stateDB, testLiquidToken, testUnderlying, debtCeiling)
+	transmuter.InitializeTransmuter(stateDB, testLiquidToken, testUnderlying)
 
 	// User deposits LP tokens
 	setBalance(stateDB, testUser1, bigInt("1000000000000000000000"))
 	depositAmount := bigInt("100000000000000000000")
 	alchemist.Deposit(stateDB, testUser1, testYieldToken, depositAmount)
 
-	// User mints synthetic at 90% LTV
+	// User mints liquid at 90% LTV
 	maxMint := alchemist.GetMaxMintable(stateDB, testUser1, testYieldToken)
-	alchemist.Mint(stateDB, testUser1, testYieldToken, testSyntheticToken, maxMint)
+	alchemist.Mint(stateDB, testUser1, testYieldToken, testLiquidToken, maxMint)
 
 	// Verify position
 	account := alchemist.GetAccount(stateDB, testUser1, testYieldToken)
@@ -568,18 +568,18 @@ func TestAlchemist_FullFlow(t *testing.T) {
 		t.Fatalf("LTV should be 90%%, got %d", ltv.Int64())
 	}
 
-	// User can use synthetics (e.g., stake in transmuter)
-	transmuter.Stake(stateDB, testUser1, testSyntheticToken, maxMint)
+	// User can use liquidTokens (e.g., stake in transmuter)
+	transmuter.Stake(stateDB, testUser1, testLiquidToken, maxMint)
 
-	// Verify synthetics are staked
-	stake := transmuter.GetStake(stateDB, testUser1, testSyntheticToken)
+	// Verify liquidTokens are staked
+	stake := transmuter.GetStake(stateDB, testUser1, testLiquidToken)
 	if stake.StakedAmount.Sign() == 0 {
-		t.Fatal("no synthetics staked")
+		t.Fatal("no liquidTokens staked")
 	}
 
 	t.Logf("Full flow completed:")
 	t.Logf("  Deposited: %s yield tokens", depositAmount)
-	t.Logf("  Minted: %s synthetics (90%% LTV)", maxMint)
+	t.Logf("  Minted: %s liquidTokens (90%% LTV)", maxMint)
 	t.Logf("  Staked in transmuter: %s", stake.StakedAmount)
 }
 
@@ -587,9 +587,9 @@ func TestAlchemist_FullFlow(t *testing.T) {
 // Benchmark Tests
 // =========================================================================
 
-func BenchmarkAlchemist_Deposit(b *testing.B) {
+func BenchmarkLiquid_Deposit(b *testing.B) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	stateDB := NewMockStateDB()
 
 	yieldPerBlock := bigInt("1000000000000000")
@@ -605,15 +605,15 @@ func BenchmarkAlchemist_Deposit(b *testing.B) {
 	}
 }
 
-func BenchmarkAlchemist_Mint(b *testing.B) {
+func BenchmarkLiquid_Mint(b *testing.B) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	stateDB := NewMockStateDB()
 
 	yieldPerBlock := bigInt("1000000000000000")
 	debtCeiling := bigInt("1000000000000000000000000000000")
 	alchemist.AddYieldToken(stateDB, testYieldToken, testUnderlying, yieldPerBlock)
-	alchemist.AddSyntheticToken(stateDB, testSyntheticToken, testUnderlying, debtCeiling)
+	alchemist.AddLiquidToken(stateDB, testLiquidToken, testUnderlying, debtCeiling)
 
 	// Pre-deposit for many users
 	depositAmount := bigInt("100000000000000000000")
@@ -627,23 +627,23 @@ func BenchmarkAlchemist_Mint(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		user := common.BigToAddress(big.NewInt(int64(i)))
-		alchemist.Mint(stateDB, user, testYieldToken, testSyntheticToken, mintAmount)
+		alchemist.Mint(stateDB, user, testYieldToken, testLiquidToken, mintAmount)
 	}
 }
 
 func BenchmarkTransmuter_Stake(b *testing.B) {
 	pm := NewPoolManager()
-	alchemist := NewAlchemist(pm)
+	alchemist := NewLiquid(pm)
 	transmuter := NewTransmuter(alchemist)
 	stateDB := NewMockStateDB()
 
-	transmuter.InitializeTransmuter(stateDB, testSyntheticToken, testUnderlying)
+	transmuter.InitializeTransmuter(stateDB, testLiquidToken, testUnderlying)
 	stakeAmount := bigInt("1000000000000000000")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		user := common.BigToAddress(big.NewInt(int64(i)))
 		setBalance(stateDB, user, bigInt("1000000000000000000000000000000"))
-		transmuter.Stake(stateDB, user, testSyntheticToken, stakeAmount)
+		transmuter.Stake(stateDB, user, testLiquidToken, stakeAmount)
 	}
 }

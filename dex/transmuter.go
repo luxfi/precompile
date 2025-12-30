@@ -13,7 +13,7 @@ import (
 )
 
 // Precompile address as bytes
-var transmuterAddr = common.HexToAddress(TransmuterAddress)
+var transmuterAddr = common.HexToAddress(LiquidFXAddress)
 
 // Storage key prefixes for Transmuter state
 var (
@@ -22,48 +22,48 @@ var (
 	transmuterQueuePrefix  = []byte("xmut/queue")
 )
 
-// Transmuter allows conversion of synthetic tokens back to underlying assets
+// Transmuter allows conversion of liquid tokens back to underlying assets
 // Based on Alchemix's Transmuter design:
-// 1. Users stake synthetic tokens (e.g., luxUSD) in the transmuter
-// 2. As underlying flows in (from yield harvesting), staked synthetics convert
+// 1. Users stake liquid tokens (e.g., LUSD) in the transmuter
+// 2. As underlying flows in (from yield harvesting), staked liquidTokens convert
 // 3. Users can claim their proportional share of underlying
 //
-// This provides an exit mechanism from synthetics without market selling
+// This provides an exit mechanism from liquidTokens without market selling
 type Transmuter struct {
 	mu sync.RWMutex
 
-	// Transmuter state per synthetic token
-	states map[common.Address]*TransmuterState
+	// Transmuter state per liquid token
+	states map[common.Address]*LiquidFXState
 
-	// User stakes (keyed by synthetic + user)
+	// User stakes (keyed by liquid + user)
 	stakes map[[32]byte]*TransmuterStake
 
-	// Reference to Alchemist for yield flow
-	alchemist *Alchemist
+	// Reference to Liquid for yield flow
+	alchemist *Liquid
 }
 
 // TransmuterStake represents a user's stake in the transmuter
 type TransmuterStake struct {
 	Owner           common.Address
-	SyntheticToken  common.Address
-	StakedAmount    *big.Int       // Amount of synthetic staked
+	LiquidToken  common.Address
+	StakedAmount    *big.Int       // Amount of liquid staked
 	UnclaimedAmount *big.Int       // Underlying available to claim
 	LastUpdateIndex *big.Int       // Index at last update (for pro-rata)
 }
 
 // NewTransmuter creates a new Transmuter instance
-func NewTransmuter(alchemist *Alchemist) *Transmuter {
+func NewTransmuter(alchemist *Liquid) *Transmuter {
 	return &Transmuter{
-		states:    make(map[common.Address]*TransmuterState),
+		states:    make(map[common.Address]*LiquidFXState),
 		stakes:    make(map[[32]byte]*TransmuterStake),
 		alchemist: alchemist,
 	}
 }
 
 // stakeKey generates unique key for user stake
-func stakeKey(synthetic common.Address, owner common.Address) [32]byte {
+func stakeKey(liquid common.Address, owner common.Address) [32]byte {
 	h := blake3.New()
-	h.Write(synthetic.Bytes())
+	h.Write(liquid.Bytes())
 	h.Write(owner.Bytes())
 	var key [32]byte
 	h.Digest().Read(key[:])
@@ -74,28 +74,28 @@ func stakeKey(synthetic common.Address, owner common.Address) [32]byte {
 // Admin Functions
 // =========================================================================
 
-// InitializeTransmuter sets up a transmuter for a synthetic token
+// InitializeTransmuter sets up a transmuter for a liquid token
 func (t *Transmuter) InitializeTransmuter(
 	stateDB StateDB,
-	syntheticToken common.Address,
+	liquidToken common.Address,
 	underlyingAsset Currency,
 ) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if _, exists := t.states[syntheticToken]; exists {
-		return ErrSyntheticNotRegistered
+	if _, exists := t.states[liquidToken]; exists {
+		return ErrLiquidTokenNotRegistered
 	}
 
-	state := &TransmuterState{
-		SyntheticToken:  syntheticToken,
+	state := &LiquidFXState{
+		LiquidToken:  liquidToken,
 		UnderlyingAsset: underlyingAsset,
 		ExchangeBuffer:  big.NewInt(0),
 		TotalStaked:     big.NewInt(0),
 		ExchangeRate:    new(big.Int).Set(Q96), // 1:1 initial rate
 	}
 
-	t.states[syntheticToken] = state
+	t.states[liquidToken] = state
 	t.saveState(stateDB, state)
 
 	return nil
@@ -105,20 +105,20 @@ func (t *Transmuter) InitializeTransmuter(
 // Core Transmuter Operations
 // =========================================================================
 
-// Stake stakes synthetic tokens for transmutation
-// Staked synthetics will be converted to underlying as yield flows in
+// Stake stakes liquid tokens for transmutation
+// Staked liquidTokens will be converted to underlying as yield flows in
 func (t *Transmuter) Stake(
 	stateDB StateDB,
 	owner common.Address,
-	syntheticToken common.Address,
+	liquidToken common.Address,
 	amount *big.Int,
 ) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	state, exists := t.states[syntheticToken]
+	state, exists := t.states[liquidToken]
 	if !exists {
-		return ErrSyntheticNotRegistered
+		return ErrLiquidTokenNotRegistered
 	}
 
 	if amount.Sign() <= 0 {
@@ -126,12 +126,12 @@ func (t *Transmuter) Stake(
 	}
 
 	// Get or create stake
-	key := stakeKey(syntheticToken, owner)
+	key := stakeKey(liquidToken, owner)
 	stake := t.getStake(stateDB, key)
 	if stake == nil {
 		stake = &TransmuterStake{
 			Owner:           owner,
-			SyntheticToken:  syntheticToken,
+			LiquidToken:  liquidToken,
 			StakedAmount:    big.NewInt(0),
 			UnclaimedAmount: big.NewInt(0),
 			LastUpdateIndex: new(big.Int).Set(state.ExchangeRate),
@@ -141,8 +141,8 @@ func (t *Transmuter) Stake(
 	// Update stake's unclaimed amount based on exchange rate change
 	t.updateStakeUnclaimed(stake, state)
 
-	// Transfer synthetic tokens from user
-	t.transferSynthetic(stateDB, syntheticToken, owner, transmuterAddr, amount)
+	// Transfer liquid tokens from user
+	t.transferSynthetic(stateDB, liquidToken, owner, transmuterAddr, amount)
 
 	// Update stake
 	stake.StakedAmount = new(big.Int).Add(stake.StakedAmount, amount)
@@ -158,23 +158,23 @@ func (t *Transmuter) Stake(
 	return nil
 }
 
-// Unstake removes synthetic tokens from transmutation queue
-// Only unexchanged (remaining) synthetics can be unstaked
+// Unstake removes liquid tokens from transmutation queue
+// Only unexchanged (remaining) liquidTokens can be unstaked
 func (t *Transmuter) Unstake(
 	stateDB StateDB,
 	owner common.Address,
-	syntheticToken common.Address,
+	liquidToken common.Address,
 	amount *big.Int,
 ) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	state, exists := t.states[syntheticToken]
+	state, exists := t.states[liquidToken]
 	if !exists {
-		return ErrSyntheticNotRegistered
+		return ErrLiquidTokenNotRegistered
 	}
 
-	key := stakeKey(syntheticToken, owner)
+	key := stakeKey(liquidToken, owner)
 	stake := t.getStake(stateDB, key)
 	if stake == nil || stake.StakedAmount.Sign() == 0 {
 		return ErrInvalidPositionSize
@@ -194,8 +194,8 @@ func (t *Transmuter) Unstake(
 	// Update total staked
 	state.TotalStaked = new(big.Int).Sub(state.TotalStaked, amount)
 
-	// Transfer synthetic tokens back to user
-	t.transferSynthetic(stateDB, syntheticToken, transmuterAddr, owner, amount)
+	// Transfer liquid tokens back to user
+	t.transferSynthetic(stateDB, liquidToken, transmuterAddr, owner, amount)
 
 	// Save state
 	t.saveStake(stateDB, key, stake)
@@ -209,17 +209,17 @@ func (t *Transmuter) Unstake(
 func (t *Transmuter) Claim(
 	stateDB StateDB,
 	owner common.Address,
-	syntheticToken common.Address,
+	liquidToken common.Address,
 ) (*big.Int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	state, exists := t.states[syntheticToken]
+	state, exists := t.states[liquidToken]
 	if !exists {
-		return nil, ErrSyntheticNotRegistered
+		return nil, ErrLiquidTokenNotRegistered
 	}
 
-	key := stakeKey(syntheticToken, owner)
+	key := stakeKey(liquidToken, owner)
 	stake := t.getStake(stateDB, key)
 	if stake == nil {
 		return nil, ErrTransmuterEmpty
@@ -253,18 +253,18 @@ func (t *Transmuter) Claim(
 }
 
 // Deposit deposits underlying tokens into the transmuter buffer
-// Called by Alchemist when harvesting yield for debt repayment overflow
+// Called by Liquid when harvesting yield for debt repayment overflow
 func (t *Transmuter) Deposit(
 	stateDB StateDB,
-	syntheticToken common.Address,
+	liquidToken common.Address,
 	underlyingAmount *big.Int,
 ) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	state, exists := t.states[syntheticToken]
+	state, exists := t.states[liquidToken]
 	if !exists {
-		return ErrSyntheticNotRegistered
+		return ErrLiquidTokenNotRegistered
 	}
 
 	if underlyingAmount.Sign() <= 0 {
@@ -296,40 +296,40 @@ func (t *Transmuter) Deposit(
 func (t *Transmuter) GetStake(
 	stateDB StateDB,
 	owner common.Address,
-	syntheticToken common.Address,
+	liquidToken common.Address,
 ) *TransmuterStake {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	key := stakeKey(syntheticToken, owner)
+	key := stakeKey(liquidToken, owner)
 	return t.getStake(stateDB, key)
 }
 
-// GetTransmuterState returns the transmuter state for a synthetic
-func (t *Transmuter) GetTransmuterState(
-	syntheticToken common.Address,
-) *TransmuterState {
+// GetLiquidFXState returns the transmuter state for a liquid
+func (t *Transmuter) GetLiquidFXState(
+	liquidToken common.Address,
+) *LiquidFXState {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	return t.states[syntheticToken]
+	return t.states[liquidToken]
 }
 
 // GetClaimable returns the amount of underlying a user can claim
 func (t *Transmuter) GetClaimable(
 	stateDB StateDB,
 	owner common.Address,
-	syntheticToken common.Address,
+	liquidToken common.Address,
 ) *big.Int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	state, exists := t.states[syntheticToken]
+	state, exists := t.states[liquidToken]
 	if !exists {
 		return big.NewInt(0)
 	}
 
-	key := stakeKey(syntheticToken, owner)
+	key := stakeKey(liquidToken, owner)
 	stake := t.getStake(stateDB, key)
 	if stake == nil {
 		return big.NewInt(0)
@@ -357,11 +357,11 @@ func (t *Transmuter) GetClaimable(
 }
 
 // GetExchangeRate returns the current exchange rate
-func (t *Transmuter) GetExchangeRate(syntheticToken common.Address) *big.Int {
+func (t *Transmuter) GetExchangeRate(liquidToken common.Address) *big.Int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	state, exists := t.states[syntheticToken]
+	state, exists := t.states[liquidToken]
 	if !exists {
 		return new(big.Int).Set(Q96)
 	}
@@ -374,7 +374,7 @@ func (t *Transmuter) GetExchangeRate(syntheticToken common.Address) *big.Int {
 // =========================================================================
 
 // updateStakeUnclaimed updates a stake's unclaimed amount based on exchange rate
-func (t *Transmuter) updateStakeUnclaimed(stake *TransmuterStake, state *TransmuterState) {
+func (t *Transmuter) updateStakeUnclaimed(stake *TransmuterStake, state *LiquidFXState) {
 	if stake.StakedAmount.Sign() == 0 {
 		return
 	}
@@ -391,7 +391,7 @@ func (t *Transmuter) updateStakeUnclaimed(stake *TransmuterStake, state *Transmu
 
 	stake.UnclaimedAmount = new(big.Int).Add(stake.UnclaimedAmount, newUnclaimed)
 
-	// Reduce staked amount by converted amount (synthetics are "burned" as they convert)
+	// Reduce staked amount by converted amount (liquidTokens are "burned" as they convert)
 	if newUnclaimed.Cmp(stake.StakedAmount) >= 0 {
 		stake.StakedAmount = big.NewInt(0)
 	} else {
@@ -438,11 +438,11 @@ func (t *Transmuter) saveStake(stateDB StateDB, key [32]byte, stake *TransmuterS
 	stateDB.SetState(transmuterAddr, storageKey, data)
 }
 
-func (t *Transmuter) saveState(stateDB StateDB, state *TransmuterState) {
-	t.states[state.SyntheticToken] = state
+func (t *Transmuter) saveState(stateDB StateDB, state *LiquidFXState) {
+	t.states[state.LiquidToken] = state
 
 	// In production, would serialize full struct to state
-	storageKey := makeStorageKey(transmuterStatePrefix, state.SyntheticToken.Bytes())
+	storageKey := makeStorageKey(transmuterStatePrefix, state.LiquidToken.Bytes())
 	var data common.Hash
 	bufferBytes := state.ExchangeBuffer.Bytes()
 	totalBytes := state.TotalStaked.Bytes()
