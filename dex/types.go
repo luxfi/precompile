@@ -34,10 +34,10 @@ const (
 	FundingRateAddress      = "0x0421" // Funding rate calculation
 	InsuranceFundAddress    = "0x0422" // Insurance and ADL
 
-	// Synthetics Module - Alchemix-style (0x0430-0x043F)
-	AlchemistAddress        = "0x0430" // Main vault for self-repaying loans
-	TransmuterAddress       = "0x0431" // Convert synthetics back to underlying
-	SyntheticTokenAddress   = "0x0432" // Synthetic token registry (luxUSD, luxETH)
+	// Liquid Module (0x0430-0x043F) - Self-repaying loans with yield-bearing collateral
+	LiquidAddress      = "0x0430" // Main vault for self-repaying loans
+	LiquidFXAddress = "0x0431" // Convert L* tokens back to underlying
+	LiquidTokenAddress      = "0x0432" // Liquid token registry (LUSD, LETH, LBTC)
 	YieldRouterAddress      = "0x0433" // Yield strategy routing
 
 	// Teleport/Omnichain (0x0440-0x044F)
@@ -72,13 +72,13 @@ const (
 	GasModifyMargin   uint64 = 10_000  // Add/remove margin
 	GasSettleFunding  uint64 = 10_000  // Settle funding rate
 
-	// Synthetics operations (Alchemix-style)
+	// Liquid operations (self-repaying loans)
 	GasDeposit        uint64 = 20_000  // Deposit yield-bearing collateral
-	GasMint           uint64 = 25_000  // Mint synthetic tokens
-	GasBurn           uint64 = 20_000  // Burn synthetic tokens
+	GasMint           uint64 = 25_000  // Mint liquid tokens (L*)
+	GasBurn           uint64 = 20_000  // Burn liquid tokens
 	GasRepayDebt      uint64 = 15_000  // Manual debt repayment
 	GasHarvest        uint64 = 30_000  // Harvest yield and repay debt
-	GasTransmute      uint64 = 25_000  // Convert synthetic to underlying
+	GasTransmute      uint64 = 25_000  // Convert liquid token to underlying
 
 	// Teleport operations
 	GasTeleportInit   uint64 = 50_000  // Initiate cross-chain transfer
@@ -394,14 +394,14 @@ var (
 	ErrBankruptPosition         = errors.New("position is bankrupt")
 )
 
-// Errors - Synthetics (Alchemix-style)
+// Errors - Liquid (self-repaying loans)
 var (
 	ErrMaxLTVExceeded           = errors.New("max LTV exceeded (90%)")
 	ErrInvalidYieldToken        = errors.New("invalid yield-bearing token")
 	ErrDebtCeiling              = errors.New("debt ceiling reached")
 	ErrNoDebtToRepay            = errors.New("no debt to repay")
 	ErrTransmuterEmpty          = errors.New("transmuter has no underlying")
-	ErrSyntheticNotRegistered   = errors.New("synthetic token not registered")
+	ErrLiquidTokenNotRegistered = errors.New("liquid token not registered")
 )
 
 // Errors - Teleport
@@ -501,12 +501,12 @@ type FundingState struct {
 }
 
 // =========================================================================
-// Synthetics Types (Alchemix-style with 90% LTV)
+// Liquid Types (self-repaying loans with 90% LTV)
 // =========================================================================
 
-// Alchemix-style parameters
+// Liquid protocol parameters
 const (
-	// MaxLTV is 90% (vs Alchemix's 50%) - allows 90% of collateral to be minted as debt
+	// MaxLTV is 90% - allows 90% of collateral to be minted as debt
 	MaxLTV = 9000 // 90.00% in basis points
 
 	// MinLTV is the minimum LTV to maintain position
@@ -516,11 +516,11 @@ const (
 	LTVPrecision = 10000
 )
 
-// SyntheticToken represents a synthetic asset (e.g., luxUSD, luxETH)
-type SyntheticToken struct {
-	Address          common.Address // Synthetic token address
+// LiquidToken represents a liquid asset (e.g., LUSD, LETH, LBTC)
+type LiquidToken struct {
+	Address          common.Address // Liquid token address
 	UnderlyingAsset  Currency       // The underlying asset it tracks
-	TotalMinted      *big.Int       // Total synthetic minted
+	TotalMinted      *big.Int       // Total liquid tokens minted
 	DebtCeiling      *big.Int       // Maximum mintable
 	MintFee          uint24         // Fee on minting (basis points)
 	BurnFee          uint24         // Fee on burning (basis points)
@@ -533,26 +533,25 @@ type YieldToken struct {
 	UnderlyingAsset  Currency       // The underlying asset
 	YieldPerBlock    *big.Int       // Expected yield per block (for estimation)
 	IsActive         bool           // Whether deposits are accepted
-	TotalDeposited   *big.Int       // Total deposited in Alchemist
+	TotalDeposited   *big.Int       // Total deposited in Liquid
 }
 
-// AlchemistAccount represents a user's self-repaying loan position
-// Similar to Alchemix's CDP structure
-type AlchemistAccount struct {
+// LiquidAccount represents a user's self-repaying loan position
+type LiquidAccount struct {
 	Owner            common.Address
 	YieldToken       common.Address // The yield-bearing collateral token
 	Collateral       *big.Int       // Amount of yield token deposited
-	Debt             *big.Int       // Amount of synthetic debt owed
+	Debt             *big.Int       // Amount of liquid token debt owed
 	LastHarvestBlock uint64         // Last block yield was harvested
 	AccruedYield     *big.Int       // Unharvested yield (auto-repays debt)
 }
 
-// TransmuterState manages the conversion of synthetics back to underlying
-type TransmuterState struct {
-	SyntheticToken   common.Address // The synthetic token (e.g., luxUSD)
+// LiquidFXState manages the conversion of L* tokens back to underlying
+type LiquidFXState struct {
+	LiquidToken      common.Address // The liquid token (e.g., LUSD)
 	UnderlyingAsset  Currency       // The underlying (e.g., USDC)
 	ExchangeBuffer   *big.Int       // Underlying available for exchange
-	TotalStaked      *big.Int       // Total synthetic staked for transmutation
+	TotalStaked      *big.Int       // Total liquid tokens staked for transmutation
 	ExchangeRate     *big.Int       // Current exchange rate (Q96)
 }
 
