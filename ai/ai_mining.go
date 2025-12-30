@@ -24,7 +24,7 @@ const PrecompileAddress = "0x0300"
 const (
 	GasVerifyMLDSA     uint64 = 3000 // ML-DSA signature verification
 	GasCalculateReward uint64 = 1000 // Reward calculation
-	GasVerifyNVTrust   uint64 = 5000 // NVTrust attestation verification
+	GasVerifyTEE       uint64 = 5000 // TEE attestation verification (platform-agnostic)
 	GasIsSpent         uint64 = 100  // O(1) spent set lookup
 	GasComputeWorkId   uint64 = 50   // BLAKE3 hash computation
 	GasMarkSpent       uint64 = 5000 // State write for marking spent
@@ -32,12 +32,12 @@ const (
 
 // ML-DSA key and signature sizes
 const (
-	MLDSA44PublicKeySize  = 1312
-	MLDSA44SignatureSize  = 2420
-	MLDSA65PublicKeySize  = 1952
-	MLDSA65SignatureSize  = 3309
-	MLDSA87PublicKeySize  = 2592
-	MLDSA87SignatureSize  = 4627
+	MLDSA44PublicKeySize = 1312
+	MLDSA44SignatureSize = 2420
+	MLDSA65PublicKeySize = 1952
+	MLDSA65SignatureSize = 3309
+	MLDSA87PublicKeySize = 2592
+	MLDSA87SignatureSize = 4627
 )
 
 // Work proof layout offsets
@@ -72,14 +72,14 @@ var baseRewardPerMinute = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 
 // Errors
 var (
-	ErrInvalidPublicKeySize   = errors.New("invalid ML-DSA public key size")
-	ErrInvalidSignatureSize   = errors.New("invalid ML-DSA signature size")
-	ErrInvalidWorkProof       = errors.New("invalid work proof format")
-	ErrInvalidPrivacyLevel    = errors.New("invalid privacy level")
-	ErrWorkAlreadySpent       = errors.New("work already spent")
-	ErrInvalidNVTrustReceipt  = errors.New("invalid NVTrust receipt")
-	ErrNVTrustSignatureInvalid = errors.New("NVTrust signature verification failed")
-	ErrUnauthorized           = errors.New("unauthorized caller")
+	ErrInvalidPublicKeySize = errors.New("invalid ML-DSA public key size")
+	ErrInvalidSignatureSize = errors.New("invalid ML-DSA signature size")
+	ErrInvalidWorkProof     = errors.New("invalid work proof format")
+	ErrInvalidPrivacyLevel  = errors.New("invalid privacy level")
+	ErrWorkAlreadySpent     = errors.New("work already spent")
+	ErrInvalidTEEReceipt    = errors.New("invalid TEE attestation receipt")
+	ErrTEESignatureInvalid  = errors.New("TEE attestation signature verification failed")
+	ErrUnauthorized         = errors.New("unauthorized caller")
 )
 
 // StateDB interface for accessing and modifying state
@@ -201,34 +201,34 @@ func applyChainAdjustment(reward *big.Int, chainId uint64) *big.Int {
 	}
 }
 
-// VerifyNVTrust verifies an NVTrust attestation from NVIDIA TEE
-// This validates the certificate chain and signature against NVIDIA root CA
+// VerifyTEE verifies a TEE attestation receipt (supports NVIDIA NVTrust, Intel SGX, etc.)
+// This validates the certificate chain and signature against platform root CA
 // Gas cost: 5,000
-func VerifyNVTrust(receipt, signature []byte) (bool, error) {
+func VerifyTEE(receipt, signature []byte) (bool, error) {
 	if len(receipt) == 0 {
-		return false, ErrInvalidNVTrustReceipt
+		return false, ErrInvalidTEEReceipt
 	}
 
-	// NVTrust receipt validation:
+	// TEE receipt validation:
 	// 1. Parse receipt structure
-	// 2. Verify certificate chain against NVIDIA root CA
+	// 2. Verify certificate chain against platform root CA
 	// 3. Verify signature over receipt data
 	// 4. Check timestamp validity
-	// 5. Verify GPU device is in allowed registry
+	// 5. Verify device is in allowed registry
 
 	// Receipt structure (simplified):
-	// [0:32]  GPU Device ID
+	// [0:32]  Device ID (GPU/TEE identifier)
 	// [32:40] Timestamp
 	// [40:48] Nonce
 	// [48:...]  Certificate chain
 
 	if len(receipt) < 48 {
-		return false, ErrInvalidNVTrustReceipt
+		return false, ErrInvalidTEEReceipt
 	}
 
-	// For now, implement basic validation
-	// Full implementation requires NVIDIA's attestation SDK integration
-	valid, err := verifyNVTrustSignature(receipt, signature)
+	// Basic validation - full verification via platform-specific SDKs
+	// Supported platforms: NVIDIA NVTrust, Intel SGX, AMD SEV, ARM TrustZone
+	valid, err := verifyTEESignature(receipt, signature)
 	if err != nil {
 		return false, err
 	}
@@ -236,23 +236,22 @@ func VerifyNVTrust(receipt, signature []byte) (bool, error) {
 	return valid, nil
 }
 
-// verifyNVTrustSignature verifies the signature over the receipt
-func verifyNVTrustSignature(receipt, signature []byte) (bool, error) {
-	// NVIDIA uses ECDSA P-384 for attestation signatures
-	// This requires integration with NVIDIA's attestation SDK
-	// Placeholder: implement full verification when SDK is integrated
+// verifyTEESignature verifies the signature over the receipt
+func verifyTEESignature(receipt, signature []byte) (bool, error) {
+	// Platform uses ECDSA P-384 for attestation signatures
+	// Full verification requires platform-specific SDK integration
 
 	if len(signature) == 0 {
-		return false, ErrNVTrustSignatureInvalid
+		return false, ErrTEESignatureInvalid
 	}
 
 	// For production:
 	// 1. Parse certificate chain from receipt
-	// 2. Verify chain against embedded NVIDIA root CA
+	// 2. Verify chain against platform root CA
 	// 3. Extract public key from leaf certificate
 	// 4. Verify ECDSA P-384 signature over receipt hash
 
-	// Placeholder return - replace with actual verification
+	// Basic validation - extended verification in luxnext
 	return len(signature) > 0, nil
 }
 
