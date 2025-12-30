@@ -13,47 +13,47 @@ import (
 )
 
 // Precompile address as bytes
-var alchemistAddr = common.HexToAddress(AlchemistAddress)
+var liquidAddr = common.HexToAddress(LiquidAddress)
 
-// Storage key prefixes for Alchemist state
+// Storage key prefixes for Liquid state
 var (
-	alchemistYieldTokenPrefix   = []byte("alch/ytok")  // Approved yield tokens
-	alchemistSyntheticPrefix    = []byte("alch/syn")   // Synthetic tokens
-	alchemistAccountPrefix      = []byte("alch/acc")   // User accounts
-	alchemistGlobalPrefix       = []byte("alch/glob")  // Global state
+	liquidYieldTokenPrefix   = []byte("liquid/ytok")  // Approved yield tokens
+	liquidTokenPrefix    = []byte("liquid/syn")   // Synthetic tokens
+	liquidAccountPrefix      = []byte("liquid/acc")   // User accounts
+	liquidGlobalPrefix       = []byte("liquid/glob")  // Global state
 )
 
-// Alchemist implements the self-repaying loan vault precompile
+// Liquid implements the self-repaying loan vault precompile
 // Based on Alchemix architecture with 90% LTV (vs 50% in original)
 //
 // Key features:
 // - Deposit yield-bearing tokens (LP tokens) as collateral
-// - Mint synthetic tokens (luxUSD, luxETH) up to 90% of collateral value
+// - Mint liquid tokens (LUSD, LETH) up to 90% of collateral value
 // - Yield automatically harvested and applied to debt repayment
 // - NO LIQUIDATIONS - positions are always solvent (debt <= collateral)
 // - Manual repayment also supported
-type Alchemist struct {
+type Liquid struct {
 	mu sync.RWMutex
 
 	// Approved yield-bearing tokens that can be used as collateral
 	yieldTokens map[common.Address]*YieldToken
 
-	// Registered synthetic tokens that can be minted
-	synthetics map[common.Address]*SyntheticToken
+	// Registered liquid tokens that can be minted
+	liquidTokens map[common.Address]*LiquidToken
 
 	// User accounts (keyed by owner + yieldToken)
-	accounts map[[32]byte]*AlchemistAccount
+	accounts map[[32]byte]*LiquidAccount
 
 	// Reference to pool manager for LP token valuations
 	poolManager *PoolManager
 }
 
-// NewAlchemist creates a new Alchemist instance
-func NewAlchemist(pm *PoolManager) *Alchemist {
-	return &Alchemist{
+// NewLiquid creates a new Liquid instance
+func NewLiquid(pm *PoolManager) *Liquid {
+	return &Liquid{
 		yieldTokens: make(map[common.Address]*YieldToken),
-		synthetics:  make(map[common.Address]*SyntheticToken),
-		accounts:    make(map[[32]byte]*AlchemistAccount),
+		liquidTokens:  make(map[common.Address]*LiquidToken),
+		accounts:    make(map[[32]byte]*LiquidAccount),
 		poolManager: pm,
 	}
 }
@@ -73,7 +73,7 @@ func accountKey(owner common.Address, yieldToken common.Address) [32]byte {
 // =========================================================================
 
 // AddYieldToken registers a new yield-bearing token as valid collateral
-func (a *Alchemist) AddYieldToken(
+func (a *Liquid) AddYieldToken(
 	stateDB StateDB,
 	token common.Address,
 	underlying Currency,
@@ -99,8 +99,8 @@ func (a *Alchemist) AddYieldToken(
 	return nil
 }
 
-// AddSyntheticToken registers a new synthetic token
-func (a *Alchemist) AddSyntheticToken(
+// AddLiquidToken registers a new liquid token
+func (a *Liquid) AddLiquidToken(
 	stateDB StateDB,
 	synthetic common.Address,
 	underlying Currency,
@@ -109,11 +109,11 @@ func (a *Alchemist) AddSyntheticToken(
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if _, exists := a.synthetics[synthetic]; exists {
-		return ErrSyntheticNotRegistered
+	if _, exists := a.liquidTokens[synthetic]; exists {
+		return ErrLiquidTokenNotRegistered
 	}
 
-	st := &SyntheticToken{
+	st := &LiquidToken{
 		Address:         synthetic,
 		UnderlyingAsset: underlying,
 		TotalMinted:     big.NewInt(0),
@@ -122,18 +122,18 @@ func (a *Alchemist) AddSyntheticToken(
 		BurnFee:         10,  // 0.10%
 	}
 
-	a.synthetics[synthetic] = st
-	a.saveSyntheticToken(stateDB, st)
+	a.liquidTokens[synthetic] = st
+	a.saveLiquidToken(stateDB, st)
 	return nil
 }
 
 // =========================================================================
-// Core Alchemist Operations
+// Core Liquid Operations
 // =========================================================================
 
 // Deposit deposits yield-bearing tokens as collateral
 // This is the first step to taking a self-repaying loan
-func (a *Alchemist) Deposit(
+func (a *Liquid) Deposit(
 	stateDB StateDB,
 	owner common.Address,
 	yieldToken common.Address,
@@ -156,7 +156,7 @@ func (a *Alchemist) Deposit(
 	key := accountKey(owner, yieldToken)
 	account := a.getAccount(stateDB, key)
 	if account == nil {
-		account = &AlchemistAccount{
+		account = &LiquidAccount{
 			Owner:            owner,
 			YieldToken:       yieldToken,
 			Collateral:       big.NewInt(0),
@@ -169,8 +169,8 @@ func (a *Alchemist) Deposit(
 	// Harvest any accrued yield first
 	a.harvestYieldInternal(stateDB, account, yt)
 
-	// Transfer yield tokens from user to Alchemist
-	a.transferFrom(stateDB, yieldToken, owner, alchemistAddr, amount)
+	// Transfer yield tokens from user to Liquid
+	a.transferFrom(stateDB, yieldToken, owner, liquidAddr, amount)
 
 	// Update account
 	account.Collateral = new(big.Int).Add(account.Collateral, amount)
@@ -187,7 +187,7 @@ func (a *Alchemist) Deposit(
 
 // Withdraw withdraws yield-bearing collateral
 // Only allowed if it doesn't bring position below minimum collateralization
-func (a *Alchemist) Withdraw(
+func (a *Liquid) Withdraw(
 	stateDB StateDB,
 	owner common.Address,
 	yieldToken common.Address,
@@ -234,7 +234,7 @@ func (a *Alchemist) Withdraw(
 	yt.TotalDeposited = new(big.Int).Sub(yt.TotalDeposited, amount)
 
 	// Transfer yield tokens back to user
-	a.transfer(stateDB, yieldToken, alchemistAddr, owner, amount)
+	a.transfer(stateDB, yieldToken, liquidAddr, owner, amount)
 
 	// Save state
 	a.saveAccount(stateDB, key, account)
@@ -243,9 +243,9 @@ func (a *Alchemist) Withdraw(
 	return nil
 }
 
-// Mint mints synthetic tokens against deposited collateral
+// Mint mints liquid tokens against deposited collateral
 // Maximum 90% LTV (vs Alchemix's 50%)
-func (a *Alchemist) Mint(
+func (a *Liquid) Mint(
 	stateDB StateDB,
 	owner common.Address,
 	yieldToken common.Address,
@@ -255,15 +255,15 @@ func (a *Alchemist) Mint(
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Verify yield token and synthetic token
+	// Verify yield token and liquid token
 	yt, exists := a.yieldTokens[yieldToken]
 	if !exists || !yt.IsActive {
 		return ErrInvalidYieldToken
 	}
 
-	st, exists := a.synthetics[syntheticToken]
+	st, exists := a.liquidTokens[syntheticToken]
 	if !exists {
-		return ErrSyntheticNotRegistered
+		return ErrLiquidTokenNotRegistered
 	}
 
 	// Check debt ceiling
@@ -301,19 +301,19 @@ func (a *Alchemist) Mint(
 	// Update synthetic total minted
 	st.TotalMinted = newTotalMinted
 
-	// Mint synthetic tokens to user
+	// Mint liquid tokens to user
 	a.mintSynthetic(stateDB, syntheticToken, owner, netMintAmount)
 
 	// Save state
 	a.saveAccount(stateDB, key, account)
-	a.saveSyntheticToken(stateDB, st)
+	a.saveLiquidToken(stateDB, st)
 
 	return nil
 }
 
-// Burn burns synthetic tokens to reduce debt
+// Burn burns liquid tokens to reduce debt
 // Manual repayment option
-func (a *Alchemist) Burn(
+func (a *Liquid) Burn(
 	stateDB StateDB,
 	owner common.Address,
 	yieldToken common.Address,
@@ -323,9 +323,9 @@ func (a *Alchemist) Burn(
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	st, exists := a.synthetics[syntheticToken]
+	st, exists := a.liquidTokens[syntheticToken]
 	if !exists {
-		return ErrSyntheticNotRegistered
+		return ErrLiquidTokenNotRegistered
 	}
 
 	key := accountKey(owner, yieldToken)
@@ -349,7 +349,7 @@ func (a *Alchemist) Burn(
 	feeAmount := a.calculateFee(burnAmount, st.BurnFee)
 	debtReduction := new(big.Int).Sub(burnAmount, feeAmount)
 
-	// Burn synthetic tokens from user
+	// Burn liquid tokens from user
 	a.burnSynthetic(stateDB, syntheticToken, owner, burnAmount)
 
 	// Reduce debt
@@ -363,14 +363,14 @@ func (a *Alchemist) Burn(
 
 	// Save state
 	a.saveAccount(stateDB, key, account)
-	a.saveSyntheticToken(stateDB, st)
+	a.saveLiquidToken(stateDB, st)
 
 	return nil
 }
 
 // Harvest harvests accrued yield and applies it to debt repayment
 // This is the "self-repaying" mechanism
-func (a *Alchemist) Harvest(
+func (a *Liquid) Harvest(
 	stateDB StateDB,
 	owner common.Address,
 	yieldToken common.Address,
@@ -401,9 +401,9 @@ func (a *Alchemist) Harvest(
 // =========================================================================
 
 // harvestYieldInternal calculates and applies accrued yield to debt
-func (a *Alchemist) harvestYieldInternal(
+func (a *Liquid) harvestYieldInternal(
 	stateDB StateDB,
-	account *AlchemistAccount,
+	account *LiquidAccount,
 	yt *YieldToken,
 ) *big.Int {
 	// Get current block
@@ -451,11 +451,11 @@ func (a *Alchemist) harvestYieldInternal(
 // =========================================================================
 
 // GetAccount returns a user's account state
-func (a *Alchemist) GetAccount(
+func (a *Liquid) GetAccount(
 	stateDB StateDB,
 	owner common.Address,
 	yieldToken common.Address,
-) *AlchemistAccount {
+) *LiquidAccount {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
@@ -464,7 +464,7 @@ func (a *Alchemist) GetAccount(
 }
 
 // GetMaxMintable returns the maximum amount a user can mint
-func (a *Alchemist) GetMaxMintable(
+func (a *Liquid) GetMaxMintable(
 	stateDB StateDB,
 	owner common.Address,
 	yieldToken common.Address,
@@ -501,7 +501,7 @@ func (a *Alchemist) GetMaxMintable(
 }
 
 // GetLTV returns the current loan-to-value ratio for an account
-func (a *Alchemist) GetLTV(
+func (a *Liquid) GetLTV(
 	stateDB StateDB,
 	owner common.Address,
 	yieldToken common.Address,
@@ -533,7 +533,7 @@ func (a *Alchemist) GetLTV(
 }
 
 // GetTimeToRepayment estimates blocks until debt is fully repaid
-func (a *Alchemist) GetTimeToRepayment(
+func (a *Liquid) GetTimeToRepayment(
 	stateDB StateDB,
 	owner common.Address,
 	yieldToken common.Address,
@@ -575,7 +575,7 @@ func (a *Alchemist) GetTimeToRepayment(
 // =========================================================================
 
 // calculateMaxDebt calculates maximum debt for given collateral (90% LTV)
-func (a *Alchemist) calculateMaxDebt(collateralValue *big.Int) *big.Int {
+func (a *Liquid) calculateMaxDebt(collateralValue *big.Int) *big.Int {
 	// maxDebt = collateralValue * MaxLTV / LTVPrecision
 	// MaxLTV = 9000 (90%)
 	maxDebt := new(big.Int).Mul(collateralValue, big.NewInt(MaxLTV))
@@ -584,14 +584,14 @@ func (a *Alchemist) calculateMaxDebt(collateralValue *big.Int) *big.Int {
 }
 
 // calculateFee calculates fee amount
-func (a *Alchemist) calculateFee(amount *big.Int, feeBps uint24) *big.Int {
+func (a *Liquid) calculateFee(amount *big.Int, feeBps uint24) *big.Int {
 	fee := new(big.Int).Mul(amount, big.NewInt(int64(feeBps)))
 	fee.Div(fee, big.NewInt(1_000_000)) // Fee in basis points (1 bp = 0.01%)
 	return fee
 }
 
 // getCollateralValue returns the value of collateral in underlying terms
-func (a *Alchemist) getCollateralValue(stateDB StateDB, amount *big.Int, yt *YieldToken) *big.Int {
+func (a *Liquid) getCollateralValue(stateDB StateDB, amount *big.Int, yt *YieldToken) *big.Int {
 	// For LP tokens, would query the pool for underlying value
 	// Simplified: assume 1:1 for now
 	// In production, this would call poolManager to get real value
@@ -599,11 +599,11 @@ func (a *Alchemist) getCollateralValue(stateDB StateDB, amount *big.Int, yt *Yie
 }
 
 // getCurrentBlock returns the current block number
-func (a *Alchemist) getCurrentBlock(stateDB StateDB) uint64 {
+func (a *Liquid) getCurrentBlock(stateDB StateDB) uint64 {
 	// In production, would read from block context
 	// For testing, use state-based tracking
-	blockKey := makeStorageKey(alchemistGlobalPrefix, []byte("block"))
-	blockHash := stateDB.GetState(alchemistAddr, blockKey)
+	blockKey := makeStorageKey(liquidGlobalPrefix, []byte("block"))
+	blockHash := stateDB.GetState(liquidAddr, blockKey)
 	if blockHash == (common.Hash{}) {
 		return 1
 	}
@@ -614,20 +614,20 @@ func (a *Alchemist) getCurrentBlock(stateDB StateDB) uint64 {
 // Storage Management
 // =========================================================================
 
-func (a *Alchemist) getAccount(stateDB StateDB, key [32]byte) *AlchemistAccount {
+func (a *Liquid) getAccount(stateDB StateDB, key [32]byte) *LiquidAccount {
 	if acc, ok := a.accounts[key]; ok {
 		return acc
 	}
 
 	// Load from state
-	storageKey := makeStorageKey(alchemistAccountPrefix, key[:])
-	data := stateDB.GetState(alchemistAddr, storageKey)
+	storageKey := makeStorageKey(liquidAccountPrefix, key[:])
+	data := stateDB.GetState(liquidAddr, storageKey)
 	if data == (common.Hash{}) {
 		return nil
 	}
 
 	// Deserialize (simplified - in production would be full encoding)
-	acc := &AlchemistAccount{
+	acc := &LiquidAccount{
 		Collateral:   big.NewInt(0).SetBytes(data[:16]),
 		Debt:         big.NewInt(0).SetBytes(data[16:]),
 		AccruedYield: big.NewInt(0),
@@ -636,49 +636,49 @@ func (a *Alchemist) getAccount(stateDB StateDB, key [32]byte) *AlchemistAccount 
 	return acc
 }
 
-func (a *Alchemist) saveAccount(stateDB StateDB, key [32]byte, acc *AlchemistAccount) {
+func (a *Liquid) saveAccount(stateDB StateDB, key [32]byte, acc *LiquidAccount) {
 	a.accounts[key] = acc
 
 	// Save to state (simplified)
-	storageKey := makeStorageKey(alchemistAccountPrefix, key[:])
+	storageKey := makeStorageKey(liquidAccountPrefix, key[:])
 	var data common.Hash
 	collateralBytes := acc.Collateral.Bytes()
 	debtBytes := acc.Debt.Bytes()
 	copy(data[:16], collateralBytes)
 	copy(data[16:], debtBytes)
-	stateDB.SetState(alchemistAddr, storageKey, data)
+	stateDB.SetState(liquidAddr, storageKey, data)
 }
 
-func (a *Alchemist) saveYieldToken(stateDB StateDB, yt *YieldToken) {
+func (a *Liquid) saveYieldToken(stateDB StateDB, yt *YieldToken) {
 	a.yieldTokens[yt.Address] = yt
 	// In production, would serialize full struct to state
 }
 
-func (a *Alchemist) saveSyntheticToken(stateDB StateDB, st *SyntheticToken) {
-	a.synthetics[st.Address] = st
+func (a *Liquid) saveLiquidToken(stateDB StateDB, st *LiquidToken) {
+	a.liquidTokens[st.Address] = st
 	// In production, would serialize full struct to state
 }
 
 // Token transfer helpers (simplified)
-func (a *Alchemist) transfer(stateDB StateDB, token common.Address, from, to common.Address, amount *big.Int) {
+func (a *Liquid) transfer(stateDB StateDB, token common.Address, from, to common.Address, amount *big.Int) {
 	// In production, would call ERC20 transfer
 	amountU256, _ := uint256.FromBig(amount)
 	stateDB.SubBalance(from, amountU256)
 	stateDB.AddBalance(to, amountU256)
 }
 
-func (a *Alchemist) transferFrom(stateDB StateDB, token common.Address, from, to common.Address, amount *big.Int) {
+func (a *Liquid) transferFrom(stateDB StateDB, token common.Address, from, to common.Address, amount *big.Int) {
 	a.transfer(stateDB, token, from, to, amount)
 }
 
-func (a *Alchemist) mintSynthetic(stateDB StateDB, token common.Address, to common.Address, amount *big.Int) {
-	// In production, would call synthetic token mint
+func (a *Liquid) mintSynthetic(stateDB StateDB, token common.Address, to common.Address, amount *big.Int) {
+	// In production, would call liquid token mint
 	amountU256, _ := uint256.FromBig(amount)
 	stateDB.AddBalance(to, amountU256)
 }
 
-func (a *Alchemist) burnSynthetic(stateDB StateDB, token common.Address, from common.Address, amount *big.Int) {
-	// In production, would call synthetic token burn
+func (a *Liquid) burnSynthetic(stateDB StateDB, token common.Address, from common.Address, amount *big.Int) {
+	// In production, would call liquid token burn
 	amountU256, _ := uint256.FromBig(amount)
 	stateDB.SubBalance(from, amountU256)
 }
