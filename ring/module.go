@@ -5,7 +5,7 @@ package ring
 
 import (
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/precompiles/contract"
+	"github.com/luxfi/precompile/contract"
 )
 
 var (
