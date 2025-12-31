@@ -12,7 +12,7 @@ import (
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/geth/core/tracing"
 	ethtypes "github.com/luxfi/geth/core/types"
-	"github.com/luxfi/precompiles/precompileconfig"
+	"github.com/luxfi/precompile/precompileconfig"
 )
 
 // StatefulPrecompiledContract is the interface for executing a precompiled contract
