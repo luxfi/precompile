@@ -355,7 +355,7 @@ func TestGetPrivacyMultiplier(t *testing.T) {
 	}
 }
 
-func TestVerifyNVTrust(t *testing.T) {
+func TestVerifyTEE(t *testing.T) {
 	// Valid receipt structure (minimal)
 	deviceId := [32]byte{0x01, 0x02, 0x03}
 	timestamp := uint64(1700000000)
@@ -378,24 +378,24 @@ func TestVerifyNVTrust(t *testing.T) {
 
 	signature := []byte("valid signature placeholder")
 
-	valid, err := VerifyNVTrust(receipt, signature)
+	valid, err := VerifyTEE(receipt, signature)
 	if err != nil {
-		t.Fatalf("VerifyNVTrust error: %v", err)
+		t.Fatalf("VerifyTEE error: %v", err)
 	}
 	if !valid {
-		t.Error("Expected valid NVTrust attestation")
+		t.Error("Expected valid TEE attestation")
 	}
 
 	// Empty receipt should fail
-	_, err = VerifyNVTrust([]byte{}, signature)
-	if err != ErrInvalidNVTrustReceipt {
-		t.Errorf("Expected ErrInvalidNVTrustReceipt, got %v", err)
+	_, err = VerifyTEE([]byte{}, signature)
+	if err != ErrInvalidTEEReceipt {
+		t.Errorf("Expected ErrInvalidTEEReceipt, got %v", err)
 	}
 
 	// Short receipt should fail
-	_, err = VerifyNVTrust([]byte("short"), signature)
-	if err != ErrInvalidNVTrustReceipt {
-		t.Errorf("Expected ErrInvalidNVTrustReceipt, got %v", err)
+	_, err = VerifyTEE([]byte("short"), signature)
+	if err != ErrInvalidTEEReceipt {
+		t.Errorf("Expected ErrInvalidTEEReceipt, got %v", err)
 	}
 }
 
