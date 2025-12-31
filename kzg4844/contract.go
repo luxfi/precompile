@@ -15,7 +15,7 @@ import (
 
 	gokzg4844 "github.com/crate-crypto/go-kzg-4844"
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/precompiles/contract"
+	"github.com/luxfi/precompile/contract"
 )
 
 var (

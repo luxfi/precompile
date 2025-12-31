@@ -12,7 +12,7 @@ import (
 	"github.com/luxfi/crypto/mlkem"
 	"github.com/luxfi/crypto/slhdsa"
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/precompiles/contract"
+	"github.com/luxfi/precompile/contract"
 )
 
 const (

@@ -4,7 +4,7 @@
 package fhe
 
 import (
-	"github.com/luxfi/precompiles/precompileconfig"
+	"github.com/luxfi/precompile/precompileconfig"
 )
 
 var _ precompileconfig.Config = (*Config)(nil)
