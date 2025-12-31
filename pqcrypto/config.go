@@ -6,7 +6,7 @@ package pqcrypto
 import (
 	"fmt"
 
-	"github.com/luxfi/precompiles/precompileconfig"
+	"github.com/luxfi/precompile/precompileconfig"
 	"github.com/luxfi/geth/common"
 )
 

@@ -4,7 +4,7 @@
 package slhdsa
 
 import (
-	"github.com/luxfi/precompiles/contract"
+	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/geth/common"
 )
 

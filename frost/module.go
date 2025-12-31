@@ -4,9 +4,9 @@
 package frost
 
 import (
-	"github.com/luxfi/precompiles/contract"
-	"github.com/luxfi/precompiles/modules"
-	"github.com/luxfi/precompiles/precompileconfig"
+	"github.com/luxfi/precompile/contract"
+	"github.com/luxfi/precompile/modules"
+	"github.com/luxfi/precompile/precompileconfig"
 )
 
 var _ contract.Configurator = &configurator{}

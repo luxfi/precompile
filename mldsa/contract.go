@@ -9,7 +9,7 @@ import (
 
 	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/precompiles/contract"
+	"github.com/luxfi/precompile/contract"
 )
 
 var (
