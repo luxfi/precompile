@@ -1,4 +1,4 @@
-module github.com/luxfi/precompiles/dex
+module github.com/luxfi/precompile/dex
 
 go 1.25.5
 
