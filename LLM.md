@@ -152,25 +152,135 @@ Example hook implementations:
    - 2.3μs latency per swap
    - Zero-allocation hot paths
 
-## Existing Precompiles
+## Complete Precompile Registry (v0.3.0)
 
-### AI Mining (0x0300)
-- ML-DSA signature verification (quantum-safe)
-- NVTrust attestation for GPU compute
-- Reward calculation with privacy levels
+### Address Ranges
+| Range | Category | Description |
+|-------|----------|-------------|
+| 0x0001-0x00FF | Standard EVM | ECRECOVER, SHA256, BN254, BLS12-381 |
+| 0x0100-0x01FF | Warp/Teleport | Cross-chain messaging |
+| 0x0200-0x02FF | Chain Config | Subnet-EVM style (AllowLists, FeeManager) |
+| 0x0300-0x03FF | AI/ML | Mining, NVTrust, ModelRegistry |
+| 0x0400-0x04FF | DEX | Uniswap v4-style AMM, Lending, Perps |
+| 0x0500-0x05FF | Graph/Query | GraphQL, Subscriptions, Cache |
+| 0x0600-0x06FF | Post-Quantum | ML-DSA, ML-KEM, SLH-DSA, Quasar |
+| 0x0700-0x07FF | Privacy | FHE, ECIES, Ring, HPKE |
+| 0x0800-0x08FF | Threshold | FROST, CGGMP21, Ringtail |
+| 0x0900-0x09FF | ZK Proofs | KZG, Groth16, PLONK |
+| 0x0A00-0x0AFF | Curves | P-256 (secp256r1) |
 
-### Post-Quantum Crypto
-- MLDSA (Dilithium) signatures
-- Lattice-based cryptography
-- SPHINCS+ fallback
+### All Precompiles by Package
 
-### Standard Precompiles
-- DeployerAllowList: Contract deployment permissions
-- FeeManager: Dynamic fee configuration
-- NativeMinter: Native token minting
-- RewardManager: Validator rewards
-- TxAllowList: Transaction permissions
-- Warp: Cross-chain messaging
+#### ai/ - AI Mining (0x0300-0x03FF)
+| Address | Name | Description | Gas |
+|---------|------|-------------|-----|
+| 0x0300 | AI_MINING | ML-DSA signature verification, rewards | 100,000 |
+| 0x0301 | NV_TRUST | GPU TEE attestation (NVTrust) | 50,000 |
+| 0x0302 | MODEL_REGISTRY | AI model registration/verification | 25,000 |
+
+#### dex/ - DEX Operations (0x0400-0x04FF)
+| Address | Name | Description | Gas |
+|---------|------|-------------|-----|
+| 0x0400 | POOL_MANAGER | Singleton pool manager (Uniswap v4) | 50,000 |
+| 0x0401 | SWAP_ROUTER | Optimized swap routing | 10,000 |
+| 0x0402 | HOOKS_REGISTRY | Custom hook contracts | 3,000 |
+| 0x0403 | FLASH_LOAN | Flash loan facility | 5,000 |
+| 0x0410 | LENDING_POOL | Supply/borrow with collateral | 15,000 |
+| 0x0411 | INTEREST_RATE | Dynamic interest rate curves | 5,000 |
+| 0x0412 | LIQUIDATOR | Liquidation engine | 50,000 |
+| 0x0420 | PERP_ENGINE | Perpetuals (up to 1111x leverage) | 25,000 |
+| 0x0421 | FUNDING_RATE | Funding rate calculation | 10,000 |
+| 0x0422 | INSURANCE_FUND | Insurance and ADL | 20,000 |
+| 0x0430 | LIQUID_VAULT | Self-repaying loans (90% LTV) | 20,000 |
+| 0x0431 | LIQUID_FX | L* token to underlying conversion | 25,000 |
+| 0x0432 | LIQUID_TOKEN | Liquid token registry (LUSD, LETH) | 5,000 |
+| 0x0433 | YIELD_ROUTER | Yield strategy routing | 30,000 |
+| 0x0440 | TELEPORT_BRIDGE | Cross-chain transfer engine | 50,000 |
+| 0x0441 | OMNICHAIN_ROUTER | Multi-chain liquidity routing | 40,000 |
+
+#### graph/ - Query Layer (0x0500-0x05FF)
+| Address | Name | Description | Gas |
+|---------|------|-------------|-----|
+| 0x0500 | GRAPHQL_QUERY | Unified GraphQL interface | 5,000 |
+| 0x0501 | GRAPH_SUBSCRIBE | Event subscriptions | 10,000 |
+| 0x0502 | GRAPH_CACHE | Query result caching | 2,000 |
+| 0x0503 | GRAPH_INDEX | Index management | 15,000 |
+
+#### Post-Quantum Crypto (0x0600-0x06FF)
+| Address | Name | Package | Description | Gas |
+|---------|------|---------|-------------|-----|
+| 0x0600 | ML_DSA | mldsa/ | NIST ML-DSA signatures (Dilithium) | 50,000 |
+| 0x0601 | ML_KEM | mlkem/ | NIST ML-KEM key encapsulation | 25,000 |
+| 0x0602 | SLH_DSA | slhdsa/ | Stateless hash-based signatures | 75,000 |
+| 0x0603 | PQ_CRYPTO | pqcrypto/ | Multi-PQ operations | 30,000 |
+| 0x0604 | QUASAR | quasar/ | Quantum consensus verification | 100,000 |
+
+#### Privacy/Encryption (0x0700-0x07FF)
+| Address | Name | Package | Description | Gas |
+|---------|------|---------|-------------|-----|
+| 0x0700 | FHE | fhe/ | Fully Homomorphic Encryption | 500,000 |
+| 0x0701 | ECIES | ecies/ | Elliptic Curve Integrated Encryption | 25,000 |
+| 0x0702 | RING | ring/ | Ring signatures (anonymity) | 50,000 |
+| 0x0703 | HPKE | hpke/ | Hybrid Public Key Encryption | 20,000 |
+
+#### Threshold Signatures (0x0800-0x08FF)
+| Address | Name | Package | Description | Gas |
+|---------|------|---------|-------------|-----|
+| 0x0800 | FROST | frost/ | Schnorr threshold signatures | 25,000 |
+| 0x0801 | CGGMP21 | cggmp21/ | ECDSA threshold signatures | 50,000 |
+| 0x0802 | RINGTAIL | ringtail/ | Threshold lattice signatures (PQ) | 75,000 |
+
+#### ZK Proofs (0x0900-0x09FF)
+| Address | Name | Package | Description | Gas |
+|---------|------|---------|-------------|-----|
+| 0x0900 | KZG_4844 | kzg4844/ | KZG commitments (EIP-4844) | 50,000 |
+| 0x0901 | GROTH16 | (planned) | Groth16 ZK verifier | 200,000 |
+| 0x0902 | PLONK | (planned) | PLONK ZK verifier | 250,000 |
+
+#### Curves (0x0A00-0x0AFF)
+| Address | Name | Package | Description | Gas |
+|---------|------|---------|-------------|-----|
+| 0x0A00 | P256_VERIFY | secp256r1/ | secp256r1/P-256 verification | 3,450 |
+
+### Chain-Specific Precompile Activation
+
+| Chain | Precompiles Enabled |
+|-------|---------------------|
+| **C-Chain** | ALL (full feature set) |
+| **Z-Chain (Zoo)** | Warp, PoolManager, SwapRouter, AIMining, GraphQL |
+| **D-Chain (DEX)** | Warp, Full DEX suite, GraphQL |
+| **K-Chain (Keys)** | Warp, PQ Crypto, Privacy, Threshold, GraphQL |
+| **Q-Chain (Quantum)** | Warp, Full PQ suite, Ringtail, GraphQL |
+| **B-Chain (Bridge)** | Warp, TeleportBridge, GraphQL |
+
+### Missing from Z-Chain (Zoo) for Full Integration
+
+Current Z-Chain precompiles are limited. To enable full native chain functionality:
+
+| Feature | Missing Precompiles | Priority |
+|---------|---------------------|----------|
+| **Bridge** | TeleportBridge (0x0440), OmnichainRouter (0x0441) | HIGH |
+| **Threshold** | FROST (0x0800), CGGMP21 (0x0801), Ringtail (0x0802) | HIGH |
+| **FHE** | FHE (0x0700), ECIES (0x0701) | MEDIUM |
+| **Full DEX** | HooksRegistry, FlashLoan, LendingPool, PerpEngine | MEDIUM |
+| **PQ Crypto** | ML-DSA (0x0600), ML-KEM (0x0601) | LOW |
+
+### Standard Precompiles (Subnet-EVM)
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x0200...01 | DeployerAllowList | Contract deployment permissions |
+| 0x0200...02 | TxAllowList | Transaction permissions |
+| 0x0200...03 | FeeManager | Dynamic fee configuration |
+| 0x0200...04 | NativeMinter | Native token minting |
+| 0x0200...05 | RewardManager | Validator rewards |
+
+### FHE Sub-Addresses
+| Address | Name | Description |
+|---------|------|-------------|
+| 0x0200...80 | FHE_CONTRACT | Main FHE operations |
+| 0x0200...81 | FHE_ACL | Access control for ciphertexts |
+| 0x0200...82 | FHE_INPUT_VERIFIER | Input verification |
+| 0x0200...83 | FHE_GATEWAY | Gateway for external interactions |
 
 ## Testing
 
@@ -254,9 +364,9 @@ The standalone LX DEX (CLOB) is ideal for:
 
 ---
 
-*Last Updated: 2025-12-25*
-*Version: 1.2.0*
-*Test Status: 68/68 passing*
+*Last Updated: 2025-12-31*
+*Version: 0.3.0*
+*Test Status: 14 packages passing*
 
 ---
 
@@ -862,4 +972,190 @@ On M1 Max:
 
 ---
 
-*Last Updated: 2025-12-25*
+## Multi-VM Precompile Integration (v0.4.0)
+
+### Overview
+
+The Lux precompile system now provides comprehensive integration with all specialized VMs in the node:
+
+| VM | Chain | Precompile Package | Address Range | Purpose |
+|----|-------|-------------------|---------------|---------|
+| BridgeVM | B-Chain | `bridge/` | 0x0440-0x0445 | MPC-based cross-chain bridging |
+| ThresholdVM | T-Chain | `threshold/` | 0x0800-0x0813 | Threshold signatures (LSS, FROST, CGGMP21, Ringtail) |
+| ZKVM | Z-Chain | `zk/` | 0x0900-0x0932 | Zero-knowledge proofs, privacy, rollups |
+| QuantumVM | Q-Chain | `quantum/` | 0x0600-0x0632 | Post-quantum crypto, quantum stamps |
+
+### Bridge Precompiles (bridge/)
+
+EVM interface to B-Chain MPC bridge operations:
+
+| Address | Name | Description | Gas |
+|---------|------|-------------|-----|
+| 0x0440 | BRIDGE_GATEWAY | Main bridge gateway for cross-chain transfers | 100,000 |
+| 0x0441 | BRIDGE_ROUTER | Cross-chain routing | 50,000 |
+| 0x0442 | BRIDGE_VERIFIER | Message verification | 25,000 |
+| 0x0443 | BRIDGE_LIQUIDITY | Bridge liquidity pools | 75,000 |
+| 0x0444 | BRIDGE_FEE | Fee management | 10,000 |
+| 0x0445 | BRIDGE_SIGNER | MPC signer interface | 150,000 |
+
+**Supported Chains:**
+- Lux ecosystem: C-Chain (96369), Hanzo (36963), Zoo (200200), SPC (36911)
+- External: Ethereum (1), Arbitrum (42161), Optimism (10), Base (8453), Polygon (137), BSC (56), Avalanche (43114)
+
+**Key Features:**
+- LP-333 opt-in signer model (100 max signers, 100M LUX bond)
+- 2/3 BFT threshold for signatures
+- Daily limits and per-transaction limits
+- Liquidity provider incentives
+
+### Threshold Precompiles (threshold/)
+
+EVM interface to T-Chain MPC-as-a-service:
+
+| Address | Name | Description | Gas |
+|---------|------|-------------|-----|
+| 0x0800 | THRESHOLD_KEYGEN | Distributed key generation | 500,000 |
+| 0x0801 | THRESHOLD_SIGN | Threshold signing | 100,000 |
+| 0x0802 | THRESHOLD_REFRESH | Key share refresh | 250,000 |
+| 0x0803 | THRESHOLD_RESHARE | Key resharing | 500,000 |
+| 0x0804 | THRESHOLD_VERIFY | Signature verification | 25,000 |
+| 0x0810 | FROST | FROST threshold Schnorr | 25,000 |
+| 0x0811 | CGGMP21 | CGGMP21 threshold ECDSA | 50,000 |
+| 0x0812 | RINGTAIL | Post-quantum threshold | 75,000 |
+| 0x0813 | LSS | Lux Secret Sharing | 25,000 |
+
+**Supported Key Types:**
+- secp256k1 (ECDSA)
+- Ed25519 (EdDSA)
+- BLS12-381
+- Ringtail (post-quantum)
+- ML-DSA
+
+### ZK Precompiles (zk/)
+
+EVM interface to ZKVM for privacy and rollups:
+
+| Address | Name | Description | Gas |
+|---------|------|-------------|-----|
+| 0x0900 | ZK_VERIFY | Generic ZK proof verification | 200,000 |
+| 0x0901 | GROTH16 | Groth16 verifier | 200,000 |
+| 0x0902 | PLONK | PLONK verifier | 250,000 |
+| 0x0903 | FFLONK | fflonk verifier | 250,000 |
+| 0x0904 | HALO2 | Halo2 verifier | 300,000 |
+| 0x0910 | KZG | KZG commitments | 50,000 |
+| 0x0911 | PEDERSEN | Pedersen commitments | 10,000 |
+| 0x0912 | IPA | Inner product arguments | 75,000 |
+| 0x0920 | PRIVACY_POOL | Confidential transaction pool | 50,000 |
+| 0x0921 | NULLIFIER | Nullifier verification | 5,000 |
+| 0x0922 | COMMITMENT | Commitment verification | 10,000 |
+| 0x0923 | RANGE_PROOF | Range proof verification | 100,000 |
+| 0x0930 | ROLLUP_VERIFY | ZK rollup batch verification | 500,000 |
+| 0x0931 | STATE_ROOT | State root verification | 25,000 |
+| 0x0932 | BATCH_PROOF | Batch proof aggregation | 100,000 |
+
+**Features:**
+- Groth16 and PLONK proof verification
+- Confidential UTXO model with nullifiers
+- ZK rollup batch verification
+- KZG polynomial commitments (EIP-4844)
+- Range proofs for hidden amounts
+
+### Quantum Precompiles (quantum/)
+
+EVM interface to QuantumVM for post-quantum security:
+
+| Address | Name | Description | Gas |
+|---------|------|-------------|-----|
+| 0x0600 | QUANTUM_VERIFY | Generic quantum signature verification | 75,000 |
+| 0x0601 | RINGTAIL | Ringtail threshold signatures | 75,000 |
+| 0x0602 | ML_DSA | NIST ML-DSA (Dilithium) | 50,000 |
+| 0x0603 | ML_KEM | NIST ML-KEM (Kyber) | 25,000 |
+| 0x0604 | SLH_DSA | NIST SLH-DSA (SPHINCS+) | 100,000 |
+| 0x0610 | HYBRID_BLS_RINGTAIL | BLS + Ringtail hybrid | 100,000 |
+| 0x0611 | HYBRID_ECDSA_MLDSA | ECDSA + ML-DSA hybrid | 100,000 |
+| 0x0612 | HYBRID_SCHNORR_RINGTAIL | Schnorr + Ringtail hybrid | 100,000 |
+| 0x0620 | QUANTUM_STAMP | Quantum timestamp verification | 50,000 |
+| 0x0621 | QUANTUM_ANCHOR | Quantum anchor verification | 50,000 |
+| 0x0630 | BLS_VERIFY | BLS12-381 signature verification | 25,000 |
+| 0x0631 | BLS_AGGREGATE | BLS signature aggregation | 10,000 |
+| 0x0632 | BLS_MULTI_VERIFY | BLS multi-signature verification | 50,000 |
+
+**NIST PQ Standards:**
+- ML-DSA-44/65/87 (FIPS 204)
+- ML-KEM-512/768/1024 (FIPS 203)
+- SLH-DSA (FIPS 205)
+
+**Hybrid Signatures:**
+- Both classical and quantum signatures required for maximum security
+- Graceful degradation if one fails
+- Future-proof against quantum attacks
+
+### Directory Structure (Updated)
+
+```
+/Users/z/work/lux/precompile/
+├── ai/           # AI Mining (0x0300)
+├── bridge/       # B-Chain bridge (0x0440-0x0445) [NEW]
+│   ├── types.go
+│   ├── gateway.go
+│   └── signer.go
+├── cggmp21/      # CGGMP21 threshold ECDSA
+├── dex/          # DEX precompiles (0x0400-0x043F)
+│   ├── pool_manager.go
+│   ├── perpetuals.go
+│   ├── margin.go
+│   ├── vaults.go
+│   └── lending.go
+├── ecies/        # ECIES encryption
+├── fhe/          # Fully Homomorphic Encryption
+├── frost/        # FROST threshold Schnorr
+├── graph/        # GraphQL query layer
+├── hpke/         # Hybrid Public Key Encryption
+├── kzg4844/      # KZG commitments
+├── mldsa/        # ML-DSA signatures
+├── mlkem/        # ML-KEM key encapsulation
+├── pqcrypto/     # Multi-PQ operations
+├── quantum/      # Quantum precompiles (0x0600-0x0632) [NEW]
+│   ├── types.go
+│   └── verifier.go
+├── quasar/       # Quantum consensus
+├── ring/         # Ring signatures
+├── ringtail/     # Ringtail threshold
+├── secp256r1/    # P-256 curve
+├── slhdsa/       # SLH-DSA signatures
+├── threshold/    # Threshold precompiles (0x0800-0x0813) [NEW]
+│   ├── types.go
+│   └── manager.go
+└── zk/           # ZK precompiles (0x0900-0x0932) [NEW]
+    ├── types.go
+    └── verifier.go
+```
+
+### Cross-VM Communication Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     C-Chain (EVM)                               │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                    Precompiles                          │    │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────────┐   │    │
+│  │  │ bridge/ │ │threshold│ │   zk/   │ │  quantum/   │   │    │
+│  │  │ 0x0440  │ │ 0x0800  │ │ 0x0900  │ │   0x0600    │   │    │
+│  │  └────┬────┘ └────┬────┘ └────┬────┘ └──────┬──────┘   │    │
+│  └───────┼───────────┼───────────┼─────────────┼──────────┘    │
+│          │           │           │             │                │
+└──────────┼───────────┼───────────┼─────────────┼────────────────┘
+           │           │           │             │
+           ▼           ▼           ▼             ▼
+    ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+    │ BridgeVM │ │ThresholdVM│ │  ZKVM   │ │QuantumVM │
+    │ B-Chain  │ │ T-Chain  │ │ Z-Chain │ │ Q-Chain  │
+    │  MPC     │ │  DKG     │ │ Privacy │ │   PQ     │
+    └──────────┘ └──────────┘ └──────────┘ └──────────┘
+```
+
+---
+
+*Last Updated: 2025-12-31*
+*Version: 0.4.0*
+*Test Status: All packages building*
