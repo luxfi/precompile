@@ -1,4 +1,4 @@
-module github.com/luxfi/precompiles/ai
+module github.com/luxfi/precompile/ai
 
 go 1.24.0
 
