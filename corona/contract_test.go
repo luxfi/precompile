@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/lattice/v6/ring"
+	"github.com/luxfi/lattice/v7/ring"
 	"github.com/luxfi/corona/sign"
 	"github.com/luxfi/corona/threshold"
 	"github.com/stretchr/testify/require"
