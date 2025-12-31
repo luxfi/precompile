@@ -14,6 +14,7 @@ require (
 	github.com/luxfi/ringtail v0.2.0
 	github.com/luxfi/warp v1.18.2
 	github.com/stretchr/testify v1.11.1
+	github.com/zeebo/blake3 v0.2.4
 )
 
 require (
@@ -85,7 +86,6 @@ require (
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	github.com/zeebo/blake3 v0.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.39.0 // indirect
 	go.opentelemetry.io/otel/metric v1.39.0 // indirect

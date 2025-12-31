@@ -12,14 +12,13 @@ import (
 
 // Precompile addresses for G-Chain components
 // Reserved range: 0x0500 - 0x050F
+// NOTE: Core addresses are also defined in registry.go for RegistryMap
 const (
-	// G-Chain GraphQL precompile
+	// G-Chain GraphQL precompile (alias for GraphQLQueryAddress in registry.go)
 	GraphQLAddress = "0x0500" // Main GraphQL query interface
 
 	// Future extensions
-	GraphSubscribeAddress = "0x0501" // GraphQL subscriptions (future)
-	GraphCacheAddress     = "0x0502" // Query result caching (future)
-	GraphIndexAddress     = "0x0503" // Index management (future)
+	GraphIndexAddress = "0x0503" // Index management (future)
 )
 
 // Gas costs for GraphQL operations
