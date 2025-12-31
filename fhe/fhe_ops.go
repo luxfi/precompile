@@ -245,8 +245,9 @@ func tfheLt(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	// Result is a single encrypted bit - serialize it
-	return serializeCiphertext(result)
+	// Wrap single bit as FheBool BitCiphertext for consistent serialization
+	boolCt := fhe.WrapBoolCiphertext(result)
+	return serializeBitCiphertext(boolCt)
 }
 
 func tfheLe(lhs, rhs []byte, fheType uint8) []byte {
@@ -265,7 +266,8 @@ func tfheLe(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	return serializeCiphertext(result)
+	boolCt := fhe.WrapBoolCiphertext(result)
+	return serializeBitCiphertext(boolCt)
 }
 
 func tfheGt(lhs, rhs []byte, fheType uint8) []byte {
@@ -284,7 +286,8 @@ func tfheGt(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	return serializeCiphertext(result)
+	boolCt := fhe.WrapBoolCiphertext(result)
+	return serializeBitCiphertext(boolCt)
 }
 
 func tfheGe(lhs, rhs []byte, fheType uint8) []byte {
@@ -303,7 +306,8 @@ func tfheGe(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	return serializeCiphertext(result)
+	boolCt := fhe.WrapBoolCiphertext(result)
+	return serializeBitCiphertext(boolCt)
 }
 
 func tfheEq(lhs, rhs []byte, fheType uint8) []byte {
@@ -322,7 +326,8 @@ func tfheEq(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	return serializeCiphertext(result)
+	boolCt := fhe.WrapBoolCiphertext(result)
+	return serializeBitCiphertext(boolCt)
 }
 
 func tfheNe(lhs, rhs []byte, fheType uint8) []byte {
