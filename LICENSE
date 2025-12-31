@@ -1,162 +1,122 @@
-Lux Research License with Patent Reservation
-Version 1.0, December 2025
+Lux Ecosystem License
+Version 1.2, December 2025
 
 Copyright (c) 2020-2025 Lux Industries Inc.
 All rights reserved.
 
-PATENT PENDING TECHNOLOGY
-Contact: oss@lux.network
+TECHNOLOGY PORTFOLIO - PATENT APPLICATIONS PLANNED
+Contact: licensing@lux.network
 
 ================================================================================
-                          IMPORTANT NOTICE
-================================================================================
-
-This software contains patent-pending technology. Key innovations include but
-are not limited to:
-
-PRECOMPILE INNOVATIONS:
-- Native EVM Precompiles with Optimized Gas Metering
-- DEX Precompiles (Uniswap v4-Style Singleton Architecture)
-- Sub-Microsecond Swap Execution via Hardware-Optimized Precompiles
-- Flash Accounting with Native EVM Integration
-- Hooks Registry Pattern for Extensible Precompile Behavior
-- BN254/BLS12-381 ZK Precompiles with EIP-1108/2537 Compliance
-- ML-DSA Post-Quantum Signature Verification Precompiles
-- NVTrust GPU Attestation Precompiles for AI Mining
-- Verkle Witness Verification Precompiles
-
-Commercial use of any patented technology requires a separate license.
-Contact oss@lux.network for commercial licensing inquiries.
-
-================================================================================
-                          LICENSE TERMS
+                          TERMS AND CONDITIONS
 ================================================================================
 
 1. DEFINITIONS
 
-   "Software" means the source code, object code, documentation, and any
-   related materials included in this repository.
+   "Lux Primary Network" means the official Lux blockchain with Network ID=1
+   and EVM Chain ID=96369.
+   
+   "Authorized Network" means the Lux Primary Network, official testnets/devnets,
+   and any L1/L2/L3 chain descending from the Lux Primary Network.
+   
+   "Descending Chain" means an L1/L2/L3 chain built on, anchored to, or deriving
+   security from the Lux Primary Network or its authorized testnets.
+   
+   "Research Use" means non-commercial academic research, education, personal
+   study, or evaluation purposes.
+   
+   "Commercial Use" means any use in connection with a product or service
+   offered for sale or fee, internal use by a for-profit entity, or any use
+   to generate revenue.
 
-   "Research Use" means use of the Software solely for non-commercial
-   academic research, education, personal study, or evaluation purposes.
+2. GRANT OF LICENSE
 
-   "Commercial Use" means any use of the Software or any patent claims
-   covered by the Software in connection with a product or service offered
-   for sale or fee, or any internal use by a for-profit entity, or any use
-   to generate revenue directly or indirectly.
-
-   "Patent Claims" means any patent claims owned or controlled by Lux
-   Industries Inc. that cover any aspect of the Software's implementation
-   or any method, system, or process described therein.
-
-   "Lux Network" means the decentralized blockchain network operated using
-   software distributed by Lux Industries Inc.
-
-2. GRANT OF RESEARCH LICENSE
-
-   Subject to the terms and conditions of this License, Lux Industries Inc.
-   hereby grants you a limited, non-exclusive, non-transferable, revocable,
+   Subject to these terms, Lux Industries Inc grants you a non-exclusive,
    royalty-free license to:
-
-   (a) Use, copy, and modify the Software solely for Research Use;
-
-   (b) Create derivative works of the Software solely for Research Use;
-
-   (c) Publish academic papers and research findings based on the Software,
-       provided that proper attribution is given; and
-
-   (d) Contribute modifications back to the original repository.
+   
+   (a) Use for Research Use without restriction;
+   
+   (b) Operate on the Lux Primary Network (Network ID=1, EVM Chain ID=96369);
+   
+   (c) Operate on official Lux testnets and devnets;
+   
+   (d) Operate L1/L2/L3 chains descending from the Lux Primary Network;
+   
+   (e) Build applications within the Lux ecosystem;
+   
+   (f) Contribute improvements back to the original repositories.
 
 3. RESTRICTIONS
 
-   You may NOT:
+   Without a commercial license from Lux Industries Inc, you may NOT:
+   
+   (a) Fork the Lux Network or any Lux software;
+   
+   (b) Create competing networks not descending from Lux Primary Network;
+   
+   (c) Use for Commercial Use outside the Lux ecosystem;
+   
+   (d) Sublicense or transfer rights outside the Lux ecosystem;
+   
+   (e) Use to create competing blockchain networks, exchanges, custody
+       services, or cryptographic systems outside the Lux ecosystem.
 
-   (a) Use the Software or any Patent Claims for any Commercial Use without
-       first obtaining a commercial license from Lux Industries Inc.;
+4. NO FORKS POLICY
 
-   (b) Use the Software to create or operate any blockchain network, consensus
-       system, or distributed ledger that competes with or is similar to the
-       Lux Network;
+   Lux Industries Inc maintains ZERO TOLERANCE for unauthorized forks.
+   Any fork or deployment on an unauthorized network constitutes:
+   
+   (a) Breach of this license;
+   (b) Grounds for immediate legal action.
 
-   (c) Sublicense, sell, lease, or otherwise transfer rights in the
-       Software to any third party;
+5. RIGHTS RESERVATION
 
-   (d) Remove or alter any copyright, patent, trademark, or attribution
-       notices contained in the Software;
+   All rights not explicitly granted are reserved by Lux Industries Inc.
+   
+   We plan to apply for patent protection for the technology in this
+   repository. Any implementation outside the Lux ecosystem may require
+   a separate commercial license.
 
-   (e) Use the Software in any manner that infringes the Patent Claims
-       without authorization; or
+6. DISCLAIMER OF WARRANTY
 
-   (f) File any patent applications covering technology substantially
-       derived from the Software.
+   THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
-4. PATENT RIGHTS RESERVATION
+7. LIMITATION OF LIABILITY
 
-   ALL PATENT RIGHTS ARE EXPRESSLY RESERVED by Lux Industries Inc.
+   IN NO EVENT SHALL LUX INDUSTRIES INC BE LIABLE FOR ANY CLAIM, DAMAGES
+   OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+   ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE.
 
-   This License does NOT grant any license or rights under any Patent Claims.
-   The grant of a copyright license herein does NOT include any express or
-   implied patent license.
+8. TERMINATION
 
-   Any use of the Software that would infringe Patent Claims requires a
-   separate patent license, which must be obtained in writing from:
+   This license terminates immediately upon any breach, including but not
+   limited to deployment on unauthorized networks or creation of forks.
 
-       Lux Industries Inc.
-       Email: oss@lux.network
-       Subject: Patent License Request
+9. GOVERNING LAW
 
-5. LUX NETWORK PRIMARY NETWORK EXCEPTION
+   This License shall be governed by the laws of the State of Delaware.
 
-   Notwithstanding the above restrictions, this License grants an automatic
-   license to use the Software and Patent Claims solely for the purpose of
-   operating a node on the Lux Network primary network (mainnet and testnet),
-   subject to the network's terms of service and validator requirements.
+10. COMMERCIAL LICENSING
 
-6. CONTRIBUTIONS
-
-   By submitting contributions to this repository, you agree to license
-   your contributions under the same terms as this License and assign all
-   patent rights in your contributions to Lux Industries Inc.
-
-7. DISCLAIMER OF WARRANTY
-
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
-
-8. LIMITATION OF LIABILITY
-
-   IN NO EVENT SHALL LUX INDUSTRIES INC. BE LIABLE FOR ANY SPECIAL, DIRECT,
-   INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES OF ANY KIND ARISING OUT
-   OF THE USE OF OR INABILITY TO USE THE SOFTWARE.
-
-9. TERMINATION
-
-   This License and all rights granted hereunder will terminate immediately
-   upon any breach of this License by you.
-
-10. GOVERNING LAW
-
-    This License shall be governed by the laws of the State of Delaware,
-    United States.
-
-11. COMMERCIAL LICENSING
-
-    For commercial licensing inquiries, please contact:
-
-        Lux Industries Inc.
-        Email: oss@lux.network
+    For commercial use outside the Lux ecosystem:
+    
+    Lux Industries Inc.
+    Email: licensing@lux.network
+    Subject: Commercial License Request
 
 ================================================================================
-                          ATTRIBUTION
+                              TL;DR
 ================================================================================
 
-When using this Software for research purposes, please cite:
-
-    Lux Precompiles: Native EVM Extensions for High-Performance Blockchain
-    Copyright (c) 2020-2025 Lux Industries Inc.
-    https://lux.network
+- Research/academic use = OK
+- Lux Primary Network (Network ID=1, Chain ID=96369) = OK
+- L1/L2/L3 chains descending from Lux Primary Network = OK
+- Commercial products outside Lux ecosystem = Contact licensing@lux.network
+- Forks = Absolutely not
 
 ================================================================================
 
-END OF LICENSE TERMS
+See LP-0012 for full licensing documentation:
+https://github.com/luxfi/lps/blob/main/LPs/lp-0012-ecosystem-licensing.md
