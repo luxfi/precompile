@@ -1,6 +1,6 @@
 module github.com/luxfi/precompile/ai
 
-go 1.24.0
+go 1.25.5
 
 require (
 	github.com/cloudflare/circl v1.6.2-0.20251204010831-23491bd573cf
