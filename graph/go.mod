@@ -1,4 +1,4 @@
-module github.com/luxfi/precompiles/graph
+module github.com/luxfi/precompile/graph
 
 go 1.22
 
