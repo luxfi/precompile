@@ -347,6 +347,8 @@ type FlashParams struct {
 var (
 	ErrPoolNotInitialized       = errors.New("pool not initialized")
 	ErrPoolAlreadyInitialized   = errors.New("pool already initialized")
+	ErrPoolExists               = errors.New("pool already exists")
+	ErrPoolNotFound             = errors.New("pool not found")
 	ErrInvalidTickRange         = errors.New("invalid tick range")
 	ErrInsufficientLiquidity    = errors.New("insufficient liquidity")
 	ErrPriceLimitReached        = errors.New("price limit reached")
