@@ -1,4 +1,4 @@
-module github.com/luxfi/precompiles
+module github.com/luxfi/precompile
 
 go 1.25.5
 
@@ -60,7 +60,6 @@ require (
 	github.com/luxfi/cache v1.1.0 // indirect
 	github.com/luxfi/database v1.2.17 // indirect
 	github.com/luxfi/ids v1.2.5 // indirect
-	github.com/luxfi/lattice/v6 v6.1.2 // indirect
 	github.com/luxfi/log v1.2.0 // indirect
 	github.com/luxfi/math v1.2.0 // indirect
 	github.com/luxfi/metric v1.4.8 // indirect
@@ -105,4 +104,9 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+exclude (
+	github.com/luxfi/lattice/v6 v6.1.2
+	github.com/luxfi/lattice/v6 v6.1.3
 )

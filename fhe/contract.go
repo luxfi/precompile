@@ -8,7 +8,7 @@ import (
 	"math/big"
 
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/precompiles/contract"
+	"github.com/luxfi/precompile/contract"
 )
 
 // Ciphertext type constants - must match github.com/luxfi/fhe FheUintType

@@ -13,7 +13,7 @@ import (
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v7/ring"
 	"github.com/luxfi/lattice/v7/utils/structs"
-	"github.com/luxfi/precompiles/contract"
+	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/ringtail/sign"
 	"github.com/luxfi/ringtail/threshold"
 )
