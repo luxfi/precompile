@@ -3,11 +3,6 @@
 @import 'fumadocs-ui/css/preset.css';
 @plugin 'tailwindcss-animate';
 
-/* Ensure app directory is scanned for Tailwind classes */
-@source "./**/*.tsx";
-@source "./**/*.ts";
-@source "../content/**/*.mdx";
-
 @theme {
   --color-fd-primary: hsl(0, 0%, 100%);
   --color-fd-primary-foreground: hsl(0, 0%, 9%);
