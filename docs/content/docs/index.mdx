@@ -1,0 +1,108 @@
+---
+title: Lux Precompiles
+description: High-performance native EVM precompiles for the Lux blockchain
+---
+
+# Lux Precompiles
+
+Native EVM precompiles providing high-performance cryptography, DEX operations, and blockchain primitives for the Lux Network.
+
+## Overview
+
+Precompiles are native code executed by the EVM at reserved addresses, offering 10-100x performance improvements over equivalent Solidity implementations.
+
+| Category | Precompiles | Description |
+|----------|-------------|-------------|
+| [Cryptography](/docs/crypto) | ML-DSA, ML-KEM, SLH-DSA, FROST, Ringtail, CGGMP21 | Post-quantum and threshold signatures |
+| [DEX](/docs/dex) | PoolManager, Hooks, Lending, Perpetuals | Uniswap v4-style DEX operations |
+| [FHE](/docs/fhe) | Encrypted operations | Fully Homomorphic Encryption |
+| [Oracle](/docs/oracle) | Price feeds, GraphQL | Native oracle and query interface |
+| [AI](/docs/ai) | GPU attestation, mining | AI compute verification |
+
+## Installation
+
+```bash
+# In your Solidity project
+forge install luxfi/precompile
+```
+
+```toml
+# foundry.toml remapping
+@luxfi/precompile/=lib/precompile/
+```
+
+## Usage
+
+```solidity
+import {IMLDSA} from "@luxfi/precompile/mldsa/IMLDSA.sol";
+import {IDEX} from "@luxfi/precompile/solidity/dex/IDEX.sol";
+import {IFHE} from "@luxfi/precompile/fhe/IFHE.sol";
+
+contract MyContract {
+    // Use precompiles for high-performance operations
+    function verifySignature(bytes calldata sig, bytes32 msg) external view {
+        IMLDSA(0x0200000000000000000000000000000000000006).verify(sig, msg);
+    }
+}
+```
+
+## Address Map
+
+### Cryptography (0x0200...0005 - 0x0200...000D)
+
+| Address | Precompile | Gas | Description |
+|---------|------------|-----|-------------|
+| `0x...0005` | PQCrypto | Variable | Multi-algorithm PQ operations |
+| `0x...0006` | ML-DSA | 100,000 | FIPS 204 post-quantum signatures |
+| `0x...0007` | SLH-DSA | 150,000 | Stateless hash-based signatures |
+| `0x...0008` | Warp | 120,000 | Cross-chain BLS messaging |
+| `0x...0009` | ML-KEM | 50,000 | FIPS 203 key encapsulation |
+| `0x...000A` | Quasar | Variable | Quantum consensus operations |
+| `0x...000B` | Ringtail | 150,000 | Post-quantum threshold signatures |
+| `0x...000C` | FROST | 50,000 | Schnorr threshold signatures |
+| `0x...000D` | CGGMP21 | 75,000 | ECDSA threshold signatures |
+
+### DEX (0x0400 - 0x0403)
+
+| Address | Precompile | Gas | Description |
+|---------|------------|-----|-------------|
+| `0x0400` | PoolManager | 2.26μs | Singleton pool management |
+| `0x0401` | SwapRouter | Variable | Optimized swap routing |
+| `0x0402` | HooksRegistry | Variable | Hook contract registry |
+| `0x0403` | FlashLoan | Variable | Flash loan facility |
+
+### FHE (0x0200...0080 - 0x0200...0083)
+
+| Address | Precompile | Description |
+|---------|------------|-------------|
+| `0x...0080` | FHE Ops | Encrypted arithmetic |
+| `0x...0081` | FHE Config | Configuration |
+| `0x...0082` | FHE Gateway | Decryption gateway |
+| `0x...0083` | Task Manager | Async task management |
+
+### Oracle (0x0500)
+
+| Address | Precompile | Description |
+|---------|------------|-------------|
+| `0x0500` | GraphQL | Native G-Chain queries |
+
+### AI (0x0300)
+
+| Address | Precompile | Description |
+|---------|------------|-------------|
+| `0x0300` | Attestation | GPU TEE verification |
+
+## Related Documentation
+
+- **[Lux Standard Contracts](https://standard.lux.network)** - Pure Solidity implementations
+- **[Lux Node](https://docs.lux.network)** - Full node documentation
+- **[LPs (Lux Proposals)](https://lps.lux.network)** - Protocol specifications
+
+## Performance Benchmarks (Apple M1 Max)
+
+| Operation | Precompile | Pure Solidity | Speedup |
+|-----------|------------|---------------|---------|
+| DEX Swap | 2.26μs | ~200μs | 88x |
+| ML-DSA Verify | 50μs | N/A | - |
+| FROST Verify | 45μs | N/A | - |
+| FHE Add | 10μs | N/A | - |

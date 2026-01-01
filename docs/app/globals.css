@@ -1,0 +1,14 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+@plugin 'tailwindcss-animate';
+
+@theme {
+  --color-fd-primary: hsl(0, 0%, 100%);
+  --color-fd-primary-foreground: hsl(0, 0%, 9%);
+}
+
+.dark {
+  --color-fd-primary: hsl(0, 0%, 98%);
+  --color-fd-primary-foreground: hsl(0, 0%, 9%);
+}

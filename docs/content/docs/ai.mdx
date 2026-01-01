@@ -1,0 +1,96 @@
+---
+title: AI Mining Precompiles
+description: GPU attestation and compute verification
+---
+
+# AI Mining Precompiles
+
+Native precompiles for AI compute attestation and mining operations.
+
+## Address Range
+
+AI precompiles occupy addresses `0x0300` through `0x0302`.
+
+## Precompiles
+
+| Address | Precompile | Gas | Description |
+|---------|------------|-----|-------------|
+| `0x0300` | AI_MINING | 100,000 | ML-DSA signature verification, rewards |
+| `0x0301` | NV_TRUST | 50,000 | GPU TEE attestation (NVTrust) |
+| `0x0302` | MODEL_REGISTRY | 25,000 | AI model registration/verification |
+
+## Hardware Trust Tiers
+
+| Level | Hardware | Multiplier | Description |
+|-------|----------|------------|-------------|
+| Sovereign (4) | Blackwell | 1.5x | Full TEE, highest trust |
+| Confidential (3) | H100/TDX/SEV | 1.0x | Hardware-backed confidential compute |
+| Private (2) | SGX/A100 | 0.5x | Trusted execution environment |
+| Public (1) | Consumer GPU | 0.25x | Stake-based soft attestation |
+
+## Usage
+
+```solidity
+import {IAIMining} from "@luxfi/precompile/ai/IAIMining.sol";
+import {INVTrust} from "@luxfi/precompile/ai/INVTrust.sol";
+
+contract ComputeProvider {
+    IAIMining constant MINING = IAIMining(0x0300);
+    INVTrust constant NVTRUST = INVTrust(0x0301);
+
+    function startSession(bytes calldata teeQuote) external returns (bytes32 sessionId) {
+        // Verify TEE quote from GPU
+        require(NVTRUST.verifyQuote(teeQuote), "Invalid TEE quote");
+
+        // Start mining session
+        sessionId = MINING.startSession(msg.sender, teeQuote);
+    }
+
+    function heartbeat(bytes32 sessionId) external returns (uint256 reward) {
+        // Submit proof of work and receive rewards
+        return MINING.heartbeat(sessionId);
+    }
+}
+```
+
+## NVTrust Verification
+
+The NVTrust precompile verifies NVIDIA Confidential Computing attestations:
+
+```solidity
+// Verify a TEE quote
+bool valid = NVTRUST.verifyQuote(teeQuote);
+
+// Get hardware info from quote
+(
+    uint8 trustLevel,
+    bytes32 gpuId,
+    uint256 computeUnits
+) = NVTRUST.parseQuote(teeQuote);
+```
+
+## Model Registry
+
+Register and verify AI models on-chain:
+
+```solidity
+import {IModelRegistry} from "@luxfi/precompile/ai/IModelRegistry.sol";
+
+IModelRegistry constant REGISTRY = IModelRegistry(0x0302);
+
+// Register a model
+bytes32 modelId = REGISTRY.register(
+    "llama-3-70b",
+    modelHash,
+    metadata
+);
+
+// Verify model execution
+bool valid = REGISTRY.verifyExecution(modelId, inputHash, outputHash, proof);
+```
+
+## Related
+
+- **[Lux Standard Contracts](https://standard.lux.network/docs/ai)** - AI token and mining contracts
+- **[A-Chain Documentation](https://docs.lux.network)** - Attestation chain details
+- **[LP-2000](https://lps.lux.network)** - AI Mining specification
