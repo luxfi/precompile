@@ -1,0 +1,15 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "index",
+    "---Cryptography---",
+    "crypto",
+    "---DEX---",
+    "dex",
+    "---Privacy---",
+    "fhe",
+    "---Infrastructure---",
+    "oracle",
+    "ai"
+  ]
+}
