@@ -150,12 +150,12 @@ contract PrivateBalance {
 
 ## Decryption Flow
 
-1. **Request**: Contract calls `Gateway.requestDecryption(handle, type)`
+1. **Request**: Contract calls `FHE.decrypt(value)` or `Gateway.decrypt(handle, type)`
 2. **Warp**: Request sent to T-Chain via Warp messaging
 3. **Threshold**: 67-of-100 validators contribute decryption shares
 4. **Combine**: Shares combined to recover plaintext
-5. **Fulfill**: Result returned via `fulfillDecryption` callback
-6. **Poll/Callback**: Contract retrieves result or receives callback
+5. **Fulfill**: Result returned via `fulfill(requestId, result)` callback
+6. **Poll/Callback**: Contract retrieves result via `reveal(requestId)` or receives callback
 
 ## Files
 
