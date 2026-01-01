@@ -181,32 +181,32 @@ interface IFHEDecrypt {
     /// @param handle The encrypted value handle
     /// @param ctType The ciphertext type
     /// @return requestId The decryption request ID
-    function requestDecryption(bytes32 handle, uint8 ctType) external returns (bytes32 requestId);
+    function decrypt(bytes32 handle, uint8 ctType) external returns (bytes32 requestId);
 
     /// @notice Request decryption with callback
     /// @param handle The encrypted value handle
     /// @param ctType The ciphertext type
     /// @param callback Contract to call when decryption completes
     /// @param callbackSelector Function selector to call
-    function requestDecryptionWithCallback(
+    function decryptAndCall(
         bytes32 handle,
         uint8 ctType,
         address callback,
         bytes4 callbackSelector
     ) external returns (bytes32 requestId);
 
-    /// @notice Get decryption result (poll-based)
+    /// @notice Get decryption result (poll-based) - use reveal() in FHE library
     /// @param requestId The decryption request ID
     /// @return result The decrypted value (if ready)
     /// @return ready Whether the result is available
-    function getDecryptResult(bytes32 requestId) external view returns (bytes memory result, bool ready);
+    function reveal(bytes32 requestId) external view returns (bytes memory result, bool ready);
 
     /// @notice Fulfill a decryption request (called by T-Chain relayer)
     /// @param requestId The request ID
     /// @param result The decrypted plaintext value
-    function fulfillDecryption(bytes32 requestId, bytes calldata result) external;
+    function fulfill(bytes32 requestId, bytes calldata result) external;
 
     // Events
-    event DecryptionRequested(bytes32 indexed requestId, bytes32 indexed handle, uint8 ctType, address requester);
-    event DecryptionFulfilled(bytes32 indexed requestId, bytes result);
+    event Decrypted(bytes32 indexed requestId, bytes32 indexed handle, uint8 ctType, address requester);
+    event Revealed(bytes32 indexed requestId, bytes result);
 }
