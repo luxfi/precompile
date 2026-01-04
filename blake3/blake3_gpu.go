@@ -1,7 +1,7 @@
 // Copyright (C) 2024-2025 Lux Industries Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build cgo && metal
+//go:build cgo
 
 package blake3
 
