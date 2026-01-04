@@ -2,7 +2,7 @@
 // See the file LICENSE for licensing terms.
 
 // Package ecies implements ECIES (Elliptic Curve Integrated Encryption Scheme)
-// precompile for the Lux EVM. Address: 0x031B
+// precompile for the Lux EVM. Address: 0x9201 (Lux Crypto Privacy range)
 //
 // Compatible with go-ethereum's ECIES implementation used in devp2p.
 // See LP-3663 for full specification.
@@ -28,8 +28,8 @@ import (
 )
 
 var (
-	// ContractAddress is the address of the ECIES precompile
-	ContractAddress = common.HexToAddress("0x000000000000000000000000000000000000031B")
+	// ContractAddress is the address of the ECIES precompile (Lux Crypto Privacy range 0x9201)
+	ContractAddress = common.HexToAddress("0x9201")
 
 	// Singleton instance
 	ECIESPrecompile = &eciesPrecompile{}

@@ -18,16 +18,16 @@ var _ contract.Configurator = (*configurator)(nil)
 // Must be unique across all precompiles.
 const ConfigKey = "fheConfig"
 
-// FHE Precompile Addresses
+// FHE Precompile Addresses (Lux Privacy range 0x0700)
 var (
-	// Main FHE operations precompile - 0x0200...0080 (128 in the last byte)
-	ContractAddress = common.HexToAddress("0x0200000000000000000000000000000000000080")
+	// Main FHE operations precompile
+	ContractAddress = common.HexToAddress("0x0700000000000000000000000000000000000000")
 	// ACL (Access Control List) precompile
-	ACLContractAddress = common.HexToAddress("0x0200000000000000000000000000000000000081")
+	ACLContractAddress = common.HexToAddress("0x0700000000000000000000000000000000000001")
 	// Input Verifier precompile
-	InputVerifierAddress = common.HexToAddress("0x0200000000000000000000000000000000000082")
+	InputVerifierAddress = common.HexToAddress("0x0700000000000000000000000000000000000002")
 	// Decryption Gateway precompile
-	GatewayContractAddress = common.HexToAddress("0x0200000000000000000000000000000000000083")
+	GatewayContractAddress = common.HexToAddress("0x0700000000000000000000000000000000000003")
 )
 
 // FHEPrecompile is a thread-safe singleton instance of FHEContract

@@ -1,4 +1,4 @@
-//go:build luxgpu
+//go:build cgo && metal
 
 // Package frost provides GPU-accelerated threshold signature verification for the FROST precompile.
 package frost
