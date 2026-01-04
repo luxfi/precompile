@@ -9,9 +9,8 @@ import (
 )
 
 var (
-	// ContractAddress is the address of the SLH-DSA precompile contract
-	// 0x0200000000000000000000000000000000000007
-	ContractAddress = common.HexToAddress("0x0200000000000000000000000000000000000007")
+	// ContractAddress is the address of the SLH-DSA precompile contract (Post-Quantum range 0x0600)
+	ContractAddress = common.HexToAddress("0x0600000000000000000000000000000000000001")
 
 	// Module is the precompile module singleton
 	Module = &module{

@@ -22,11 +22,13 @@ var _ contract.StatefulPrecompiledContract = (*GraphQLContract)(nil)
 const ConfigKey = "graphConfig"
 
 // Contract addresses for Graph/Query layer (0x0500-0x05FF)
+// Note: Hashing precompiles (Poseidon2, Pedersen, Blake3) use 0x0500...0001-0004
+// Graph precompiles start at 0x0500...0010 to avoid conflicts
 var (
-	ContractGraphQLAddress   = common.HexToAddress("0x0500000000000000000000000000000000000000")
-	ContractSubscribeAddress = common.HexToAddress("0x0501000000000000000000000000000000000000")
-	ContractCacheAddress     = common.HexToAddress("0x0502000000000000000000000000000000000000")
-	ContractIndexAddress     = common.HexToAddress("0x0503000000000000000000000000000000000000")
+	ContractGraphQLAddress   = common.HexToAddress("0x0500000000000000000000000000000000000010")
+	ContractSubscribeAddress = common.HexToAddress("0x0500000000000000000000000000000000000011")
+	ContractCacheAddress     = common.HexToAddress("0x0500000000000000000000000000000000000012")
+	ContractIndexAddress     = common.HexToAddress("0x0500000000000000000000000000000000000013")
 )
 
 // GraphQLContract wraps GraphQLPrecompile to implement StatefulPrecompiledContract
