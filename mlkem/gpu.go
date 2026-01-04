@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/luxfi/crypto/mlkem"
-	mlkemgpu "github.com/luxfi/crypto/pqcrypto/mlkem/gpu"
+	mlkemgpu "github.com/luxfi/crypto/pq/mlkem/gpu"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
