@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/luxfi/crypto/mldsa"
-	mldsagpu "github.com/luxfi/crypto/pqcrypto/mldsa/gpu"
+	mldsagpu "github.com/luxfi/crypto/pq/mldsa/gpu"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
