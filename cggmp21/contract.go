@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	// ContractCGGMP21VerifyAddress is the address of the CGGMP21 threshold signature precompile
-	ContractCGGMP21VerifyAddress = common.HexToAddress("0x020000000000000000000000000000000000000D")
+	// ContractCGGMP21VerifyAddress is the address of the CGGMP21 threshold signature precompile (Threshold Signatures range 0x0800)
+	ContractCGGMP21VerifyAddress = common.HexToAddress("0x0800000000000000000000000000000000000003")
 
 	// Singleton instance
 	CGGMP21VerifyPrecompile = &cggmp21VerifyPrecompile{}

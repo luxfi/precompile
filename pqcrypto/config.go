@@ -12,9 +12,9 @@ import (
 
 var _ precompileconfig.Config = &Config{}
 
-// Address of the PQ crypto precompile
+// Address of the PQ crypto precompile (Lux Crypto PQ range 0x9003)
 var (
-	ContractAddress = common.HexToAddress("0x0300000000000000000000000000000000000010")
+	ContractAddress = common.HexToAddress("0x9003")
 	Module          = common.BytesToAddress(ContractAddress.Bytes()).Hex()
 )
 
