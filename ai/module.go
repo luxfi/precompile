@@ -19,7 +19,8 @@ var _ contract.StatefulPrecompiledContract = (*AIMiningContract)(nil)
 // ConfigKey is the key used in json config files to specify this precompile config.
 const ConfigKey = "aiMiningConfig"
 
-// ContractAddress is the address of the AI Mining precompile (0x0300)
+// ContractAddress is the address of the AI Mining precompile
+// AI Mining range: 0x0300-0x03FF (significant bytes at START of 20-byte address)
 var ContractAddress = common.HexToAddress("0x0300000000000000000000000000000000000000")
 
 // AIMiningPrecompile is the singleton instance

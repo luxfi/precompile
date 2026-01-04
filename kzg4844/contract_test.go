@@ -14,7 +14,8 @@ import (
 )
 
 func TestKZG4844Precompile_Address(t *testing.T) {
-	expectedAddr := common.HexToAddress("0x000000000000000000000000000000000000031D")
+	// KZG4844 in ZK Proofs range: 0x0900...0014
+	expectedAddr := common.HexToAddress("0x0900000000000000000000000000000000000014")
 	require.Equal(t, expectedAddr, ContractAddress)
 	require.Equal(t, expectedAddr, KZG4844Precompile.Address())
 }
