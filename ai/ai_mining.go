@@ -4,17 +4,26 @@
 // Package ai implements the AI Mining precompile for EVM at address 0x0300.
 // This precompile is shared by Hanzo, Lux, and Zoo EVMs for efficient
 // AI mining reward calculation and cryptographic verification.
+//
+// GPU Acceleration:
+// When batch size >= gpu.Threshold() and GPU is available, operations
+// are dispatched to Metal/CUDA for parallel processing. This provides
+// significant speedup for ML-DSA verification (NTT-based) and attestation
+// verification (SHA-256/ECDSA).
 package ai
 
 import (
 	"encoding/binary"
 	"errors"
 	"math/big"
+	"sync"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
 	"github.com/zeebo/blake3"
+
+	"github.com/luxfi/precompile/ai/gpu"
 )
 
 // Precompile address
@@ -385,4 +394,239 @@ func GetPrivacyMultiplier(level uint16) (uint64, error) {
 		return 0, ErrInvalidPrivacyLevel
 	}
 	return mult, nil
+}
+
+// =============================================================================
+// GPU Acceleration Support
+// =============================================================================
+
+// GPUAvailable returns true if GPU acceleration is available
+func GPUAvailable() bool {
+	return gpu.Available()
+}
+
+// GPUBackend returns the GPU backend name ("Metal", "CUDA", or "CPU")
+func GPUBackend() string {
+	return gpu.Backend()
+}
+
+// GPUThreshold returns minimum batch size for GPU acceleration
+func GPUThreshold() int {
+	return gpu.Threshold()
+}
+
+// =============================================================================
+// Batch Accumulator for GPU Dispatch
+// =============================================================================
+
+// BatchAccumulator collects verification requests for GPU batch processing.
+// When the batch reaches threshold, it dispatches to GPU for parallel verification.
+type BatchAccumulator struct {
+	mu         sync.Mutex
+	pubkeys    [][]byte
+	messages   [][]byte
+	signatures [][]byte
+	callbacks  []func(bool, error)
+	threshold  int
+}
+
+// NewBatchAccumulator creates a new batch accumulator
+func NewBatchAccumulator(threshold int) *BatchAccumulator {
+	if threshold < gpu.Threshold() {
+		threshold = gpu.Threshold()
+	}
+	return &BatchAccumulator{
+		threshold: threshold,
+	}
+}
+
+// Add queues a verification request. Returns true if batch was flushed.
+func (ba *BatchAccumulator) Add(pubkey, message, signature []byte, callback func(bool, error)) bool {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+
+	ba.pubkeys = append(ba.pubkeys, pubkey)
+	ba.messages = append(ba.messages, message)
+	ba.signatures = append(ba.signatures, signature)
+	ba.callbacks = append(ba.callbacks, callback)
+
+	if len(ba.signatures) >= ba.threshold {
+		ba.flushLocked()
+		return true
+	}
+	return false
+}
+
+// Flush processes all pending verification requests
+func (ba *BatchAccumulator) Flush() {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	ba.flushLocked()
+}
+
+// flushLocked processes the batch (must hold lock)
+func (ba *BatchAccumulator) flushLocked() {
+	if len(ba.signatures) == 0 {
+		return
+	}
+
+	pubkeys := ba.pubkeys
+	messages := ba.messages
+	signatures := ba.signatures
+	callbacks := ba.callbacks
+
+	// Reset accumulator
+	ba.pubkeys = nil
+	ba.messages = nil
+	ba.signatures = nil
+	ba.callbacks = nil
+
+	// Try GPU batch verification
+	results, err := gpu.BatchVerifyMLDSA(pubkeys, messages, signatures)
+	if err == gpu.ErrBatchTooSmall || err == gpu.ErrGPUUnavailable {
+		// Fall back to CPU verification
+		for i := range signatures {
+			valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
+			if callbacks[i] != nil {
+				callbacks[i](valid, verifyErr)
+			}
+		}
+		return
+	}
+
+	if err != nil {
+		// GPU error - fall back to CPU
+		for i := range signatures {
+			valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
+			if callbacks[i] != nil {
+				callbacks[i](valid, verifyErr)
+			}
+		}
+		return
+	}
+
+	// Dispatch GPU results
+	for i := range results {
+		if callbacks[i] != nil {
+			callbacks[i](results[i], nil)
+		}
+	}
+}
+
+// Size returns current batch size
+func (ba *BatchAccumulator) Size() int {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	return len(ba.signatures)
+}
+
+// =============================================================================
+// Batch Verification Functions
+// =============================================================================
+
+// BatchVerifyMLDSA verifies multiple ML-DSA signatures.
+// Uses GPU when batch size >= Threshold() and GPU is available.
+// Falls back to CPU verification otherwise.
+func BatchVerifyMLDSA(pubkeys, messages, signatures [][]byte) ([]bool, error) {
+	// Try GPU path first
+	results, err := gpu.BatchVerifyMLDSA(pubkeys, messages, signatures)
+	if err == nil {
+		return results, nil
+	}
+
+	// Fall back to CPU
+	if err == gpu.ErrBatchTooSmall || err == gpu.ErrGPUUnavailable {
+		results = make([]bool, len(signatures))
+		for i := range signatures {
+			valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
+			if verifyErr != nil {
+				results[i] = false
+			} else {
+				results[i] = valid
+			}
+		}
+		return results, nil
+	}
+
+	return nil, err
+}
+
+// BatchVerifyTEE verifies multiple TEE attestations.
+// Uses GPU when batch size >= Threshold() and GPU is available.
+func BatchVerifyTEE(attestations [][]byte) ([]bool, []uint8, error) {
+	// Try GPU path first
+	results, scores, err := gpu.BatchVerifyAttestation(attestations)
+	if err == nil {
+		return results, scores, nil
+	}
+
+	// Fall back to CPU
+	if err == gpu.ErrBatchTooSmall || err == gpu.ErrGPUUnavailable {
+		results = make([]bool, len(attestations))
+		scores = make([]uint8, len(attestations))
+		for i, att := range attestations {
+			if len(att) < gpu.NVTrustMinQuoteSize {
+				results[i] = false
+				scores[i] = 0
+				continue
+			}
+			quote, parseErr := gpu.ParseNVTrustQuote(att)
+			if parseErr != nil {
+				results[i] = false
+				scores[i] = 0
+				continue
+			}
+			valid, score := gpu.VerifyNVTrustQuote(quote)
+			results[i] = valid
+			scores[i] = score
+		}
+		return results, scores, nil
+	}
+
+	return nil, nil, err
+}
+
+// BatchCalculateReward computes rewards for multiple work proofs.
+// Uses GPU when batch size >= Threshold() and GPU is available.
+func BatchCalculateReward(workProofs [][]byte, chainId uint64) ([]*big.Int, error) {
+	n := len(workProofs)
+	if n == 0 {
+		return nil, nil
+	}
+
+	// Try GPU path
+	rawRewards, err := gpu.ComputeReward(workProofs, chainId)
+	if err == nil {
+		results := make([]*big.Int, n)
+		for i := range rawRewards {
+			results[i] = new(big.Int).SetBytes(rawRewards[i][:])
+		}
+		return results, nil
+	}
+
+	// Fall back to CPU
+	results := make([]*big.Int, n)
+	for i := range workProofs {
+		reward, calcErr := CalculateReward(workProofs[i], chainId)
+		if calcErr != nil {
+			results[i] = big.NewInt(0)
+		} else {
+			results[i] = reward
+		}
+	}
+	return results, nil
+}
+
+// =============================================================================
+// GPU Statistics
+// =============================================================================
+
+// GPUStats returns GPU verification statistics
+func GPUStats() gpu.Stats {
+	return gpu.GetStats()
+}
+
+// ResetGPUStats resets GPU verification statistics
+func ResetGPUStats() {
+	gpu.ResetStats()
 }

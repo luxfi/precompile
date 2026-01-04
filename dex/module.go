@@ -21,7 +21,8 @@ var _ contract.StatefulPrecompiledContract = (*DEXContract)(nil)
 // ConfigKey is the key used in json config files to specify this precompile config.
 const ConfigKey = "dexConfig"
 
-// Contract addresses
+// Contract addresses (canonical precompile addresses - matches reserved ranges)
+// Reserved ranges have significant bytes at the START: 0x04XX...00
 var (
 	ContractPoolManagerAddress = common.HexToAddress("0x0400000000000000000000000000000000000000")
 	ContractSwapRouterAddress  = common.HexToAddress("0x0401000000000000000000000000000000000000")
@@ -91,11 +92,11 @@ func (*configurator) Configure(
 
 // Config implements the precompileconfig.Config interface
 type Config struct {
-	Upgrade               precompileconfig.Upgrade `json:"upgrade,omitempty"`
-	ProtocolFeeController common.Address           `json:"protocolFeeController,omitempty"`
-	MaxPools              uint64                   `json:"maxPools,omitempty"`
-	EnableFlashLoans      bool                     `json:"enableFlashLoans,omitempty"`
-	EnableHooks           bool                     `json:"enableHooks,omitempty"`
+	precompileconfig.Upgrade              // Embedded for flat JSON structure
+	ProtocolFeeController common.Address `json:"protocolFeeController,omitempty"`
+	MaxPools              uint64         `json:"maxPools,omitempty"`
+	EnableFlashLoans      bool           `json:"enableFlashLoans,omitempty"`
+	EnableHooks           bool           `json:"enableHooks,omitempty"`
 }
 
 func (c *Config) Key() string {

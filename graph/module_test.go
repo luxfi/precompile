@@ -227,9 +227,11 @@ func TestModuleRegistration(t *testing.T) {
 }
 
 func TestContractAddresses(t *testing.T) {
-	// Verify contract addresses are in expected range (0x0500-0x05FF)
-	require.Equal(t, "0x0500000000000000000000000000000000000000", ContractGraphQLAddress.Hex())
-	require.Equal(t, "0x0501000000000000000000000000000000000000", ContractSubscribeAddress.Hex())
-	require.Equal(t, "0x0502000000000000000000000000000000000000", ContractCacheAddress.Hex())
-	require.Equal(t, "0x0503000000000000000000000000000000000000", ContractIndexAddress.Hex())
+	// Verify contract addresses are in Graph/Query range (0x0500-0x05FF)
+	// Note: Hashing precompiles (Poseidon2, Pedersen, Blake3) use 0x0500...0001-0004
+	// Graph precompiles start at 0x0500...0010 to avoid conflicts
+	require.Equal(t, "0x0500000000000000000000000000000000000010", ContractGraphQLAddress.Hex())
+	require.Equal(t, "0x0500000000000000000000000000000000000011", ContractSubscribeAddress.Hex())
+	require.Equal(t, "0x0500000000000000000000000000000000000012", ContractCacheAddress.Hex())
+	require.Equal(t, "0x0500000000000000000000000000000000000013", ContractIndexAddress.Hex())
 }

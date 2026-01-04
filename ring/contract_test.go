@@ -14,7 +14,8 @@ import (
 )
 
 func TestRingSignaturePrecompile_Address(t *testing.T) {
-	expectedAddr := common.HexToAddress("0x000000000000000000000000000000000000031C")
+	// Ring Signatures in Threshold Signatures range: 0x0800...0001
+	expectedAddr := common.HexToAddress("0x0800000000000000000000000000000000000001")
 	require.Equal(t, expectedAddr, ContractAddress)
 	require.Equal(t, expectedAddr, RingSignaturePrecompile.Address())
 }

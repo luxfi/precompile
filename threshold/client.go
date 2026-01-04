@@ -803,7 +803,7 @@ func (c *ThresholdClient) executeRingtailSign(
 			defer wg.Done()
 
 			h, err := protocol.NewMultiHandler(
-				ringtail.Sign(config, signers, messageHash[:], c.pool),
+				ringtail.SignWithConfig(config, signers, messageHash[:], c.pool),
 				nil,
 			)
 			if err != nil {

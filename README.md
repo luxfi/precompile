@@ -25,6 +25,33 @@ Precompiles are located at deterministic addresses starting from `0x020000000000
 | `0x020000000000000000000000000000000000000D` | **CGGMP21** | ECDSA threshold signatures with aborts | LP-322 |
 | `0x020000000000000000000000000000000000000E` | **Bridge** | Cross-chain bridge verification | LP-323 (Reserved) |
 
+### Hashing & Commitment Precompiles
+
+| Address | Name | Description | LP |
+|---------|------|-------------|-----|
+| `0x0000000000000000000000000000000000000501` | **Poseidon2** | PQ-safe hash commitment | - |
+| `0x0000000000000000000000000000000000000502` | **Pedersen** | Elliptic curve commitment (BN254) | - |
+| `0x0000000000000000000000000000000000000504` | **Blake3** | Fast hashing (6-17x faster than SHA-3) | - |
+
+### Zero-Knowledge Precompiles
+
+| Address | Name | Description | Gas |
+|---------|------|-------------|-----|
+| `0x0000000000000000000000000000000000000900` | **ZKVerifier** | Generic ZK proof verification | Variable |
+| `0x0000000000000000000000000000000000000901` | **Groth16** | Groth16 SNARK verification | ~200,000 |
+| `0x0000000000000000000000000000000000000902` | **PLONK** | PLONK proof verification | ~250,000 |
+| `0x0000000000000000000000000000000000000903` | **fflonk** | Optimized PLONK variant | ~180,000 |
+| `0x0000000000000000000000000000000000000904` | **Halo2** | Recursive proof verification | ~300,000 |
+| `0x0000000000000000000000000000000000000910` | **KZG** | Polynomial commitment (EIP-4844) | ~50,000 |
+| `0x0000000000000000000000000000000000000912` | **IPA** | Inner product arguments | ~30,000 |
+| `0x0000000000000000000000000000000000000920` | **PrivacyPool** | Confidential transaction pool | ~100,000 |
+| `0x0000000000000000000000000000000000000921` | **Nullifier** | Double-spend prevention | ~5,000 |
+| `0x0000000000000000000000000000000000000922` | **Commitment** | Commitment verification | ~10,000 |
+| `0x0000000000000000000000000000000000000923` | **RangeProof** | Bulletproofs range verification | ~100,000 |
+| `0x0000000000000000000000000000000000000930` | **RollupVerify** | ZK rollup batch verification | ~500,000 |
+| `0x0000000000000000000000000000000000000931` | **StateRoot** | State root verification | ~50,000 |
+| `0x0000000000000000000000000000000000000932` | **BatchProof** | Proof aggregation | ~200,000 |
+
 ## Categories
 
 ### 1. Access Control Precompiles
@@ -176,7 +203,106 @@ Multi-party computation and threshold signatures for custody and consensus:
 - **Documentation**: [cggmp21/](./cggmp21/)
 - **LP**: [LP-322](../../lps/LPs/lp-322.md)
 
-### 6. Consensus Precompiles
+### 6. Hashing Precompiles
+
+Fast cryptographic hashing for Merkle trees and commitments:
+
+#### Blake3 (`0x0504`)
+- **Purpose**: High-performance hashing (6-17x faster than SHA-3)
+- **Operations**:
+  - `hash256`: Standard 256-bit hash
+  - `hash512`: Extended 512-bit hash
+  - `hashXOF`: Extensible output function (arbitrary length)
+  - `hashWithDomain`: Domain-separated hashing
+  - `merkleRoot`: Batch Merkle tree computation
+  - `deriveKey`: KDF key derivation
+- **Gas Cost**: 100 base + 3-5 gas/word
+- **Use Cases**:
+  - ZK Merkle trees
+  - Content addressing
+  - Key derivation
+- **GPU Acceleration**: Metal shaders available
+- **Documentation**: [blake3/](./blake3/)
+- **Solidity Interface**: [blake3/IBlake3.sol](./blake3/IBlake3.sol)
+
+#### Poseidon2 (`0x0501`)
+- **Purpose**: ZK-friendly hash function (post-quantum safe)
+- **Gas Cost**: ~5,000 per hash
+- **Use Cases**: ZK circuits, commitments
+
+#### Pedersen (`0x0502`)
+- **Purpose**: Elliptic curve commitment on BN254
+- **Gas Cost**: ~10,000 per commitment
+- **Note**: NOT post-quantum safe (discrete log)
+- **GPU Acceleration**: Metal shaders available
+
+### 7. Zero-Knowledge Precompiles
+
+Comprehensive ZK proof verification and privacy operations:
+
+#### ZK Verifier (`0x0900`)
+- **Purpose**: Generic ZK proof verification router
+- **Features**:
+  - Verifying key registration
+  - Multi-proof-system support
+  - Verification statistics
+- **Documentation**: [zk/](./zk/)
+- **Solidity Interface**: [zk/IZK.sol](./zk/IZK.sol)
+
+#### Groth16 (`0x0901`)
+- **Purpose**: Groth16 SNARK verification
+- **Gas Cost**: ~200,000 per verification
+- **Proof Size**: 128 bytes (2 G1 + 1 G2)
+- **Trusted Setup**: Circuit-specific
+- **GPU Acceleration**: BN254 pairing via Metal
+
+#### PLONK (`0x0902`)
+- **Purpose**: Universal PLONK verification
+- **Gas Cost**: ~250,000 per verification
+- **Proof Size**: ~1KB (variable)
+- **Trusted Setup**: Universal (one-time)
+
+#### fflonk (`0x0903`)
+- **Purpose**: Optimized PLONK variant
+- **Gas Cost**: ~180,000 per verification
+- **Improvements**: Faster verification, smaller proofs
+
+#### Halo2 (`0x0904`)
+- **Purpose**: Recursive proof composition
+- **Gas Cost**: ~300,000 per verification
+- **Trusted Setup**: None required
+- **Use Cases**: IVC, recursive rollups
+
+#### KZG (`0x0910`)
+- **Purpose**: Polynomial commitments (EIP-4844)
+- **Gas Cost**: ~50,000 per evaluation
+- **Use Cases**: Blob commitments, data availability
+- **GPU Acceleration**: FFT and MSM via Metal
+
+#### Privacy Pool (`0x0920`)
+- **Purpose**: Confidential transaction pool
+- **Features**: Merkle tree, deposit/withdraw
+- **Gas Cost**: ~100,000 per operation
+
+#### Nullifier (`0x0921`)
+- **Purpose**: Double-spend prevention
+- **Gas Cost**: ~5,000 per lookup
+
+#### RangeProof (`0x0923`)
+- **Purpose**: Bulletproofs range verification
+- **Gas Cost**: ~100,000 per proof
+- **Use Cases**: Confidential amounts
+
+#### RollupVerify (`0x0930`)
+- **Purpose**: ZK rollup batch verification
+- **Gas Cost**: ~500,000 per batch
+- **Features**:
+  - Rollup registration
+  - Batch verification
+  - State root tracking
+  - Challenge support
+
+### 8. Consensus Precompiles
 
 Advanced consensus and validation operations:
 
@@ -322,11 +448,39 @@ All precompiles must have:
 
 Performance targets on Apple M1 (reference hardware):
 
+### Signature Verification
+
 | Operation | Target | Current |
 |-----------|--------|---------|
 | ML-DSA-65 Verify | < 150μs | ~108μs ✓ |
 | SLH-DSA-192s Verify | < 20ms | ~15ms ✓ |
 | BLS Signature Verify | < 2ms | ~1.5ms ✓ |
+| FROST (3-of-5) | < 100μs | ~55μs ✓ |
+| CGGMP21 (3-of-5) | < 150μs | ~80μs ✓ |
+
+### ZK Proof Verification
+
+| Operation | CPU | GPU (Metal) | Speedup |
+|-----------|-----|-------------|---------|
+| Groth16 Verify | 12ms | 1.5ms | 8x |
+| PLONK Verify | 18ms | 2ms | 9x |
+| KZG Point Eval | 3ms | 0.4ms | 7.5x |
+| Range Proof (64-bit) | 8ms | 1ms | 8x |
+| MSM (256 points) | 45ms | 3ms | 15x |
+| FFT (2^16) | 120ms | 8ms | 15x |
+
+### Hashing
+
+| Operation | Target | Current |
+|-----------|--------|---------|
+| Blake3 256-bit | < 1μs/KB | ~0.3μs/KB ✓ |
+| Blake3 Merkle (1K leaves) | < 100μs | ~45μs ✓ |
+| Poseidon2 | < 10μs | ~5μs ✓ |
+
+### State Operations
+
+| Operation | Target | Current |
+|-----------|--------|---------|
 | State Read | < 5μs | ~2μs ✓ |
 | State Write | < 10μs | ~5μs ✓ |
 
