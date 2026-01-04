@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	// ContractFROSTVerifyAddress is the address of the FROST threshold signature precompile
-	ContractFROSTVerifyAddress = common.HexToAddress("0x020000000000000000000000000000000000000C")
+	// ContractFROSTVerifyAddress is the address of the FROST threshold signature precompile (Threshold Signatures range 0x0800)
+	ContractFROSTVerifyAddress = common.HexToAddress("0x0800000000000000000000000000000000000002")
 
 	// Singleton instance
 	FROSTVerifyPrecompile = &frostVerifyPrecompile{}

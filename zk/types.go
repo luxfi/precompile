@@ -24,7 +24,8 @@ const (
 
 	// Commitment schemes
 	KZGAddress          = "0x0910" // KZG commitments (EIP-4844)
-	PedersenAddress     = "0x0911" // Pedersen commitments
+	// PedersenAddress moved to pedersen.go (0x0502)
+	// Poseidon2Address in poseidon.go (0x0501)
 	IPAAddress          = "0x0912" // Inner product arguments
 
 	// Privacy operations

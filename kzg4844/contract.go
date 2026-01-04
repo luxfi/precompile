@@ -2,7 +2,10 @@
 // See the file LICENSE for licensing terms.
 
 // Package kzg4844 implements EIP-4844 KZG polynomial commitment precompile
-// for the Lux EVM. Address: 0x031D
+// for the Lux EVM. Address: 0x0900...0014 (ZK Proofs range)
+//
+// Note: Ethereum standard KZG point evaluation is at 0x0a (EIP-4844).
+// This extended precompile provides additional operations beyond the standard.
 //
 // Provides efficient blob verification using Kate-Zaverucha-Goldberg commitments
 // with BLS12-381 curve. See LP-3665 for full specification.
@@ -19,8 +22,9 @@ import (
 )
 
 var (
-	// ContractAddress is the address of the KZG4844 precompile
-	ContractAddress = common.HexToAddress("0x000000000000000000000000000000000000031D")
+	// ContractAddress is the address of the KZG4844 precompile (Lux KZG Extensions range 0xB002)
+	// Note: Standard EIP-4844 point evaluation is at 0x0a
+	ContractAddress = common.HexToAddress("0xB002")
 
 	// Singleton instance
 	KZG4844Precompile = &kzg4844Precompile{}

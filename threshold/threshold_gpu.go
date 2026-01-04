@@ -3,6 +3,9 @@
 
 //go:build luxgpu
 
+// Build with: CGO_ENABLED=1 go build -tags luxgpu
+// Requires: luxcpp/crypto library installed
+
 package threshold
 
 /*

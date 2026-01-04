@@ -803,7 +803,7 @@ func (c *ThresholdClient) executeCoronaSign(
 			defer wg.Done()
 
 			h, err := protocol.NewMultiHandler(
-				corona.Sign(config, signers, messageHash[:], c.pool),
+				corona.SignWithConfig(config, signers, messageHash[:], c.pool),
 				nil,
 			)
 			if err != nil {
