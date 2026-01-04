@@ -9,7 +9,7 @@ import (
 	"fmt"
 
 	"github.com/luxfi/crypto/slhdsa"
-	slhdsagpu "github.com/luxfi/crypto/pqcrypto/slhdsa/gpu"
+	slhdsagpu "github.com/luxfi/crypto/pq/slhdsa/gpu"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
