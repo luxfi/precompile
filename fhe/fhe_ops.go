@@ -1,6 +1,8 @@
 // Copyright (C) 2019-2024, Lux Partners Limited. All rights reserved.
 // See the file LICENSE for licensing terms.
 
+//go:build !luxgpu
+
 package fhe
 
 import (
@@ -840,4 +842,9 @@ func tfheMaxValue(fheType uint8) []byte {
 	targetType := fheTypeToTFHEType(fheType)
 	maxVal := evaluator.MaxValue(targetType)
 	return serializeBitCiphertext(maxVal)
+}
+
+// GetBackend returns the current FHE backend being used
+func GetBackend() string {
+	return "CPU (pure Go)"
 }
