@@ -13,7 +13,8 @@ import (
 )
 
 func TestHPKEPrecompile_Address(t *testing.T) {
-	expectedAddr := common.HexToAddress("0x000000000000000000000000000000000000031A")
+	// HPKE in Privacy/Encryption range: 0x0700...0001
+	expectedAddr := common.HexToAddress("0x0700000000000000000000000000000000000001")
 	require.Equal(t, expectedAddr, ContractAddress)
 	require.Equal(t, expectedAddr, HPKEPrecompile.Address())
 }

@@ -4,14 +4,15 @@ go 1.25.5
 
 require (
 	github.com/cloudflare/circl v1.6.2
+	github.com/consensys/gnark-crypto v0.19.2
 	github.com/crate-crypto/go-kzg-4844 v1.1.0
 	github.com/holiman/uint256 v1.3.2
 	github.com/luxfi/ai v0.0.0-20251225021023-3f15131f2bd1
-	github.com/luxfi/consensus v1.22.47
-	github.com/luxfi/crypto v1.17.31
-	github.com/luxfi/database v1.2.17
-	github.com/luxfi/fhe v1.4.1
-	github.com/luxfi/geth v1.16.66
+	github.com/luxfi/consensus v1.22.50
+	github.com/luxfi/crypto v1.17.34
+	github.com/luxfi/database v1.17.35
+	github.com/luxfi/fhe v1.7.0
+	github.com/luxfi/geth v1.16.67
 	github.com/luxfi/lattice/v7 v7.0.0
 	github.com/luxfi/log v1.2.1
 	github.com/luxfi/node v1.22.77
@@ -36,7 +37,6 @@ require (
 	github.com/cockroachdb/pebble v1.1.5 // indirect
 	github.com/cockroachdb/redact v1.1.6 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20250429170803-42689b6311bb // indirect
-	github.com/consensys/gnark-crypto v0.19.2 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.4.0 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240724233137-53bbb0ceb27a // indirect
 	github.com/cronokirby/saferith v0.33.0 // indirect
@@ -66,14 +66,14 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/luxfi/cache v1.1.0 // indirect
-	github.com/luxfi/ids v1.2.5 // indirect
+	github.com/luxfi/ids v1.2.7 // indirect
 	github.com/luxfi/math v1.2.0 // indirect
 	github.com/luxfi/metric v1.4.8 // indirect
 	github.com/luxfi/mock v0.1.0 // indirect
 	github.com/luxfi/p2p v1.18.2 // indirect
 	github.com/luxfi/sampler v1.0.0 // indirect
 	github.com/luxfi/utils v1.1.0 // indirect
-	github.com/luxfi/vm v1.0.1 // indirect
+	github.com/luxfi/vm v1.0.2 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
@@ -126,3 +126,7 @@ exclude (
 )
 
 replace github.com/luxfi/geth => ../geth
+
+replace github.com/luxfi/node => ../node
+
+replace github.com/luxfi/fhe => ../fhe

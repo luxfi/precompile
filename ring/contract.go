@@ -2,7 +2,7 @@
 // See the file LICENSE for licensing terms.
 
 // Package ring implements LSAG (Linkable Spontaneous Anonymous Group) ring signatures
-// precompile for the Lux EVM. Address: 0x031C
+// precompile for the Lux EVM. Address: 0x9202 (Lux Crypto Privacy range)
 //
 // Ring signatures enable Q-Chain privacy transactions where the sender's identity
 // is hidden among a set of possible signers.
@@ -22,8 +22,8 @@ import (
 )
 
 var (
-	// ContractAddress is the address of the Ring Signature precompile
-	ContractAddress = common.HexToAddress("0x000000000000000000000000000000000000031C")
+	// ContractAddress is the address of the Ring Signature precompile (Lux Crypto Privacy range 0x9202)
+	ContractAddress = common.HexToAddress("0x9202")
 
 	// Singleton instance
 	RingSignaturePrecompile = &ringSignaturePrecompile{}

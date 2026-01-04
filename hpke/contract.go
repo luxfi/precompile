@@ -2,7 +2,7 @@
 // See the file LICENSE for licensing terms.
 
 // Package hpke implements RFC 9180 HPKE (Hybrid Public Key Encryption) precompile
-// for the Lux EVM. Address: 0x031A
+// for the Lux EVM. Address: 0x9200 (Lux Crypto Privacy range)
 //
 // See LP-3662 for full specification.
 package hpke
@@ -17,8 +17,8 @@ import (
 )
 
 var (
-	// ContractAddress is the address of the HPKE precompile
-	ContractAddress = common.HexToAddress("0x000000000000000000000000000000000000031A")
+	// ContractAddress is the address of the HPKE precompile (Lux Crypto Privacy range 0x9200)
+	ContractAddress = common.HexToAddress("0x9200")
 
 	// Singleton instance
 	HPKEPrecompile = &hpkePrecompile{}

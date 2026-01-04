@@ -36,9 +36,11 @@ var (
 	registeredModules = make([]Module, 0)
 
 	// Reserved address ranges for stateful precompiles
+	//
+	// HIGH-BYTE RANGES (legacy format: 0xXX00...0000):
 	// 0x0100-0x01FF: Warp/Teleport messaging
 	// 0x0200-0x02FF: Chain config (AllowLists, FeeManager, etc.)
-	// 0x0300-0x03FF: AI Mining
+	// 0x0300-0x03FF: Reserved (legacy)
 	// 0x0400-0x04FF: DEX (Uniswap v4-style)
 	// 0x0500-0x05FF: Graph/Query layer
 	// 0x0600-0x06FF: Post-quantum crypto
@@ -46,6 +48,12 @@ var (
 	// 0x0800-0x08FF: Threshold signatures
 	// 0x0900-0x09FF: ZK proofs
 	// 0x0A00-0x0AFF: Curves (secp256r1, etc.)
+	//
+	// LOW-BYTE RANGES (EIP-collision-free: 0x0000...XXXX):
+	// 0x8000-0x8FFF: Lux Core System (AI Mining at 0x8100)
+	// 0x9000-0x9FFF: Lux Crypto Privacy (HPKE, ECIES, FHE)
+	// 0xA000-0xAFFF: Lux Hashing & ZK (Poseidon2, Blake3, STARK)
+	// 0xB000-0xBFFF: Lux KZG Extensions
 	reservedRanges = []AddressRange{
 		// Warp/Teleport (0x0100-0x01FF)
 		{
@@ -96,6 +104,45 @@ var (
 		{
 			Start: common.HexToAddress("0x0A00000000000000000000000000000000000000"),
 			End:   common.HexToAddress("0x0A000000000000000000000000000000000000ff"),
+		},
+		// =====================================================================
+		// LOW-BYTE RANGES (EIP-collision-free addresses)
+		// =====================================================================
+		// Lux Core System (0x8000-0x8FFF) - AI Mining, etc.
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000008000"),
+			End:   common.HexToAddress("0x0000000000000000000000000000000000008fff"),
+		},
+		// Lux Crypto Privacy (0x9000-0x9FFF) - HPKE, ECIES, FHE
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000009000"),
+			End:   common.HexToAddress("0x0000000000000000000000000000000000009fff"),
+		},
+		// Lux Hashing & ZK (0xA000-0xAFFF) - Poseidon2, Blake3, STARK, etc.
+		{
+			Start: common.HexToAddress("0x000000000000000000000000000000000000a000"),
+			End:   common.HexToAddress("0x000000000000000000000000000000000000afff"),
+		},
+		// Lux KZG Extensions (0xB000-0xBFFF)
+		{
+			Start: common.HexToAddress("0x000000000000000000000000000000000000b000"),
+			End:   common.HexToAddress("0x000000000000000000000000000000000000bfff"),
+		},
+		// Dead/Burn Addresses (LP-0150)
+		// 0x0000...0000 - Zero address
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000000000"),
+			End:   common.HexToAddress("0x0000000000000000000000000000000000000000"),
+		},
+		// 0x0000...dEaD - Common dead address
+		{
+			Start: common.HexToAddress("0x000000000000000000000000000000000000dEaD"),
+			End:   common.HexToAddress("0x000000000000000000000000000000000000dEaD"),
+		},
+		// 0xdEaD...0000 - Full dead address prefix
+		{
+			Start: common.HexToAddress("0xdEaD000000000000000000000000000000000000"),
+			End:   common.HexToAddress("0xdEaD000000000000000000000000000000000000"),
 		},
 	}
 )
