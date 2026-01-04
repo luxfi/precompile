@@ -1,10 +1,13 @@
-//go:build cgo && (darwin || linux)
+//go:build luxgpu
 
 // Copyright (C) 2025, Lux Industries Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
 // Package gpu provides GPU-accelerated operations for the AI Mining precompile.
 // Uses Metal (macOS) or CUDA (Linux) via luxcpp/lattice for NTT operations.
+//
+// Build with: CGO_ENABLED=1 go build -tags luxgpu
+// Requires: luxcpp/crypto and luxcpp/lattice libraries installed
 //
 // ML-DSA verification is the primary bottleneck in AI mining. This package
 // provides batch verification using GPU-accelerated NTT (Number Theoretic

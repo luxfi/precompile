@@ -1,10 +1,11 @@
-//go:build !cgo || !(darwin || linux)
+//go:build !luxgpu
 
 // Copyright (C) 2025, Lux Industries Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
 // Package gpu provides GPU-accelerated operations for the AI Mining precompile.
-// This is the stub implementation for builds without CGO or GPU support.
+// This is the stub implementation for builds without the luxgpu tag.
+// The GPU implementation in gpu_cgo.go requires: CGO_ENABLED=1 go build -tags luxgpu
 package gpu
 
 import (
