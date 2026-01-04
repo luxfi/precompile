@@ -1,8 +1,9 @@
 // Copyright (C) 2019-2024, Lux Partners Limited. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-//go:build !metal
+//go:build !luxgpu
 
+// NOTE: Pure Go FHE implementation. For GPU acceleration, build with -tags=luxgpu
 package fhe
 
 import (
