@@ -20,7 +20,7 @@ import (
 
 var (
 	// ContractCoronaThresholdAddress is the address of the Corona threshold signature precompile (Threshold range 0x0800)
-	ContractCoronaThresholdAddress = common.HexToAddress("0x0800000000000000000000000000000000000004")
+	ContractCoronaThresholdAddress = common.HexToAddress("0x020000000000000000000000000000000000000B")
 
 	// Singleton instance
 	CoronaThresholdPrecompile = &coronaThresholdPrecompile{}

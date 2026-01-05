@@ -1,4 +1,4 @@
-//go:build gpu
+//go:build !gpu
 
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
@@ -8,10 +8,8 @@ package mldsa
 import (
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/luxfi/crypto/mldsa"
-	mldsagpu "github.com/luxfi/crypto/pq/mldsa/gpu"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -28,24 +26,12 @@ var (
 
 // Batch verification gas costs
 const (
-	MLDSABatchVerifyBaseGas      uint64 = 50_000 // Fixed overhead
-	MLDSABatchVerifyPerSigGas44  uint64 = 50_000 // Per-sig cost for ML-DSA-44 (GPU amortized)
-	MLDSABatchVerifyPerSigGas65  uint64 = 65_000 // Per-sig cost for ML-DSA-65
-	MLDSABatchVerifyPerSigGas87  uint64 = 85_000 // Per-sig cost for ML-DSA-87
-	MLDSABatchVerifyPerByteGas   uint64 = 5      // Per message byte
+	MLDSABatchVerifyBaseGas     uint64 = 50_000 // Fixed overhead
+	MLDSABatchVerifyPerSigGas44 uint64 = 50_000 // Per-sig cost for ML-DSA-44
+	MLDSABatchVerifyPerSigGas65 uint64 = 65_000 // Per-sig cost for ML-DSA-65
+	MLDSABatchVerifyPerSigGas87 uint64 = 85_000 // Per-sig cost for ML-DSA-87
+	MLDSABatchVerifyPerByteGas  uint64 = 5      // Per message byte
 )
-
-// GPU verification state
-var (
-	gpuBatchMu     sync.Mutex
-	pendingBatches = make(map[uint8][][]verifyItem) // mode -> batches -> items
-)
-
-type verifyItem struct {
-	pubKey    []byte
-	signature []byte
-	message   []byte
-}
 
 type mldsaBatchVerifyPrecompile struct{}
 
@@ -55,10 +41,6 @@ func (p *mldsaBatchVerifyPrecompile) Address() common.Address {
 }
 
 // RequiredGas calculates gas for batch verification
-// Input format:
-//   [0]     = mode byte (0x44, 0x65, or 0x87)
-//   [1:3]   = count (uint16 big-endian)
-//   [3:...] = repeated: [pubKey][sig][msgLen(uint32)][msg]
 func (p *mldsaBatchVerifyPrecompile) RequiredGas(input []byte) uint64 {
 	if len(input) < 3 {
 		return MLDSABatchVerifyBaseGas
@@ -82,29 +64,10 @@ func (p *mldsaBatchVerifyPrecompile) RequiredGas(input []byte) uint64 {
 		perSigGas = MLDSABatchVerifyPerSigGas65
 	}
 
-	// Base + per-signature cost
-	gas := MLDSABatchVerifyBaseGas + count*perSigGas
-
-	// GPU discount for large batches
-	if mldsagpu.Available() && count >= uint64(mldsagpu.Threshold()) {
-		// 30% discount for GPU acceleration
-		gas = gas * 70 / 100
-	}
-
-	return gas
+	return MLDSABatchVerifyBaseGas + count*perSigGas
 }
 
-// Run implements batch ML-DSA signature verification
-// Input format:
-//   [0]     = mode byte (0x44, 0x65, or 0x87)
-//   [1:3]   = count (uint16 big-endian)
-//   [3:...] = for each signature:
-//             - pubKey (mode-dependent size)
-//             - signature (mode-dependent size)
-//             - msgLen (uint32 big-endian)
-//             - message (msgLen bytes)
-//
-// Output: 32-byte word per signature (1 = valid, 0 = invalid)
+// Run implements batch ML-DSA signature verification (CPU-only stub)
 func (p *mldsaBatchVerifyPrecompile) Run(
 	accessibleState contract.AccessibleState,
 	caller common.Address,
@@ -141,13 +104,11 @@ func (p *mldsaBatchVerifyPrecompile) Run(
 
 	offset := 3
 	for i := 0; i < count; i++ {
-		// Check minimum remaining bytes
 		if len(input) < offset+pubKeySize+sigSize+4 {
 			return nil, suppliedGas - gasCost, fmt.Errorf("%w: truncated at signature %d",
 				ErrInvalidInputLength, i)
 		}
 
-		// Parse public key
 		pubKeyBytes := input[offset : offset+pubKeySize]
 		pk, err := mldsa.PublicKeyFromBytes(pubKeyBytes, mldsaMode)
 		if err != nil {
@@ -156,16 +117,13 @@ func (p *mldsaBatchVerifyPrecompile) Run(
 		pks[i] = pk
 		offset += pubKeySize
 
-		// Parse signature
 		sigs[i] = input[offset : offset+sigSize]
 		offset += sigSize
 
-		// Parse message length
 		msgLen := int(input[offset])<<24 | int(input[offset+1])<<16 |
 			int(input[offset+2])<<8 | int(input[offset+3])
 		offset += 4
 
-		// Validate and extract message
 		if len(input) < offset+msgLen {
 			return nil, suppliedGas - gasCost, fmt.Errorf("%w: message %d truncated",
 				ErrInvalidInputLength, i)
@@ -174,16 +132,12 @@ func (p *mldsaBatchVerifyPrecompile) Run(
 		offset += msgLen
 	}
 
-	// Verify using GPU if available and batch is large enough
-	var results []bool
-	if mldsagpu.Available() && count >= mldsagpu.Threshold() {
-		results, err = mldsagpu.BatchVerify(pks, sigs, msgs)
-		if err != nil {
-			// Fall back to CPU on GPU error
-			results = verifyCPU(pks, sigs, msgs)
+	// CPU-only verification
+	results := make([]bool, len(pks))
+	for i := range pks {
+		if pks[i] != nil {
+			results[i] = pks[i].Verify(msgs[i], sigs[i], nil)
 		}
-	} else {
-		results = verifyCPU(pks, sigs, msgs)
 	}
 
 	// Encode results: 32 bytes per result
@@ -197,23 +151,12 @@ func (p *mldsaBatchVerifyPrecompile) Run(
 	return output, suppliedGas - gasCost, nil
 }
 
-// verifyCPU performs sequential verification on CPU
-func verifyCPU(pks []*mldsa.PublicKey, sigs [][]byte, msgs [][]byte) []bool {
-	results := make([]bool, len(pks))
-	for i := range pks {
-		if pks[i] != nil {
-			results[i] = pks[i].Verify(msgs[i], sigs[i], nil)
-		}
-	}
-	return results
-}
-
-// GPUAvailable returns true if GPU acceleration is available
+// GPUAvailable returns false in stub build
 func GPUAvailable() bool {
-	return mldsagpu.Available()
+	return false
 }
 
-// GPUThreshold returns the minimum batch size for GPU acceleration
+// GPUThreshold returns default threshold
 func GPUThreshold() int {
-	return mldsagpu.Threshold()
+	return 4
 }
