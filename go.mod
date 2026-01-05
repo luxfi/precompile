@@ -9,13 +9,13 @@ require (
 	github.com/holiman/uint256 v1.3.2
 	github.com/luxfi/ai v0.0.0-20251225021023-3f15131f2bd1
 	github.com/luxfi/consensus v1.22.50
-	github.com/luxfi/crypto v1.17.34
+	github.com/luxfi/crypto v1.17.36
 	github.com/luxfi/database v1.17.35
-	github.com/luxfi/fhe v1.7.0
-	github.com/luxfi/geth v1.16.67
+	github.com/luxfi/fhe v1.7.1
+	github.com/luxfi/geth v1.16.68
 	github.com/luxfi/lattice/v7 v7.0.0
 	github.com/luxfi/log v1.2.1
-	github.com/luxfi/node v1.22.77
+	github.com/luxfi/node v1.22.80
 	github.com/luxfi/ringtail v0.2.0
 	github.com/luxfi/threshold v1.5.0
 	github.com/luxfi/warp v1.18.2
@@ -66,8 +66,10 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/luxfi/cache v1.1.0 // indirect
+	github.com/luxfi/gpu v0.29.4 // indirect
 	github.com/luxfi/ids v1.2.7 // indirect
 	github.com/luxfi/math v1.2.0 // indirect
+	github.com/luxfi/math/big v0.1.0 // indirect
 	github.com/luxfi/metric v1.4.8 // indirect
 	github.com/luxfi/mock v0.1.0 // indirect
 	github.com/luxfi/p2p v1.18.2 // indirect
@@ -124,9 +126,3 @@ exclude (
 	github.com/luxfi/precompiles v0.1.10
 	github.com/luxfi/precompiles v0.1.11
 )
-
-replace github.com/luxfi/geth => ../geth
-
-replace github.com/luxfi/node => ../node
-
-replace github.com/luxfi/fhe => ../fhe
