@@ -11,7 +11,7 @@ require (
 	github.com/luxfi/consensus v1.22.50
 	github.com/luxfi/crypto v1.17.36
 	github.com/luxfi/database v1.17.35
-	github.com/luxfi/fhe v1.7.1
+	github.com/luxfi/fhe v1.7.4
 	github.com/luxfi/geth v1.16.68
 	github.com/luxfi/lattice/v7 v7.0.0
 	github.com/luxfi/log v1.2.1
