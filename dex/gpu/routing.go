@@ -5,6 +5,7 @@ package gpu
 
 import (
 	"container/heap"
+	"errors"
 	"math"
 	"math/big"
 	"sync"
@@ -942,6 +943,3 @@ func (c *PriceImpactCalc) BatchCalculateImpact(
 
 	return impacts, nil
 }
-
-// Import errors for this file
-import "errors"
