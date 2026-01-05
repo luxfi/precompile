@@ -1,7 +1,7 @@
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-//go:build cgo
+//go:build gpu
 
 // Package ringtailthreshold provides GPU-accelerated Ringtail threshold signature
 // verification precompile with Metal/CUDA acceleration via luxcpp/lattice.
