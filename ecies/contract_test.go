@@ -17,7 +17,7 @@ import (
 
 func TestECIESPrecompile_Address(t *testing.T) {
 	// ECIES in Privacy/Encryption range: 0x0700...0002
-	expectedAddr := common.HexToAddress("0x0700000000000000000000000000000000000002")
+	expectedAddr := common.HexToAddress("0x0000000000000000000000000000000000009201")
 	require.Equal(t, expectedAddr, ContractAddress)
 	require.Equal(t, expectedAddr, ECIESPrecompile.Address())
 }

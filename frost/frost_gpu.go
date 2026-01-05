@@ -1,4 +1,4 @@
-//go:build cgo
+//go:build gpu
 
 // Package frost provides GPU-accelerated threshold signature verification for the FROST precompile.
 package frost
