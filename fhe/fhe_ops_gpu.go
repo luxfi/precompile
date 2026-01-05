@@ -89,7 +89,7 @@ func deserializeGPUInteger(data []byte, bitLen int) *gpu.Integer {
 	if len(data) == 0 || gpuCtx == nil {
 		return nil
 	}
-	ct, err := gpuCtx.DeserializeInteger(data)
+	ct, err := gpuCtx.DeserializeInteger(data, bitLen)
 	if err != nil {
 		return nil
 	}
@@ -615,7 +615,7 @@ func tfheShl(ct []byte, shift int, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := gpuCtx.Shl(ctIn, uint64(shift))
+	result, err := gpuCtx.Shl(ctIn, shift)
 	if err != nil {
 		return nil
 	}
@@ -634,7 +634,7 @@ func tfheShr(ct []byte, shift int, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := gpuCtx.Shr(ctIn, uint64(shift))
+	result, err := gpuCtx.Shr(ctIn, shift)
 	if err != nil {
 		return nil
 	}
@@ -656,12 +656,12 @@ func tfheRotl(ct []byte, shift int, fheType uint8) []byte {
 	// Rotate left: (shl | shr)
 	shift = shift % bitLen
 
-	leftPart, err := gpuCtx.Shl(ctIn, uint64(shift))
+	leftPart, err := gpuCtx.Shl(ctIn, shift)
 	if err != nil {
 		return nil
 	}
 
-	rightPart, err := gpuCtx.Shr(ctIn, uint64(bitLen-shift))
+	rightPart, err := gpuCtx.Shr(ctIn, bitLen-shift)
 	if err != nil {
 		return nil
 	}
@@ -688,12 +688,12 @@ func tfheRotr(ct []byte, shift int, fheType uint8) []byte {
 	// Rotate right: (shr | shl)
 	shift = shift % bitLen
 
-	rightPart, err := gpuCtx.Shr(ctIn, uint64(shift))
+	rightPart, err := gpuCtx.Shr(ctIn, shift)
 	if err != nil {
 		return nil
 	}
 
-	leftPart, err := gpuCtx.Shl(ctIn, uint64(bitLen-shift))
+	leftPart, err := gpuCtx.Shl(ctIn, bitLen-shift)
 	if err != nil {
 		return nil
 	}
