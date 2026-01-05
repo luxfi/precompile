@@ -20,7 +20,7 @@ import (
 
 var (
 	// ContractRingtailThresholdAddress is the address of the Ringtail threshold signature precompile (Threshold range 0x0800)
-	ContractRingtailThresholdAddress = common.HexToAddress("0x0800000000000000000000000000000000000004")
+	ContractRingtailThresholdAddress = common.HexToAddress("0x020000000000000000000000000000000000000B")
 
 	// Singleton instance
 	RingtailThresholdPrecompile = &ringtailThresholdPrecompile{}

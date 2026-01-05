@@ -1,7 +1,7 @@
 // Copyright (C) 2025, Lux Industries Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-//go:build cgo
+//go:build gpu
 
 // Build with: CGO_ENABLED=1 go build -tags luxgpu
 // Requires: luxcpp/crypto library installed
