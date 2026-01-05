@@ -1,4 +1,4 @@
-//go:build gpu
+//go:build !gpu
 
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
@@ -10,7 +10,6 @@ import (
 	"fmt"
 
 	"github.com/luxfi/crypto/mlkem"
-	mlkemgpu "github.com/luxfi/crypto/pq/mlkem/gpu"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -33,12 +32,12 @@ const (
 
 // Batch gas costs
 const (
-	MLKEMBatchBaseGas           uint64 = 30_000 // Fixed overhead
-	MLKEMBatchEncapsPerOpGas512 uint64 = 35_000 // Per-op GPU cost for ML-KEM-512
-	MLKEMBatchEncapsPerOpGas768 uint64 = 50_000 // Per-op GPU cost for ML-KEM-768
-	MLKEMBatchEncapsPerOpGas1024 uint64 = 70_000 // Per-op GPU cost for ML-KEM-1024
-	MLKEMBatchDecapsPerOpGas512 uint64 = 40_000
-	MLKEMBatchDecapsPerOpGas768 uint64 = 60_000
+	MLKEMBatchBaseGas            uint64 = 30_000  // Fixed overhead
+	MLKEMBatchEncapsPerOpGas512  uint64 = 35_000  // Per-op cost for ML-KEM-512
+	MLKEMBatchEncapsPerOpGas768  uint64 = 50_000  // Per-op cost for ML-KEM-768
+	MLKEMBatchEncapsPerOpGas1024 uint64 = 70_000  // Per-op cost for ML-KEM-1024
+	MLKEMBatchDecapsPerOpGas512  uint64 = 40_000
+	MLKEMBatchDecapsPerOpGas768  uint64 = 60_000
 	MLKEMBatchDecapsPerOpGas1024 uint64 = 80_000
 )
 
@@ -50,11 +49,6 @@ func (p *mlkemBatchPrecompile) Address() common.Address {
 }
 
 // RequiredGas calculates gas for batch operations
-// Input format:
-//   [0]     = operation (0x11 = batch encaps, 0x12 = batch decaps)
-//   [1]     = mode byte (0x00 = 512, 0x01 = 768, 0x02 = 1024)
-//   [2:4]   = count (uint16 big-endian)
-//   [4:...] = operation-specific data
 func (p *mlkemBatchPrecompile) RequiredGas(input []byte) uint64 {
 	if len(input) < 4 {
 		return MLKEMBatchBaseGas
@@ -95,33 +89,10 @@ func (p *mlkemBatchPrecompile) RequiredGas(input []byte) uint64 {
 		return MLKEMBatchBaseGas
 	}
 
-	gas := MLKEMBatchBaseGas + count*perOpGas
-
-	// GPU discount for large batches
-	if mlkemgpu.Available() && count >= uint64(mlkemgpu.Threshold()) {
-		gas = gas * 70 / 100
-	}
-
-	return gas
+	return MLKEMBatchBaseGas + count*perOpGas
 }
 
-// Run implements batch ML-KEM operations
-// Input format depends on operation:
-//
-// Batch Encapsulate (0x11):
-//   [0]     = 0x11
-//   [1]     = mode
-//   [2:4]   = count
-//   [4:...] = count * pubKey (mode-dependent size)
-// Output: for each: ciphertext || sharedSecret (32 bytes)
-//
-// Batch Decapsulate (0x12):
-//   [0]     = 0x12
-//   [1]     = mode
-//   [2:4]   = count
-//   [4:4+privKeySize] = private key
-//   [4+privKeySize:...] = count * ciphertext
-// Output: count * sharedSecret (32 bytes each)
+// Run implements batch ML-KEM operations (CPU-only stub)
 func (p *mlkemBatchPrecompile) Run(
 	accessibleState contract.AccessibleState,
 	caller common.Address,
@@ -175,7 +146,6 @@ func (p *mlkemBatchPrecompile) batchEncapsulate(
 			ErrInvalidInputLength, expectedInput, count)
 	}
 
-	// Parse public keys
 	pks := make([]*mlkem.PublicKey, count)
 	for i := 0; i < count; i++ {
 		pkBytes := input[i*pubKeySize : (i+1)*pubKeySize]
@@ -186,26 +156,26 @@ func (p *mlkemBatchPrecompile) batchEncapsulate(
 		pks[i] = pk
 	}
 
-	// Encapsulate using GPU if available
-	var cts [][]byte
-	var sss [][]byte
-	var err error
-
-	if mlkemgpu.Available() && count >= mlkemgpu.Threshold() {
-		cts, sss, err = mlkemgpu.BatchEncaps(pks, nil)
+	// CPU-only encapsulation
+	cts := make([][]byte, count)
+	sss := make([][]byte, count)
+	for i, pk := range pks {
+		ct, ss, err := pk.Encapsulate()
 		if err != nil {
-			// Fall back to CPU
-			cts, sss = encapsulateCPU(pks)
+			continue
 		}
-	} else {
-		cts, sss = encapsulateCPU(pks)
+		cts[i] = ct
+		sss[i] = ss
 	}
 
-	// Build output: ct || ss for each
 	output := make([]byte, count*(ctSize+sharedSize))
 	for i := 0; i < count; i++ {
-		copy(output[i*(ctSize+sharedSize):], cts[i])
-		copy(output[i*(ctSize+sharedSize)+ctSize:], sss[i])
+		if cts[i] != nil {
+			copy(output[i*(ctSize+sharedSize):], cts[i])
+		}
+		if sss[i] != nil {
+			copy(output[i*(ctSize+sharedSize)+ctSize:], sss[i])
+		}
 	}
 
 	return output, remainingGas, nil
@@ -224,74 +194,32 @@ func (p *mlkemBatchPrecompile) batchDecapsulate(
 			ErrInvalidInputLength, expectedInput)
 	}
 
-	// Parse private key
 	sk, err := mlkem.PrivateKeyFromBytes(input[:privKeySize], mode)
 	if err != nil {
 		return nil, remainingGas, fmt.Errorf("invalid private key: %w", err)
 	}
 
-	// Parse ciphertexts
-	cts := make([][]byte, count)
-	for i := 0; i < count; i++ {
-		start := privKeySize + i*ctSize
-		cts[i] = input[start : start+ctSize]
-	}
-
-	// Decapsulate using GPU if available
-	var sss [][]byte
-
-	if mlkemgpu.Available() && count >= mlkemgpu.Threshold() {
-		sss, err = mlkemgpu.BatchDecaps(sk, cts)
-		if err != nil {
-			// Fall back to CPU
-			sss = decapsulateCPU(sk, cts)
-		}
-	} else {
-		sss = decapsulateCPU(sk, cts)
-	}
-
-	// Build output: ss for each
+	// CPU-only decapsulation
 	output := make([]byte, count*32)
 	for i := 0; i < count; i++ {
-		copy(output[i*32:], sss[i])
+		start := privKeySize + i*ctSize
+		ct := input[start : start+ctSize]
+		ss, err := sk.Decapsulate(ct)
+		if err != nil {
+			continue
+		}
+		copy(output[i*32:], ss)
 	}
 
 	return output, remainingGas, nil
 }
 
-func encapsulateCPU(pks []*mlkem.PublicKey) ([][]byte, [][]byte) {
-	cts := make([][]byte, len(pks))
-	sss := make([][]byte, len(pks))
-	for i, pk := range pks {
-		ct, ss, err := pk.Encapsulate()
-		if err != nil {
-			continue
-		}
-		cts[i] = ct
-		sss[i] = ss
-	}
-	return cts, sss
-}
-
-func decapsulateCPU(sk *mlkem.PrivateKey, cts [][]byte) [][]byte {
-	sss := make([][]byte, len(cts))
-	for i, ct := range cts {
-		ss, err := sk.Decapsulate(ct)
-		if err != nil {
-			sss[i] = make([]byte, 32) // Zero on error
-			continue
-		}
-		sss[i] = ss
-	}
-	return sss
-}
-
-// GPUAvailable returns true if GPU acceleration is available
+// GPUAvailable returns false in stub build
 func GPUAvailable() bool {
-	return mlkemgpu.Available()
+	return false
 }
 
-// GPUThreshold returns the minimum batch size for GPU acceleration
+// GPUThreshold returns default threshold
 func GPUThreshold() int {
-	return mlkemgpu.Threshold()
+	return 4
 }
