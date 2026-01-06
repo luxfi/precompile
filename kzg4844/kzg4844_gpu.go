@@ -1,7 +1,7 @@
 // Copyright (C) 2024-2025 Lux Industries Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build gpu
+//go:build cgo && luxgpu
 
 package kzg4844
 
@@ -26,9 +26,12 @@ import (
 	"unsafe"
 
 	gokzg4844 "github.com/crate-crypto/go-kzg-4844"
-	"github.com/luxfi/geth/common"
+	ethcommon "github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
+
+// ErrInvalidOperation is returned for unsupported GPU operations
+var ErrInvalidOperation = errors.New("invalid GPU operation")
 
 // GPU context management
 var (
@@ -104,8 +107,8 @@ func (p *kzg4844PrecompileGPU) RequiredGas(input []byte) uint64 {
 // Run executes the KZG4844 precompile with GPU acceleration
 func (p *kzg4844PrecompileGPU) Run(
 	accessibleState contract.AccessibleState,
-	caller common.Address,
-	addr common.Address,
+	caller ethcommon.Address,
+	addr ethcommon.Address,
 	input []byte,
 	suppliedGas uint64,
 	readOnly bool,
@@ -144,7 +147,7 @@ func (p *kzg4844PrecompileGPU) Run(
 			result, err = p.batchVerifyProofs(data)
 		}
 	default:
-		return nil, suppliedGas, ErrInvalidOperation
+		return nil, suppliedGas, ErrInvalidInput
 	}
 
 	if err != nil {
@@ -158,14 +161,14 @@ func (p *kzg4844PrecompileGPU) Run(
 // GPU-Accelerated Operations
 // =============================================================================
 
-// BLS12-381 field element size constants
+// BLS12-381 field element size constants for GPU operations
 const (
-	Fp384Size    = 48 // 384-bit field element (compressed)
-	Fr256Size    = 32 // 256-bit scalar field element
-	G1PointSize  = 96 // Uncompressed G1 point (two Fp384)
-	G1CompSize   = 48 // Compressed G1 point
-	BlobSize     = 4096 * 32 // 4096 field elements × 32 bytes
-	FieldElements = 4096
+	Fp384Size     = 48   // 384-bit field element (compressed)
+	Fr256Size     = 32   // 256-bit scalar field element
+	G1PointSize   = 96   // Uncompressed G1 point (two Fp384)
+	G1CompSize    = 48   // Compressed G1 point
+	FieldElements = 4096 // Number of field elements in a blob
+	// BlobSize is defined in contract.go (131072 = 4096 * 32)
 )
 
 // gpuBlobToCommitment computes KZG commitment using GPU-accelerated MSM
@@ -369,7 +372,8 @@ func gpuBatchVerifyProofs(input []byte) ([]byte, error) {
 	scalars := make([]C.uint64_t, count*4)
 	for i := uint32(0); i < count; i++ {
 		for j := 0; j < 4; j++ {
-			scalars[i*4+uint32(j)] = C.uint64_t(challenges[i*4+j])
+			idx := int(i)*4 + j
+			scalars[idx] = C.uint64_t(challenges[idx])
 		}
 	}
 
@@ -479,23 +483,12 @@ func compressG1(pt *C.G1Affine) []byte {
 }
 
 // getCRSG1Points returns the trusted setup G1 points for KZG
+// NOTE: go-kzg-4844 doesn't expose GetG1LagrangePoint, so GPU MSM falls back to CPU
 func getCRSG1Points() ([][]byte, error) {
-	// Access the trusted setup from go-kzg-4844
-	// The library stores the CRS (Common Reference String) internally
-	// We need to extract the G1 points for MSM
-	
-	// For now, use a placeholder that extracts from kzgContext
-	// In production, these should be cached after first extraction
-	points := make([][]byte, FieldElements)
-	
-	// Extract G1 Lagrange points from the trusted setup
-	// These are the L_i(s) values where s is the secret
-	for i := 0; i < FieldElements; i++ {
-		// Each point is 96 bytes uncompressed (x, y coordinates)
-		points[i] = kzg.GetG1LagrangePoint(i)
-	}
-	
-	return points, nil
+	// go-kzg-4844 doesn't expose the internal CRS points
+	// GPU MSM operations will fall back to CPU implementation
+	// TODO: Extract CRS from trusted setup or use custom loading
+	return nil, errors.New("CRS extraction not available - falling back to CPU")
 }
 
 // computeQuotientPolynomial computes q(x) = (p(x) - p(z)) / (x - z)
@@ -539,27 +532,25 @@ func computeQuotientPolynomial(blobData, evalPoint []byte) ([]uint64, error) {
 }
 
 // evaluatePolynomial evaluates the polynomial at the given point
+// Uses the KZG context's ComputeKZGProof which returns (proof, y) where y = p(z)
 func evaluatePolynomial(blobData, point []byte) ([]byte, error) {
-	// Use Horner's method for polynomial evaluation
-	// p(z) = c_0 + z*(c_1 + z*(c_2 + ... + z*c_{n-1}))
-	
-	result := make([]byte, 32)
-	
-	// In production, this should use proper field arithmetic
-	// For now, delegate to go-kzg-4844
-	var blob kzg.Blob
-	copy(blob[:], blobData)
-	
-	var z kzg.Scalar
-	copy(z[:], point)
-	
-	y, err := kzg.EvaluatePolynomialInEvaluationForm(&blob, &z)
-	if err != nil {
-		return nil, err
+	if kzgContext == nil {
+		return nil, ErrContextNotInit
 	}
-	
-	copy(result, y[:])
-	return result, nil
+
+	var blob gokzg4844.Blob
+	copy(blob[:], blobData)
+
+	var z gokzg4844.Scalar
+	copy(z[:], point)
+
+	// ComputeKZGProof returns (proof, y) where y is the evaluation p(z)
+	_, y, err := kzgContext.ComputeKZGProof(&blob, z, 0)
+	if err != nil {
+		return nil, fmt.Errorf("polynomial evaluation failed: %w", err)
+	}
+
+	return y[:], nil
 }
 
 // generateRandomChallenges generates random challenges for batch verification
@@ -602,14 +593,6 @@ func verifyAggregatedProof(commitment, proof, pointValue []byte) (bool, error) {
 	
 	// In production, expose pairing operations from luxcpp/crypto
 	return true, nil
-}
-
-// =============================================================================
-// Package-level type alias for common.Address
-// =============================================================================
-
-type common = struct {
-	Address [20]byte
 }
 
 func init() {
