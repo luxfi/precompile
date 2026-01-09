@@ -33,15 +33,15 @@ var (
 const (
 	// Gas costs for FROST threshold signature verification
 	// FROST is more efficient than ECDSA threshold (CMP/CGGMP21)
-	FROSTVerifyBaseGas    uint64 = 50_000 // Base cost for Schnorr verification
-	FROSTVerifyPerSignerGas uint64 = 5_000 // Cost per signer in threshold
+	FROSTVerifyBaseGas      uint64 = 50_000 // Base cost for Schnorr verification
+	FROSTVerifyPerSignerGas uint64 = 5_000  // Cost per signer in threshold
 
 	// FROST uses 32-byte Schnorr signatures (Ed25519 or secp256k1)
-	FROSTPublicKeySize  = 32 // Compressed public key
-	FROSTSignatureSize  = 64 // Schnorr signature (R || s)
+	FROSTPublicKeySize   = 32 // Compressed public key
+	FROSTSignatureSize   = 64 // Schnorr signature (R || s)
 	FROSTMessageHashSize = 32 // SHA-256 message hash
-	ThresholdSize       = 4  // uint32 threshold t
-	TotalSignersSize    = 4  // uint32 total signers n
+	ThresholdSize        = 4  // uint32 threshold t
+	TotalSignersSize     = 4  // uint32 total signers n
 
 	// Minimum input size
 	MinInputSize = ThresholdSize + TotalSignersSize + FROSTPublicKeySize + FROSTMessageHashSize + FROSTSignatureSize

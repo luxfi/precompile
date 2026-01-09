@@ -15,7 +15,7 @@ import (
 // mockAccessibleState implements the minimal interface for testing
 type mockAccessibleState struct{}
 
-func (m *mockAccessibleState) GetStateDB() interface{}   { return nil }
+func (m *mockAccessibleState) GetStateDB() interface{}      { return nil }
 func (m *mockAccessibleState) GetBlockContext() interface{} { return nil }
 
 func TestBlake3Address(t *testing.T) {
@@ -352,5 +352,3 @@ func BenchmarkMerkleRoot256Leaves(b *testing.B) {
 		p.merkleRoot(data)
 	}
 }
-
-

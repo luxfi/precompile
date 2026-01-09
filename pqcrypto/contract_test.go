@@ -72,9 +72,9 @@ func TestMLDSAVerify(t *testing.T) {
 
 func TestMLDSAVerify_AllModes(t *testing.T) {
 	modes := []struct {
-		name    string
-		mode    mldsa.Mode
-		modeByte uint8
+		name        string
+		mode        mldsa.Mode
+		modeByte    uint8
 		gasExpected uint64
 	}{
 		{"ML-DSA-44", mldsa.MLDSA44, MLDSAMode44, MLDSA44VerifyGas},

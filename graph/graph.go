@@ -35,9 +35,9 @@ var graphQLAddr = common.HexToAddress(GraphQLAddress)
 
 // Storage key prefixes
 var (
-	cachePrefix      = []byte("gcache")
-	statsPrefix      = []byte("gstats")
-	configPrefix     = []byte("gconf")
+	cachePrefix  = []byte("gcache")
+	statsPrefix  = []byte("gstats")
+	configPrefix = []byte("gconf")
 )
 
 // GraphQLPrecompile implements the G-Chain GraphQL query interface
@@ -68,11 +68,11 @@ type CacheEntry struct {
 
 // QueryStats tracks query performance
 type QueryStats struct {
-	TotalQueries     uint64
-	CacheHits        uint64
-	CacheMisses      uint64
-	TotalGasUsed     uint64
-	AvgResponseTime  time.Duration
+	TotalQueries    uint64
+	CacheHits       uint64
+	CacheMisses     uint64
+	TotalGasUsed    uint64
+	AvgResponseTime time.Duration
 }
 
 // Config holds precompile configuration
@@ -198,7 +198,7 @@ func (p *GraphQLPrecompile) Query(
 			return QueryResponse{}, ErrQueryTimeout
 		}
 		return QueryResponse{
-			Errors: []QueryError{{Message: err.Error()}},
+			Errors:  []QueryError{{Message: err.Error()}},
 			GasUsed: gasCost,
 		}, nil
 	}

@@ -15,8 +15,8 @@ import (
 	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/crypto/mlkem"
 	"github.com/luxfi/crypto/slhdsa"
-	ringtailConfig "github.com/luxfi/threshold/protocols/ringtail/config"
 	"github.com/luxfi/geth/common"
+	ringtailConfig "github.com/luxfi/threshold/protocols/ringtail/config"
 )
 
 // QuantumVerifier provides quantum-safe cryptographic operations
@@ -29,7 +29,7 @@ type QuantumVerifier struct {
 	BLSKeys      map[[32]byte]*BLSPublicKey
 
 	// Quantum stamps from Q-Chain
-	Stamps map[[32]byte]*QuantumStamp
+	Stamps  map[[32]byte]*QuantumStamp
 	Anchors map[[32]byte]*QuantumAnchor
 
 	// Q-Chain connection
@@ -674,8 +674,8 @@ func (qv *QuantumVerifier) verifySchnorrSignature(
 	// Compute challenge hash: e = SHA256(r || P || m)
 	var challengeData []byte
 	challengeData = append(challengeData, signature[:32]...) // r
-	challengeData = append(challengeData, publicKey...)       // P (x-only)
-	challengeData = append(challengeData, message...)         // m
+	challengeData = append(challengeData, publicKey...)      // P (x-only)
+	challengeData = append(challengeData, message...)        // m
 	eHash := sha256.Sum256(challengeData)
 	e := new(big.Int).SetBytes(eHash[:])
 	e.Mod(e, curveOrder)

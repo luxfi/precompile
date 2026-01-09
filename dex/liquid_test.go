@@ -13,11 +13,11 @@ import (
 
 // Test helpers
 var (
-	testYieldToken     = common.HexToAddress("0x1111111111111111111111111111111111111111")
+	testYieldToken  = common.HexToAddress("0x1111111111111111111111111111111111111111")
 	testLiquidToken = common.HexToAddress("0x2222222222222222222222222222222222222222")
-	testUser1          = common.HexToAddress("0x3333333333333333333333333333333333333333")
-	testUser2          = common.HexToAddress("0x4444444444444444444444444444444444444444")
-	testUnderlying     = Currency{Address: common.HexToAddress("0x5555555555555555555555555555555555555555")}
+	testUser1       = common.HexToAddress("0x3333333333333333333333333333333333333333")
+	testUser2       = common.HexToAddress("0x4444444444444444444444444444444444444444")
+	testUnderlying  = Currency{Address: common.HexToAddress("0x5555555555555555555555555555555555555555")}
 )
 
 // Helper to create large big.Int values

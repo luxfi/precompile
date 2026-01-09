@@ -17,8 +17,8 @@ import (
 // This precompile at 0x0440 handles bridge initiation and completion
 type BridgeGateway struct {
 	// State
-	Requests       map[[32]byte]*BridgeRequest
-	Nonces         map[common.Address]uint64 // Per-address nonces
+	Requests        map[[32]byte]*BridgeRequest
+	Nonces          map[common.Address]uint64 // Per-address nonces
 	SupportedTokens map[common.Address]*BridgedToken
 	SupportedChains map[uint32]bool
 
@@ -44,18 +44,18 @@ func NewBridgeGateway() *BridgeGateway {
 		SupportedTokens: make(map[common.Address]*BridgedToken),
 		SupportedChains: make(map[uint32]bool),
 		Pools:           make(map[uint32]map[common.Address]*LiquidityPool),
-		SignerSet:       &SignerSet{
+		SignerSet: &SignerSet{
 			Signers:   make([]*SignerInfo, 0),
 			Waitlist:  make([][20]byte, 0),
 			Threshold: 67, // 2/3 default
 		},
 		Config: &BridgeFeeConfig{
-			BaseFee:      big.NewInt(1e15),               // 0.001 token
-			PercentFee:   30,                              // 0.3%
-			MinFee:       big.NewInt(1e15),               // 0.001 token
+			BaseFee:      big.NewInt(1e15),                                    // 0.001 token
+			PercentFee:   30,                                                  // 0.3%
+			MinFee:       big.NewInt(1e15),                                    // 0.001 token
 			MaxFee:       new(big.Int).Mul(big.NewInt(1e18), big.NewInt(100)), // 100 tokens
-			LiquidityFee: 20,                              // 0.2% to LPs
-			ProtocolFee:  10,                              // 0.1% protocol
+			LiquidityFee: 20,                                                  // 0.2% to LPs
+			ProtocolFee:  10,                                                  // 0.1% protocol
 		},
 		Enabled: true,
 		Paused:  false,

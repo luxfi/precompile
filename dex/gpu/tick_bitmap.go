@@ -25,10 +25,10 @@ type TickBitmap struct {
 	bitmap map[int16][4]uint64
 
 	// Cache of recently accessed words
-	cache      map[int16][4]uint64
-	cacheSize  int
-	cacheHits  uint64
-	cacheMiss  uint64
+	cache     map[int16][4]uint64
+	cacheSize int
+	cacheHits uint64
+	cacheMiss uint64
 }
 
 // NewTickBitmap creates a new tick bitmap.
@@ -305,11 +305,11 @@ func (tb *TickBitmap) BatchNextInitializedTick(
 
 // TickState holds state for an initialized tick.
 type TickState struct {
-	LiquidityGross *Liquidity128 // Total liquidity referencing this tick
-	LiquidityNet   *Liquidity128 // Net liquidity delta when crossing (signed)
+	LiquidityGross        *Liquidity128 // Total liquidity referencing this tick
+	LiquidityNet          *Liquidity128 // Net liquidity delta when crossing (signed)
 	FeeGrowthOutside0X128 *Liquidity128
 	FeeGrowthOutside1X128 *Liquidity128
-	Initialized    bool
+	Initialized           bool
 }
 
 // TickStateMap manages tick states.
@@ -354,9 +354,9 @@ func (m *TickStateMap) BatchUpdate(updates map[int32]*TickState) {
 
 // PositionBitmap tracks which positions exist for quick lookup.
 type PositionBitmap struct {
-	mu      sync.RWMutex
-	bitmap  map[[32]byte]struct{}
-	count   uint64
+	mu     sync.RWMutex
+	bitmap map[[32]byte]struct{}
+	count  uint64
 }
 
 // NewPositionBitmap creates a new position bitmap.
@@ -405,11 +405,11 @@ func (pb *PositionBitmap) Count() uint64 {
 
 // PositionUpdate represents a position modification.
 type PositionUpdate struct {
-	PositionKey  [32]byte
-	TickLower    int32
-	TickUpper    int32
-	LiqDelta     Liquidity128
-	IsAdd        bool
+	PositionKey [32]byte
+	TickLower   int32
+	TickUpper   int32
+	LiqDelta    Liquidity128
+	IsAdd       bool
 }
 
 // PositionUpdateResult holds the result of a position update.
@@ -422,10 +422,10 @@ type PositionUpdateResult struct {
 
 // BatchPositionUpdater processes position updates in parallel.
 type BatchPositionUpdater struct {
-	tickBitmap   *TickBitmap
-	tickStates   *TickStateMap
-	positions    *PositionBitmap
-	acc          *Accelerator
+	tickBitmap *TickBitmap
+	tickStates *TickStateMap
+	positions  *PositionBitmap
+	acc        *Accelerator
 }
 
 // NewBatchPositionUpdater creates a new batch position updater.
@@ -546,12 +546,12 @@ func (u *BatchPositionUpdater) ProcessUpdates(
 
 // CrossTickInput represents a tick crossing calculation.
 type CrossTickInput struct {
-	PoolID          [32]byte
-	TickToCross     int32
-	FeeGrowth0X128  Liquidity128
-	FeeGrowth1X128  Liquidity128
-	CurrentLiq      Liquidity128
-	ZeroForOne      bool
+	PoolID         [32]byte
+	TickToCross    int32
+	FeeGrowth0X128 Liquidity128
+	FeeGrowth1X128 Liquidity128
+	CurrentLiq     Liquidity128
+	ZeroForOne     bool
 }
 
 // CrossTickOutput holds the result of crossing a tick.

@@ -12,10 +12,8 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-// Precompile addresses
-var (
-	lendingPoolAddr = common.HexToAddress(LendingPoolAddress)
-)
+// Precompile address (LP-9050 LXLend)
+var lendingPoolAddr = common.HexToAddress(LXLendAddress)
 
 // Storage key prefixes for Lending state
 var (

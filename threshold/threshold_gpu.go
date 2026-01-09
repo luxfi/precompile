@@ -1,21 +1,47 @@
 // Copyright (C) 2025, Lux Industries Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-//go:build gpu
+//go:build cgo
 
-// Build with: CGO_ENABLED=1 go build -tags luxgpu
+// Build with: CGO_ENABLED=1 go build
 // Requires: luxcpp/crypto library installed
 
 package threshold
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../../../luxcpp/crypto/include
-#cgo LDFLAGS: -L${SRCDIR}/../../../../luxcpp/crypto/lib -lluxcrypto -lstdc++
+#cgo CFLAGS: -I/Users/z/work/luxcpp/crypto/include
+#cgo LDFLAGS: -L/Users/z/work/luxcpp/crypto/build-local -lluxcrypto -lstdc++
 
 #include <lux/crypto/crypto.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+// Short aliases for Go code readability (hides lux_crypto_ prefix)
+#define crypto_gpu_available    lux_crypto_gpu_available
+#define crypto_get_backend      lux_crypto_get_backend
+#define crypto_clear_cache      lux_crypto_clear_cache
+
+// Hash functions
+#define crypto_sha3_256         lux_crypto_sha3_256
+#define crypto_sha3_512         lux_crypto_sha3_512
+#define crypto_blake3           lux_crypto_blake3
+#define crypto_batch_hash       lux_crypto_batch_hash
+
+// BLS operations
+#define crypto_bls_keygen       lux_crypto_bls_keygen
+#define crypto_bls_sk_to_pk     lux_crypto_bls_sk_to_pk
+#define crypto_bls_sign         lux_crypto_bls_sign
+#define crypto_bls_verify       lux_crypto_bls_verify
+#define crypto_bls_batch_verify lux_crypto_bls_batch_verify
+
+// Error codes
+#define CRYPTO_SUCCESS          LUX_CRYPTO_SUCCESS
+#define CRYPTO_ERROR_INVALID    LUX_CRYPTO_ERROR_INVALID
+#define CRYPTO_ERROR_INVALID_KEY LUX_CRYPTO_ERROR_INVALID_KEY
+#define CRYPTO_ERROR_INVALID_SIG LUX_CRYPTO_ERROR_INVALID_SIG
+#define CRYPTO_ERROR_NULL_PTR   LUX_CRYPTO_ERROR_NULL_PTR
+#define CRYPTO_ERROR_GPU        LUX_CRYPTO_ERROR_GPU
 */
 import "C"
 

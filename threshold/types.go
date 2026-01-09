@@ -15,33 +15,33 @@ import (
 // Precompile addresses for threshold operations
 const (
 	// Core threshold operations
-	ThresholdKeygenAddress   = "0x0800" // Distributed key generation
-	ThresholdSignAddress     = "0x0801" // Threshold signing
-	ThresholdRefreshAddress  = "0x0802" // Key share refresh
-	ThresholdReshareAddress  = "0x0803" // Key resharing
-	ThresholdVerifyAddress   = "0x0804" // Signature verification
+	ThresholdKeygenAddress  = "0x0800" // Distributed key generation
+	ThresholdSignAddress    = "0x0801" // Threshold signing
+	ThresholdRefreshAddress = "0x0802" // Key share refresh
+	ThresholdReshareAddress = "0x0803" // Key resharing
+	ThresholdVerifyAddress  = "0x0804" // Signature verification
 
 	// Protocol-specific precompiles
-	FROSTAddress     = "0x0810" // FROST threshold Schnorr
-	CGGMP21Address   = "0x0811" // CGGMP21 threshold ECDSA
-	RingtailAddress  = "0x0812" // Post-quantum threshold (lattice)
-	LSSAddress       = "0x0813" // Lux Secret Sharing
+	FROSTAddress    = "0x0810" // FROST threshold Schnorr
+	CGGMP21Address  = "0x0811" // CGGMP21 threshold ECDSA
+	RingtailAddress = "0x0812" // Post-quantum threshold (lattice)
+	LSSAddress      = "0x0813" // Lux Secret Sharing
 
 	// Gas costs
-	GasKeygen        = uint64(500000)  // DKG is expensive
-	GasSign          = uint64(100000)  // Threshold signing
-	GasRefresh       = uint64(250000)  // Share refresh
-	GasReshare       = uint64(500000)  // Full reshare
-	GasVerify        = uint64(25000)   // Signature verification
-	GasGetPublicKey  = uint64(5000)    // Get public key
-	GasGetKeyInfo    = uint64(5000)    // Get key metadata
+	GasKeygen       = uint64(500000) // DKG is expensive
+	GasSign         = uint64(100000) // Threshold signing
+	GasRefresh      = uint64(250000) // Share refresh
+	GasReshare      = uint64(500000) // Full reshare
+	GasVerify       = uint64(25000)  // Signature verification
+	GasGetPublicKey = uint64(5000)   // Get public key
+	GasGetKeyInfo   = uint64(5000)   // Get key metadata
 )
 
 // Protocol represents a threshold signature protocol
 type Protocol uint8
 
 const (
-	ProtocolLSS Protocol = iota      // Lux Secret Sharing
+	ProtocolLSS      Protocol = iota // Lux Secret Sharing
 	ProtocolFROST                    // Flexible Round-Optimized Schnorr
 	ProtocolCGGMP21                  // CGGMP21 threshold ECDSA
 	ProtocolRingtail                 // Post-quantum threshold (lattice-based)
@@ -99,16 +99,16 @@ type KeyPermissions struct {
 
 // SigningRequest represents a threshold signing request
 type SigningRequest struct {
-	RequestID    [32]byte       // Unique request ID
-	KeyID        [32]byte       // Key to sign with
-	MessageHash  [32]byte       // Message hash to sign
-	Requester    common.Address // Who requested the signature
-	RequestedAt  uint64         // Request timestamp
-	ExpiresAt    uint64         // Request expiry
-	Status       SigningStatus
-	Signature    []byte   // Final threshold signature
-	PartialSigs  [][]byte // Partial signatures collected
-	PartyCount   uint32   // Number of parties that signed
+	RequestID   [32]byte       // Unique request ID
+	KeyID       [32]byte       // Key to sign with
+	MessageHash [32]byte       // Message hash to sign
+	Requester   common.Address // Who requested the signature
+	RequestedAt uint64         // Request timestamp
+	ExpiresAt   uint64         // Request expiry
+	Status      SigningStatus
+	Signature   []byte   // Final threshold signature
+	PartialSigs [][]byte // Partial signatures collected
+	PartyCount  uint32   // Number of parties that signed
 }
 
 // SigningStatus represents the status of a signing request
@@ -133,7 +133,7 @@ type KeygenRequest struct {
 	RequestedAt  uint64         // Request timestamp
 	ExpiresAt    uint64         // Request expiry
 	Status       KeygenStatus
-	ResultKeyID  [32]byte // Resulting key ID (when complete)
+	ResultKeyID  [32]byte   // Resulting key ID (when complete)
 	Participants [][20]byte // Node IDs participating
 }
 

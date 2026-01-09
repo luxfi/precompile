@@ -68,10 +68,10 @@ var (
 
 // Hook errors
 var (
-	ErrHookNotRegistered    = errors.New("hook not registered")
-	ErrHookCallFailed       = errors.New("hook call failed")
-	ErrHookInvalidAddress   = errors.New("hook address doesn't match capabilities")
-	ErrHookDeltaOverflow    = errors.New("hook delta modification overflow")
+	ErrHookNotRegistered     = errors.New("hook not registered")
+	ErrHookCallFailed        = errors.New("hook call failed")
+	ErrHookInvalidAddress    = errors.New("hook address doesn't match capabilities")
+	ErrHookDeltaOverflow     = errors.New("hook delta modification overflow")
 	ErrHookUnauthorizedDelta = errors.New("hook not authorized to modify delta")
 )
 
@@ -199,10 +199,10 @@ func (hr *HookRegistry) IsHookEnabled(addr common.Address, flag HookFlags) bool 
 
 // DynamicFeeHookData contains data for dynamic fee hooks
 type DynamicFeeHookData struct {
-	BaseFee      uint24   // Base fee in basis points
-	VolatilityFee uint24  // Additional fee based on volatility
-	TimeDecay    uint64   // Fee decay over time
-	LastUpdate   uint64   // Timestamp of last update
+	BaseFee       uint24 // Base fee in basis points
+	VolatilityFee uint24 // Additional fee based on volatility
+	TimeDecay     uint64 // Fee decay over time
+	LastUpdate    uint64 // Timestamp of last update
 }
 
 // TWAPHookData contains data for TWAP oracle hooks
@@ -216,29 +216,29 @@ type TWAPHookData struct {
 
 // TWAPObservation is a single TWAP data point
 type TWAPObservation struct {
-	Timestamp          uint64
-	TickCumulative     *big.Int
+	Timestamp           uint64
+	TickCumulative      *big.Int
 	SecondsPerLiquidity *big.Int
-	Initialized        bool
+	Initialized         bool
 }
 
 // LimitOrderHookData contains data for limit order hooks
 type LimitOrderHookData struct {
-	Orders          map[[32]byte]*LimitOrder
-	OrdersByTick    map[int24][][32]byte
-	ExecutedOrders  [][32]byte
+	Orders         map[[32]byte]*LimitOrder
+	OrdersByTick   map[int24][][32]byte
+	ExecutedOrders [][32]byte
 }
 
 // LimitOrder represents a limit order in the hook
 type LimitOrder struct {
-	ID           [32]byte
-	Owner        common.Address
-	ZeroForOne   bool           // Direction
-	Tick         int24          // Price tick
-	Amount       *big.Int       // Amount to swap
-	Filled       *big.Int       // Amount filled
-	Status       LimitOrderStatus
-	CreatedAt    uint64
+	ID         [32]byte
+	Owner      common.Address
+	ZeroForOne bool     // Direction
+	Tick       int24    // Price tick
+	Amount     *big.Int // Amount to swap
+	Filled     *big.Int // Amount filled
+	Status     LimitOrderStatus
+	CreatedAt  uint64
 }
 
 // LimitOrderStatus represents the status of a limit order
@@ -253,28 +253,28 @@ const (
 
 // MEVProtectionHookData contains data for MEV protection hooks
 type MEVProtectionHookData struct {
-	CommittedSwaps    map[[32]byte]*CommittedSwap
-	RevealedSwaps     map[[32]byte]*RevealedSwap
-	CommitmentPeriod  uint64 // Blocks to wait before reveal
-	MaxSlippage       uint64 // Max allowed slippage (basis points)
+	CommittedSwaps   map[[32]byte]*CommittedSwap
+	RevealedSwaps    map[[32]byte]*RevealedSwap
+	CommitmentPeriod uint64 // Blocks to wait before reveal
+	MaxSlippage      uint64 // Max allowed slippage (basis points)
 }
 
 // CommittedSwap is a committed (hidden) swap
 type CommittedSwap struct {
-	CommitHash   [32]byte
-	Sender       common.Address
-	CommitBlock  uint64
-	Amount       *big.Int // Encrypted or hidden
+	CommitHash  [32]byte
+	Sender      common.Address
+	CommitBlock uint64
+	Amount      *big.Int // Encrypted or hidden
 }
 
 // RevealedSwap is a revealed swap after commitment period
 type RevealedSwap struct {
-	CommitHash   [32]byte
-	Sender       common.Address
-	ZeroForOne   bool
-	Amount       *big.Int
-	MinOutput    *big.Int
-	RevealBlock  uint64
+	CommitHash  [32]byte
+	Sender      common.Address
+	ZeroForOne  bool
+	Amount      *big.Int
+	MinOutput   *big.Int
+	RevealBlock uint64
 }
 
 // =========================================================================

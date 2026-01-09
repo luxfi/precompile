@@ -15,61 +15,61 @@ import (
 // Precompile addresses for quantum-safe operations
 const (
 	// Core quantum signature operations
-	QuantumVerifyAddress   = "0x0600" // Generic quantum signature verification
-	RingtailAddress        = "0x0601" // Ringtail threshold signatures
-	MLDSAAddress           = "0x0602" // NIST ML-DSA (Dilithium)
-	MLKEMAddress           = "0x0603" // NIST ML-KEM (Kyber)
-	SLHDSAAddress          = "0x0604" // NIST SLH-DSA (SPHINCS+)
+	QuantumVerifyAddress = "0x0600" // Generic quantum signature verification
+	RingtailAddress      = "0x0601" // Ringtail threshold signatures
+	MLDSAAddress         = "0x0602" // NIST ML-DSA (Dilithium)
+	MLKEMAddress         = "0x0603" // NIST ML-KEM (Kyber)
+	SLHDSAAddress        = "0x0604" // NIST SLH-DSA (SPHINCS+)
 
 	// Hybrid operations (classical + PQ)
-	HybridBLSRingtailAddress = "0x0610" // BLS12-381 + Ringtail
-	HybridECDSAMLDSAAddress  = "0x0611" // ECDSA + ML-DSA
+	HybridBLSRingtailAddress     = "0x0610" // BLS12-381 + Ringtail
+	HybridECDSAMLDSAAddress      = "0x0611" // ECDSA + ML-DSA
 	HybridSchnorrRingtailAddress = "0x0612" // Schnorr + Ringtail
 
 	// Quantum stamping (Q-Chain integration)
-	QuantumStampAddress    = "0x0620" // Quantum timestamp verification
-	QuantumAnchorAddress   = "0x0621" // Quantum anchor verification
+	QuantumStampAddress  = "0x0620" // Quantum timestamp verification
+	QuantumAnchorAddress = "0x0621" // Quantum anchor verification
 
 	// BLS operations (classical but often paired with PQ)
-	BLSVerifyAddress       = "0x0630" // BLS12-381 signature verification
-	BLSAggregateAddress    = "0x0631" // BLS signature aggregation
-	BLSMultiVerifyAddress  = "0x0632" // BLS multi-signature verification
+	BLSVerifyAddress      = "0x0630" // BLS12-381 signature verification
+	BLSAggregateAddress   = "0x0631" // BLS signature aggregation
+	BLSMultiVerifyAddress = "0x0632" // BLS multi-signature verification
 
 	// Gas costs
-	GasRingtailVerify      = uint64(75000)  // Ringtail signature verification
-	GasMLDSAVerify         = uint64(50000)  // ML-DSA verification
-	GasMLKEMDecap          = uint64(25000)  // ML-KEM decapsulation
-	GasSLHDSAVerify        = uint64(100000) // SLH-DSA verification (larger)
-	GasHybridVerify        = uint64(100000) // Hybrid signature verification
-	GasBLSVerify           = uint64(25000)  // BLS verification
-	GasBLSAggregate        = uint64(10000)  // BLS aggregation (per sig)
-	GasQuantumStamp        = uint64(50000)  // Quantum stamp verification
+	GasRingtailVerify = uint64(75000)  // Ringtail signature verification
+	GasMLDSAVerify    = uint64(50000)  // ML-DSA verification
+	GasMLKEMDecap     = uint64(25000)  // ML-KEM decapsulation
+	GasSLHDSAVerify   = uint64(100000) // SLH-DSA verification (larger)
+	GasHybridVerify   = uint64(100000) // Hybrid signature verification
+	GasBLSVerify      = uint64(25000)  // BLS verification
+	GasBLSAggregate   = uint64(10000)  // BLS aggregation (per sig)
+	GasQuantumStamp   = uint64(50000)  // Quantum stamp verification
 )
 
 // QuantumAlgorithm represents a post-quantum algorithm
 type QuantumAlgorithm uint8
 
 const (
-	AlgRingtail QuantumAlgorithm = iota // Threshold lattice signatures
-	AlgMLDSA44                          // ML-DSA-44 (FIPS 204)
-	AlgMLDSA65                          // ML-DSA-65
-	AlgMLDSA87                          // ML-DSA-87
-	AlgMLKEM512                         // ML-KEM-512 (FIPS 203)
-	AlgMLKEM768                         // ML-KEM-768
-	AlgMLKEM1024                        // ML-KEM-1024
-	AlgSLHDSASHA2128f                   // SLH-DSA-SHA2-128f (FIPS 205)
-	AlgSLHDSASHA2192f                   // SLH-DSA-SHA2-192f
-	AlgSLHDSASHA2256f                   // SLH-DSA-SHA2-256f
+	AlgRingtail       QuantumAlgorithm = iota // Threshold lattice signatures
+	AlgMLDSA44                                // ML-DSA-44 (FIPS 204)
+	AlgMLDSA65                                // ML-DSA-65
+	AlgMLDSA87                                // ML-DSA-87
+	AlgMLKEM512                               // ML-KEM-512 (FIPS 203)
+	AlgMLKEM768                               // ML-KEM-768
+	AlgMLKEM1024                              // ML-KEM-1024
+	AlgSLHDSASHA2128f                         // SLH-DSA-SHA2-128f (FIPS 205)
+	AlgSLHDSASHA2192f                         // SLH-DSA-SHA2-192f
+	AlgSLHDSASHA2256f                         // SLH-DSA-SHA2-256f
 )
 
 // HybridScheme represents a hybrid classical+PQ scheme
 type HybridScheme uint8
 
 const (
-	HybridBLSRingtail HybridScheme = iota   // BLS + Ringtail
-	HybridECDSAMLDSA                         // ECDSA + ML-DSA
-	HybridSchnorrRingtail                    // Schnorr + Ringtail
-	HybridEd25519MLDSA                       // Ed25519 + ML-DSA
+	HybridBLSRingtail     HybridScheme = iota // BLS + Ringtail
+	HybridECDSAMLDSA                          // ECDSA + ML-DSA
+	HybridSchnorrRingtail                     // Schnorr + Ringtail
+	HybridEd25519MLDSA                        // Ed25519 + ML-DSA
 )
 
 // RingtailPublicKey represents a Ringtail threshold public key
@@ -125,31 +125,31 @@ type MLKEMCiphertext struct {
 
 // HybridSignature combines classical and PQ signatures
 type HybridSignature struct {
-	Scheme            HybridScheme
-	ClassicalSig      []byte   // ECDSA/BLS/Schnorr signature
-	QuantumSig        []byte   // Ringtail/ML-DSA signature
-	ClassicalPubKey   []byte   // Classical public key
-	QuantumPubKey     []byte   // PQ public key
+	Scheme          HybridScheme
+	ClassicalSig    []byte // ECDSA/BLS/Schnorr signature
+	QuantumSig      []byte // Ringtail/ML-DSA signature
+	ClassicalPubKey []byte // Classical public key
+	QuantumPubKey   []byte // PQ public key
 }
 
 // QuantumStamp represents a quantum timestamp from Q-Chain
 type QuantumStamp struct {
-	StampID     [32]byte       // Unique stamp identifier
-	BlockID     [32]byte       // Q-Chain block ID
-	BlockHeight uint64         // Q-Chain block height
-	Timestamp   uint64         // Unix timestamp
-	PChainRef   uint64         // P-Chain block reference
-	Message     []byte         // Stamped message/hash
+	StampID     [32]byte           // Unique stamp identifier
+	BlockID     [32]byte           // Q-Chain block ID
+	BlockHeight uint64             // Q-Chain block height
+	Timestamp   uint64             // Unix timestamp
+	PChainRef   uint64             // P-Chain block reference
+	Message     []byte             // Stamped message/hash
 	Signature   *RingtailSignature // Quantum signature
 }
 
 // QuantumAnchor anchors data to Q-Chain with quantum proof
 type QuantumAnchor struct {
-	AnchorID    [32]byte // Unique anchor identifier
-	DataHash    [32]byte // Hash of anchored data
-	Stamp       *QuantumStamp
-	Proof       []byte   // Merkle proof in Q-Chain
-	Verified    bool
+	AnchorID [32]byte // Unique anchor identifier
+	DataHash [32]byte // Hash of anchored data
+	Stamp    *QuantumStamp
+	Proof    []byte // Merkle proof in Q-Chain
+	Verified bool
 }
 
 // BLSPublicKey represents a BLS12-381 public key
@@ -164,17 +164,17 @@ type BLSSignature struct {
 
 // BLSAggregateSignature represents an aggregated BLS signature
 type BLSAggregateSignature struct {
-	AggSig     []byte          // Aggregated signature
-	PubKeys    [][]byte        // Participating public keys
-	Messages   [][32]byte      // Messages (if distinct)
-	SameMessage bool           // True if all signed same message
+	AggSig      []byte     // Aggregated signature
+	PubKeys     [][]byte   // Participating public keys
+	Messages    [][32]byte // Messages (if distinct)
+	SameMessage bool       // True if all signed same message
 }
 
 // QuantumKeyPair represents a quantum key pair
 type QuantumKeyPair struct {
 	Algorithm  QuantumAlgorithm
 	PublicKey  []byte
-	PrivateKey []byte // Only populated for local keys
+	PrivateKey []byte         // Only populated for local keys
 	Address    common.Address // Derived EVM address
 }
 
@@ -224,15 +224,15 @@ const (
 
 // ML-DSA key sizes (FIPS 204)
 const (
-	MLDSA44PublicKeySize  = 1312
-	MLDSA44SecretKeySize  = 2560
-	MLDSA44SignatureSize  = 2420
-	MLDSA65PublicKeySize  = 1952
-	MLDSA65SecretKeySize  = 4032
-	MLDSA65SignatureSize  = 3309
-	MLDSA87PublicKeySize  = 2592
-	MLDSA87SecretKeySize  = 4896
-	MLDSA87SignatureSize  = 4627
+	MLDSA44PublicKeySize = 1312
+	MLDSA44SecretKeySize = 2560
+	MLDSA44SignatureSize = 2420
+	MLDSA65PublicKeySize = 1952
+	MLDSA65SecretKeySize = 4032
+	MLDSA65SignatureSize = 3309
+	MLDSA87PublicKeySize = 2592
+	MLDSA87SecretKeySize = 4896
+	MLDSA87SignatureSize = 4627
 )
 
 // ML-KEM key sizes (FIPS 203)
@@ -253,7 +253,7 @@ const MLKEMSharedSecretSize = 32
 
 // BLS12-381 sizes
 const (
-	BLSPublicKeySize  = 48  // G1 compressed
-	BLSSignatureSize  = 96  // G2 compressed
-	BLSSecretKeySize  = 32
+	BLSPublicKeySize = 48 // G1 compressed
+	BLSSignatureSize = 96 // G2 compressed
+	BLSSecretKeySize = 32
 )

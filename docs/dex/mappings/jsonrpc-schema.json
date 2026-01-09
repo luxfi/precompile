@@ -1,0 +1,352 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LXDEX JSON-RPC Schema",
+  "description": "Canonical JSON-RPC types for LXDEX trading API",
+  "definitions": {
+    "MarketId": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Market identifier (uint32)"
+    },
+    "OrderId": {
+      "type": "string",
+      "pattern": "^[0-9]+$",
+      "description": "Exchange order ID (uint64 as string)"
+    },
+    "ClOrdId": {
+      "type": "string",
+      "pattern": "^(0x[0-9a-fA-F]+|[0-9]+)$",
+      "description": "Client order ID (uint128 as hex or decimal string)"
+    },
+    "X18Amount": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)?$",
+      "description": "Fixed-point amount with 18 decimals (as decimal string)"
+    },
+    "Address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{40}$",
+      "description": "Ethereum address"
+    },
+    "Timestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix timestamp in seconds"
+    },
+    "Side": {
+      "type": "string",
+      "enum": ["BUY", "SELL"],
+      "description": "Order side"
+    },
+    "OrderType": {
+      "type": "string",
+      "enum": [
+        "LIMIT",
+        "MARKET",
+        "STOP_LIMIT",
+        "STOP_MARKET",
+        "TAKE_PROFIT_LIMIT",
+        "TAKE_PROFIT_MARKET",
+        "TRAILING_STOP",
+        "TWAP",
+        "ICEBERG"
+      ],
+      "description": "Order type (append-only enum)"
+    },
+    "TimeInForce": {
+      "type": "string",
+      "enum": ["GTC", "IOC", "FOK", "GTD", "ALO"],
+      "description": "Time-in-force (append-only enum)"
+    },
+    "OrderStatus": {
+      "type": "string",
+      "enum": ["NEW", "OPEN", "FILLED", "CANCELLED", "REJECTED", "EXPIRED", "TRIGGERED"],
+      "description": "Order status"
+    },
+    "OrderRequest": {
+      "type": "object",
+      "required": ["marketId", "side", "orderType", "size"],
+      "properties": {
+        "marketId": { "$ref": "#/definitions/MarketId" },
+        "side": { "$ref": "#/definitions/Side" },
+        "orderType": { "$ref": "#/definitions/OrderType" },
+        "price": {
+          "$ref": "#/definitions/X18Amount",
+          "description": "Limit price (required for LIMIT orders)"
+        },
+        "size": {
+          "$ref": "#/definitions/X18Amount",
+          "description": "Order size in base asset"
+        },
+        "timeInForce": {
+          "$ref": "#/definitions/TimeInForce",
+          "default": "GTC"
+        },
+        "reduceOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, order can only reduce position"
+        },
+        "clOrdId": {
+          "$ref": "#/definitions/ClOrdId",
+          "description": "Client order ID for idempotency"
+        },
+        "expireTime": {
+          "$ref": "#/definitions/Timestamp",
+          "description": "Expiration timestamp for GTD orders"
+        },
+        "triggerPrice": {
+          "$ref": "#/definitions/X18Amount",
+          "description": "Trigger price for Stop/TP orders"
+        },
+        "trailingDelta": {
+          "$ref": "#/definitions/X18Amount",
+          "description": "Trailing delta for trailing stop orders"
+        }
+      }
+    },
+    "Order": {
+      "type": "object",
+      "properties": {
+        "orderId": { "$ref": "#/definitions/OrderId" },
+        "owner": { "$ref": "#/definitions/Address" },
+        "marketId": { "$ref": "#/definitions/MarketId" },
+        "side": { "$ref": "#/definitions/Side" },
+        "orderType": { "$ref": "#/definitions/OrderType" },
+        "price": { "$ref": "#/definitions/X18Amount" },
+        "originalSize": { "$ref": "#/definitions/X18Amount" },
+        "remainingSize": { "$ref": "#/definitions/X18Amount" },
+        "filledSize": { "$ref": "#/definitions/X18Amount" },
+        "timeInForce": { "$ref": "#/definitions/TimeInForce" },
+        "status": { "$ref": "#/definitions/OrderStatus" },
+        "timestamp": { "$ref": "#/definitions/Timestamp" },
+        "clOrdId": { "$ref": "#/definitions/ClOrdId" },
+        "reduceOnly": { "type": "boolean" }
+      }
+    },
+    "CancelRequest": {
+      "type": "object",
+      "properties": {
+        "orderId": {
+          "$ref": "#/definitions/OrderId",
+          "description": "Cancel by exchange order ID"
+        },
+        "clOrdId": {
+          "$ref": "#/definitions/ClOrdId",
+          "description": "Cancel by client order ID (requires marketId)"
+        },
+        "marketId": {
+          "$ref": "#/definitions/MarketId",
+          "description": "Required when using clOrdId"
+        }
+      },
+      "description": "Provide either orderId OR (clOrdId + marketId)"
+    },
+    "AmendRequest": {
+      "type": "object",
+      "required": ["orderId"],
+      "properties": {
+        "orderId": { "$ref": "#/definitions/OrderId" },
+        "newPrice": {
+          "$ref": "#/definitions/X18Amount",
+          "description": "New price (omit to keep current)"
+        },
+        "newSize": {
+          "$ref": "#/definitions/X18Amount",
+          "description": "New size (omit to keep current)"
+        }
+      }
+    },
+    "Fill": {
+      "type": "object",
+      "properties": {
+        "marketId": { "$ref": "#/definitions/MarketId" },
+        "orderId": { "$ref": "#/definitions/OrderId" },
+        "clOrdId": { "$ref": "#/definitions/ClOrdId" },
+        "side": { "$ref": "#/definitions/Side" },
+        "price": { "$ref": "#/definitions/X18Amount" },
+        "size": { "$ref": "#/definitions/X18Amount" },
+        "fee": { "$ref": "#/definitions/X18Amount" },
+        "timestamp": { "$ref": "#/definitions/Timestamp" },
+        "tradeId": { "type": "string" },
+        "isMaker": { "type": "boolean" },
+        "newStatus": { "$ref": "#/definitions/OrderStatus" }
+      }
+    },
+    "Position": {
+      "type": "object",
+      "properties": {
+        "marketId": { "$ref": "#/definitions/MarketId" },
+        "side": { "type": "string", "enum": ["LONG", "SHORT"] },
+        "size": { "$ref": "#/definitions/X18Amount" },
+        "avgEntryPrice": { "$ref": "#/definitions/X18Amount" },
+        "unrealizedPnl": { "$ref": "#/definitions/X18Amount" },
+        "margin": { "$ref": "#/definitions/X18Amount" },
+        "fundingAccrued": { "$ref": "#/definitions/X18Amount" }
+      }
+    },
+    "AccountState": {
+      "type": "object",
+      "properties": {
+        "equity": { "$ref": "#/definitions/X18Amount" },
+        "totalCollateral": { "$ref": "#/definitions/X18Amount" },
+        "unrealizedPnl": { "$ref": "#/definitions/X18Amount" },
+        "maintenanceMargin": { "$ref": "#/definitions/X18Amount" },
+        "initialMargin": { "$ref": "#/definitions/X18Amount" },
+        "marginMode": { "type": "string", "enum": ["ISOLATED", "CROSS", "PORTFOLIO"] },
+        "isLiquidatable": { "type": "boolean" }
+      }
+    },
+    "BBO": {
+      "type": "object",
+      "properties": {
+        "marketId": { "$ref": "#/definitions/MarketId" },
+        "bidPrice": { "$ref": "#/definitions/X18Amount" },
+        "bidSize": { "$ref": "#/definitions/X18Amount" },
+        "askPrice": { "$ref": "#/definitions/X18Amount" },
+        "askSize": { "$ref": "#/definitions/X18Amount" },
+        "timestamp": { "$ref": "#/definitions/Timestamp" }
+      }
+    },
+    "DepthLevel": {
+      "type": "object",
+      "properties": {
+        "price": { "$ref": "#/definitions/X18Amount" },
+        "size": { "$ref": "#/definitions/X18Amount" }
+      }
+    },
+    "OrderBook": {
+      "type": "object",
+      "properties": {
+        "marketId": { "$ref": "#/definitions/MarketId" },
+        "bids": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/DepthLevel" }
+        },
+        "asks": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/DepthLevel" }
+        },
+        "timestamp": { "$ref": "#/definitions/Timestamp" }
+      }
+    }
+  },
+  "methods": {
+    "lxdex_placeOrder": {
+      "description": "Submit a new order",
+      "params": { "$ref": "#/definitions/OrderRequest" },
+      "result": { "$ref": "#/definitions/OrderId" }
+    },
+    "lxdex_placeOrders": {
+      "description": "Submit multiple orders atomically",
+      "params": {
+        "type": "array",
+        "items": { "$ref": "#/definitions/OrderRequest" }
+      },
+      "result": {
+        "type": "array",
+        "items": { "$ref": "#/definitions/OrderId" }
+      }
+    },
+    "lxdex_cancelOrder": {
+      "description": "Cancel an order",
+      "params": { "$ref": "#/definitions/CancelRequest" },
+      "result": { "type": "boolean" }
+    },
+    "lxdex_cancelOrders": {
+      "description": "Cancel multiple orders",
+      "params": {
+        "type": "array",
+        "items": { "$ref": "#/definitions/CancelRequest" }
+      },
+      "result": {
+        "type": "array",
+        "items": { "type": "boolean" }
+      }
+    },
+    "lxdex_cancelAll": {
+      "description": "Cancel all orders (optionally for specific market)",
+      "params": {
+        "type": "object",
+        "properties": {
+          "marketId": { "$ref": "#/definitions/MarketId" }
+        }
+      },
+      "result": { "type": "integer", "description": "Number cancelled" }
+    },
+    "lxdex_amendOrder": {
+      "description": "Amend an existing order",
+      "params": { "$ref": "#/definitions/AmendRequest" },
+      "result": { "$ref": "#/definitions/OrderId" }
+    },
+    "lxdex_getOrder": {
+      "description": "Get order by ID",
+      "params": {
+        "type": "object",
+        "properties": {
+          "orderId": { "$ref": "#/definitions/OrderId" }
+        }
+      },
+      "result": { "$ref": "#/definitions/Order" }
+    },
+    "lxdex_getOpenOrders": {
+      "description": "Get all open orders for account",
+      "params": {
+        "type": "object",
+        "properties": {
+          "account": { "$ref": "#/definitions/Address" },
+          "marketId": { "$ref": "#/definitions/MarketId" }
+        }
+      },
+      "result": {
+        "type": "array",
+        "items": { "$ref": "#/definitions/Order" }
+      }
+    },
+    "lxdex_getPositions": {
+      "description": "Get all positions for account",
+      "params": {
+        "type": "object",
+        "properties": {
+          "account": { "$ref": "#/definitions/Address" }
+        }
+      },
+      "result": {
+        "type": "array",
+        "items": { "$ref": "#/definitions/Position" }
+      }
+    },
+    "lxdex_getAccountState": {
+      "description": "Get full account state",
+      "params": {
+        "type": "object",
+        "properties": {
+          "account": { "$ref": "#/definitions/Address" }
+        }
+      },
+      "result": { "$ref": "#/definitions/AccountState" }
+    },
+    "lxdex_getBBO": {
+      "description": "Get best bid/offer",
+      "params": {
+        "type": "object",
+        "properties": {
+          "marketId": { "$ref": "#/definitions/MarketId" }
+        }
+      },
+      "result": { "$ref": "#/definitions/BBO" }
+    },
+    "lxdex_getDepth": {
+      "description": "Get order book depth",
+      "params": {
+        "type": "object",
+        "properties": {
+          "marketId": { "$ref": "#/definitions/MarketId" },
+          "levels": { "type": "integer", "default": 20 }
+        }
+      },
+      "result": { "$ref": "#/definitions/OrderBook" }
+    }
+  }
+}

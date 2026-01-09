@@ -12,15 +12,15 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-// Precompile address as bytes
-var liquidAddr = common.HexToAddress(LiquidAddress)
+// Precompile address (LP-9060 LXLiquid)
+var liquidAddr = common.HexToAddress(LXLiquidAddress)
 
 // Storage key prefixes for Liquid state
 var (
-	liquidYieldTokenPrefix   = []byte("liquid/ytok")  // Approved yield tokens
-	liquidTokenPrefix    = []byte("liquid/syn")   // Synthetic tokens
-	liquidAccountPrefix      = []byte("liquid/acc")   // User accounts
-	liquidGlobalPrefix       = []byte("liquid/glob")  // Global state
+	liquidYieldTokenPrefix = []byte("liquid/ytok") // Approved yield tokens
+	liquidTokenPrefix      = []byte("liquid/syn")  // Synthetic tokens
+	liquidAccountPrefix    = []byte("liquid/acc")  // User accounts
+	liquidGlobalPrefix     = []byte("liquid/glob") // Global state
 )
 
 // Liquid implements the self-repaying loan vault precompile
@@ -51,10 +51,10 @@ type Liquid struct {
 // NewLiquid creates a new Liquid instance
 func NewLiquid(pm *PoolManager) *Liquid {
 	return &Liquid{
-		yieldTokens: make(map[common.Address]*YieldToken),
-		liquidTokens:  make(map[common.Address]*LiquidToken),
-		accounts:    make(map[[32]byte]*LiquidAccount),
-		poolManager: pm,
+		yieldTokens:  make(map[common.Address]*YieldToken),
+		liquidTokens: make(map[common.Address]*LiquidToken),
+		accounts:     make(map[[32]byte]*LiquidAccount),
+		poolManager:  pm,
 	}
 }
 
@@ -118,8 +118,8 @@ func (a *Liquid) AddLiquidToken(
 		UnderlyingAsset: underlying,
 		TotalMinted:     big.NewInt(0),
 		DebtCeiling:     new(big.Int).Set(debtCeiling),
-		MintFee:         10,  // 0.10%
-		BurnFee:         10,  // 0.10%
+		MintFee:         10, // 0.10%
+		BurnFee:         10, // 0.10%
 	}
 
 	a.liquidTokens[synthetic] = st

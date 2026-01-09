@@ -21,7 +21,7 @@ func TestEncodeDecodeHookPermissions(t *testing.T) {
 		permissions HookPermissions
 	}{
 		{
-			name: "no permissions",
+			name:        "no permissions",
 			permissions: HookPermissions{},
 		},
 		{
@@ -450,10 +450,10 @@ func TestUnpackHookDeltaReturn(t *testing.T) {
 
 func BenchmarkEncodeHookPermissions(b *testing.B) {
 	permissions := HookPermissions{
-		BeforeSwap: true,
-		AfterSwap:  true,
+		BeforeSwap:         true,
+		AfterSwap:          true,
 		BeforeAddLiquidity: true,
-		AfterAddLiquidity: true,
+		AfterAddLiquidity:  true,
 	}
 
 	b.ResetTimer()
