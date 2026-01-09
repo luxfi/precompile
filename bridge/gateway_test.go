@@ -113,9 +113,9 @@ func TestRegisterToken(t *testing.T) {
 		18,
 		"TEST",
 		"Test Token",
-		big.NewInt(1e17),                                      // min bridge
-		new(big.Int).Mul(big.NewInt(1e12), big.NewInt(1e12)),  // max bridge (1e24)
-		new(big.Int).Mul(big.NewInt(1e13), big.NewInt(1e12)),  // daily limit (1e25)
+		big.NewInt(1e17), // min bridge
+		new(big.Int).Mul(big.NewInt(1e12), big.NewInt(1e12)), // max bridge (1e24)
+		new(big.Int).Mul(big.NewInt(1e13), big.NewInt(1e12)), // daily limit (1e25)
 	)
 
 	if err != nil {
@@ -555,9 +555,9 @@ func TestCalculateFee(t *testing.T) {
 		amount *big.Int
 		minFee *big.Int
 	}{
-		{"Small amount", big.NewInt(1e17), gw.Config.MinFee},   // Fee would be below min
-		{"Large amount", e22(), gw.Config.MaxFee},   // Fee would exceed max
-		{"Medium amount", e19(), nil},               // Normal calculation
+		{"Small amount", big.NewInt(1e17), gw.Config.MinFee}, // Fee would be below min
+		{"Large amount", e22(), gw.Config.MaxFee},            // Fee would exceed max
+		{"Medium amount", e19(), nil},                        // Normal calculation
 	}
 
 	for _, tt := range tests {

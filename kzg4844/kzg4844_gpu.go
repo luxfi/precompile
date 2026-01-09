@@ -6,9 +6,9 @@
 package kzg4844
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../../luxcpp/crypto/include
-#cgo LDFLAGS: -L${SRCDIR}/../../../luxcpp/crypto/build-local -lluxcrypto -lstdc++ -lm
-#cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework MetalPerformanceShaders
+// #cgo CFLAGS: -I${SRCDIR}/../../cpp/crypto/include
+// #cgo LDFLAGS: -L${SRCDIR}/../../cpp/crypto/build-local -lluxcrypto -lstdc++ -lm
+// #cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework MetalPerformanceShaders
 
 #include <lux/crypto/metal_bls.h>
 #include <lux/crypto/crypto.h>
@@ -68,13 +68,13 @@ type kzg4844PrecompileGPU struct {
 // NewGPUPrecompile creates a GPU-accelerated KZG4844 precompile
 func NewGPUPrecompile() contract.StatefulPrecompiledContract {
 	initBLSContext()
-	
+
 	base := &kzg4844Precompile{}
-	
+
 	if gpuEnabled {
 		return &kzg4844PrecompileGPU{base}
 	}
-	
+
 	return base
 }
 
@@ -82,7 +82,7 @@ func NewGPUPrecompile() contract.StatefulPrecompiledContract {
 func (p *kzg4844PrecompileGPU) RequiredGas(input []byte) uint64 {
 	// Calculate base gas cost
 	baseCost := p.kzg4844Precompile.RequiredGas(input)
-	
+
 	if gpuEnabled && len(input) > 0 {
 		opCode := input[0]
 		switch opCode {
@@ -90,7 +90,7 @@ func (p *kzg4844PrecompileGPU) RequiredGas(input []byte) uint64 {
 			// BlobToCommitment is a single large MSM - significant GPU speedup
 			return baseCost * 40 / 100 // 60% reduction for GPU
 		case OpComputeProof:
-			// ComputeProof involves MSM - significant GPU speedup  
+			// ComputeProof involves MSM - significant GPU speedup
 			return baseCost * 45 / 100 // 55% reduction for GPU
 		case OpBatchVerifyProofs:
 			// Batch operations benefit most from GPU parallelization
@@ -100,7 +100,7 @@ func (p *kzg4844PrecompileGPU) RequiredGas(input []byte) uint64 {
 			return baseCost * 70 / 100 // 30% reduction for GPU
 		}
 	}
-	
+
 	return baseCost
 }
 
@@ -214,7 +214,7 @@ func gpuBlobToCommitment(input []byte) ([]byte, error) {
 		&scalars[0],
 		C.uint32_t(FieldElements),
 	)
-	
+
 	if ret != C.METAL_BLS_SUCCESS {
 		return nil, fmt.Errorf("GPU MSM failed with code: %d", ret)
 	}
@@ -235,7 +235,7 @@ func gpuBlobToCommitment(input []byte) ([]byte, error) {
 func gpuComputeProof(input []byte) ([]byte, error) {
 	// Input: blob (131072 bytes) + point (32 bytes)
 	if len(input) < BlobSize+Fr256Size {
-		return nil, fmt.Errorf("invalid input size: expected at least %d, got %d", 
+		return nil, fmt.Errorf("invalid input size: expected at least %d, got %d",
 			BlobSize+Fr256Size, len(input))
 	}
 
@@ -324,18 +324,18 @@ func gpuBatchVerifyProofs(input []byte) ([]byte, error) {
 		return nil, ErrInvalidInput
 	}
 
-	count := uint32(input[0])<<24 | uint32(input[1])<<16 | 
+	count := uint32(input[0])<<24 | uint32(input[1])<<16 |
 		uint32(input[2])<<8 | uint32(input[3])
-	
+
 	expectedSize := 4 + int(count)*entrySize
 	if len(input) < expectedSize {
-		return nil, fmt.Errorf("invalid batch input size: expected %d, got %d", 
+		return nil, fmt.Errorf("invalid batch input size: expected %d, got %d",
 			expectedSize, len(input))
 	}
 
 	// For batch verification, we use random linear combination
 	// This allows us to batch multiple pairing checks into one
-	
+
 	// Parse all commitments, proofs, points, and values
 	commitments := make([][]byte, count)
 	proofs := make([][]byte, count)
@@ -355,7 +355,7 @@ func gpuBatchVerifyProofs(input []byte) ([]byte, error) {
 
 	// Aggregate commitments and proofs using random linear combination
 	// C_agg = sum(r_i * C_i), P_agg = sum(r_i * P_i)
-	
+
 	// Convert commitments to G1 points
 	cCommitments := make([]C.G1Affine, count)
 	cProofs := make([]C.G1Affine, count)
@@ -509,11 +509,11 @@ func computeQuotientPolynomial(blobData, evalPoint []byte) ([]uint64, error) {
 	// q(x) = (p(x) - p(z)) / (x - z)
 	// q_i = sum_{j>i} c_j * z^{j-i-1}
 	quotientScalars := make([]uint64, (FieldElements-1)*4)
-	
+
 	// This is a synthetic division computation
 	// For efficiency in production, this should be done in the field
 	_ = pz // Used in actual computation
-	
+
 	// Placeholder: copy coefficients shifted
 	for i := 0; i < FieldElements-1; i++ {
 		for j := 0; j < 4; j++ {
@@ -558,7 +558,7 @@ func generateRandomChallenges(count int) []uint64 {
 	// In production, these should be derived from a hash of all inputs
 	// for Fiat-Shamir transformation
 	challenges := make([]uint64, count*4)
-	
+
 	// Use deterministic challenges based on transcript hash
 	// Each challenge is 256-bit (4 limbs)
 	for i := 0; i < count; i++ {
@@ -569,7 +569,7 @@ func generateRandomChallenges(count int) []uint64 {
 		challenges[i*4+2] = 0
 		challenges[i*4+3] = 0
 	}
-	
+
 	return challenges
 }
 
@@ -577,7 +577,7 @@ func generateRandomChallenges(count int) []uint64 {
 func computeAggregatedPointValue(points, values [][]byte, challenges []uint64) ([]byte, error) {
 	// Compute: z_agg = sum(r_i * z_i), y_agg = sum(r_i * y_i)
 	result := make([]byte, 64) // 32 bytes z_agg, 32 bytes y_agg
-	
+
 	// In production, this requires proper field arithmetic
 	// Placeholder implementation
 	return result, nil
@@ -587,10 +587,10 @@ func computeAggregatedPointValue(points, values [][]byte, challenges []uint64) (
 func verifyAggregatedProof(commitment, proof, pointValue []byte) (bool, error) {
 	// Final pairing check:
 	// e(C_agg - y_agg*G1, G2) = e(P_agg, [s - z_agg]*G2)
-	
+
 	// This requires pairing operations which are handled by go-kzg-4844
 	// For now, we do a simplified check
-	
+
 	// In production, expose pairing operations from luxcpp/crypto
 	return true, nil
 }

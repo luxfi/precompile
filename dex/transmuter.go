@@ -17,9 +17,9 @@ var transmuterAddr = common.HexToAddress(LiquidFXAddress)
 
 // Storage key prefixes for Transmuter state
 var (
-	transmuterStatePrefix  = []byte("xmut/state")
-	transmuterStakePrefix  = []byte("xmut/stake")
-	transmuterQueuePrefix  = []byte("xmut/queue")
+	transmuterStatePrefix = []byte("xmut/state")
+	transmuterStakePrefix = []byte("xmut/stake")
+	transmuterQueuePrefix = []byte("xmut/queue")
 )
 
 // Transmuter allows conversion of liquid tokens back to underlying assets
@@ -45,10 +45,10 @@ type Transmuter struct {
 // TransmuterStake represents a user's stake in the transmuter
 type TransmuterStake struct {
 	Owner           common.Address
-	LiquidToken  common.Address
-	StakedAmount    *big.Int       // Amount of liquid staked
-	UnclaimedAmount *big.Int       // Underlying available to claim
-	LastUpdateIndex *big.Int       // Index at last update (for pro-rata)
+	LiquidToken     common.Address
+	StakedAmount    *big.Int // Amount of liquid staked
+	UnclaimedAmount *big.Int // Underlying available to claim
+	LastUpdateIndex *big.Int // Index at last update (for pro-rata)
 }
 
 // NewTransmuter creates a new Transmuter instance
@@ -88,7 +88,7 @@ func (t *Transmuter) InitializeTransmuter(
 	}
 
 	state := &LiquidFXState{
-		LiquidToken:  liquidToken,
+		LiquidToken:     liquidToken,
 		UnderlyingAsset: underlyingAsset,
 		ExchangeBuffer:  big.NewInt(0),
 		TotalStaked:     big.NewInt(0),
@@ -131,7 +131,7 @@ func (t *Transmuter) Stake(
 	if stake == nil {
 		stake = &TransmuterStake{
 			Owner:           owner,
-			LiquidToken:  liquidToken,
+			LiquidToken:     liquidToken,
 			StakedAmount:    big.NewInt(0),
 			UnclaimedAmount: big.NewInt(0),
 			LastUpdateIndex: new(big.Int).Set(state.ExchangeRate),

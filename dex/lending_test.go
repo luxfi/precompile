@@ -12,9 +12,9 @@ import (
 
 // Test addresses for lending
 var (
-	testLendingAsset  = common.HexToAddress("0x4444444444444444444444444444444444444444")
-	testLendingUser1  = common.HexToAddress("0x5555555555555555555555555555555555555555")
-	testLendingUser2  = common.HexToAddress("0x6666666666666666666666666666666666666666")
+	testLendingAsset = common.HexToAddress("0x4444444444444444444444444444444444444444")
+	testLendingUser1 = common.HexToAddress("0x5555555555555555555555555555555555555555")
+	testLendingUser2 = common.HexToAddress("0x6666666666666666666666666666666666666666")
 )
 
 // =========================================================================

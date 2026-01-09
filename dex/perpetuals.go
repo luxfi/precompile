@@ -20,9 +20,9 @@ var (
 // PerpetualEngine manages perpetual futures trading
 // Address: 0x0420
 type PerpetualEngine struct {
-	Markets      map[[32]byte]*PerpMarket   // Market ID -> Market
-	Positions    map[common.Address]map[[32]byte]*PerpPosition // User -> Market -> Position
-	InsuranceFund *big.Int                   // Global insurance fund
+	Markets       map[[32]byte]*PerpMarket                      // Market ID -> Market
+	Positions     map[common.Address]map[[32]byte]*PerpPosition // User -> Market -> Position
+	InsuranceFund *big.Int                                      // Global insurance fund
 
 	// Funding state per market
 	FundingStates map[[32]byte]*FundingState

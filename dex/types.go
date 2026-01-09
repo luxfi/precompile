@@ -15,83 +15,84 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-// Precompile addresses for DEX components
-// Reserved range: 0x0400 - 0x04FF
+// Precompile addresses for LX components
+// LP-aligned format: 0x0000000000000000000000000000000000LPNUM
+// See LP-9015 for canonical specification
 const (
-	// Core DEX (0x0400-0x040F)
-	PoolManagerAddress = "0x0400" // Singleton pool manager
-	SwapRouterAddress  = "0x0401" // Swap router
-	HooksAddress       = "0x0402" // Hooks registry
-	FlashLoanAddress   = "0x0403" // Flash loan facility
+	// Core LX (LP-9010 series - Uniswap v4 style)
+	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // LP-9010 LXPool (singleton AMM)
+	LXOracleAddress = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (price aggregation)
+	LXRouterAddress = "0x0000000000000000000000000000000000009012" // LP-9012 LXRouter (swap routing)
+	LXHooksAddress  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (hook registry)
+	LXFlashAddress  = "0x0000000000000000000000000000000000009014" // LP-9014 LXFlash (flash loans)
 
-	// Lending Module (0x0410-0x041F)
-	LendingPoolAddress      = "0x0410" // Supply/borrow with collateral
-	InterestRateAddress     = "0x0411" // Dynamic interest rate curves
-	LiquidatorAddress       = "0x0412" // Liquidation engine
+	// Trading & DeFi Extensions (LP-90xx)
+	LXBookAddress     = "0x0000000000000000000000000000000000009020" // LP-9020 LXBook (orderbook + matching)
+	LXVaultAddress    = "0x0000000000000000000000000000000000009030" // LP-9030 LXVault (custody + margin)
+	LXFeedAddress     = "0x0000000000000000000000000000000000009040" // LP-9040 LXFeed (computed prices)
+	LXLendAddress     = "0x0000000000000000000000000000000000009050" // LP-9050 LXLend (lending pool)
+	LXLiquidAddress   = "0x0000000000000000000000000000000000009060" // LP-9060 LXLiquid (self-repaying loans)
+	LiquidatorAddress = "0x0000000000000000000000000000000000009070" // LP-9070 Liquidator (position liquidation)
+	LiquidFXAddress   = "0x0000000000000000000000000000000000009080" // LP-9080 LiquidFX (transmuter)
 
-	// Perpetuals Module (0x0420-0x042F)
-	PerpetualEngineAddress  = "0x0420" // High-leverage perpetuals (up to 1111x)
-	FundingRateAddress      = "0x0421" // Funding rate calculation
-	InsuranceFundAddress    = "0x0422" // Insurance and ADL
+	// Bridge Precompiles (LP-6xxx)
+	TeleportAddress = "0x0000000000000000000000000000000000006010" // LP-6010 Teleport (cross-chain)
 
-	// Liquid Module (0x0430-0x043F) - Self-repaying loans with yield-bearing collateral
-	LiquidAddress      = "0x0430" // Main vault for self-repaying loans
-	LiquidFXAddress = "0x0431" // Convert L* tokens back to underlying
-	LiquidTokenAddress      = "0x0432" // Liquid token registry (LUSD, LETH, LBTC)
-	YieldRouterAddress      = "0x0433" // Yield strategy routing
-
-	// Teleport/Omnichain (0x0440-0x044F)
-	TeleportBridgeAddress   = "0x0440" // Cross-chain transfer engine
-	OmnichainRouterAddress  = "0x0441" // Multi-chain liquidity routing
+	// Deprecated: Old addresses kept for migration reference only
+	// These will be removed in a future release
+	// PoolManagerAddress = "0x0400" // DEPRECATED: Use LXPoolAddress
+	// SwapRouterAddress  = "0x0401" // DEPRECATED: Use LXRouterAddress
+	// HooksAddress       = "0x0402" // DEPRECATED: Use LXHooksAddress
+	// FlashLoanAddress   = "0x0403" // DEPRECATED: Use LXFlashAddress
 )
 
 // Gas costs optimized for HFT operations
 const (
 	// Core DEX operations
-	GasPoolCreate     uint64 = 50_000  // Create new pool
-	GasSwap           uint64 = 10_000  // Single swap
-	GasAddLiquidity   uint64 = 20_000  // Add liquidity
-	GasRemoveLiq      uint64 = 20_000  // Remove liquidity
-	GasFlashLoan      uint64 = 5_000   // Flash loan base
-	GasHookCall       uint64 = 3_000   // Hook invocation
-	GasBalanceUpdate  uint64 = 500     // Balance delta update
-	GasSettlement     uint64 = 8_000   // Final settlement
-	GasPoolLookup     uint64 = 100     // Pool state lookup
-	GasNativeTransfer uint64 = 2_100   // Native LUX transfer
+	GasPoolCreate     uint64 = 50_000 // Create new pool
+	GasSwap           uint64 = 10_000 // Single swap
+	GasAddLiquidity   uint64 = 20_000 // Add liquidity
+	GasRemoveLiq      uint64 = 20_000 // Remove liquidity
+	GasFlashLoan      uint64 = 5_000  // Flash loan base
+	GasHookCall       uint64 = 3_000  // Hook invocation
+	GasBalanceUpdate  uint64 = 500    // Balance delta update
+	GasSettlement     uint64 = 8_000  // Final settlement
+	GasPoolLookup     uint64 = 100    // Pool state lookup
+	GasNativeTransfer uint64 = 2_100  // Native LUX transfer
 
 	// Lending operations
-	GasSupply         uint64 = 15_000  // Supply collateral
-	GasBorrow         uint64 = 20_000  // Borrow against collateral
-	GasRepay          uint64 = 15_000  // Repay debt
-	GasWithdraw       uint64 = 15_000  // Withdraw collateral
-	GasLiquidate      uint64 = 50_000  // Liquidate position
+	GasSupply    uint64 = 15_000 // Supply collateral
+	GasBorrow    uint64 = 20_000 // Borrow against collateral
+	GasRepay     uint64 = 15_000 // Repay debt
+	GasWithdraw  uint64 = 15_000 // Withdraw collateral
+	GasLiquidate uint64 = 50_000 // Liquidate position
 
 	// Perpetual operations
-	GasOpenPosition   uint64 = 25_000  // Open perp position
-	GasClosePosition  uint64 = 25_000  // Close perp position
-	GasModifyMargin   uint64 = 10_000  // Add/remove margin
-	GasSettleFunding  uint64 = 10_000  // Settle funding rate
+	GasOpenPosition  uint64 = 25_000 // Open perp position
+	GasClosePosition uint64 = 25_000 // Close perp position
+	GasModifyMargin  uint64 = 10_000 // Add/remove margin
+	GasSettleFunding uint64 = 10_000 // Settle funding rate
 
 	// Liquid operations (self-repaying loans)
-	GasDeposit        uint64 = 20_000  // Deposit yield-bearing collateral
-	GasMint           uint64 = 25_000  // Mint liquid tokens (L*)
-	GasBurn           uint64 = 20_000  // Burn liquid tokens
-	GasRepayDebt      uint64 = 15_000  // Manual debt repayment
-	GasHarvest        uint64 = 30_000  // Harvest yield and repay debt
-	GasTransmute      uint64 = 25_000  // Convert liquid token to underlying
+	GasDeposit   uint64 = 20_000 // Deposit yield-bearing collateral
+	GasMint      uint64 = 25_000 // Mint liquid tokens (L*)
+	GasBurn      uint64 = 20_000 // Burn liquid tokens
+	GasRepayDebt uint64 = 15_000 // Manual debt repayment
+	GasHarvest   uint64 = 30_000 // Harvest yield and repay debt
+	GasTransmute uint64 = 25_000 // Convert liquid token to underlying
 
 	// Teleport operations
-	GasTeleportInit   uint64 = 50_000  // Initiate cross-chain transfer
-	GasTeleportComplete uint64 = 40_000  // Complete cross-chain transfer
+	GasTeleportInit     uint64 = 50_000 // Initiate cross-chain transfer
+	GasTeleportComplete uint64 = 40_000 // Complete cross-chain transfer
 )
 
 // Pool fee tiers (basis points)
 const (
-	Fee001   uint24 = 100    // 0.01% - stablecoins
-	Fee005   uint24 = 500    // 0.05% - stable pairs
-	Fee030   uint24 = 3000   // 0.30% - standard
-	Fee100   uint24 = 10000  // 1.00% - exotic pairs
-	FeeMax   uint24 = 100000 // 10% max fee
+	Fee001 uint24 = 100    // 0.01% - stablecoins
+	Fee005 uint24 = 500    // 0.05% - stable pairs
+	Fee030 uint24 = 3000   // 0.30% - standard
+	Fee100 uint24 = 10000  // 1.00% - exotic pairs
+	FeeMax uint24 = 100000 // 10% max fee
 )
 
 // Tick spacing for different fee tiers
@@ -265,13 +266,13 @@ func (bd BalanceDelta) IsZero() bool {
 
 // Pool represents the state of a liquidity pool
 type Pool struct {
-	SqrtPriceX96   *big.Int       // sqrt(price) * 2^96 (Q64.96)
-	Tick           int24          // Current tick
-	Liquidity      *big.Int       // Total liquidity (L)
-	FeeGrowth0X128 *big.Int       // Fee growth for currency0 (Q128.128)
-	FeeGrowth1X128 *big.Int       // Fee growth for currency1 (Q128.128)
-	ProtocolFees0  *big.Int       // Accumulated protocol fees currency0
-	ProtocolFees1  *big.Int       // Accumulated protocol fees currency1
+	SqrtPriceX96   *big.Int // sqrt(price) * 2^96 (Q64.96)
+	Tick           int24    // Current tick
+	Liquidity      *big.Int // Total liquidity (L)
+	FeeGrowth0X128 *big.Int // Fee growth for currency0 (Q128.128)
+	FeeGrowth1X128 *big.Int // Fee growth for currency1 (Q128.128)
+	ProtocolFees0  *big.Int // Accumulated protocol fees currency0
+	ProtocolFees1  *big.Int // Accumulated protocol fees currency1
 }
 
 // IsInitialized returns true if the pool has been initialized
@@ -294,14 +295,14 @@ func NewPool() *Pool {
 
 // Position represents a liquidity position
 type Position struct {
-	Owner           common.Address
-	TickLower       int24
-	TickUpper       int24
-	Liquidity       *big.Int
+	Owner                    common.Address
+	TickLower                int24
+	TickUpper                int24
+	Liquidity                *big.Int
 	FeeGrowthInside0LastX128 *big.Int
 	FeeGrowthInside1LastX128 *big.Int
-	TokensOwed0     *big.Int
-	TokensOwed1     *big.Int
+	TokensOwed0              *big.Int
+	TokensOwed1              *big.Int
 }
 
 // PositionKey computes the unique position identifier
@@ -345,24 +346,24 @@ type FlashParams struct {
 
 // Errors - Core DEX
 var (
-	ErrPoolNotInitialized       = errors.New("pool not initialized")
-	ErrPoolAlreadyInitialized   = errors.New("pool already initialized")
-	ErrPoolExists               = errors.New("pool already exists")
-	ErrPoolNotFound             = errors.New("pool not found")
-	ErrInvalidTickRange         = errors.New("invalid tick range")
-	ErrInsufficientLiquidity    = errors.New("insufficient liquidity")
-	ErrPriceLimitReached        = errors.New("price limit reached")
-	ErrInvalidFee               = errors.New("invalid fee")
-	ErrCurrencyNotSorted        = errors.New("currencies not sorted")
-	ErrFlashLoanNotRepaid       = errors.New("flash loan not repaid")
-	ErrUnauthorized             = errors.New("unauthorized")
-	ErrInvalidHookResponse      = errors.New("invalid hook response")
-	ErrSettlementFailed         = errors.New("settlement failed")
-	ErrNonZeroDelta             = errors.New("non-zero balance delta after settlement")
-	ErrInvalidSqrtPrice         = errors.New("invalid sqrt price")
-	ErrTickOutOfRange           = errors.New("tick out of range")
-	ErrReentrant                = errors.New("reentrancy detected")
-	ErrNoLiquidity              = errors.New("no liquidity in pool")
+	ErrPoolNotInitialized     = errors.New("pool not initialized")
+	ErrPoolAlreadyInitialized = errors.New("pool already initialized")
+	ErrPoolExists             = errors.New("pool already exists")
+	ErrPoolNotFound           = errors.New("pool not found")
+	ErrInvalidTickRange       = errors.New("invalid tick range")
+	ErrInsufficientLiquidity  = errors.New("insufficient liquidity")
+	ErrPriceLimitReached      = errors.New("price limit reached")
+	ErrInvalidFee             = errors.New("invalid fee")
+	ErrCurrencyNotSorted      = errors.New("currencies not sorted")
+	ErrFlashLoanNotRepaid     = errors.New("flash loan not repaid")
+	ErrUnauthorized           = errors.New("unauthorized")
+	ErrInvalidHookResponse    = errors.New("invalid hook response")
+	ErrSettlementFailed       = errors.New("settlement failed")
+	ErrNonZeroDelta           = errors.New("non-zero balance delta after settlement")
+	ErrInvalidSqrtPrice       = errors.New("invalid sqrt price")
+	ErrTickOutOfRange         = errors.New("tick out of range")
+	ErrReentrant              = errors.New("reentrancy detected")
+	ErrNoLiquidity            = errors.New("no liquidity in pool")
 )
 
 // Errors - Lending
@@ -388,12 +389,12 @@ var (
 
 // Errors - Perpetuals
 var (
-	ErrMaxLeverageExceeded      = errors.New("max leverage exceeded (1111x)")
-	ErrInsufficientMargin       = errors.New("insufficient margin")
-	ErrPositionNotFound         = errors.New("position not found")
-	ErrInvalidPositionSize      = errors.New("invalid position size")
-	ErrMarkPriceUnavailable     = errors.New("mark price unavailable")
-	ErrBankruptPosition         = errors.New("position is bankrupt")
+	ErrMaxLeverageExceeded  = errors.New("max leverage exceeded (1111x)")
+	ErrInsufficientMargin   = errors.New("insufficient margin")
+	ErrPositionNotFound     = errors.New("position not found")
+	ErrInvalidPositionSize  = errors.New("invalid position size")
+	ErrMarkPriceUnavailable = errors.New("mark price unavailable")
+	ErrBankruptPosition     = errors.New("position is bankrupt")
 )
 
 // Errors - Liquid (self-repaying loans)
@@ -408,10 +409,10 @@ var (
 
 // Errors - Teleport
 var (
-	ErrInvalidChainID           = errors.New("invalid chain ID")
-	ErrTeleportNotFinalized     = errors.New("teleport not finalized")
-	ErrDuplicateTeleportID      = errors.New("duplicate teleport ID")
-	ErrInvalidWarpSignature     = errors.New("invalid warp signature")
+	ErrInvalidChainID       = errors.New("invalid chain ID")
+	ErrTeleportNotFinalized = errors.New("teleport not finalized")
+	ErrDuplicateTeleportID  = errors.New("duplicate teleport ID")
+	ErrInvalidWarpSignature = errors.New("invalid warp signature")
 )
 
 // Constants for math
@@ -422,7 +423,7 @@ var (
 	MinTick int24 = -887272
 	MaxTick int24 = 887272
 
-	MinSqrtRatio = new(big.Int).SetUint64(4295128739)
+	MinSqrtRatio    = new(big.Int).SetUint64(4295128739)
 	MaxSqrtRatio, _ = new(big.Int).SetString("1461446703485210103287273052203988822378723970342", 10)
 )
 
@@ -438,27 +439,27 @@ type int24 = int32
 
 // LendingReserve represents a lending market for a single asset
 type LendingReserve struct {
-	Asset              Currency       // The asset
-	TotalSupply        *big.Int       // Total supplied (in underlying)
-	TotalBorrow        *big.Int       // Total borrowed
-	SupplyIndex        *big.Int       // Cumulative supply interest index (Q128)
-	BorrowIndex        *big.Int       // Cumulative borrow interest index (Q128)
-	LastUpdateBlock    uint64         // Last block interest was accrued
-	CollateralFactor   *big.Int       // Max borrow % (18 decimals, 0.8e18 = 80%)
-	LiquidationBonus   *big.Int       // Liquidator bonus (18 decimals, 0.05e18 = 5%)
-	BorrowCap          *big.Int       // Maximum borrowable amount
-	ReserveFactor      *big.Int       // Protocol fee on interest (18 decimals)
-	IsActive           bool           // Whether reserve accepts deposits
+	Asset            Currency // The asset
+	TotalSupply      *big.Int // Total supplied (in underlying)
+	TotalBorrow      *big.Int // Total borrowed
+	SupplyIndex      *big.Int // Cumulative supply interest index (Q128)
+	BorrowIndex      *big.Int // Cumulative borrow interest index (Q128)
+	LastUpdateBlock  uint64   // Last block interest was accrued
+	CollateralFactor *big.Int // Max borrow % (18 decimals, 0.8e18 = 80%)
+	LiquidationBonus *big.Int // Liquidator bonus (18 decimals, 0.05e18 = 5%)
+	BorrowCap        *big.Int // Maximum borrowable amount
+	ReserveFactor    *big.Int // Protocol fee on interest (18 decimals)
+	IsActive         bool     // Whether reserve accepts deposits
 }
 
 // LendingPosition represents a user's lending position
 type LendingPosition struct {
 	Owner           common.Address
 	Asset           common.Address
-	SupplyShares    *big.Int       // User's share of supply pool
-	BorrowAmount    *big.Int       // Current borrow amount with interest
-	BorrowIndex     *big.Int       // Index when borrow was last updated
-	LastUpdateBlock uint64         // Block when position was last updated
+	SupplyShares    *big.Int // User's share of supply pool
+	BorrowAmount    *big.Int // Current borrow amount with interest
+	BorrowIndex     *big.Int // Index when borrow was last updated
+	LastUpdateBlock uint64   // Block when position was last updated
 }
 
 // =========================================================================
@@ -470,36 +471,36 @@ const MaxLeverage uint32 = 1111
 
 // PerpMarket represents a perpetual futures market
 type PerpMarket struct {
-	BaseAsset        Currency       // The underlying asset (e.g., ETH)
-	QuoteAsset       Currency       // The quote asset (e.g., USD)
-	MarkPrice        *big.Int       // Current mark price (Q96)
-	IndexPrice       *big.Int       // Oracle index price (Q96)
-	OpenInterestLong *big.Int       // Total long open interest
-	OpenInterestShort *big.Int      // Total short open interest
-	FundingRate      *big.Int       // Current funding rate (signed, per 8h)
-	LastFundingTime  int64          // Unix timestamp of last funding
-	MaxLeverage      uint32         // Maximum leverage (default 1111x)
-	MaintenanceMargin *big.Int      // Maintenance margin ratio (18 decimals)
-	InsuranceFund    *big.Int       // Market's insurance fund balance
+	BaseAsset         Currency // The underlying asset (e.g., ETH)
+	QuoteAsset        Currency // The quote asset (e.g., USD)
+	MarkPrice         *big.Int // Current mark price (Q96)
+	IndexPrice        *big.Int // Oracle index price (Q96)
+	OpenInterestLong  *big.Int // Total long open interest
+	OpenInterestShort *big.Int // Total short open interest
+	FundingRate       *big.Int // Current funding rate (signed, per 8h)
+	LastFundingTime   int64    // Unix timestamp of last funding
+	MaxLeverage       uint32   // Maximum leverage (default 1111x)
+	MaintenanceMargin *big.Int // Maintenance margin ratio (18 decimals)
+	InsuranceFund     *big.Int // Market's insurance fund balance
 }
 
 // PerpPosition represents a user's perpetual position
 type PerpPosition struct {
 	Owner            common.Address
-	Market           [32]byte       // Market ID
-	Size             *big.Int       // Position size (positive=long, negative=short)
-	EntryPrice       *big.Int       // Average entry price (Q96)
-	Margin           *big.Int       // Deposited margin
-	LastFundingIndex *big.Int       // Funding index at last update
-	IsIsolated       bool           // Isolated vs cross margin
+	Market           [32]byte // Market ID
+	Size             *big.Int // Position size (positive=long, negative=short)
+	EntryPrice       *big.Int // Average entry price (Q96)
+	Margin           *big.Int // Deposited margin
+	LastFundingIndex *big.Int // Funding index at last update
+	IsIsolated       bool     // Isolated vs cross margin
 }
 
 // FundingState tracks funding rate calculation state
 type FundingState struct {
-	CumulativeFunding *big.Int      // Cumulative funding per unit size
-	LastUpdateTime    int64         // Last funding settlement time
-	PremiumEMA        *big.Int      // Exponential moving average of premium
-	TWAPWindow        uint64        // TWAP window in seconds (default 8h)
+	CumulativeFunding *big.Int // Cumulative funding per unit size
+	LastUpdateTime    int64    // Last funding settlement time
+	PremiumEMA        *big.Int // Exponential moving average of premium
+	TWAPWindow        uint64   // TWAP window in seconds (default 8h)
 }
 
 // =========================================================================
@@ -520,22 +521,22 @@ const (
 
 // LiquidToken represents a liquid asset (e.g., LUSD, LETH, LBTC)
 type LiquidToken struct {
-	Address          common.Address // Liquid token address
-	UnderlyingAsset  Currency       // The underlying asset it tracks
-	TotalMinted      *big.Int       // Total liquid tokens minted
-	DebtCeiling      *big.Int       // Maximum mintable
-	MintFee          uint24         // Fee on minting (basis points)
-	BurnFee          uint24         // Fee on burning (basis points)
+	Address         common.Address // Liquid token address
+	UnderlyingAsset Currency       // The underlying asset it tracks
+	TotalMinted     *big.Int       // Total liquid tokens minted
+	DebtCeiling     *big.Int       // Maximum mintable
+	MintFee         uint24         // Fee on minting (basis points)
+	BurnFee         uint24         // Fee on burning (basis points)
 }
 
 // YieldToken represents an approved yield-bearing collateral token
 // (e.g., LP tokens from DEX pools, yield vault shares)
 type YieldToken struct {
-	Address          common.Address // Yield token address
-	UnderlyingAsset  Currency       // The underlying asset
-	YieldPerBlock    *big.Int       // Expected yield per block (for estimation)
-	IsActive         bool           // Whether deposits are accepted
-	TotalDeposited   *big.Int       // Total deposited in Liquid
+	Address         common.Address // Yield token address
+	UnderlyingAsset Currency       // The underlying asset
+	YieldPerBlock   *big.Int       // Expected yield per block (for estimation)
+	IsActive        bool           // Whether deposits are accepted
+	TotalDeposited  *big.Int       // Total deposited in Liquid
 }
 
 // LiquidAccount represents a user's self-repaying loan position
@@ -550,11 +551,11 @@ type LiquidAccount struct {
 
 // LiquidFXState manages the conversion of L* tokens back to underlying
 type LiquidFXState struct {
-	LiquidToken      common.Address // The liquid token (e.g., LUSD)
-	UnderlyingAsset  Currency       // The underlying (e.g., USDC)
-	ExchangeBuffer   *big.Int       // Underlying available for exchange
-	TotalStaked      *big.Int       // Total liquid tokens staked for transmutation
-	ExchangeRate     *big.Int       // Current exchange rate (Q96)
+	LiquidToken     common.Address // The liquid token (e.g., LUSD)
+	UnderlyingAsset Currency       // The underlying (e.g., USDC)
+	ExchangeBuffer  *big.Int       // Underlying available for exchange
+	TotalStaked     *big.Int       // Total liquid tokens staked for transmutation
+	ExchangeRate    *big.Int       // Current exchange rate (Q96)
 }
 
 // =========================================================================
@@ -563,63 +564,63 @@ type LiquidFXState struct {
 
 // Supported chains for Teleport
 const (
-	ChainLux    uint32 = 96369  // Lux mainnet
-	ChainHanzo  uint32 = 36963  // Hanzo chain
-	ChainZoo    uint32 = 200200 // Zoo chain
-	ChainETH    uint32 = 1      // Ethereum mainnet
-	ChainArb    uint32 = 42161  // Arbitrum One
-	ChainOP     uint32 = 10     // Optimism
-	ChainBase   uint32 = 8453   // Base
-	ChainPoly   uint32 = 137    // Polygon
-	ChainBSC    uint32 = 56     // BNB Chain
-	ChainAvax   uint32 = 43114  // Avalanche C-Chain
+	ChainLux   uint32 = 96369  // Lux mainnet
+	ChainHanzo uint32 = 36963  // Hanzo chain
+	ChainZoo   uint32 = 200200 // Zoo chain
+	ChainETH   uint32 = 1      // Ethereum mainnet
+	ChainArb   uint32 = 42161  // Arbitrum One
+	ChainOP    uint32 = 10     // Optimism
+	ChainBase  uint32 = 8453   // Base
+	ChainPoly  uint32 = 137    // Polygon
+	ChainBSC   uint32 = 56     // BNB Chain
+	ChainAvax  uint32 = 43114  // Avalanche C-Chain
 )
 
 // TeleportRequest represents a cross-chain transfer request
 type TeleportRequest struct {
-	TeleportID       [32]byte       // Unique identifier
-	SourceChain      uint32         // Source chain ID
-	DestChain        uint32         // Destination chain ID
-	Sender           common.Address // Sender on source chain
-	Recipient        common.Address // Recipient on dest chain
-	Token            common.Address // Token being teleported
-	Amount           *big.Int       // Amount to teleport
-	Timestamp        int64          // Request timestamp
-	Status           TeleportStatus // Current status
+	TeleportID  [32]byte       // Unique identifier
+	SourceChain uint32         // Source chain ID
+	DestChain   uint32         // Destination chain ID
+	Sender      common.Address // Sender on source chain
+	Recipient   common.Address // Recipient on dest chain
+	Token       common.Address // Token being teleported
+	Amount      *big.Int       // Amount to teleport
+	Timestamp   int64          // Request timestamp
+	Status      TeleportStatus // Current status
 }
 
 // TeleportStatus represents the state of a teleport
 type TeleportStatus uint8
 
 const (
-	TeleportPending TeleportStatus = iota
-	TeleportBurned      // Burned on source chain
-	TeleportValidated   // Validated by MPC/Warp
-	TeleportMinted      // Minted on destination chain
-	TeleportFailed      // Failed (can be retried)
+	TeleportPending   TeleportStatus = iota
+	TeleportBurned                   // Burned on source chain
+	TeleportValidated                // Validated by MPC/Warp
+	TeleportMinted                   // Minted on destination chain
+	TeleportFailed                   // Failed (can be retried)
 )
 
 // WarpMessage represents a cross-chain message via Lux Warp
 type WarpMessage struct {
-	SourceChainID    [32]byte       // Source chain ID (Lux format)
-	Payload          []byte         // Message payload
-	Signatures       []byte         // BLS aggregate signature
-	BitSet           []byte         // Validator bitset
+	SourceChainID [32]byte // Source chain ID (Lux format)
+	Payload       []byte   // Message payload
+	Signatures    []byte   // BLS aggregate signature
+	BitSet        []byte   // Validator bitset
 }
 
 // OmnichainRoute represents a multi-hop cross-chain swap route
 type OmnichainRoute struct {
-	Hops             []RouteHop     // Sequence of hops
-	TotalEstimate    *big.Int       // Estimated output amount
-	TotalGas         uint64         // Estimated total gas
+	Hops          []RouteHop // Sequence of hops
+	TotalEstimate *big.Int   // Estimated output amount
+	TotalGas      uint64     // Estimated total gas
 }
 
 // RouteHop represents a single hop in a cross-chain route
 type RouteHop struct {
-	ChainID          uint32         // Chain for this hop
-	PoolID           [32]byte       // Pool to use on this chain
-	TokenIn          common.Address // Input token
-	TokenOut         common.Address // Output token
-	AmountIn         *big.Int       // Amount in
-	MinAmountOut     *big.Int       // Minimum output
+	ChainID      uint32         // Chain for this hop
+	PoolID       [32]byte       // Pool to use on this chain
+	TokenIn      common.Address // Input token
+	TokenOut     common.Address // Output token
+	AmountIn     *big.Int       // Amount in
+	MinAmountOut *big.Int       // Minimum output
 }

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luxfi/geth/common"
 	luxcrypto "github.com/luxfi/crypto"
+	"github.com/luxfi/geth/common"
 
 	"github.com/luxfi/log"
 	"github.com/luxfi/log/level"

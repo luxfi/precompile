@@ -36,20 +36,20 @@ const (
 // Size constants for each mode
 const (
 	// ML-DSA-44
-	MLDSA44PublicKeySize  = 1312
-	MLDSA44SignatureSize  = 2420
+	MLDSA44PublicKeySize = 1312
+	MLDSA44SignatureSize = 2420
 
 	// ML-DSA-65
-	MLDSA65PublicKeySize  = 1952
-	MLDSA65SignatureSize  = 3309
+	MLDSA65PublicKeySize = 1952
+	MLDSA65SignatureSize = 3309
 
 	// ML-DSA-87
-	MLDSA87PublicKeySize  = 2592
-	MLDSA87SignatureSize  = 4627
+	MLDSA87PublicKeySize = 2592
+	MLDSA87SignatureSize = 4627
 
 	// Common
-	ModeByte        = 1  // Mode indicator byte
-	MessageLenSize  = 32 // Size of message length field (uint256)
+	ModeByte       = 1  // Mode indicator byte
+	MessageLenSize = 32 // Size of message length field (uint256)
 )
 
 // Gas costs - adjusted per mode based on computational complexity
@@ -112,11 +112,12 @@ func (p *mldsaVerifyPrecompile) RequiredGas(input []byte) uint64 {
 
 // Run implements the ML-DSA signature verification precompile
 // Input format (NEW - supports all modes):
-//   [0]              = mode byte (0x44, 0x65, or 0x87)
-//   [1:pubKeyEnd]    = public key (size depends on mode)
-//   [pubKeyEnd:+32]  = message length as uint256 (32 bytes)
-//   [+32:+sigEnd]    = signature (size depends on mode)
-//   [sigEnd:...]     = message (variable length)
+//
+//	[0]              = mode byte (0x44, 0x65, or 0x87)
+//	[1:pubKeyEnd]    = public key (size depends on mode)
+//	[pubKeyEnd:+32]  = message length as uint256 (32 bytes)
+//	[+32:+sigEnd]    = signature (size depends on mode)
+//	[sigEnd:...]     = message (variable length)
 //
 // Output: 32-byte word (1 = valid, 0 = invalid)
 func (p *mldsaVerifyPrecompile) Run(

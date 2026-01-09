@@ -3,11 +3,11 @@ pragma solidity ^0.8.24;
 
 import {Currency, PoolKey, BalanceDelta, HookPermissions} from "./Types.sol";
 
-/// @title IPoolManager
-/// @notice Interface for the Lux DEX singleton pool manager with flash accounting
+/// @title ILXPool (LP-9010)
+/// @notice Singleton pool manager with flash accounting (Uniswap v4 compatible)
 /// @dev All pools live in this single contract, enabling unified liquidity across all markets
-/// @dev Precompile address: 0x0400
-interface IPoolManager {
+/// @dev Precompile address: LP-9010 (0x0000000000000000000000000000000000009010)
+interface ILXPool {
     // =========================================================================
     // Errors
     // =========================================================================

@@ -106,6 +106,46 @@ var (
 			End:   common.HexToAddress("0x0A000000000000000000000000000000000000ff"),
 		},
 		// =====================================================================
+		// LP-ALIGNED RANGES (Low-byte format: 0x0000...LPNUM)
+		// Address = LP number directly, e.g., LP-9010 = 0x...9010
+		// See precompile/registry/registry.go for full scheme documentation
+		// =====================================================================
+		// LP-2xxx: PQ Identity (0x0..2000 - 0x0..2FFF)
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000002000"),
+			End:   common.HexToAddress("0x0000000000000000000000000000000000002fff"),
+		},
+		// LP-3xxx: EVM/Crypto (0x0..3000 - 0x0..3FFF)
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000003000"),
+			End:   common.HexToAddress("0x0000000000000000000000000000000000003fff"),
+		},
+		// LP-4xxx: Privacy/ZK (0x0..4000 - 0x0..4FFF)
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000004000"),
+			End:   common.HexToAddress("0x0000000000000000000000000000000000004fff"),
+		},
+		// LP-5xxx: Threshold/MPC (0x0..5000 - 0x0..5FFF)
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000005000"),
+			End:   common.HexToAddress("0x0000000000000000000000000000000000005fff"),
+		},
+		// LP-6xxx: Bridges (0x0..6000 - 0x0..6FFF)
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000006000"),
+			End:   common.HexToAddress("0x0000000000000000000000000000000000006fff"),
+		},
+		// LP-7xxx: AI (0x0..7000 - 0x0..7FFF)
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000007000"),
+			End:   common.HexToAddress("0x0000000000000000000000000000000000007fff"),
+		},
+		// LP-9xxx: DEX/Markets (0x0..9000 - 0x0..9FFF)
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000009000"),
+			End:   common.HexToAddress("0x0000000000000000000000000000000000009fff"),
+		},
+		// =====================================================================
 		// LOW-BYTE RANGES (EIP-collision-free addresses)
 		// =====================================================================
 		// Lux Core System (0x8000-0x8FFF) - AI Mining, etc.

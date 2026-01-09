@@ -18,7 +18,7 @@ func TestVerifyNVTrust_ValidH100(t *testing.T) {
 		TEEIOEnabled:  true,
 		DriverVersion: "535.104.05",
 		VBIOSVersion:  "96.00.89.00.01",
-		SPDMReport:    make([]byte, 512), // Valid SPDM report size
+		SPDMReport:    make([]byte, 512),  // Valid SPDM report size
 		CertChain:     make([]byte, 1024), // Valid cert chain size
 		Nonce:         [32]byte{0xAA, 0xBB, 0xCC},
 	}
