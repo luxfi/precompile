@@ -1,4 +1,4 @@
-//go:build gpu
+//go:build cgo
 
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
@@ -28,11 +28,11 @@ var (
 
 // Batch verification gas costs
 const (
-	MLDSABatchVerifyBaseGas      uint64 = 50_000 // Fixed overhead
-	MLDSABatchVerifyPerSigGas44  uint64 = 50_000 // Per-sig cost for ML-DSA-44 (GPU amortized)
-	MLDSABatchVerifyPerSigGas65  uint64 = 65_000 // Per-sig cost for ML-DSA-65
-	MLDSABatchVerifyPerSigGas87  uint64 = 85_000 // Per-sig cost for ML-DSA-87
-	MLDSABatchVerifyPerByteGas   uint64 = 5      // Per message byte
+	MLDSABatchVerifyBaseGas     uint64 = 50_000 // Fixed overhead
+	MLDSABatchVerifyPerSigGas44 uint64 = 50_000 // Per-sig cost for ML-DSA-44 (GPU amortized)
+	MLDSABatchVerifyPerSigGas65 uint64 = 65_000 // Per-sig cost for ML-DSA-65
+	MLDSABatchVerifyPerSigGas87 uint64 = 85_000 // Per-sig cost for ML-DSA-87
+	MLDSABatchVerifyPerByteGas  uint64 = 5      // Per message byte
 )
 
 // GPU verification state
@@ -56,9 +56,10 @@ func (p *mldsaBatchVerifyPrecompile) Address() common.Address {
 
 // RequiredGas calculates gas for batch verification
 // Input format:
-//   [0]     = mode byte (0x44, 0x65, or 0x87)
-//   [1:3]   = count (uint16 big-endian)
-//   [3:...] = repeated: [pubKey][sig][msgLen(uint32)][msg]
+//
+//	[0]     = mode byte (0x44, 0x65, or 0x87)
+//	[1:3]   = count (uint16 big-endian)
+//	[3:...] = repeated: [pubKey][sig][msgLen(uint32)][msg]
 func (p *mldsaBatchVerifyPrecompile) RequiredGas(input []byte) uint64 {
 	if len(input) < 3 {
 		return MLDSABatchVerifyBaseGas
@@ -96,13 +97,14 @@ func (p *mldsaBatchVerifyPrecompile) RequiredGas(input []byte) uint64 {
 
 // Run implements batch ML-DSA signature verification
 // Input format:
-//   [0]     = mode byte (0x44, 0x65, or 0x87)
-//   [1:3]   = count (uint16 big-endian)
-//   [3:...] = for each signature:
-//             - pubKey (mode-dependent size)
-//             - signature (mode-dependent size)
-//             - msgLen (uint32 big-endian)
-//             - message (msgLen bytes)
+//
+//	[0]     = mode byte (0x44, 0x65, or 0x87)
+//	[1:3]   = count (uint16 big-endian)
+//	[3:...] = for each signature:
+//	          - pubKey (mode-dependent size)
+//	          - signature (mode-dependent size)
+//	          - msgLen (uint32 big-endian)
+//	          - message (msgLen bytes)
 //
 // Output: 32-byte word per signature (1 = valid, 0 = invalid)
 func (p *mldsaBatchVerifyPrecompile) Run(

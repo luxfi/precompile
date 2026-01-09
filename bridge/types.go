@@ -33,41 +33,41 @@ const (
 
 // Supported chain IDs
 const (
-	ChainLux      uint32 = 96369  // Lux mainnet C-Chain
-	ChainLuxTest  uint32 = 96368  // Lux testnet
-	ChainHanzo    uint32 = 36963  // Hanzo AI mainnet
-	ChainHanzoTest uint32 = 36962 // Hanzo testnet
-	ChainZoo      uint32 = 200200 // Zoo mainnet
-	ChainZooTest  uint32 = 200201 // Zoo testnet
-	ChainSPC      uint32 = 36911  // SPC mainnet
-	ChainSPCTest  uint32 = 36910  // SPC testnet
-	ChainEthereum uint32 = 1      // Ethereum mainnet
-	ChainArbitrum uint32 = 42161  // Arbitrum One
-	ChainOptimism uint32 = 10     // Optimism
-	ChainBase     uint32 = 8453   // Base
-	ChainPolygon  uint32 = 137    // Polygon PoS
-	ChainBSC      uint32 = 56     // BNB Smart Chain
-	ChainAvalanche uint32 = 43114 // Avalanche C-Chain
+	ChainLux       uint32 = 96369  // Lux mainnet C-Chain
+	ChainLuxTest   uint32 = 96368  // Lux testnet
+	ChainHanzo     uint32 = 36963  // Hanzo AI mainnet
+	ChainHanzoTest uint32 = 36962  // Hanzo testnet
+	ChainZoo       uint32 = 200200 // Zoo mainnet
+	ChainZooTest   uint32 = 200201 // Zoo testnet
+	ChainSPC       uint32 = 36911  // SPC mainnet
+	ChainSPCTest   uint32 = 36910  // SPC testnet
+	ChainEthereum  uint32 = 1      // Ethereum mainnet
+	ChainArbitrum  uint32 = 42161  // Arbitrum One
+	ChainOptimism  uint32 = 10     // Optimism
+	ChainBase      uint32 = 8453   // Base
+	ChainPolygon   uint32 = 137    // Polygon PoS
+	ChainBSC       uint32 = 56     // BNB Smart Chain
+	ChainAvalanche uint32 = 43114  // Avalanche C-Chain
 )
 
 // BridgeRequest represents a cross-chain transfer request
 type BridgeRequest struct {
-	ID            [32]byte       // Unique request ID
-	Sender        common.Address // Source chain sender
-	Recipient     common.Address // Destination chain recipient
-	Token         common.Address // Token address (address(0) for native)
-	Amount        *big.Int       // Amount to bridge
-	SourceChain   uint32         // Source chain ID
-	DestChain     uint32         // Destination chain ID
-	Nonce         uint64         // Sender nonce for replay protection
-	Deadline      uint64         // Timestamp deadline
-	Data          []byte         // Optional calldata for recipient
-	Status        BridgeStatus   // Current status
-	SourceTxHash  common.Hash    // Source chain transaction hash
-	DestTxHash    common.Hash    // Destination chain transaction hash
-	Signatures    [][]byte       // MPC signatures
-	CreatedAt     uint64         // Creation timestamp
-	CompletedAt   uint64         // Completion timestamp
+	ID           [32]byte       // Unique request ID
+	Sender       common.Address // Source chain sender
+	Recipient    common.Address // Destination chain recipient
+	Token        common.Address // Token address (address(0) for native)
+	Amount       *big.Int       // Amount to bridge
+	SourceChain  uint32         // Source chain ID
+	DestChain    uint32         // Destination chain ID
+	Nonce        uint64         // Sender nonce for replay protection
+	Deadline     uint64         // Timestamp deadline
+	Data         []byte         // Optional calldata for recipient
+	Status       BridgeStatus   // Current status
+	SourceTxHash common.Hash    // Source chain transaction hash
+	DestTxHash   common.Hash    // Destination chain transaction hash
+	Signatures   [][]byte       // MPC signatures
+	CreatedAt    uint64         // Creation timestamp
+	CompletedAt  uint64         // Completion timestamp
 }
 
 // BridgeStatus represents the status of a bridge request
@@ -101,13 +101,13 @@ type BridgedToken struct {
 
 // LiquidityPool represents a bridge liquidity pool
 type LiquidityPool struct {
-	Token       common.Address // Pool token
-	ChainID     uint32         // Chain ID
-	TotalLiq    *big.Int       // Total liquidity
-	Available   *big.Int       // Available liquidity (not in transit)
-	Providers   map[common.Address]*LPPosition
-	FeeRate     uint32   // Fee in basis points (100 = 1%)
-	TotalFees   *big.Int // Total fees collected
+	Token     common.Address // Pool token
+	ChainID   uint32         // Chain ID
+	TotalLiq  *big.Int       // Total liquidity
+	Available *big.Int       // Available liquidity (not in transit)
+	Providers map[common.Address]*LPPosition
+	FeeRate   uint32   // Fee in basis points (100 = 1%)
+	TotalFees *big.Int // Total fees collected
 }
 
 // LPPosition represents a liquidity provider position
@@ -136,26 +136,26 @@ type BridgeMessage struct {
 
 // MessageType constants
 const (
-	MsgTypeTransfer    uint8 = 1 // Token transfer
-	MsgTypeMint        uint8 = 2 // Mint wrapped token
-	MsgTypeBurn        uint8 = 3 // Burn wrapped token
-	MsgTypeUnlock      uint8 = 4 // Unlock native token
-	MsgTypeLiquidity   uint8 = 5 // Liquidity operation
-	MsgTypeGovernance  uint8 = 6 // Governance message
-	MsgTypeEmergency   uint8 = 7 // Emergency pause/unpause
+	MsgTypeTransfer   uint8 = 1 // Token transfer
+	MsgTypeMint       uint8 = 2 // Mint wrapped token
+	MsgTypeBurn       uint8 = 3 // Burn wrapped token
+	MsgTypeUnlock     uint8 = 4 // Unlock native token
+	MsgTypeLiquidity  uint8 = 5 // Liquidity operation
+	MsgTypeGovernance uint8 = 6 // Governance message
+	MsgTypeEmergency  uint8 = 7 // Emergency pause/unpause
 )
 
 // SignerInfo represents an MPC signer in the bridge set
 type SignerInfo struct {
-	NodeID      [20]byte       // Validator node ID
-	Address     common.Address // EVM address
-	PublicKey   []byte         // MPC public key share
-	Bond        *big.Int       // Staked bond (min 100M LUX)
-	JoinedAt    uint64         // When joined signer set
-	LastActive  uint64         // Last activity timestamp
-	SignCount   uint64         // Total signatures produced
-	SlashCount  uint32         // Times slashed
-	Status      SignerStatus
+	NodeID     [20]byte       // Validator node ID
+	Address    common.Address // EVM address
+	PublicKey  []byte         // MPC public key share
+	Bond       *big.Int       // Staked bond (min 100M LUX)
+	JoinedAt   uint64         // When joined signer set
+	LastActive uint64         // Last activity timestamp
+	SignCount  uint64         // Total signatures produced
+	SlashCount uint32         // Times slashed
+	Status     SignerStatus
 }
 
 // SignerStatus represents MPC signer status
@@ -170,12 +170,12 @@ const (
 
 // SignerSet represents the current MPC signer set
 type SignerSet struct {
-	Signers      []*SignerInfo  // Active signers (max 100)
-	Waitlist     [][20]byte     // Waitlisted node IDs
-	Threshold    uint32         // Required signatures (2/3 of signers)
-	Epoch        uint64         // Current epoch
-	PublicKey    []byte         // Combined threshold public key
-	LastReshare  uint64         // Last reshare timestamp
+	Signers     []*SignerInfo // Active signers (max 100)
+	Waitlist    [][20]byte    // Waitlisted node IDs
+	Threshold   uint32        // Required signatures (2/3 of signers)
+	Epoch       uint64        // Current epoch
+	PublicKey   []byte        // Combined threshold public key
+	LastReshare uint64        // Last reshare timestamp
 }
 
 // BridgeFeeConfig represents fee configuration

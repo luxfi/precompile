@@ -1,5 +1,5 @@
 // Copyright (C) 2019-2025, Lux Industries, Inc. All rights reserved.
-//go:build gpu
+//go:build cgo
 
 // See the file LICENSE for licensing terms.
 

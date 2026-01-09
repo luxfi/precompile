@@ -13,11 +13,11 @@ import (
 
 var (
 	// Note: ErrInvalidPublicInputs is defined in types.go
-	ErrInvalidInput        = errors.New("invalid zk input")
-	ErrInvalidOperation    = errors.New("invalid operation selector")
-	ErrInvalidProofLength  = errors.New("invalid proof length")
-	ErrVerificationFailed  = errors.New("proof verification failed")
-	ErrUnknownProofSystem  = errors.New("unknown proof system")
+	ErrInvalidInput       = errors.New("invalid zk input")
+	ErrInvalidOperation   = errors.New("invalid operation selector")
+	ErrInvalidProofLength = errors.New("invalid proof length")
+	ErrVerificationFailed = errors.New("proof verification failed")
+	ErrUnknownProofSystem = errors.New("unknown proof system")
 )
 
 // Operation selectors (first byte of input)
@@ -36,17 +36,17 @@ const (
 
 // Gas costs
 const (
-	GasGroth16Base      = 150000 // Base cost for Groth16
-	GasPLONKBase        = 200000 // Base cost for PLONK
-	GasFflonkBase       = 180000 // Base cost for fflonk
-	GasHalo2Base        = 250000 // Base cost for Halo2
-	GasKZGBase          = 50000  // Base cost for KZG
-	GasIPABase          = 75000  // Base cost for IPA
-	GasRangeProofBase   = 30000  // Base cost for range proof
-	GasNullifierBase    = 10000  // Base cost for nullifier check
-	GasCommitmentBase   = 20000  // Base cost for commitment
-	GasPerPublicInput   = 1000   // Per public input element
-	GasPerBatchProof    = 50000  // Per proof in batch
+	GasGroth16Base    = 150000 // Base cost for Groth16
+	GasPLONKBase      = 200000 // Base cost for PLONK
+	GasFflonkBase     = 180000 // Base cost for fflonk
+	GasHalo2Base      = 250000 // Base cost for Halo2
+	GasKZGBase        = 50000  // Base cost for KZG
+	GasIPABase        = 75000  // Base cost for IPA
+	GasRangeProofBase = 30000  // Base cost for range proof
+	GasNullifierBase  = 10000  // Base cost for nullifier check
+	GasCommitmentBase = 20000  // Base cost for commitment
+	GasPerPublicInput = 1000   // Per public input element
+	GasPerBatchProof  = 50000  // Per proof in batch
 )
 
 type zkVerifyPrecompile struct {

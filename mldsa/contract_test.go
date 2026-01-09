@@ -268,11 +268,11 @@ func TestMLDSAVerify_GasCost(t *testing.T) {
 
 	// Verify per-mode gas costs
 	tests := []struct {
-		mode    uint8
-		minGas  uint64
-		maxGas  uint64
+		mode   uint8
+		minGas uint64
+		maxGas uint64
 	}{
-		{ModeMLDSA44, 75000, 80000},  // Smaller keys, faster
+		{ModeMLDSA44, 75000, 80000},   // Smaller keys, faster
 		{ModeMLDSA65, 100000, 110000}, // Medium
 		{ModeMLDSA87, 150000, 160000}, // Larger keys, slower
 	}

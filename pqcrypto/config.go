@@ -6,8 +6,8 @@ package pqcrypto
 import (
 	"fmt"
 
-	"github.com/luxfi/precompile/precompileconfig"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/precompileconfig"
 )
 
 var _ precompileconfig.Config = &Config{}

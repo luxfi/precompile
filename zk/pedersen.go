@@ -299,35 +299,35 @@ func hashToG1(seed string) bn254.G1Affine {
 	// Use hash-to-curve via repeated hashing until we find a valid point
 	// This is a simple try-and-increment approach
 	var point bn254.G1Affine
-	
+
 	seedBytes := []byte(seed)
 	var counter byte = 0
-	
+
 	for {
 		// Hash seed with counter
 		data := append(seedBytes, counter)
 		hash := sha256.Sum256(data)
-		
+
 		// Try to create a point from the hash
 		var x fp.Element
 		x.SetBytes(hash[:])
-		
+
 		// Try to find y for this x using curve equation y^2 = x^3 + 3
 		var x2, x3, rhs fp.Element
 		x2.Square(&x)
 		x3.Mul(&x2, &x)
-		
+
 		var three fp.Element
 		three.SetInt64(3)
 		rhs.Add(&x3, &three)
-		
+
 		// Try to compute square root
 		var y fp.Element
 		if y.Sqrt(&rhs) != nil {
 			// Found valid point
 			point.X = x
 			point.Y = y
-			
+
 			if point.IsOnCurve() && !point.IsInfinity() {
 				return point
 			}
@@ -338,7 +338,7 @@ func hashToG1(seed string) bn254.G1Affine {
 			break
 		}
 	}
-	
+
 	// Fallback to base generator (shouldn't reach here)
 	_, _, g1, _ := bn254.Generators()
 	return g1
@@ -351,7 +351,7 @@ func compressG1(p *bn254.G1Affine) [32]byte {
 	// This loses some efficiency but ensures correctness
 	fullBytes := p.Bytes()
 	hash := sha256.Sum256(fullBytes[:])
-	
+
 	// Store hash + first byte of X for verification
 	var result [32]byte
 	copy(result[:], hash[:])
@@ -370,11 +370,11 @@ func storePoint(p *bn254.G1Affine) [32]byte {
 	hash := sha256.Sum256(fullBytes[:])
 	var key [32]byte
 	copy(key[:], hash[:])
-	
+
 	pointCache.Lock()
 	pointCache.m[key] = *p
 	pointCache.Unlock()
-	
+
 	return key
 }
 
@@ -391,7 +391,7 @@ func decompressG1(data [32]byte) (bn254.G1Affine, error) {
 		return p, nil
 	}
 	pointCache.RUnlock()
-	
+
 	// If not in cache, we can't decompress (this is a limitation of this simple approach)
 	// In production, use proper point compression
 	return bn254.G1Affine{}, ErrPointNotOnCurve

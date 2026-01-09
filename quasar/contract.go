@@ -8,9 +8,9 @@ import (
 
 	"github.com/luxfi/crypto/bls"
 	"github.com/luxfi/crypto/mldsa"
-	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/geth/core/vm"
+	"github.com/luxfi/precompile/contract"
 )
 
 const (

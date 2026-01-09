@@ -8,17 +8,17 @@ require (
 	github.com/crate-crypto/go-kzg-4844 v1.1.0
 	github.com/holiman/uint256 v1.3.2
 	github.com/luxfi/ai v0.0.0-20251225021023-3f15131f2bd1
-	github.com/luxfi/consensus v1.22.50
-	github.com/luxfi/crypto v1.17.36
+	github.com/luxfi/consensus v1.22.52
+	github.com/luxfi/crypto v1.17.38
 	github.com/luxfi/database v1.17.35
-	github.com/luxfi/fhe v1.7.4
-	github.com/luxfi/geth v1.16.68
+	github.com/luxfi/fhe v1.7.6-0.20260106060801-28e308e4c2f8
+	github.com/luxfi/geth v1.16.69
 	github.com/luxfi/lattice/v7 v7.0.0
 	github.com/luxfi/log v1.2.1
-	github.com/luxfi/node v1.22.80
 	github.com/luxfi/ringtail v0.2.0
 	github.com/luxfi/threshold v1.5.0
-	github.com/luxfi/warp v1.18.2
+	github.com/luxfi/vm v1.0.15
+	github.com/luxfi/warp v1.18.4
 	github.com/stretchr/testify v1.11.1
 	github.com/zeebo/blake3 v0.2.4
 )
@@ -26,6 +26,7 @@ require (
 require (
 	github.com/ALTree/bigfloat v0.2.0 // indirect
 	github.com/DataDog/zstd v1.5.7 // indirect
+	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251230134950-44c893854e3f // indirect
 	github.com/VictoriaMetrics/fastcache v1.13.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -60,35 +61,50 @@ require (
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/gorilla/rpc v1.2.1 // indirect
+	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/holiman/bloomfilter/v2 v2.0.3 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/kr/fs v0.1.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/luxfi/cache v1.1.0 // indirect
-	github.com/luxfi/gpu v0.29.4 // indirect
-	github.com/luxfi/ids v1.2.7 // indirect
-	github.com/luxfi/math v1.2.0 // indirect
+	github.com/luxfi/cache v1.2.0 // indirect
+	github.com/luxfi/codec v1.1.2 // indirect
+	github.com/luxfi/const v1.4.1 // indirect
+	github.com/luxfi/constants v1.4.3 // indirect
+	github.com/luxfi/container v0.0.2 // indirect
+	github.com/luxfi/gpu v0.30.0 // indirect
+	github.com/luxfi/ids v1.2.9 // indirect
+	github.com/luxfi/math v1.2.3 // indirect
 	github.com/luxfi/math/big v0.1.0 // indirect
-	github.com/luxfi/metric v1.4.8 // indirect
+	github.com/luxfi/metric v1.4.10 // indirect
 	github.com/luxfi/mock v0.1.0 // indirect
-	github.com/luxfi/p2p v1.18.2 // indirect
+	github.com/luxfi/p2p v1.18.7 // indirect
+	github.com/luxfi/rpc v1.0.0 // indirect
 	github.com/luxfi/sampler v1.0.0 // indirect
-	github.com/luxfi/utils v1.1.0 // indirect
-	github.com/luxfi/vm v1.0.2 // indirect
+	github.com/luxfi/sdk v1.16.40 // indirect
+	github.com/luxfi/tls v1.0.2 // indirect
+	github.com/luxfi/version v1.0.1 // indirect
+	github.com/melbahja/goph v1.4.0 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pkg/sftp v1.13.5 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/posthog/posthog-go v1.6.1 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.67.4 // indirect
+	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/shirou/gopsutil v3.21.11+incompatible // indirect
+	github.com/spf13/cobra v1.9.1 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/supranational/blst v0.3.16 // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20220614013038-64ee5596c38a // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect

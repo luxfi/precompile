@@ -13,57 +13,57 @@ import (
 
 // Ciphertext type constants - must match github.com/luxfi/fhe FheUintType
 const (
-	TypeEbool    uint8 = 0  // FheBool - 1 bit
-	TypeEuint4   uint8 = 1  // FheUint4 - 4 bits
-	TypeEuint8   uint8 = 2  // FheUint8 - 8 bits
-	TypeEuint16  uint8 = 3  // FheUint16 - 16 bits
-	TypeEuint32  uint8 = 4  // FheUint32 - 32 bits
-	TypeEuint64  uint8 = 5  // FheUint64 - 64 bits
-	TypeEuint128 uint8 = 6  // FheUint128 - 128 bits
-	TypeEuint160 uint8 = 7  // FheUint160 - 160 bits (Ethereum addresses)
-	TypeEuint256 uint8 = 8  // FheUint256 - 256 bits
-	TypeEaddress uint8 = 7  // Alias for TypeEuint160
+	TypeEbool    uint8 = 0 // FheBool - 1 bit
+	TypeEuint4   uint8 = 1 // FheUint4 - 4 bits
+	TypeEuint8   uint8 = 2 // FheUint8 - 8 bits
+	TypeEuint16  uint8 = 3 // FheUint16 - 16 bits
+	TypeEuint32  uint8 = 4 // FheUint32 - 32 bits
+	TypeEuint64  uint8 = 5 // FheUint64 - 64 bits
+	TypeEuint128 uint8 = 6 // FheUint128 - 128 bits
+	TypeEuint160 uint8 = 7 // FheUint160 - 160 bits (Ethereum addresses)
+	TypeEuint256 uint8 = 8 // FheUint256 - 256 bits
+	TypeEaddress uint8 = 7 // Alias for TypeEuint160
 )
 
 // Gas costs for FHE operations
 const (
-	GasEncrypt          uint64 = 50000
-	GasDecryptRequest   uint64 = 10000
-	GasAdd              uint64 = 65000
-	GasSub              uint64 = 65000
-	GasMul              uint64 = 150000
-	GasDiv              uint64 = 500000
-	GasRem              uint64 = 500000
-	GasAnd              uint64 = 50000
-	GasOr               uint64 = 50000
-	GasXor              uint64 = 50000
-	GasNot              uint64 = 30000
-	GasShl              uint64 = 70000
-	GasShr              uint64 = 70000
-	GasRotl             uint64 = 70000
-	GasRotr             uint64 = 70000
-	GasEq               uint64 = 60000
-	GasNe               uint64 = 60000
-	GasGt               uint64 = 60000
-	GasGe               uint64 = 60000
-	GasLt               uint64 = 60000
-	GasLe               uint64 = 60000
-	GasMin              uint64 = 120000
-	GasMax              uint64 = 120000
-	GasSelect           uint64 = 100000
-	GasNeg              uint64 = 50000
-	GasRand             uint64 = 100000
-	GasCast             uint64 = 30000
-	GasRequire          uint64 = 80000
+	GasEncrypt        uint64 = 50000
+	GasDecryptRequest uint64 = 10000
+	GasAdd            uint64 = 65000
+	GasSub            uint64 = 65000
+	GasMul            uint64 = 150000
+	GasDiv            uint64 = 500000
+	GasRem            uint64 = 500000
+	GasAnd            uint64 = 50000
+	GasOr             uint64 = 50000
+	GasXor            uint64 = 50000
+	GasNot            uint64 = 30000
+	GasShl            uint64 = 70000
+	GasShr            uint64 = 70000
+	GasRotl           uint64 = 70000
+	GasRotr           uint64 = 70000
+	GasEq             uint64 = 60000
+	GasNe             uint64 = 60000
+	GasGt             uint64 = 60000
+	GasGe             uint64 = 60000
+	GasLt             uint64 = 60000
+	GasLe             uint64 = 60000
+	GasMin            uint64 = 120000
+	GasMax            uint64 = 120000
+	GasSelect         uint64 = 100000
+	GasNeg            uint64 = 50000
+	GasRand           uint64 = 100000
+	GasCast           uint64 = 30000
+	GasRequire        uint64 = 80000
 )
 
 var (
-	ErrInvalidInput       = errors.New("invalid input")
-	ErrTypeMismatch       = errors.New("ciphertext type mismatch")
-	ErrOperationFailed    = errors.New("FHE operation failed")
-	ErrNotImplemented     = errors.New("operation not implemented")
-	ErrInsufficientGas    = errors.New("insufficient gas for FHE operation")
-	ErrInvalidCiphertext  = errors.New("invalid ciphertext handle")
+	ErrInvalidInput      = errors.New("invalid input")
+	ErrTypeMismatch      = errors.New("ciphertext type mismatch")
+	ErrOperationFailed   = errors.New("FHE operation failed")
+	ErrNotImplemented    = errors.New("operation not implemented")
+	ErrInsufficientGas   = errors.New("insufficient gas for FHE operation")
+	ErrInvalidCiphertext = errors.New("invalid ciphertext handle")
 )
 
 // FHEContract implements the main FHE precompile
@@ -244,7 +244,7 @@ func (c *FHEContract) handleAdd(state contract.AccessibleState, caller common.Ad
 
 	// Delegate to Z-Chain FHE coprocessor
 	result := performFHEOperation("add", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasAdd, nil
 }
 
@@ -260,7 +260,7 @@ func (c *FHEContract) handleSub(state contract.AccessibleState, caller common.Ad
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("sub", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasSub, nil
 }
 
@@ -276,7 +276,7 @@ func (c *FHEContract) handleMul(state contract.AccessibleState, caller common.Ad
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("mul", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasMul, nil
 }
 
@@ -292,7 +292,7 @@ func (c *FHEContract) handleLt(state contract.AccessibleState, caller common.Add
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("lt", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasLt, nil
 }
 
@@ -308,7 +308,7 @@ func (c *FHEContract) handleGt(state contract.AccessibleState, caller common.Add
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("gt", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasGt, nil
 }
 
@@ -324,7 +324,7 @@ func (c *FHEContract) handleEq(state contract.AccessibleState, caller common.Add
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("eq", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasEq, nil
 }
 
@@ -341,7 +341,7 @@ func (c *FHEContract) handleSelect(state contract.AccessibleState, caller common
 	ifFalse := common.BytesToHash(data[64:96])
 
 	result := performFHESelect(condition, ifTrue, ifFalse, caller)
-	
+
 	return result.Bytes(), gas - GasSelect, nil
 }
 
@@ -354,9 +354,9 @@ func (c *FHEContract) handleAsEuint64(state contract.AccessibleState, caller com
 	}
 
 	value := new(big.Int).SetBytes(data[:32])
-	
+
 	result := encryptValue(value.Uint64(), TypeEuint64, caller)
-	
+
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
@@ -369,9 +369,9 @@ func (c *FHEContract) handleAsEaddress(state contract.AccessibleState, caller co
 	}
 
 	addr := common.BytesToAddress(data[12:32])
-	
+
 	result := encryptAddress(addr, caller)
-	
+
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
@@ -387,7 +387,7 @@ func (c *FHEContract) handleMax(state contract.AccessibleState, caller common.Ad
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("max", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasMax, nil
 }
 
@@ -403,7 +403,7 @@ func (c *FHEContract) handleMin(state contract.AccessibleState, caller common.Ad
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("min", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasMin, nil
 }
 
@@ -419,7 +419,7 @@ func (c *FHEContract) handleAnd(state contract.AccessibleState, caller common.Ad
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("and", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasAnd, nil
 }
 
@@ -435,7 +435,7 @@ func (c *FHEContract) handleOr(state contract.AccessibleState, caller common.Add
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("or", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasOr, nil
 }
 
@@ -450,7 +450,7 @@ func (c *FHEContract) handleNot(state contract.AccessibleState, caller common.Ad
 	handle := common.BytesToHash(data[:32])
 
 	result := performFHEUnaryOperation("not", handle, caller)
-	
+
 	return result.Bytes(), gas - GasNot, nil
 }
 
@@ -465,7 +465,7 @@ func (c *FHEContract) handleNeg(state contract.AccessibleState, caller common.Ad
 	handle := common.BytesToHash(data[:32])
 
 	result := performFHEUnaryOperation("neg", handle, caller)
-	
+
 	return result.Bytes(), gas - GasNeg, nil
 }
 
@@ -478,9 +478,9 @@ func (c *FHEContract) handleRand(state contract.AccessibleState, caller common.A
 	}
 
 	ctType := data[0]
-	
+
 	result := generateEncryptedRandom(ctType, caller)
-	
+
 	return result.Bytes(), gas - GasRand, nil
 }
 
@@ -498,7 +498,7 @@ func (c *FHEContract) handleDiv(state contract.AccessibleState, caller common.Ad
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("div", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasDiv, nil
 }
 
@@ -514,7 +514,7 @@ func (c *FHEContract) handleRem(state contract.AccessibleState, caller common.Ad
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("rem", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasRem, nil
 }
 
@@ -532,7 +532,7 @@ func (c *FHEContract) handleScalarAdd(state contract.AccessibleState, caller com
 	scalar := new(big.Int).SetBytes(data[32:64])
 
 	result := performFHEScalarOperation("scalarAdd", handle, scalar, caller)
-	
+
 	return result.Bytes(), gas - GasAdd, nil
 }
 
@@ -548,7 +548,7 @@ func (c *FHEContract) handleScalarSub(state contract.AccessibleState, caller com
 	scalar := new(big.Int).SetBytes(data[32:64])
 
 	result := performFHEScalarOperation("scalarSub", handle, scalar, caller)
-	
+
 	return result.Bytes(), gas - GasSub, nil
 }
 
@@ -564,7 +564,7 @@ func (c *FHEContract) handleScalarMul(state contract.AccessibleState, caller com
 	scalar := new(big.Int).SetBytes(data[32:64])
 
 	result := performFHEScalarOperation("scalarMul", handle, scalar, caller)
-	
+
 	return result.Bytes(), gas - GasMul, nil
 }
 
@@ -580,7 +580,7 @@ func (c *FHEContract) handleScalarDiv(state contract.AccessibleState, caller com
 	scalar := new(big.Int).SetBytes(data[32:64])
 
 	result := performFHEScalarOperation("scalarDiv", handle, scalar, caller)
-	
+
 	return result.Bytes(), gas - GasDiv, nil
 }
 
@@ -596,7 +596,7 @@ func (c *FHEContract) handleScalarRem(state contract.AccessibleState, caller com
 	scalar := new(big.Int).SetBytes(data[32:64])
 
 	result := performFHEScalarOperation("scalarRem", handle, scalar, caller)
-	
+
 	return result.Bytes(), gas - GasRem, nil
 }
 
@@ -614,7 +614,7 @@ func (c *FHEContract) handleLe(state contract.AccessibleState, caller common.Add
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("le", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasLe, nil
 }
 
@@ -630,7 +630,7 @@ func (c *FHEContract) handleGe(state contract.AccessibleState, caller common.Add
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("ge", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasGe, nil
 }
 
@@ -646,7 +646,7 @@ func (c *FHEContract) handleNe(state contract.AccessibleState, caller common.Add
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("ne", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasNe, nil
 }
 
@@ -664,7 +664,7 @@ func (c *FHEContract) handleXor(state contract.AccessibleState, caller common.Ad
 	handle2 := common.BytesToHash(data[32:64])
 
 	result := performFHEOperation("xor", handle1, handle2, caller)
-	
+
 	return result.Bytes(), gas - GasXor, nil
 }
 
@@ -682,7 +682,7 @@ func (c *FHEContract) handleShl(state contract.AccessibleState, caller common.Ad
 	shift := int(data[32])
 
 	result := performFHEShiftOperation("shl", handle, shift, caller)
-	
+
 	return result.Bytes(), gas - GasShl, nil
 }
 
@@ -698,7 +698,7 @@ func (c *FHEContract) handleShr(state contract.AccessibleState, caller common.Ad
 	shift := int(data[32])
 
 	result := performFHEShiftOperation("shr", handle, shift, caller)
-	
+
 	return result.Bytes(), gas - GasShr, nil
 }
 
@@ -714,7 +714,7 @@ func (c *FHEContract) handleRotl(state contract.AccessibleState, caller common.A
 	shift := int(data[32])
 
 	result := performFHEShiftOperation("rotl", handle, shift, caller)
-	
+
 	return result.Bytes(), gas - GasRotl, nil
 }
 
@@ -730,7 +730,7 @@ func (c *FHEContract) handleRotr(state contract.AccessibleState, caller common.A
 	shift := int(data[32])
 
 	result := performFHEShiftOperation("rotr", handle, shift, caller)
-	
+
 	return result.Bytes(), gas - GasRotr, nil
 }
 
@@ -748,7 +748,7 @@ func (c *FHEContract) handleCast(state contract.AccessibleState, caller common.A
 	toType := data[32]
 
 	result := performFHECast(handle, toType, caller)
-	
+
 	return result.Bytes(), gas - GasCast, nil
 }
 
@@ -765,9 +765,9 @@ func (c *FHEContract) handleAsEbool(state contract.AccessibleState, caller commo
 	if value.Sign() != 0 {
 		boolVal = 1
 	}
-	
+
 	result := encryptValue(boolVal, TypeEbool, caller)
-	
+
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
@@ -780,9 +780,9 @@ func (c *FHEContract) handleAsEuint4(state contract.AccessibleState, caller comm
 	}
 
 	value := new(big.Int).SetBytes(data[:32])
-	
+
 	result := encryptValue(value.Uint64()&0xF, TypeEuint4, caller)
-	
+
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
@@ -795,9 +795,9 @@ func (c *FHEContract) handleAsEuint8(state contract.AccessibleState, caller comm
 	}
 
 	value := new(big.Int).SetBytes(data[:32])
-	
+
 	result := encryptValue(value.Uint64()&0xFF, TypeEuint8, caller)
-	
+
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
@@ -810,9 +810,9 @@ func (c *FHEContract) handleAsEuint16(state contract.AccessibleState, caller com
 	}
 
 	value := new(big.Int).SetBytes(data[:32])
-	
+
 	result := encryptValue(value.Uint64()&0xFFFF, TypeEuint16, caller)
-	
+
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
@@ -825,9 +825,9 @@ func (c *FHEContract) handleAsEuint32(state contract.AccessibleState, caller com
 	}
 
 	value := new(big.Int).SetBytes(data[:32])
-	
+
 	result := encryptValue(value.Uint64()&0xFFFFFFFF, TypeEuint32, caller)
-	
+
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
@@ -840,9 +840,9 @@ func (c *FHEContract) handleAsEuint128(state contract.AccessibleState, caller co
 	}
 
 	value := new(big.Int).SetBytes(data[:32])
-	
+
 	result := encryptBigIntValue(value, TypeEuint128, caller)
-	
+
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
@@ -855,9 +855,9 @@ func (c *FHEContract) handleAsEuint256(state contract.AccessibleState, caller co
 	}
 
 	value := new(big.Int).SetBytes(data[:32])
-	
+
 	result := encryptBigIntValue(value, TypeEuint256, caller)
-	
+
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
@@ -874,7 +874,7 @@ func (c *FHEContract) handleDecrypt(state contract.AccessibleState, caller commo
 	handle := common.BytesToHash(data[:32])
 
 	result := performFHEDecrypt(handle, caller)
-	
+
 	return result.Bytes(), gas - GasDecryptRequest, nil
 }
 
@@ -890,7 +890,7 @@ func (c *FHEContract) handleVerify(state contract.AccessibleState, caller common
 	inputHandle := data[1:]
 
 	result := performFHEVerify(inputHandle, ctType, caller)
-	
+
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
@@ -906,7 +906,7 @@ func (c *FHEContract) handleSealOutput(state contract.AccessibleState, caller co
 	publicKey := data[32:]
 
 	result := performFHESealOutput(handle, publicKey, caller)
-	
+
 	return result, gas - GasEncrypt, nil
 }
 

@@ -53,13 +53,13 @@ const (
 
 // Operation selectors
 const (
-	OpBlobToCommitment    = 0x01
-	OpComputeProof        = 0x02
-	OpVerifyProof         = 0x03
-	OpVerifyBlobProof     = 0x04
-	OpBatchVerifyProofs   = 0x10
-	OpComputeChallenge    = 0x20
-	OpEvaluatePolynomial  = 0x21
+	OpBlobToCommitment   = 0x01
+	OpComputeProof       = 0x02
+	OpVerifyProof        = 0x03
+	OpVerifyBlobProof    = 0x04
+	OpBatchVerifyProofs  = 0x10
+	OpComputeChallenge   = 0x20
+	OpEvaluatePolynomial = 0x21
 )
 
 // Gas costs aligned with EIP-4844

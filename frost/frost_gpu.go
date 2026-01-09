@@ -1,4 +1,4 @@
-//go:build gpu
+//go:build cgo
 
 // Package frost provides GPU-accelerated threshold signature verification for the FROST precompile.
 package frost
@@ -138,10 +138,10 @@ func verifySchnorrSignatureGPU(threshold, totalSigners uint32, publicKey, messag
 	// Pad public key to BLS format (48 bytes) if needed
 	// FROST uses 32-byte Schnorr keys, GPU library expects BLS format
 	// We need to convert or use the raw verification path
-	
+
 	// For Schnorr signatures, we use a different approach:
 	// The GPU library provides batch hash operations that accelerate the challenge computation
-	
+
 	// Extract R and s from signature
 	R := signature[0:32]
 	s := signature[32:64]
@@ -151,20 +151,20 @@ func verifySchnorrSignatureGPU(threshold, totalSigners uint32, publicKey, messag
 	copy(challengeInput[0:32], R)
 	copy(challengeInput[32:64], publicKey)
 	copy(challengeInput[64:96], messageHash)
-	
+
 	// Use GPU-accelerated hashing for challenge computation
 	challenge := gpu.SHA3_256(challengeInput)
 
 	// For batch verification of multiple signatures (common in FROST),
 	// we can use GPU-accelerated elliptic curve operations
 	// This is a simplified single-signature verification
-	
+
 	// Verify: s*G == R + c*P (Schnorr equation)
 	// Use GPU batch verification for the EC operations
-	
+
 	// Since the current GPU library focuses on BLS threshold signatures,
 	// we use it for hash acceleration and fall back to optimized CPU EC ops
-	
+
 	// For now, use the challenge computed with GPU-accelerated hash
 	// and perform EC verification
 	return verifySchnorrEquation(publicKey, R, s, challenge)
@@ -175,12 +175,12 @@ func verifySchnorrSignatureGPU(threshold, totalSigners uint32, publicKey, messag
 func verifySchnorrEquation(publicKey, R, s, challenge []byte) bool {
 	// This would use the secp256k1 GPU kernels if available
 	// For now, use the standard verification path with GPU-accelerated challenge
-	
+
 	// The GPU acceleration provides benefit through:
 	// 1. Parallel hash computation for challenge (done above)
 	// 2. Batch EC operations when verifying multiple signatures
 	// 3. MSM acceleration for aggregate verification
-	
+
 	// Single signature verification - use optimized CPU for EC ops
 	return verifySchnorrCPUOptimized(publicKey, R, s, challenge)
 }
@@ -189,28 +189,28 @@ func verifySchnorrEquation(publicKey, R, s, challenge []byte) bool {
 func verifySchnorrCPUOptimized(publicKey, R, s, challenge []byte) bool {
 	// Import secp256k1 operations for final EC verification
 	// The challenge was already computed using GPU-accelerated SHA3
-	
+
 	// For a complete implementation, we would use:
 	// 1. GPU MSM for batch scalar multiplications
 	// 2. GPU pairing checks for aggregate verification
-	
+
 	// Currently using standard ECDSA verification as fallback
 	// since secp256k1 Schnorr GPU kernels are not yet in luxcpp/crypto
-	
+
 	// Use the challenge hash to verify signature structure
 	// This is a placeholder - real implementation needs secp256k1 GPU support
 	if len(challenge) != 32 {
 		return false
 	}
-	
+
 	// Verify signature format
 	if len(R) != 32 || len(s) != 32 {
 		return false
 	}
-	
+
 	// For threshold signatures, verify the aggregated signature
 	// The threshold context handles the Lagrange interpolation on GPU
-	
+
 	// Placeholder: Return true for valid format (real impl needs EC ops)
 	// In production, this would call into secp256k1 scalar multiplication
 	return verifyChallengeSignature(publicKey, R, s, challenge)
@@ -220,16 +220,16 @@ func verifySchnorrCPUOptimized(publicKey, R, s, challenge []byte) bool {
 func verifyChallengeSignature(publicKey, R, s, challenge []byte) bool {
 	// This would be the core Schnorr verification: s*G = R + c*P
 	// Using secp256k1 scalar multiplication and point addition
-	
+
 	// For now, verify using existing ECDSA infrastructure
 	// with the GPU-computed challenge
-	
+
 	// Compute commitment: R' = s*G - c*P
 	// Verify: R' == R
-	
+
 	// Using existing crypto operations
 	// Real implementation needs secp256k1 Schnorr support in luxcpp/crypto
-	
+
 	// Placeholder verification - checks format only
 	for i := 0; i < 32; i++ {
 		if R[i] == 0 && s[i] == 0 {
@@ -265,7 +265,7 @@ func verifySchnorrSignatureCPU(publicKey, messageHash, signature []byte) bool {
 // This is the main benefit of GPU acceleration - parallel verification
 func BatchVerifyFROST(sigs, pks, msgs [][]byte, threshold, totalSigners uint32) ([]bool, error) {
 	initGPU()
-	
+
 	n := len(sigs)
 	if n != len(pks) || n != len(msgs) {
 		return nil, errors.New("mismatched input lengths")
@@ -284,7 +284,7 @@ func BatchVerifyFROST(sigs, pks, msgs [][]byte, threshold, totalSigners uint32) 
 				results[i] = false
 				continue
 			}
-			
+
 			R := sigs[i][0:32]
 			challengeInputs[i] = make([]byte, 96)
 			copy(challengeInputs[i][0:32], R)
@@ -324,7 +324,7 @@ func BatchVerifyFROST(sigs, pks, msgs [][]byte, threshold, totalSigners uint32) 
 // This is useful for DKG and signing operations
 func ThresholdSign(shares [][]byte, indices []uint32, msg []byte, threshold, totalSigners uint32) ([]byte, error) {
 	initGPU()
-	
+
 	if !gpuAvailable {
 		return nil, errors.New("GPU not available for threshold signing")
 	}

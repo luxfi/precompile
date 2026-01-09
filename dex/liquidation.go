@@ -63,13 +63,13 @@ type LiquidatorConfig struct {
 
 // LiquidationEvent records a liquidation
 type LiquidationEvent struct {
-	Liquidator    common.Address
-	Borrower      common.Address
-	Asset         common.Address
-	DebtRepaid    *big.Int
+	Liquidator       common.Address
+	Borrower         common.Address
+	Asset            common.Address
+	DebtRepaid       *big.Int
 	CollateralSeized *big.Int
-	Bonus         *big.Int
-	Timestamp     uint64
+	Bonus            *big.Int
+	Timestamp        uint64
 }
 
 // NewLiquidator creates a new Liquidator instance
@@ -84,9 +84,9 @@ func NewLiquidator(lendingPool *LendingPool) *Liquidator {
 // DefaultLiquidatorConfig returns default configuration
 func DefaultLiquidatorConfig() *LiquidatorConfig {
 	return &LiquidatorConfig{
-		CloseFactor:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(50), RAY), big.NewInt(100)),  // 50%
-		LiquidationThreshold:    new(big.Int).Set(RAY),                                                      // 1.0
-		ProtocolFee:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(10), RAY), big.NewInt(100)),  // 10%
+		CloseFactor:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(50), RAY), big.NewInt(100)), // 50%
+		LiquidationThreshold:    new(big.Int).Set(RAY),                                                    // 1.0
+		ProtocolFee:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(10), RAY), big.NewInt(100)), // 10%
 		MinLiquidation:          big.NewInt(0),
 		FlashLiquidationEnabled: true,
 	}

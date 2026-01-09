@@ -49,8 +49,8 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Backend:         detectBackend(),
-		BatchThreshold:  64,     // GPU overhead not worth it below 64 ops
-		MaxBatchSize:    65536,  // 64K ops per dispatch
+		BatchThreshold:  64,    // GPU overhead not worth it below 64 ops
+		MaxBatchSize:    65536, // 64K ops per dispatch
 		AsyncDispatch:   true,
 		PreallocBuffers: 8,
 	}
@@ -80,12 +80,12 @@ func hasCUDA() bool {
 
 // Errors
 var (
-	ErrGPUNotAvailable   = errors.New("gpu: backend not available")
-	ErrBatchTooLarge     = errors.New("gpu: batch size exceeds maximum")
-	ErrInvalidInput      = errors.New("gpu: invalid input data")
-	ErrBufferAllocation  = errors.New("gpu: buffer allocation failed")
-	ErrKernelExecution   = errors.New("gpu: kernel execution failed")
-	ErrResultCopy        = errors.New("gpu: result copy failed")
+	ErrGPUNotAvailable  = errors.New("gpu: backend not available")
+	ErrBatchTooLarge    = errors.New("gpu: batch size exceeds maximum")
+	ErrInvalidInput     = errors.New("gpu: invalid input data")
+	ErrBufferAllocation = errors.New("gpu: buffer allocation failed")
+	ErrKernelExecution  = errors.New("gpu: kernel execution failed")
+	ErrResultCopy       = errors.New("gpu: result copy failed")
 )
 
 // =============================================================================
@@ -183,26 +183,26 @@ func (l *Liquidity128) ToBigInt() *big.Int {
 
 // SwapInput represents a single swap for batch processing.
 type SwapInput struct {
-	PoolID        [32]byte     // Pool identifier
-	SqrtPriceX96  SqrtPriceX96 // Current sqrt price
-	Liquidity     Liquidity128 // Current liquidity
-	Tick          int32        // Current tick
-	ZeroForOne    bool         // Direction
-	ExactInput    bool         // Amount type
-	Amount        Liquidity128 // Amount specified (use as 128-bit signed)
-	FeePips       uint32       // Fee in pips (1 pip = 0.0001%)
+	PoolID         [32]byte     // Pool identifier
+	SqrtPriceX96   SqrtPriceX96 // Current sqrt price
+	Liquidity      Liquidity128 // Current liquidity
+	Tick           int32        // Current tick
+	ZeroForOne     bool         // Direction
+	ExactInput     bool         // Amount type
+	Amount         Liquidity128 // Amount specified (use as 128-bit signed)
+	FeePips        uint32       // Fee in pips (1 pip = 0.0001%)
 	SqrtPriceLimit SqrtPriceX96 // Price limit
 }
 
 // SwapOutput holds the result of a batch swap.
 type SwapOutput struct {
-	Amount0Delta  Liquidity128 // Token0 delta (signed as 2's complement)
-	Amount1Delta  Liquidity128 // Token1 delta (signed as 2's complement)
-	SqrtPriceX96  SqrtPriceX96 // New sqrt price
-	Tick          int32        // New tick
-	FeeGrowth     Liquidity128 // Fee growth increment
-	Success       bool         // Whether swap succeeded
-	ErrorCode     uint8        // Error code if failed
+	Amount0Delta Liquidity128 // Token0 delta (signed as 2's complement)
+	Amount1Delta Liquidity128 // Token1 delta (signed as 2's complement)
+	SqrtPriceX96 SqrtPriceX96 // New sqrt price
+	Tick         int32        // New tick
+	FeeGrowth    Liquidity128 // Fee growth increment
+	Success      bool         // Whether swap succeeded
+	ErrorCode    uint8        // Error code if failed
 }
 
 // LiquidityInput represents a liquidity operation for batch processing.
@@ -219,30 +219,30 @@ type LiquidityInput struct {
 
 // LiquidityOutput holds the result of a liquidity operation.
 type LiquidityOutput struct {
-	Amount0      Liquidity128 // Token0 amount
-	Amount1      Liquidity128 // Token1 amount
-	FeeGrowth0   Liquidity128 // Fee growth token0
-	FeeGrowth1   Liquidity128 // Fee growth token1
-	Success      bool
-	ErrorCode    uint8
+	Amount0    Liquidity128 // Token0 amount
+	Amount1    Liquidity128 // Token1 amount
+	FeeGrowth0 Liquidity128 // Fee growth token0
+	FeeGrowth1 Liquidity128 // Fee growth token1
+	Success    bool
+	ErrorCode  uint8
 }
 
 // RouteInput represents a multi-hop route for optimization.
 type RouteInput struct {
-	PoolIDs      [][32]byte   // Pools in route (max 8 hops)
-	SqrtPrices   []SqrtPriceX96
-	Liquidities  []Liquidity128
-	Fees         []uint32
-	AmountIn     Liquidity128
-	NumHops      uint8
+	PoolIDs     [][32]byte // Pools in route (max 8 hops)
+	SqrtPrices  []SqrtPriceX96
+	Liquidities []Liquidity128
+	Fees        []uint32
+	AmountIn    Liquidity128
+	NumHops     uint8
 }
 
 // RouteOutput holds optimized route result.
 type RouteOutput struct {
-	AmountOut    Liquidity128
-	PriceImpact  uint32       // Impact in basis points
-	GasEstimate  uint64
-	Success      bool
+	AmountOut   Liquidity128
+	PriceImpact uint32 // Impact in basis points
+	GasEstimate uint64
+	Success     bool
 }
 
 // =============================================================================
@@ -1096,6 +1096,6 @@ func (tm *TickMath) tickToSqrtPriceSingle(tick int32, q96 *big.Int) *big.Int {
 
 // Convenience type aliases for external use
 type (
-	PoolID = [32]byte
+	PoolID  = [32]byte
 	Address = common.Address
 )

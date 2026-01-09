@@ -4,6 +4,8 @@
 package registry
 
 import (
+	"fmt"
+
 	"github.com/luxfi/geth/common"
 )
 
@@ -11,22 +13,23 @@ import (
 // PRECOMPILE ADDRESS SCHEME - Aligned with LP Numbering (LP-0099)
 // ============================================================================
 //
-// All Lux-native precompiles live in a 64K address block starting at:
-//   BASE = 0x10000
+// All Lux-native precompiles use trailing-significant 20-byte addresses:
+//   Format: 0x0000000000000000000000000000000000PCII
 //
-// Each address is BASE + selector where the 16-bit selector encodes:
-//   0x P C II
-//      │ │ └┴─ Item/function (8 bits, 256 items per family×chain)
-//      │ └──── Chain slot    (4 bits, 16 chains max, 11 assigned)
-//      └────── Family page   (4 bits, aligned with LP-Pxxx)
+// The address ends with the 16-bit LP number (PCII) for easy identification.
+// The selector encodes:
+//   0x 0000...0000 P C II
+//                  │ │ └┴─ Item/function (8 bits, 256 items per family×chain)
+//                  │ └──── Chain slot    (4 bits, 16 chains max, 11 assigned)
+//                  └────── Family page   (4 bits, aligned with LP-Pxxx)
 //
 // P nibble = LP range first digit:
-//   P=2 → LP-2xxx (Q-Chain, PQ Identity)
-//   P=3 → LP-3xxx (C-Chain, EVM/Crypto)
-//   P=4 → LP-4xxx (Z-Chain, Privacy/ZK)
-//   P=5 → LP-5xxx (T-Chain, Threshold/MPC)
-//   P=6 → LP-6xxx (B-Chain, Bridges)
-//   P=7 → LP-7xxx (A-Chain, AI)
+//   P=2 → LP-2xxx (PQ Identity)
+//   P=3 → LP-3xxx (EVM/Crypto)
+//   P=4 → LP-4xxx (Privacy/ZK)
+//   P=5 → LP-5xxx (Threshold/MPC)
+//   P=6 → LP-6xxx (Bridges)
+//   P=7 → LP-7xxx (AI)
 //   P=9 → LP-9xxx (DEX/Markets)
 //
 // C nibble = Chain slot:
@@ -42,8 +45,8 @@ import (
 //   C=9 → Hanzo
 //   C=A → SPC
 //
-// Example: FROST on C-Chain = P=5 (Threshold), C=2 (C-Chain), II=01
-//          Address = 0x10000 + 0x5201 = 0x15201
+// Example: FROST on C-Chain = P=5 (Threshold), C=2 (C-Chain), II=00
+//          Address = 0x0000000000000000000000000000000000005200 (LP-5200)
 
 const (
 	// =========================================================================
@@ -61,285 +64,261 @@ const (
 	// 0x0A = KZG Point Evaluation (EIP-4844)
 	// 0x0B-0x11 = BLS12-381 (EIP-2537)
 
-	// BLS12-381 (0x0B-0x11) - EIP-2537
-	BLS12381G1AddAddress   = "0x000b"
-	BLS12381G1MulAddress   = "0x000c"
-	BLS12381G1MSMAddress   = "0x000d"
-	BLS12381G2AddAddress   = "0x000e"
-	BLS12381G2MulAddress   = "0x000f"
-	BLS12381G2MSMAddress   = "0x0010"
-	BLS12381PairingAddress = "0x0011"
+	// BLS12-381 (0x0B-0x11) - EIP-2537 (standard EVM addresses)
+	BLS12381G1AddAddress   = "0x000000000000000000000000000000000000000b"
+	BLS12381G1MulAddress   = "0x000000000000000000000000000000000000000c"
+	BLS12381G1MSMAddress   = "0x000000000000000000000000000000000000000d"
+	BLS12381G2AddAddress   = "0x000000000000000000000000000000000000000e"
+	BLS12381G2MulAddress   = "0x000000000000000000000000000000000000000f"
+	BLS12381G2MSMAddress   = "0x0000000000000000000000000000000000000010"
+	BLS12381PairingAddress = "0x0000000000000000000000000000000000000011"
 
 	// secp256r1 (P-256) - EIP-7212 (passkeys/WebAuthn)
-	P256VerifyAddress = "0x0100"
+	P256VerifyAddress = "0x0000000000000000000000000000000000000100"
 
 	// =========================================================================
 	// PAGE 2: PQ IDENTITY (0x2CII) → LP-2xxx
 	// =========================================================================
 
-	// Post-Quantum Signatures (II = 0x01-0x0F)
-	MLDSACChain  = "0x12201" // C-Chain ML-DSA
-	MLDSAQChain  = "0x12301" // Q-Chain ML-DSA
-	MLKEMCChain  = "0x12202" // C-Chain ML-KEM
-	MLKEMQChain  = "0x12302" // Q-Chain ML-KEM
-	SLHDSACChain = "0x12203" // C-Chain SLH-DSA
-	SLHDSAQChain = "0x12303" // Q-Chain SLH-DSA
-	FalconCChain = "0x12204" // C-Chain Falcon
-	FalconQChain = "0x12304" // Q-Chain Falcon
+	// Post-Quantum Signatures (II = 0x00-0x0F)
+	MLDSACChain  = "0x0000000000000000000000000000000000002200" // C-Chain ML-DSA (LP-2200)
+	MLDSAQChain  = "0x0000000000000000000000000000000000002300" // Q-Chain ML-DSA (LP-2300)
+	MLKEMCChain  = "0x0000000000000000000000000000000000002201" // C-Chain ML-KEM (LP-2201)
+	MLKEMQChain  = "0x0000000000000000000000000000000000002301" // Q-Chain ML-KEM (LP-2301)
+	SLHDSACChain = "0x0000000000000000000000000000000000002202" // C-Chain SLH-DSA (LP-2202)
+	SLHDSAQChain = "0x0000000000000000000000000000000000002302" // Q-Chain SLH-DSA (LP-2302)
+	FalconCChain = "0x0000000000000000000000000000000000002203" // C-Chain Falcon (LP-2203)
+	FalconQChain = "0x0000000000000000000000000000000000002303" // Q-Chain Falcon (LP-2303)
 
 	// PQ Key Exchange (II = 0x10-0x1F)
-	KyberCChain = "0x12210" // C-Chain Kyber
-	KyberQChain = "0x12310" // Q-Chain Kyber
-	NTRUCChain  = "0x12211" // C-Chain NTRU
-	NTRUQChain  = "0x12311" // Q-Chain NTRU
+	KyberCChain = "0x0000000000000000000000000000000000002210" // C-Chain Kyber (LP-2210)
+	KyberQChain = "0x0000000000000000000000000000000000002310" // Q-Chain Kyber (LP-2310)
+	NTRUCChain  = "0x0000000000000000000000000000000000002211" // C-Chain NTRU (LP-2211)
+	NTRUQChain  = "0x0000000000000000000000000000000000002311" // Q-Chain NTRU (LP-2311)
 
 	// Hybrid Modes (II = 0x20-0x2F)
-	HybridSignCChain = "0x12220" // C-Chain ECDSA+ML-DSA
-	HybridSignQChain = "0x12320" // Q-Chain ECDSA+ML-DSA
-	HybridKEMCChain  = "0x12221" // C-Chain X25519+Kyber
-	HybridKEMQChain  = "0x12321" // Q-Chain X25519+Kyber
+	HybridSignCChain = "0x0000000000000000000000000000000000002220" // C-Chain ECDSA+ML-DSA (LP-2220)
+	HybridSignQChain = "0x0000000000000000000000000000000000002320" // Q-Chain ECDSA+ML-DSA (LP-2320)
+	HybridKEMCChain  = "0x0000000000000000000000000000000000002221" // C-Chain X25519+Kyber (LP-2221)
+	HybridKEMQChain  = "0x0000000000000000000000000000000000002321" // Q-Chain X25519+Kyber (LP-2321)
 
 	// =========================================================================
 	// PAGE 3: EVM/CRYPTO (0x3CII) → LP-3xxx
 	// =========================================================================
 
-	// Hashing (II = 0x01-0x0F)
-	Poseidon2CChain    = "0x13201" // C-Chain Poseidon2
-	Poseidon2ZChain    = "0x13601" // Z-Chain Poseidon2
-	Poseidon2SpongeCCh = "0x13202" // C-Chain Poseidon2Sponge
-	Blake3CChain       = "0x13203" // C-Chain Blake3
-	Blake3ZChain       = "0x13603" // Z-Chain Blake3
-	PedersenCChain     = "0x13204" // C-Chain Pedersen
-	PedersenZChain     = "0x13604" // Z-Chain Pedersen
-	MiMCCChain         = "0x13205" // C-Chain MiMC
-	RescueCChain       = "0x13206" // C-Chain Rescue
+	// Hashing (II = 0x00-0x0F)
+	Poseidon2CChain    = "0x3200000000000000000000000000000000000000" // C-Chain Poseidon2
+	Poseidon2ZChain    = "0x3600000000000000000000000000000000000000" // Z-Chain Poseidon2
+	Poseidon2SpongeCCh = "0x3201000000000000000000000000000000000000" // C-Chain Poseidon2Sponge
+	Blake3CChain       = "0x3202000000000000000000000000000000000000" // C-Chain Blake3
+	Blake3ZChain       = "0x3602000000000000000000000000000000000000" // Z-Chain Blake3
+	PedersenCChain     = "0x3203000000000000000000000000000000000000" // C-Chain Pedersen
+	PedersenZChain     = "0x3603000000000000000000000000000000000000" // Z-Chain Pedersen
+	MiMCCChain         = "0x3204000000000000000000000000000000000000" // C-Chain MiMC
+	RescueCChain       = "0x3205000000000000000000000000000000000000" // C-Chain Rescue
 
 	// Classical Signatures (II = 0x10-0x1F)
-	ECDSACChain   = "0x13210" // Extended ECDSA
-	Ed25519CChain = "0x13211" // Ed25519
-	BLS381CChain  = "0x13212" // BLS12-381
-	SchnorrCChain = "0x13213" // Schnorr (BIP-340)
+	ECDSACChain   = "0x3210000000000000000000000000000000000000" // Extended ECDSA
+	Ed25519CChain = "0x3211000000000000000000000000000000000000" // Ed25519
+	BLS381CChain  = "0x3212000000000000000000000000000000000000" // BLS12-381
+	SchnorrCChain = "0x3213000000000000000000000000000000000000" // Schnorr (BIP-340)
 
 	// Encryption (II = 0x20-0x2F)
-	AESGCMCChain   = "0x13220" // AES-GCM
-	ChaCha20CChain = "0x13221" // ChaCha20-Poly1305
-	HPKECChain     = "0x13222" // HPKE
-	ECIESCChain    = "0x13223" // ECIES
+	AESGCMCChain   = "0x3220000000000000000000000000000000000000" // AES-GCM
+	ChaCha20CChain = "0x3221000000000000000000000000000000000000" // ChaCha20-Poly1305
+	HPKECChain     = "0x3222000000000000000000000000000000000000" // HPKE
+	ECIESCChain    = "0x3223000000000000000000000000000000000000" // ECIES
 
 	// =========================================================================
 	// PAGE 4: PRIVACY/ZK (0x4CII) → LP-4xxx
 	// =========================================================================
 
-	// SNARKs (II = 0x01-0x0F)
-	Groth16CChain = "0x14201" // C-Chain Groth16
-	Groth16ZChain = "0x14601" // Z-Chain Groth16
-	PLONKCChain   = "0x14202" // C-Chain PLONK
-	PLONKZChain   = "0x14602" // Z-Chain PLONK
-	fflonkCChain  = "0x14203" // C-Chain fflonk
-	fflonkZChain  = "0x14603" // Z-Chain fflonk
-	Halo2CChain   = "0x14204" // C-Chain Halo2
-	Halo2ZChain   = "0x14604" // Z-Chain Halo2
-	NovaCChain    = "0x14205" // C-Chain Nova
-	NovaZChain    = "0x14605" // Z-Chain Nova
+	// SNARKs (II = 0x00-0x0F)
+	Groth16CChain = "0x4200000000000000000000000000000000000000" // C-Chain Groth16
+	Groth16ZChain = "0x4600000000000000000000000000000000000000" // Z-Chain Groth16
+	PLONKCChain   = "0x4201000000000000000000000000000000000000" // C-Chain PLONK
+	PLONKZChain   = "0x4601000000000000000000000000000000000000" // Z-Chain PLONK
+	fflonkCChain  = "0x4202000000000000000000000000000000000000" // C-Chain fflonk
+	fflonkZChain  = "0x4602000000000000000000000000000000000000" // Z-Chain fflonk
+	Halo2CChain   = "0x4203000000000000000000000000000000000000" // C-Chain Halo2
+	Halo2ZChain   = "0x4603000000000000000000000000000000000000" // Z-Chain Halo2
+	NovaCChain    = "0x4204000000000000000000000000000000000000" // C-Chain Nova
+	NovaZChain    = "0x4604000000000000000000000000000000000000" // Z-Chain Nova
 
 	// STARKs (II = 0x10-0x1F)
-	STARKCChain       = "0x14210" // C-Chain STARK
-	STARKZChain       = "0x14610" // Z-Chain STARK
-	STARKRecursiveCCh = "0x14211" // C-Chain STARKRecursive
-	STARKRecursiveZCh = "0x14611" // Z-Chain STARKRecursive
-	STARKBatchCChain  = "0x14212" // C-Chain STARKBatch
-	STARKBatchZChain  = "0x14612" // Z-Chain STARKBatch
-	STARKReceiptsCCh  = "0x1421F" // C-Chain STARKReceipts
-	STARKReceiptsZCh  = "0x1461F" // Z-Chain STARKReceipts
+	STARKCChain       = "0x4210000000000000000000000000000000000000" // C-Chain STARK
+	STARKZChain       = "0x4610000000000000000000000000000000000000" // Z-Chain STARK
+	STARKRecursiveCCh = "0x4211000000000000000000000000000000000000" // C-Chain STARKRecursive
+	STARKRecursiveZCh = "0x4611000000000000000000000000000000000000" // Z-Chain STARKRecursive
+	STARKBatchCChain  = "0x4212000000000000000000000000000000000000" // C-Chain STARKBatch
+	STARKBatchZChain  = "0x4612000000000000000000000000000000000000" // Z-Chain STARKBatch
+	STARKReceiptsCCh  = "0x421F000000000000000000000000000000000000" // C-Chain STARKReceipts
+	STARKReceiptsZCh  = "0x461F000000000000000000000000000000000000" // Z-Chain STARKReceipts
 
 	// Commitments (II = 0x20-0x2F)
-	KZGCChain = "0x14220" // C-Chain KZG
-	KZGZChain = "0x14620" // Z-Chain KZG
-	IPACChain = "0x14221" // C-Chain IPA
-	IPAZChain = "0x14621" // Z-Chain IPA
-	FRICChain = "0x14222" // C-Chain FRI
-	FRIZChain = "0x14622" // Z-Chain FRI
+	KZGCChain = "0x4220000000000000000000000000000000000000" // C-Chain KZG
+	KZGZChain = "0x4620000000000000000000000000000000000000" // Z-Chain KZG
+	IPACChain = "0x4221000000000000000000000000000000000000" // C-Chain IPA
+	IPAZChain = "0x4621000000000000000000000000000000000000" // Z-Chain IPA
+	FRICChain = "0x4222000000000000000000000000000000000000" // C-Chain FRI
+	FRIZChain = "0x4622000000000000000000000000000000000000" // Z-Chain FRI
 
 	// Privacy Primitives (II = 0x30-0x3F)
-	RangeProofCChain  = "0x14230" // C-Chain Bulletproofs
-	RangeProofZChain  = "0x14630" // Z-Chain Bulletproofs
-	NullifierCChain   = "0x14231" // C-Chain Nullifier
-	NullifierZChain   = "0x14631" // Z-Chain Nullifier
-	CommitmentCChain  = "0x14232" // C-Chain Commitment
-	CommitmentZChain  = "0x14632" // Z-Chain Commitment
-	MerkleProofCChain = "0x14233" // C-Chain MerkleProof
-	MerkleProofZChain = "0x14633" // Z-Chain MerkleProof
+	RangeProofCChain  = "0x4230000000000000000000000000000000000000" // C-Chain Bulletproofs
+	RangeProofZChain  = "0x4630000000000000000000000000000000000000" // Z-Chain Bulletproofs
+	NullifierCChain   = "0x4231000000000000000000000000000000000000" // C-Chain Nullifier
+	NullifierZChain   = "0x4631000000000000000000000000000000000000" // Z-Chain Nullifier
+	CommitmentCChain  = "0x4232000000000000000000000000000000000000" // C-Chain Commitment
+	CommitmentZChain  = "0x4632000000000000000000000000000000000000" // Z-Chain Commitment
+	MerkleProofCChain = "0x4233000000000000000000000000000000000000" // C-Chain MerkleProof
+	MerkleProofZChain = "0x4633000000000000000000000000000000000000" // Z-Chain MerkleProof
 
 	// FHE (II = 0x40-0x4F)
-	FHECChain         = "0x14240" // C-Chain FHE
-	FHEZChain         = "0x14640" // Z-Chain FHE
-	TFHECChain        = "0x14241" // C-Chain TFHE
-	TFHEZChain        = "0x14641" // Z-Chain TFHE
-	CKKSCChain        = "0x14242" // C-Chain CKKS
-	CKKSZChain        = "0x14642" // Z-Chain CKKS
-	BGVCChain         = "0x14243" // C-Chain BGV
-	BGVZChain         = "0x14643" // Z-Chain BGV
-	GatewayCChain     = "0x14244" // C-Chain Gateway
-	GatewayZChain     = "0x14644" // Z-Chain Gateway
-	TaskManagerCChain = "0x14245" // C-Chain TaskManager
-	TaskManagerZChain = "0x14645" // Z-Chain TaskManager
+	FHECChain         = "0x4240000000000000000000000000000000000000" // C-Chain FHE
+	FHEZChain         = "0x4640000000000000000000000000000000000000" // Z-Chain FHE
+	TFHECChain        = "0x4241000000000000000000000000000000000000" // C-Chain TFHE
+	TFHEZChain        = "0x4641000000000000000000000000000000000000" // Z-Chain TFHE
+	CKKSCChain        = "0x4242000000000000000000000000000000000000" // C-Chain CKKS
+	CKKSZChain        = "0x4642000000000000000000000000000000000000" // Z-Chain CKKS
+	BGVCChain         = "0x4243000000000000000000000000000000000000" // C-Chain BGV
+	BGVZChain         = "0x4643000000000000000000000000000000000000" // Z-Chain BGV
+	GatewayCChain     = "0x4244000000000000000000000000000000000000" // C-Chain Gateway
+	GatewayZChain     = "0x4644000000000000000000000000000000000000" // Z-Chain Gateway
+	TaskManagerCChain = "0x4245000000000000000000000000000000000000" // C-Chain TaskManager
+	TaskManagerZChain = "0x4645000000000000000000000000000000000000" // Z-Chain TaskManager
 
 	// =========================================================================
 	// PAGE 5: THRESHOLD/MPC (0x5CII) → LP-5xxx
 	// =========================================================================
 
-	// Threshold Signatures (II = 0x01-0x0F)
-	FROSTCChain     = "0x15201" // C-Chain FROST
-	FROSTQChain     = "0x15301" // Q-Chain FROST
-	CGGMP21CChain   = "0x15202" // C-Chain CGGMP21
-	CGGMP21QChain   = "0x15302" // Q-Chain CGGMP21
-	RingtailCChain  = "0x15203" // C-Chain Ringtail
-	RingtailQChain  = "0x15303" // Q-Chain Ringtail
-	DoernerCChain   = "0x15204" // C-Chain Doerner
-	DoernerQChain   = "0x15304" // Q-Chain Doerner
-	BLSThreshCChain = "0x15205" // C-Chain BLS Threshold
-	BLSThreshQChain = "0x15305" // Q-Chain BLS Threshold
+	// Threshold Signatures (II = 0x00-0x0F)
+	FROSTCChain     = "0x5200000000000000000000000000000000000000" // C-Chain FROST
+	FROSTQChain     = "0x5300000000000000000000000000000000000000" // Q-Chain FROST
+	CGGMP21CChain   = "0x5201000000000000000000000000000000000000" // C-Chain CGGMP21
+	CGGMP21QChain   = "0x5301000000000000000000000000000000000000" // Q-Chain CGGMP21
+	RingtailCChain  = "0x5202000000000000000000000000000000000000" // C-Chain Ringtail
+	RingtailQChain  = "0x5302000000000000000000000000000000000000" // Q-Chain Ringtail
+	DoernerCChain   = "0x5203000000000000000000000000000000000000" // C-Chain Doerner
+	DoernerQChain   = "0x5303000000000000000000000000000000000000" // Q-Chain Doerner
+	BLSThreshCChain = "0x5204000000000000000000000000000000000000" // C-Chain BLS Threshold
+	BLSThreshQChain = "0x5304000000000000000000000000000000000000" // Q-Chain BLS Threshold
 
 	// Secret Sharing (II = 0x10-0x1F)
-	LSSCChain     = "0x15210" // C-Chain LSS
-	LSSQChain     = "0x15310" // Q-Chain LSS
-	ShamirCChain  = "0x15211" // C-Chain Shamir
-	ShamirQChain  = "0x15311" // Q-Chain Shamir
-	FeldmanCChain = "0x15212" // C-Chain Feldman
-	FeldmanQChain = "0x15312" // Q-Chain Feldman
+	LSSCChain     = "0x5210000000000000000000000000000000000000" // C-Chain LSS
+	LSSQChain     = "0x5310000000000000000000000000000000000000" // Q-Chain LSS
+	ShamirCChain  = "0x5211000000000000000000000000000000000000" // C-Chain Shamir
+	ShamirQChain  = "0x5311000000000000000000000000000000000000" // Q-Chain Shamir
+	FeldmanCChain = "0x5212000000000000000000000000000000000000" // C-Chain Feldman
+	FeldmanQChain = "0x5312000000000000000000000000000000000000" // Q-Chain Feldman
 
 	// DKG/Custody (II = 0x20-0x2F)
-	DKGCChain      = "0x15220" // C-Chain DKG
-	DKGQChain      = "0x15320" // Q-Chain DKG
-	RefreshCChain  = "0x15221" // C-Chain Key Refresh
-	RefreshQChain  = "0x15321" // Q-Chain Key Refresh
-	RecoveryCChain = "0x15222" // C-Chain Recovery
-	RecoveryQChain = "0x15322" // Q-Chain Recovery
+	DKGCChain      = "0x5220000000000000000000000000000000000000" // C-Chain DKG
+	DKGQChain      = "0x5320000000000000000000000000000000000000" // Q-Chain DKG
+	RefreshCChain  = "0x5221000000000000000000000000000000000000" // C-Chain Key Refresh
+	RefreshQChain  = "0x5321000000000000000000000000000000000000" // Q-Chain Key Refresh
+	RecoveryCChain = "0x5222000000000000000000000000000000000000" // C-Chain Recovery
+	RecoveryQChain = "0x5322000000000000000000000000000000000000" // Q-Chain Recovery
 
 	// =========================================================================
 	// PAGE 6: BRIDGES (0x6CII) → LP-6xxx
 	// =========================================================================
 
-	// Warp Messaging (II = 0x01-0x0F)
-	WarpSendCChain     = "0x16201" // C-Chain WarpSend
-	WarpSendBChain     = "0x16501" // B-Chain WarpSend
-	WarpReceiveCChain  = "0x16202" // C-Chain WarpReceive
-	WarpReceiveBChain  = "0x16502" // B-Chain WarpReceive
-	WarpReceiptsCChain = "0x16203" // C-Chain WarpReceipts
-	WarpReceiptsBChain = "0x16503" // B-Chain WarpReceipts
+	// Warp Messaging (II = 0x00-0x0F)
+	WarpSendCChain     = "0x6200000000000000000000000000000000000000" // C-Chain WarpSend
+	WarpSendBChain     = "0x6500000000000000000000000000000000000000" // B-Chain WarpSend
+	WarpReceiveCChain  = "0x6201000000000000000000000000000000000000" // C-Chain WarpReceive
+	WarpReceiveBChain  = "0x6501000000000000000000000000000000000000" // B-Chain WarpReceive
+	WarpReceiptsCChain = "0x6202000000000000000000000000000000000000" // C-Chain WarpReceipts
+	WarpReceiptsBChain = "0x6502000000000000000000000000000000000000" // B-Chain WarpReceipts
 
 	// Token Bridges (II = 0x10-0x1F)
-	BridgeCChain       = "0x16210" // C-Chain Bridge
-	BridgeBChain       = "0x16510" // B-Chain Bridge
-	TeleportCChain     = "0x16211" // C-Chain Teleport
-	TeleportBChain     = "0x16511" // B-Chain Teleport
-	BridgeRouterCChain = "0x16212" // C-Chain BridgeRouter
-	BridgeRouterBChain = "0x16512" // B-Chain BridgeRouter
+	BridgeCChain       = "0x6210000000000000000000000000000000000000" // C-Chain Bridge
+	BridgeBChain       = "0x6510000000000000000000000000000000000000" // B-Chain Bridge
+	TeleportCChain     = "0x6211000000000000000000000000000000000000" // C-Chain Teleport
+	TeleportBChain     = "0x6511000000000000000000000000000000000000" // B-Chain Teleport
+	BridgeRouterCChain = "0x6212000000000000000000000000000000000000" // C-Chain BridgeRouter
+	BridgeRouterBChain = "0x6512000000000000000000000000000000000000" // B-Chain BridgeRouter
 
 	// Fee Collection (II = 0x20-0x2F)
-	FeeCollectCChain = "0x16220" // C-Chain FeeCollect
-	FeeCollectBChain = "0x16520" // B-Chain FeeCollect
-	FeeGovCChain     = "0x16221" // C-Chain FeeGov
-	FeeGovBChain     = "0x16521" // B-Chain FeeGov
+	FeeCollectCChain = "0x6220000000000000000000000000000000000000" // C-Chain FeeCollect
+	FeeCollectBChain = "0x6520000000000000000000000000000000000000" // B-Chain FeeCollect
+	FeeGovCChain     = "0x6221000000000000000000000000000000000000" // C-Chain FeeGov
+	FeeGovBChain     = "0x6521000000000000000000000000000000000000" // B-Chain FeeGov
 
 	// =========================================================================
 	// PAGE 7: AI (0x7CII) → LP-7xxx
 	// =========================================================================
 
-	// Attestation (II = 0x01-0x0F)
-	GPUAttestCChain = "0x17201" // C-Chain GPU Attestation
-	GPUAttestAChain = "0x17401" // A-Chain GPU Attestation
-	GPUAttestHanzo  = "0x17901" // Hanzo GPU Attestation
-	TEEVerifyCChain = "0x17202" // C-Chain TEE Verify
-	TEEVerifyAChain = "0x17402" // A-Chain TEE Verify
-	NVTrustCChain   = "0x17203" // C-Chain NVTrust
-	NVTrustAChain   = "0x17403" // A-Chain NVTrust
-	SGXAttestCChain = "0x17204" // C-Chain SGX Attestation
-	SGXAttestAChain = "0x17404" // A-Chain SGX Attestation
-	TDXAttestCChain = "0x17205" // C-Chain TDX Attestation
-	TDXAttestAChain = "0x17405" // A-Chain TDX Attestation
+	// Attestation (II = 0x00-0x0F)
+	GPUAttestCChain = "0x7200000000000000000000000000000000000000" // C-Chain GPU Attestation
+	GPUAttestAChain = "0x7400000000000000000000000000000000000000" // A-Chain GPU Attestation
+	GPUAttestHanzo  = "0x7900000000000000000000000000000000000000" // Hanzo GPU Attestation
+	TEEVerifyCChain = "0x7201000000000000000000000000000000000000" // C-Chain TEE Verify
+	TEEVerifyAChain = "0x7401000000000000000000000000000000000000" // A-Chain TEE Verify
+	NVTrustCChain   = "0x7202000000000000000000000000000000000000" // C-Chain NVTrust
+	NVTrustAChain   = "0x7402000000000000000000000000000000000000" // A-Chain NVTrust
+	SGXAttestCChain = "0x7203000000000000000000000000000000000000" // C-Chain SGX Attestation
+	SGXAttestAChain = "0x7403000000000000000000000000000000000000" // A-Chain SGX Attestation
+	TDXAttestCChain = "0x7204000000000000000000000000000000000000" // C-Chain TDX Attestation
+	TDXAttestAChain = "0x7404000000000000000000000000000000000000" // A-Chain TDX Attestation
 
 	// Inference (II = 0x10-0x1F)
-	InferenceCChain  = "0x17210" // C-Chain Inference
-	InferenceAChain  = "0x17410" // A-Chain Inference
-	InferenceHanzo   = "0x17910" // Hanzo Inference
-	ProvenanceCChain = "0x17211" // C-Chain Provenance
-	ProvenanceAChain = "0x17411" // A-Chain Provenance
-	ModelHashCChain  = "0x17212" // C-Chain ModelHash
-	ModelHashAChain  = "0x17412" // A-Chain ModelHash
+	InferenceCChain  = "0x7210000000000000000000000000000000000000" // C-Chain Inference
+	InferenceAChain  = "0x7410000000000000000000000000000000000000" // A-Chain Inference
+	InferenceHanzo   = "0x7910000000000000000000000000000000000000" // Hanzo Inference
+	ProvenanceCChain = "0x7211000000000000000000000000000000000000" // C-Chain Provenance
+	ProvenanceAChain = "0x7411000000000000000000000000000000000000" // A-Chain Provenance
+	ModelHashCChain  = "0x7212000000000000000000000000000000000000" // C-Chain ModelHash
+	ModelHashAChain  = "0x7412000000000000000000000000000000000000" // A-Chain ModelHash
 
 	// Mining (II = 0x20-0x2F)
-	SessionCChain   = "0x17220" // C-Chain Session
-	SessionAChain   = "0x17420" // A-Chain Session
-	SessionHanzo    = "0x17920" // Hanzo Session
-	HeartbeatCChain = "0x17221" // C-Chain Heartbeat
-	HeartbeatAChain = "0x17421" // A-Chain Heartbeat
-	RewardCChain    = "0x17222" // C-Chain Reward
-	RewardAChain    = "0x17422" // A-Chain Reward
+	SessionCChain   = "0x7220000000000000000000000000000000000000" // C-Chain Session
+	SessionAChain   = "0x7420000000000000000000000000000000000000" // A-Chain Session
+	SessionHanzo    = "0x7920000000000000000000000000000000000000" // Hanzo Session
+	HeartbeatCChain = "0x7221000000000000000000000000000000000000" // C-Chain Heartbeat
+	HeartbeatAChain = "0x7421000000000000000000000000000000000000" // A-Chain Heartbeat
+	RewardCChain    = "0x7222000000000000000000000000000000000000" // C-Chain Reward
+	RewardAChain    = "0x7422000000000000000000000000000000000000" // A-Chain Reward
 
 	// =========================================================================
-	// PAGE 9: DEX/MARKETS (0x9CII) → LP-9xxx
+	// PAGE 9: DEX/MARKETS → LP-9xxx (addresses match LP numbers directly)
 	// =========================================================================
+	// LP-9000: DEX Core Trading Protocol (spec, not precompile)
+	// LP-9001: DEX Trading Engine (spec, not precompile)
+	// LP-9010: DEX Precompile - Native HFT Order Book (PoolManager, Uniswap v4 style)
+	// LP-9011: Oracle Precompile - Multi-Source Price Aggregation
+	// LP-9015: Precompile Registry - DeFi Precompile Addresses
 
-	// Core AMM (II = 0x01-0x0F)
-	PoolManagerCChain = "0x19201" // C-Chain PoolManager
-	PoolManagerZoo    = "0x19801" // Zoo PoolManager
-	SwapRouterCChain  = "0x19202" // C-Chain SwapRouter
-	SwapRouterZoo     = "0x19802" // Zoo SwapRouter
-	HooksRegCChain    = "0x19203" // C-Chain HooksRegistry
-	HooksRegZoo       = "0x19803" // Zoo HooksRegistry
-	FlashLoanCChain   = "0x19204" // C-Chain FlashLoan
-	FlashLoanZoo      = "0x19804" // Zoo FlashLoan
+	// Core DEX (LP-9010 series - Uniswap v4 style singleton PoolManager)
+	LXPool   = "0x0000000000000000000000000000000000009010" // LP-9010 LXPool (singleton AMM)
+	LXOracle = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (price aggregation)
+	LXRouter = "0x0000000000000000000000000000000000009012" // LP-9012 LXRouter (swap routing)
+	LXHooks  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (hook registry)
+	LXFlash  = "0x0000000000000000000000000000000000009014" // LP-9014 LXFlash (flash loans)
 
-	// Orderbook (II = 0x10-0x1F)
-	CLOBCChain     = "0x19210" // C-Chain CLOB
-	CLOBZoo        = "0x19810" // Zoo CLOB
-	OrderbookCCh   = "0x19211" // C-Chain Orderbook
-	OrderbookZoo   = "0x19811" // Zoo Orderbook
-	MatchingCChain = "0x19212" // C-Chain Matching
-	MatchingZoo    = "0x19812" // Zoo Matching
-
-	// Oracle (II = 0x20-0x2F)
-	OracleHubCChain = "0x19220" // C-Chain OracleHub
-	OracleHubZoo    = "0x19820" // Zoo OracleHub
-	TWAPCChain      = "0x19221" // C-Chain TWAP
-	TWAPZoo         = "0x19821" // Zoo TWAP
-	FastPriceCChain = "0x19222" // C-Chain FastPrice
-	FastPriceZoo    = "0x19822" // Zoo FastPrice
-
-	// Perps (II = 0x30-0x3F)
-	VaultCChain     = "0x19230" // C-Chain Vault
-	VaultZoo        = "0x19830" // Zoo Vault
-	PosRouterCChain = "0x19231" // C-Chain PositionRouter
-	PosRouterZoo    = "0x19831" // Zoo PositionRouter
-	PriceFeedCChain = "0x19232" // C-Chain PriceFeed
-	PriceFeedZoo    = "0x19832" // Zoo PriceFeed
+	// Trading & DeFi Extensions (LP-90xx)
+	LXBook     = "0x0000000000000000000000000000000000009020" // LP-9020 LXBook (orderbook + matching)
+	LXVault    = "0x0000000000000000000000000000000000009030" // LP-9030 LXVault (custody + margin)
+	LXFeed     = "0x0000000000000000000000000000000000009040" // LP-9040 LXFeed (computed prices)
+	LXLend     = "0x0000000000000000000000000000000000009050" // LP-9050 LXLend (lending pool)
+	LXLiquid   = "0x0000000000000000000000000000000000009060" // LP-9060 LXLiquid (self-repaying loans)
+	Liquidator = "0x0000000000000000000000000000000000009070" // LP-9070 Liquidator (position liquidation)
+	LiquidFX   = "0x0000000000000000000000000000000000009080" // LP-9080 LiquidFX (transmuter)
 )
 
 // PrecompileAddress calculates address from (P, C, II) nibbles
 // P = Family page (aligned with LP-Pxxx), C = Chain slot, II = Item
+// Returns trailing-significant format: 0x0000000000000000000000000000000000PCII
+// The address ends with the LP number (e.g., 9200 for LP-9200 PoolManager)
 func PrecompileAddress(p, c, ii uint8) common.Address {
 	if p > 15 || c > 15 {
 		return common.Address{}
 	}
-	selector := (uint32(p) << 12) | (uint32(c) << 8) | uint32(ii)
-	addr := uint32(0x10000) + selector
-	return common.HexToAddress("0x" + formatUint32AsHex(addr))
-}
-
-func formatUint32AsHex(v uint32) string {
-	hex := "0123456789abcdef"
-	result := make([]byte, 0, 8)
-	for i := 28; i >= 0; i -= 4 {
-		nibble := (v >> i) & 0xF
-		result = append(result, hex[nibble])
-	}
-	// Trim leading zeros but keep at least one
-	start := 0
-	for start < len(result)-1 && result[start] == '0' {
-		start++
-	}
-	return string(result[start:])
+	// Build the 4-character selector: PCII (hex)
+	selector := fmt.Sprintf("%x%x%02x", p, c, ii)
+	// Pad with leading zeros to 40 hex chars (20 bytes)
+	addr := "0000000000000000000000000000000000" + selector
+	return common.HexToAddress("0x" + addr)
 }
 
 // ChainSlot returns the C-nibble for a chain name
@@ -416,8 +395,8 @@ var ChainPrecompiles = map[string][]string{
 		WarpSendCChain, WarpReceiveCChain, BridgeCChain, TeleportCChain,
 		// AI (P=7)
 		GPUAttestCChain, TEEVerifyCChain, InferenceCChain, SessionCChain,
-		// DEX (P=9)
-		PoolManagerCChain, SwapRouterCChain, CLOBCChain, OracleHubCChain, VaultCChain,
+		// DEX (LP-9xxx)
+		LXPool, LXRouter, LXHooks, LXFlash, LXOracle, LXBook, LXVault, LXFeed, LXLend, LXLiquid, Liquidator, LiquidFX,
 	},
 
 	// Q-Chain (Quantum) - PQ and Threshold focused
@@ -458,13 +437,10 @@ var ChainPrecompiles = map[string][]string{
 		FHEZChain, TFHEZChain, CKKSZChain, GatewayZChain,
 	},
 
-	// Zoo - DEX focused
+	// Zoo - DEX focused (same precompile addresses)
 	"Zoo": {
-		// DEX (P=9)
-		PoolManagerZoo, SwapRouterZoo, HooksRegZoo, FlashLoanZoo,
-		CLOBZoo, OrderbookZoo, MatchingZoo,
-		OracleHubZoo, TWAPZoo, FastPriceZoo,
-		VaultZoo, PosRouterZoo, PriceFeedZoo,
+		// DEX (LP-9xxx) - same addresses as C-Chain
+		LXPool, LXRouter, LXHooks, LXFlash, LXOracle, LXBook, LXVault, LXFeed, LXLend, LXLiquid, Liquidator, LiquidFX,
 		// Bridges for cross-chain trading
 		WarpSendCChain, WarpReceiveCChain,
 	},
@@ -549,12 +525,19 @@ var AllPrecompiles = []PrecompileInfo{
 	{InferenceCChain, "INFERENCE", "AI inference verification", 150000, []string{"C", "A", "Hanzo"}, "LP-7xxx"},
 	{SessionCChain, "SESSION", "AI mining session management", 50000, []string{"C", "A", "Hanzo"}, "LP-7xxx"},
 
-	// DEX/Markets (P=9) → LP-9xxx
-	{PoolManagerCChain, "POOL_MANAGER", "Uniswap v4-style pool manager", 50000, []string{"C", "Zoo"}, "LP-9xxx"},
-	{SwapRouterCChain, "SWAP_ROUTER", "Optimized swap routing", 10000, []string{"C", "Zoo"}, "LP-9xxx"},
-	{CLOBCChain, "CLOB", "Central limit order book", 25000, []string{"C", "Zoo"}, "LP-9xxx"},
-	{OracleHubCChain, "ORACLE_HUB", "Price oracle aggregation", 15000, []string{"C", "Zoo"}, "LP-9xxx"},
-	{VaultCChain, "VAULT", "Perpetual futures vault", 50000, []string{"C", "Zoo"}, "LP-9xxx"},
+	// DEX/Markets → LP-9xxx (addresses end with LP number)
+	{LXPool, "LX_POOL", "Uniswap v4-style singleton AMM", 50000, []string{"C", "Zoo"}, "LP-9010"},
+	{LXOracle, "LX_ORACLE", "Price oracle aggregation", 15000, []string{"C", "Zoo"}, "LP-9011"},
+	{LXRouter, "LX_ROUTER", "Optimized swap routing", 10000, []string{"C", "Zoo"}, "LP-9012"},
+	{LXHooks, "LX_HOOKS", "Hook contract registry", 10000, []string{"C", "Zoo"}, "LP-9013"},
+	{LXFlash, "LX_FLASH", "Flash loan facility", 50000, []string{"C", "Zoo"}, "LP-9014"},
+	{LXBook, "LX_BOOK", "Central limit order book", 25000, []string{"C", "Zoo"}, "LP-9020"},
+	{LXVault, "LX_VAULT", "Custody, margin, positions", 50000, []string{"C", "Zoo"}, "LP-9030"},
+	{LXFeed, "LX_FEED", "Computed price feeds (mark/index)", 10000, []string{"C", "Zoo"}, "LP-9040"},
+	{LXLend, "LX_LEND", "Lending pool (Aave-style)", 25000, []string{"C", "Zoo"}, "LP-9050"},
+	{LXLiquid, "LX_LIQUID", "Self-repaying loans (Alchemix-style)", 30000, []string{"C", "Zoo"}, "LP-9060"},
+	{Liquidator, "LIQUIDATOR", "Position liquidation engine", 50000, []string{"C", "Zoo"}, "LP-9070"},
+	{LiquidFX, "LIQUID_FX", "Transmuter (liquid token conversion)", 25000, []string{"C", "Zoo"}, "LP-9080"},
 }
 
 // GetPrecompileAddress returns the address for a precompile by name

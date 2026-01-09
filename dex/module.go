@@ -21,16 +21,22 @@ var _ contract.StatefulPrecompiledContract = (*DEXContract)(nil)
 // ConfigKey is the key used in json config files to specify this precompile config.
 const ConfigKey = "dexConfig"
 
-// Contract addresses (canonical precompile addresses - matches reserved ranges)
-// Reserved ranges have significant bytes at the START: 0x04XX...00
+// Parsed addresses for LX precompiles (derived from string constants in types.go)
+// See types.go for canonical LP-aligned address strings
 var (
-	ContractPoolManagerAddress = common.HexToAddress("0x0400000000000000000000000000000000000000")
-	ContractSwapRouterAddress  = common.HexToAddress("0x0401000000000000000000000000000000000000")
-	ContractHooksAddress       = common.HexToAddress("0x0402000000000000000000000000000000000000")
-	ContractFlashLoanAddress   = common.HexToAddress("0x0403000000000000000000000000000000000000")
-	ContractLendingAddress     = common.HexToAddress("0x0410000000000000000000000000000000000000")
-	ContractLiquidAddress      = common.HexToAddress("0x0430000000000000000000000000000000000000")
-	ContractTeleportAddress    = common.HexToAddress("0x0440000000000000000000000000000000000000")
+	// Core AMM (LP-9010 series - Uniswap v4 style)
+	lxPoolAddr   = common.HexToAddress(LXPoolAddress)   // LP-9010 LXPool (v4 PoolManager)
+	lxOracleAddr = common.HexToAddress(LXOracleAddress) // LP-9011 LXOracle
+	lxRouterAddr = common.HexToAddress(LXRouterAddress) // LP-9012 LXRouter
+	lxHooksAddr  = common.HexToAddress(LXHooksAddress)  // LP-9013 LXHooks
+	lxFlashAddr  = common.HexToAddress(LXFlashAddress)  // LP-9014 LXFlash
+
+	// Trading & DeFi Extensions
+	lxBookAddr   = common.HexToAddress(LXBookAddress)   // LP-9020 LXBook (CLOB matcher)
+	lxVaultAddr  = common.HexToAddress(LXVaultAddress)  // LP-9030 LXVault
+	lxFeedAddr   = common.HexToAddress(LXFeedAddress)   // LP-9040 LXFeed
+	lxLendAddr   = common.HexToAddress(LXLendAddress)   // LP-9050 LXLend (lending pool)
+	lxLiquidAddr = common.HexToAddress(LXLiquidAddress) // LP-9060 LXLiquid (self-repaying loans)
 )
 
 // DEXPrecompile is the singleton instance
@@ -38,25 +44,25 @@ var DEXPrecompile = &DEXContract{
 	poolManager: NewPoolManager(),
 }
 
-// Module is the precompile module (PoolManager at 0x0400)
+// Module is the precompile module (LXPool at LP-9010)
 var Module = modules.Module{
 	ConfigKey:    ConfigKey,
-	Address:      ContractPoolManagerAddress,
+	Address:      lxPoolAddr,
 	Contract:     DEXPrecompile,
 	Configurator: &configurator{},
 }
 
 // Method selectors for PoolManager
 const (
-	SelectorInitialize     uint32 = 0x01000000 // initialize(PoolKey,uint160)
-	SelectorSwap           uint32 = 0x02000000 // swap(PoolKey,SwapParams,bytes)
+	SelectorInitialize      uint32 = 0x01000000 // initialize(PoolKey,uint160)
+	SelectorSwap            uint32 = 0x02000000 // swap(PoolKey,SwapParams,bytes)
 	SelectorModifyLiquidity uint32 = 0x03000000 // modifyLiquidity(PoolKey,ModifyLiqParams,bytes)
-	SelectorDonate         uint32 = 0x04000000 // donate(PoolKey,uint256,uint256)
-	SelectorTake           uint32 = 0x05000000 // take(Currency,address,uint256)
-	SelectorSettle         uint32 = 0x06000000 // settle()
-	SelectorLock           uint32 = 0x07000000 // lock(bytes)
-	SelectorGetPool        uint32 = 0x08000000 // getPool(PoolKey)
-	SelectorGetPosition    uint32 = 0x09000000 // getPosition(PoolKey,address,int24,int24,bytes32)
+	SelectorDonate          uint32 = 0x04000000 // donate(PoolKey,uint256,uint256)
+	SelectorTake            uint32 = 0x05000000 // take(Currency,address,uint256)
+	SelectorSettle          uint32 = 0x06000000 // settle()
+	SelectorLock            uint32 = 0x07000000 // lock(bytes)
+	SelectorGetPool         uint32 = 0x08000000 // getPool(PoolKey)
+	SelectorGetPosition     uint32 = 0x09000000 // getPosition(PoolKey,address,int24,int24,bytes32)
 )
 
 type configurator struct{}
@@ -92,11 +98,11 @@ func (*configurator) Configure(
 
 // Config implements the precompileconfig.Config interface
 type Config struct {
-	precompileconfig.Upgrade              // Embedded for flat JSON structure
-	ProtocolFeeController common.Address `json:"protocolFeeController,omitempty"`
-	MaxPools              uint64         `json:"maxPools,omitempty"`
-	EnableFlashLoans      bool           `json:"enableFlashLoans,omitempty"`
-	EnableHooks           bool           `json:"enableHooks,omitempty"`
+	precompileconfig.Upgrade                // Embedded for flat JSON structure
+	ProtocolFeeController    common.Address `json:"protocolFeeController,omitempty"`
+	MaxPools                 uint64         `json:"maxPools,omitempty"`
+	EnableFlashLoans         bool           `json:"enableFlashLoans,omitempty"`
+	EnableHooks              bool           `json:"enableHooks,omitempty"`
 }
 
 func (c *Config) Key() string {
@@ -547,4 +553,3 @@ func EncodePoolState(pool *Pool) []byte {
 	copy(result[128:160], pool.FeeGrowth1X128.Bytes())
 	return result
 }
-
