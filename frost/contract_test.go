@@ -121,10 +121,10 @@ func TestFROSTVerify_InputTooShort(t *testing.T) {
 
 func TestFROSTVerify_GasCost(t *testing.T) {
 	tests := []struct {
-		name          string
-		threshold     uint32
-		totalSigners  uint32
-		expectedGas   uint64
+		name         string
+		threshold    uint32
+		totalSigners uint32
+		expectedGas  uint64
 	}{
 		{"2-of-3", 2, 3, FROSTVerifyBaseGas + 3*FROSTVerifyPerSignerGas},
 		{"3-of-5", 3, 5, FROSTVerifyBaseGas + 5*FROSTVerifyPerSignerGas},

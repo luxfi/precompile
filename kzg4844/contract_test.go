@@ -450,9 +450,9 @@ func TestKZG4844_EmptyInput(t *testing.T) {
 
 func TestKZG4844_RequiredGas(t *testing.T) {
 	tests := []struct {
-		name   string
-		op     byte
-		gas    uint64
+		name string
+		op   byte
+		gas  uint64
 	}{
 		{"BlobToCommitment", OpBlobToCommitment, GasBlobToCommitment},
 		{"ComputeProof", OpComputeProof, GasComputeProof},

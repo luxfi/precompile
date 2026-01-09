@@ -9,7 +9,7 @@ import (
 
 	"github.com/luxfi/database"
 	"github.com/luxfi/geth/common"
-	gvm "github.com/luxfi/node/vms/graphvm"
+	gvm "github.com/luxfi/vm/vms/graphvm"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
 	"github.com/luxfi/precompile/precompileconfig"

@@ -15,18 +15,18 @@ import (
 // Price feed query IDs for quick access
 const (
 	// Core price feeds
-	QueryOracleETHPrice    QueryID = 0x1001 // ETH/USD price
-	QueryOracleLUXPrice    QueryID = 0x1002 // LUX/USD price
-	QueryOracleBTCPrice    QueryID = 0x1003 // BTC/USD price
-	QueryOracleTokenPrice  QueryID = 0x1004 // Any token price by address
+	QueryOracleETHPrice   QueryID = 0x1001 // ETH/USD price
+	QueryOracleLUXPrice   QueryID = 0x1002 // LUX/USD price
+	QueryOracleBTCPrice   QueryID = 0x1003 // BTC/USD price
+	QueryOracleTokenPrice QueryID = 0x1004 // Any token price by address
 
 	// AMM-derived prices (TWAP)
-	QueryTWAPPrice         QueryID = 0x1010 // Time-weighted average price
-	QuerySpotPrice         QueryID = 0x1011 // Current spot price from pool
+	QueryTWAPPrice QueryID = 0x1010 // Time-weighted average price
+	QuerySpotPrice QueryID = 0x1011 // Current spot price from pool
 
 	// Aggregated feeds
-	QueryAllPrices         QueryID = 0x1020 // All major token prices
-	QueryPriceHistory      QueryID = 0x1021 // Price history for charting
+	QueryAllPrices    QueryID = 0x1020 // All major token prices
+	QueryPriceHistory QueryID = 0x1021 // Price history for charting
 )
 
 // OracleQueries contains pre-built GraphQL queries for price feeds
@@ -82,20 +82,20 @@ var OracleQueries = map[QueryID]QueryTemplate{
 // AMM query IDs
 const (
 	// Pool queries
-	QueryAMMPoolByTokens   QueryID = 0x2001 // Find pool by token pair
-	QueryAMMPoolLiquidity  QueryID = 0x2002 // Pool liquidity depth
-	QueryAMMPoolFees       QueryID = 0x2003 // Pool fee tier and earned fees
-	QueryAMMPoolVolume     QueryID = 0x2004 // Pool volume stats
+	QueryAMMPoolByTokens  QueryID = 0x2001 // Find pool by token pair
+	QueryAMMPoolLiquidity QueryID = 0x2002 // Pool liquidity depth
+	QueryAMMPoolFees      QueryID = 0x2003 // Pool fee tier and earned fees
+	QueryAMMPoolVolume    QueryID = 0x2004 // Pool volume stats
 
 	// Position queries
-	QueryAMMMyPositions    QueryID = 0x2010 // User's LP positions
-	QueryAMMPositionValue  QueryID = 0x2011 // Position value + fees earned
-	QueryAMMPositionRange  QueryID = 0x2012 // Position tick range
+	QueryAMMMyPositions   QueryID = 0x2010 // User's LP positions
+	QueryAMMPositionValue QueryID = 0x2011 // Position value + fees earned
+	QueryAMMPositionRange QueryID = 0x2012 // Position tick range
 
 	// Swap queries
-	QueryAMMQuote          QueryID = 0x2020 // Get swap quote
-	QueryAMMRoute          QueryID = 0x2021 // Best route for swap
-	QueryAMMRecentSwaps    QueryID = 0x2022 // Recent swaps in pool
+	QueryAMMQuote       QueryID = 0x2020 // Get swap quote
+	QueryAMMRoute       QueryID = 0x2021 // Best route for swap
+	QueryAMMRecentSwaps QueryID = 0x2022 // Recent swaps in pool
 
 	// Liquidity queries
 	QueryAMMTickLiquidity  QueryID = 0x2030 // Liquidity at each tick
@@ -168,11 +168,11 @@ var AMMQueries = map[QueryID]QueryTemplate{
 type PriceResponse struct {
 	TokenAddress string   `json:"tokenAddress"`
 	Symbol       string   `json:"symbol"`
-	PriceUSD     *big.Int `json:"priceUSD"`     // 18 decimals
-	PriceETH     *big.Int `json:"priceETH"`     // 18 decimals
-	PriceLUX     *big.Int `json:"priceLUX"`     // 18 decimals
+	PriceUSD     *big.Int `json:"priceUSD"` // 18 decimals
+	PriceETH     *big.Int `json:"priceETH"` // 18 decimals
+	PriceLUX     *big.Int `json:"priceLUX"` // 18 decimals
 	Timestamp    uint64   `json:"timestamp"`
-	Source       string   `json:"source"`       // "pool", "oracle", "twap"
+	Source       string   `json:"source"` // "pool", "oracle", "twap"
 }
 
 // PoolInfoResponse represents pool information
@@ -186,39 +186,39 @@ type PoolInfoResponse struct {
 	Liquidity     *big.Int `json:"liquidity"`
 	SqrtPriceX96  *big.Int `json:"sqrtPriceX96"`
 	Tick          int32    `json:"tick"`
-	Token0Price   *big.Int `json:"token0Price"`   // 18 decimals
-	Token1Price   *big.Int `json:"token1Price"`   // 18 decimals
-	TVL_USD       *big.Int `json:"tvlUSD"`        // 18 decimals
+	Token0Price   *big.Int `json:"token0Price"`  // 18 decimals
+	Token1Price   *big.Int `json:"token1Price"`  // 18 decimals
+	TVL_USD       *big.Int `json:"tvlUSD"`       // 18 decimals
 	Volume24h_USD *big.Int `json:"volume24hUSD"` // 18 decimals
 	Fees24h_USD   *big.Int `json:"fees24hUSD"`   // 18 decimals
 }
 
 // QuoteResponse represents a swap quote
 type QuoteResponse struct {
-	AmountIn     *big.Int `json:"amountIn"`
-	AmountOut    *big.Int `json:"amountOut"`
-	PriceImpact  *big.Int `json:"priceImpact"`  // basis points (10000 = 100%)
-	GasEstimate  uint64   `json:"gasEstimate"`
-	Route        []string `json:"route"`        // pool addresses
-	FeeTiers     []uint32 `json:"feeTiers"`
+	AmountIn    *big.Int `json:"amountIn"`
+	AmountOut   *big.Int `json:"amountOut"`
+	PriceImpact *big.Int `json:"priceImpact"` // basis points (10000 = 100%)
+	GasEstimate uint64   `json:"gasEstimate"`
+	Route       []string `json:"route"` // pool addresses
+	FeeTiers    []uint32 `json:"feeTiers"`
 }
 
 // PositionResponse represents an LP position
 type PositionResponse struct {
-	PositionID    string   `json:"positionId"`
-	Owner         string   `json:"owner"`
-	PoolAddress   string   `json:"poolAddress"`
-	Token0        string   `json:"token0"`
-	Token1        string   `json:"token1"`
-	TickLower     int32    `json:"tickLower"`
-	TickUpper     int32    `json:"tickUpper"`
-	Liquidity     *big.Int `json:"liquidity"`
-	Amount0       *big.Int `json:"amount0"`
-	Amount1       *big.Int `json:"amount1"`
-	FeesEarned0   *big.Int `json:"feesEarned0"`
-	FeesEarned1   *big.Int `json:"feesEarned1"`
-	ValueUSD      *big.Int `json:"valueUSD"`      // 18 decimals
-	InRange       bool     `json:"inRange"`
+	PositionID  string   `json:"positionId"`
+	Owner       string   `json:"owner"`
+	PoolAddress string   `json:"poolAddress"`
+	Token0      string   `json:"token0"`
+	Token1      string   `json:"token1"`
+	TickLower   int32    `json:"tickLower"`
+	TickUpper   int32    `json:"tickUpper"`
+	Liquidity   *big.Int `json:"liquidity"`
+	Amount0     *big.Int `json:"amount0"`
+	Amount1     *big.Int `json:"amount1"`
+	FeesEarned0 *big.Int `json:"feesEarned0"`
+	FeesEarned1 *big.Int `json:"feesEarned1"`
+	ValueUSD    *big.Int `json:"valueUSD"` // 18 decimals
+	InRange     bool     `json:"inRange"`
 }
 
 // =====================================
@@ -269,17 +269,17 @@ func ParsePoolInfoResponse(data []byte) (*PoolInfoResponse, error) {
 	var resp struct {
 		Data struct {
 			Pool struct {
-				ID                    string `json:"id"`
-				Token0                struct{ Symbol string } `json:"token0"`
-				Token1                struct{ Symbol string } `json:"token1"`
-				FeeTier               int    `json:"feeTier"`
-				Liquidity             string `json:"liquidity"`
-				SqrtPrice             string `json:"sqrtPrice"`
-				Tick                  int    `json:"tick"`
-				Token0Price           string `json:"token0Price"`
-				Token1Price           string `json:"token1Price"`
-				TotalValueLockedUSD   string `json:"totalValueLockedUSD"`
-				VolumeUSD             string `json:"volumeUSD"`
+				ID                  string                  `json:"id"`
+				Token0              struct{ Symbol string } `json:"token0"`
+				Token1              struct{ Symbol string } `json:"token1"`
+				FeeTier             int                     `json:"feeTier"`
+				Liquidity           string                  `json:"liquidity"`
+				SqrtPrice           string                  `json:"sqrtPrice"`
+				Tick                int                     `json:"tick"`
+				Token0Price         string                  `json:"token0Price"`
+				Token1Price         string                  `json:"token1Price"`
+				TotalValueLockedUSD string                  `json:"totalValueLockedUSD"`
+				VolumeUSD           string                  `json:"volumeUSD"`
 			} `json:"pool"`
 		} `json:"data"`
 	}

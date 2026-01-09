@@ -1,4 +1,4 @@
-//go:build gpu
+//go:build cgo
 
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
@@ -10,8 +10,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/luxfi/crypto/slhdsa"
 	slhdsagpu "github.com/luxfi/crypto/pq/slhdsa/gpu"
+	"github.com/luxfi/crypto/slhdsa"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -28,14 +28,14 @@ var (
 
 // Batch verification gas costs (reduced vs sequential due to GPU parallelism)
 const (
-	SLHDSABatchVerifyBaseGas      uint64 = 40_000 // Fixed overhead
+	SLHDSABatchVerifyBaseGas       uint64 = 40_000 // Fixed overhead
 	SLHDSABatchVerifyPerSigGas128s uint64 = 35_000 // Per-sig GPU cost (vs 50k sequential)
 	SLHDSABatchVerifyPerSigGas128f uint64 = 50_000
 	SLHDSABatchVerifyPerSigGas192s uint64 = 70_000
 	SLHDSABatchVerifyPerSigGas192f uint64 = 100_000
 	SLHDSABatchVerifyPerSigGas256s uint64 = 120_000
 	SLHDSABatchVerifyPerSigGas256f uint64 = 175_000
-	SLHDSABatchVerifyPerByteGas   uint64 = 5
+	SLHDSABatchVerifyPerByteGas    uint64 = 5
 )
 
 type slhdsaBatchVerifyPrecompile struct{}
@@ -47,9 +47,10 @@ func (p *slhdsaBatchVerifyPrecompile) Address() common.Address {
 
 // RequiredGas calculates gas for batch verification
 // Input format:
-//   [0]     = mode byte
-//   [1:3]   = count (uint16 big-endian)
-//   [3:...] = repeated: [pubKeyLen(2)][pubKey][sigLen(2)][sig][msgLen(2)][msg]
+//
+//	[0]     = mode byte
+//	[1:3]   = count (uint16 big-endian)
+//	[3:...] = repeated: [pubKeyLen(2)][pubKey][sigLen(2)][sig][msgLen(2)][msg]
 func (p *slhdsaBatchVerifyPrecompile) RequiredGas(input []byte) uint64 {
 	if len(input) < 3 {
 		return SLHDSABatchVerifyBaseGas
@@ -91,15 +92,16 @@ func (p *slhdsaBatchVerifyPrecompile) RequiredGas(input []byte) uint64 {
 
 // Run implements batch SLH-DSA signature verification
 // Input format:
-//   [0]     = mode byte
-//   [1:3]   = count (uint16 big-endian)
-//   [3:...] = for each signature:
-//             - pubKeyLen (uint16 big-endian)
-//             - pubKey (pubKeyLen bytes)
-//             - sigLen (uint16 big-endian)
-//             - signature (sigLen bytes)
-//             - msgLen (uint16 big-endian)
-//             - message (msgLen bytes)
+//
+//	[0]     = mode byte
+//	[1:3]   = count (uint16 big-endian)
+//	[3:...] = for each signature:
+//	          - pubKeyLen (uint16 big-endian)
+//	          - pubKey (pubKeyLen bytes)
+//	          - sigLen (uint16 big-endian)
+//	          - signature (sigLen bytes)
+//	          - msgLen (uint16 big-endian)
+//	          - message (msgLen bytes)
 //
 // Output: 32-byte word per signature (1 = valid, 0 = invalid)
 func (p *slhdsaBatchVerifyPrecompile) Run(

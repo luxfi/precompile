@@ -166,10 +166,10 @@ func (n *Note) Nullifier(nullifierKey [32]byte) ([32]byte, error) {
 // TransactionWitness contains the private witness for a shielded transaction
 type TransactionWitness struct {
 	// Input notes
-	InputNotes       []*Note
+	InputNotes        []*Note
 	InputMerkleProofs [][][32]byte
 	InputMerklePaths  [][]bool
-	NullifierKeys    [][32]byte
+	NullifierKeys     [][32]byte
 
 	// Output notes
 	OutputNotes []*Note
@@ -196,24 +196,24 @@ type PublicInputs struct {
 	Fee *big.Int
 
 	// Metadata
-	PoolID     [32]byte
-	ChainID    uint64
-	Timestamp  uint64
+	PoolID    [32]byte
+	ChainID   uint64
+	Timestamp uint64
 }
 
 // ValidityReceipt is the attestation exported to other chains
 type ValidityReceipt struct {
-	ReceiptID        [32]byte   // Unique identifier
-	MerkleRoot       [32]byte   // State root after this batch
-	Nullifiers       [][32]byte // Consumed nullifiers
-	PoolID           [32]byte   // Shielded pool
-	AssetID          [32]byte   // Token/asset
-	SourceChainID    uint64     // Z-chain ID
-	TargetChainID    uint64     // Destination chain
-	CircuitID        [32]byte   // STARK/Groth16 circuit version
-	Timestamp        uint64     // Block timestamp
-	ProofType        ProofType  // STARK (internal) or Groth16 (external)
-	ZKProofDigest    [32]byte   // Hash of proof (not proof itself)
+	ReceiptID     [32]byte   // Unique identifier
+	MerkleRoot    [32]byte   // State root after this batch
+	Nullifiers    [][32]byte // Consumed nullifiers
+	PoolID        [32]byte   // Shielded pool
+	AssetID       [32]byte   // Token/asset
+	SourceChainID uint64     // Z-chain ID
+	TargetChainID uint64     // Destination chain
+	CircuitID     [32]byte   // STARK/Groth16 circuit version
+	Timestamp     uint64     // Block timestamp
+	ProofType     ProofType  // STARK (internal) or Groth16 (external)
+	ZKProofDigest [32]byte   // Hash of proof (not proof itself)
 }
 
 // ProofType distinguishes internal (STARK) vs external (Groth16) proofs

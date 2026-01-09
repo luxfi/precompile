@@ -57,9 +57,9 @@ type PoolData struct {
 
 // routeCacheKey is the key for route caching.
 type routeCacheKey struct {
-	TokenIn   [20]byte
-	TokenOut  [20]byte
-	AmountIn  uint64 // Quantized amount for cache key
+	TokenIn  [20]byte
+	TokenOut [20]byte
+	AmountIn uint64 // Quantized amount for cache key
 }
 
 // CachedRoute holds a cached optimal route.
@@ -130,10 +130,10 @@ func (g *PoolGraph) UpdatePool(poolID [32]byte, sqrtPrice SqrtPriceX96, liquidit
 // routeNode represents a node in the routing priority queue.
 type routeNode struct {
 	token     [20]byte
-	amountOut *big.Int     // Current amount at this node
+	amountOut *big.Int // Current amount at this node
 	gasUsed   uint64
-	path      []PoolEdge   // Path taken to reach here
-	index     int          // Heap index
+	path      []PoolEdge // Path taken to reach here
+	index     int        // Heap index
 }
 
 // routeHeap implements heap.Interface for A* routing.
@@ -348,11 +348,11 @@ var ErrNoRouteFound = errors.New("no route found")
 
 // BatchRouteRequest represents a batch route optimization request.
 type BatchRouteRequest struct {
-	TokenIn    [20]byte
-	TokenOut   [20]byte
-	AmountIn   *big.Int
-	MaxHops    int
-	Deadline   uint64 // Max block for route validity
+	TokenIn  [20]byte
+	TokenOut [20]byte
+	AmountIn *big.Int
+	MaxHops  int
+	Deadline uint64 // Max block for route validity
 }
 
 // BatchRouteResult holds the result of batch route optimization.
@@ -512,12 +512,12 @@ func NewAStarRouter(graph *PoolGraph) *AStarRouter {
 
 // astarNode represents a node in A* search.
 type astarNode struct {
-	token    [20]byte
-	amount   *big.Int
-	gScore   float64 // Cost to reach this node
-	fScore   float64 // gScore + heuristic
-	path     []PoolEdge
-	index    int
+	token  [20]byte
+	amount *big.Int
+	gScore float64 // Cost to reach this node
+	fScore float64 // gScore + heuristic
+	path   []PoolEdge
+	index  int
 }
 
 // astarHeap implements heap.Interface for A*.

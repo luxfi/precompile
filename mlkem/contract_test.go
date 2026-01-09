@@ -14,7 +14,7 @@ import (
 // mockAccessibleState implements contract.AccessibleState for testing
 type mockAccessibleState struct{}
 
-func (m *mockAccessibleState) GetStateDB() interface{} { return nil }
+func (m *mockAccessibleState) GetStateDB() interface{}      { return nil }
 func (m *mockAccessibleState) GetBlockContext() interface{} { return nil }
 
 func TestMLKEMPrecompileAddress(t *testing.T) {

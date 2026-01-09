@@ -24,18 +24,18 @@ const (
 // Gas costs for GraphQL operations
 const (
 	// Query operations
-	GasQueryBase     uint64 = 5_000   // Base cost for any query
-	GasQuerySimple   uint64 = 10_000  // Simple single-entity query
-	GasQueryComplex  uint64 = 25_000  // Complex multi-entity query
+	GasQueryBase       uint64 = 5_000  // Base cost for any query
+	GasQuerySimple     uint64 = 10_000 // Simple single-entity query
+	GasQueryComplex    uint64 = 25_000 // Complex multi-entity query
 	GasQueryCrossChain uint64 = 50_000 // Cross-chain aggregation query
 
 	// Per-result costs
-	GasPerEntity     uint64 = 1_000   // Per entity in result
-	GasPerField      uint64 = 100     // Per field returned
-	GasPerByte       uint64 = 3       // Per byte of response data
+	GasPerEntity uint64 = 1_000 // Per entity in result
+	GasPerField  uint64 = 100   // Per field returned
+	GasPerByte   uint64 = 3     // Per byte of response data
 
 	// Mutation operations (admin only)
-	GasMutationBase  uint64 = 100_000 // Base cost for mutations
+	GasMutationBase uint64 = 100_000 // Base cost for mutations
 )
 
 // Query types supported by the precompile
@@ -63,31 +63,31 @@ const (
 
 // Errors
 var (
-	ErrInvalidQuery      = errors.New("invalid GraphQL query")
-	ErrQueryTooLarge     = errors.New("query exceeds maximum size")
-	ErrQueryTimeout      = errors.New("query execution timeout")
-	ErrChainNotFound     = errors.New("chain not found")
-	ErrUnauthorized      = errors.New("unauthorized mutation")
-	ErrGasExceeded       = errors.New("gas limit exceeded for query")
-	ErrInvalidResponse   = errors.New("invalid response format")
+	ErrInvalidQuery    = errors.New("invalid GraphQL query")
+	ErrQueryTooLarge   = errors.New("query exceeds maximum size")
+	ErrQueryTimeout    = errors.New("query execution timeout")
+	ErrChainNotFound   = errors.New("chain not found")
+	ErrUnauthorized    = errors.New("unauthorized mutation")
+	ErrGasExceeded     = errors.New("gas limit exceeded for query")
+	ErrInvalidResponse = errors.New("invalid response format")
 )
 
 // Maximum limits
 const (
-	MaxQuerySize     = 4096   // Max query string size in bytes
-	MaxResponseSize  = 65536  // Max response size in bytes (64KB)
-	MaxEntitiesPerQuery = 1000 // Max entities in a single query
-	MaxQueryDepth    = 10     // Max nesting depth
+	MaxQuerySize        = 4096  // Max query string size in bytes
+	MaxResponseSize     = 65536 // Max response size in bytes (64KB)
+	MaxEntitiesPerQuery = 1000  // Max entities in a single query
+	MaxQueryDepth       = 10    // Max nesting depth
 )
 
 // ChainID constants for cross-chain queries
 const (
-	ChainIDLuxMainnet  uint64 = 96369
-	ChainIDLuxTestnet  uint64 = 96368
-	ChainIDZooMainnet  uint64 = 200200
-	ChainIDZooTestnet  uint64 = 200201
-	ChainIDSPCMainnet  uint64 = 36911
-	ChainIDSPCTestnet  uint64 = 36910
+	ChainIDLuxMainnet   uint64 = 96369
+	ChainIDLuxTestnet   uint64 = 96368
+	ChainIDZooMainnet   uint64 = 200200
+	ChainIDZooTestnet   uint64 = 200201
+	ChainIDSPCMainnet   uint64 = 36911
+	ChainIDSPCTestnet   uint64 = 36910
 	ChainIDHanzoMainnet uint64 = 36963
 	ChainIDHanzoTestnet uint64 = 36962
 )
@@ -144,37 +144,37 @@ type QueryID uint16
 
 const (
 	// Chain queries
-	QueryIDChainInfo    QueryID = 0x0001
-	QueryIDBlockByHash  QueryID = 0x0002
+	QueryIDChainInfo     QueryID = 0x0001
+	QueryIDBlockByHash   QueryID = 0x0002
 	QueryIDBlockByNumber QueryID = 0x0003
 
 	// Account queries
-	QueryIDBalance      QueryID = 0x0101
-	QueryIDAccountInfo  QueryID = 0x0102
+	QueryIDBalance     QueryID = 0x0101
+	QueryIDAccountInfo QueryID = 0x0102
 
 	// DEX queries - Factory
-	QueryIDFactory      QueryID = 0x0201
-	QueryIDBundle       QueryID = 0x0202
+	QueryIDFactory QueryID = 0x0201
+	QueryIDBundle  QueryID = 0x0202
 
 	// DEX queries - Tokens
-	QueryIDToken        QueryID = 0x0301
-	QueryIDTokens       QueryID = 0x0302
-	QueryIDTokenPrice   QueryID = 0x0303
+	QueryIDToken      QueryID = 0x0301
+	QueryIDTokens     QueryID = 0x0302
+	QueryIDTokenPrice QueryID = 0x0303
 
 	// DEX queries - Pools
-	QueryIDPool         QueryID = 0x0401
-	QueryIDPools        QueryID = 0x0402
-	QueryIDPoolTicks    QueryID = 0x0403
-	QueryIDPoolDayData  QueryID = 0x0404
+	QueryIDPool        QueryID = 0x0401
+	QueryIDPools       QueryID = 0x0402
+	QueryIDPoolTicks   QueryID = 0x0403
+	QueryIDPoolDayData QueryID = 0x0404
 
 	// DEX queries - Pairs (v2)
-	QueryIDPair         QueryID = 0x0501
-	QueryIDPairs        QueryID = 0x0502
-	QueryIDPairDayData  QueryID = 0x0503
+	QueryIDPair        QueryID = 0x0501
+	QueryIDPairs       QueryID = 0x0502
+	QueryIDPairDayData QueryID = 0x0503
 
 	// DEX queries - Positions
-	QueryIDPosition     QueryID = 0x0601
-	QueryIDPositions    QueryID = 0x0602
+	QueryIDPosition         QueryID = 0x0601
+	QueryIDPositions        QueryID = 0x0602
 	QueryIDPositionsByOwner QueryID = 0x0603
 
 	// DEX queries - Swaps
@@ -183,16 +183,16 @@ const (
 	QueryIDSwapsByToken QueryID = 0x0703
 
 	// Cross-chain queries
-	QueryIDAllChainsTVL QueryID = 0x0F01
+	QueryIDAllChainsTVL    QueryID = 0x0F01
 	QueryIDAllChainsVolume QueryID = 0x0F02
 )
 
 // QueryTemplate defines a pre-optimized query
 type QueryTemplate struct {
-	ID       QueryID
-	Query    string
-	GasCost  uint64
-	MaxArgs  int
+	ID      QueryID
+	Query   string
+	GasCost uint64
+	MaxArgs int
 }
 
 // PredefinedQueries contains all optimized query templates

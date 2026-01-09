@@ -46,11 +46,11 @@ var (
 
 // Output limits
 const (
-	MaxOutputLength    = 1024         // Maximum XOF output in bytes
-	MaxInputLength     = 1024 * 1024  // Maximum input: 1MB
-	DigestLength32     = 32           // Standard hash length
-	DigestLength64     = 64           // Extended hash length
-	MaxMerkleLeaves    = 1024         // Maximum Merkle tree leaves
+	MaxOutputLength = 1024        // Maximum XOF output in bytes
+	MaxInputLength  = 1024 * 1024 // Maximum input: 1MB
+	DigestLength32  = 32          // Standard hash length
+	DigestLength64  = 64          // Extended hash length
+	MaxMerkleLeaves = 1024        // Maximum Merkle tree leaves
 )
 
 // Operation selectors (first byte of input)
@@ -65,15 +65,15 @@ const (
 
 // Gas costs (optimized for high throughput)
 const (
-	GasBase256       = 100  // Base cost for 32-byte hash
-	GasBase512       = 150  // Base cost for 64-byte hash
-	GasBaseXOF       = 200  // Base cost for XOF
-	GasPerInputWord  = 3    // Per 32-byte input word
-	GasPerOutputWord = 5    // Per 32-byte output word (XOF)
-	GasDomainSetup   = 50   // Domain separator setup
-	GasMerkleBase    = 500  // Merkle tree base cost
-	GasMerklePerLeaf = 100  // Per leaf in Merkle tree
-	GasDeriveKey     = 300  // Key derivation
+	GasBase256       = 100 // Base cost for 32-byte hash
+	GasBase512       = 150 // Base cost for 64-byte hash
+	GasBaseXOF       = 200 // Base cost for XOF
+	GasPerInputWord  = 3   // Per 32-byte input word
+	GasPerOutputWord = 5   // Per 32-byte output word (XOF)
+	GasDomainSetup   = 50  // Domain separator setup
+	GasMerkleBase    = 500 // Merkle tree base cost
+	GasMerklePerLeaf = 100 // Per leaf in Merkle tree
+	GasDeriveKey     = 300 // Key derivation
 )
 
 type blake3Precompile struct{}

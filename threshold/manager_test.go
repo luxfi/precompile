@@ -49,8 +49,8 @@ func TestRequestKeygen(t *testing.T) {
 		requester,
 		ProtocolFROST,
 		KeyTypeSecp256k1,
-		2,  // threshold
-		5,  // total parties
+		2, // threshold
+		5, // total parties
 		participants,
 	)
 
