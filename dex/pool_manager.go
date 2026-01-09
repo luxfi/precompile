@@ -27,20 +27,20 @@ type StateDB interface {
 	GetBlockNumber() uint64
 }
 
-// Precompile address as bytes
-var poolManagerAddr = common.HexToAddress(PoolManagerAddress)
+// Precompile address as bytes (LP-9010 LXPool)
+var poolManagerAddr = common.HexToAddress(LXPoolAddress)
 
 // Storage key prefixes for pool manager state
 var (
-	poolStatePrefix      = []byte("pool")
-	poolLiquidityPrefix  = []byte("pliq")
-	positionPrefix       = []byte("posn")
-	tickPrefix           = []byte("tick")
-	deltaPrefix          = []byte("dlta")
-	lockerPrefix         = []byte("lock")
-	settledPrefix        = []byte("setl")
-	protocolFeePrefix    = []byte("pfee")
-	hookRegistryPrefix   = []byte("hook")
+	poolStatePrefix     = []byte("pool")
+	poolLiquidityPrefix = []byte("pliq")
+	positionPrefix      = []byte("posn")
+	tickPrefix          = []byte("tick")
+	deltaPrefix         = []byte("dlta")
+	lockerPrefix        = []byte("lock")
+	settledPrefix       = []byte("setl")
+	protocolFeePrefix   = []byte("pfee")
+	hookRegistryPrefix  = []byte("hook")
 )
 
 // PoolManager implements the singleton DEX pool manager precompile
@@ -664,9 +664,9 @@ func (pm *PoolManager) getPosition(stateDB StateDB, positionKey [32]byte) *Posit
 	}
 
 	pos := &Position{
-		Liquidity:   big.NewInt(0),
-		TokensOwed0: big.NewInt(0),
-		TokensOwed1: big.NewInt(0),
+		Liquidity:                big.NewInt(0),
+		TokensOwed0:              big.NewInt(0),
+		TokensOwed1:              big.NewInt(0),
 		FeeGrowthInside0LastX128: big.NewInt(0),
 		FeeGrowthInside1LastX128: big.NewInt(0),
 	}
@@ -764,15 +764,15 @@ func (pm *PoolManager) tickToSqrtPriceX96(tick int24) *big.Int {
 		bit   int
 		magic *big.Int
 	}{
-		{0, new(big.Int).SetBytes([]byte{0xff, 0xf9, 0x71, 0x63, 0xe1, 0x37, 0x66, 0x35})},   // 2^0
-		{1, new(big.Int).SetBytes([]byte{0xff, 0xf2, 0xe5, 0x0f, 0x62, 0x6c, 0x4c, 0x95})},   // 2^1
-		{2, new(big.Int).SetBytes([]byte{0xff, 0xe5, 0xca, 0xca, 0x7e, 0x10, 0xe4, 0x46})},   // 2^2
-		{3, new(big.Int).SetBytes([]byte{0xff, 0xcb, 0x9a, 0x97, 0x93, 0x42, 0xa9, 0x50})},   // 2^3
-		{4, new(big.Int).SetBytes([]byte{0xff, 0x97, 0x38, 0x3c, 0x7e, 0x70, 0x01, 0x2a})},   // 2^4
-		{5, new(big.Int).SetBytes([]byte{0xff, 0x2e, 0xa1, 0x34, 0x34, 0xc3, 0x39, 0x69})},   // 2^5
-		{6, new(big.Int).SetBytes([]byte{0xfe, 0x5d, 0xee, 0x04, 0x6a, 0x99, 0xa1, 0x2d})},   // 2^6
-		{7, new(big.Int).SetBytes([]byte{0xfc, 0xbe, 0x86, 0xc7, 0x90, 0x67, 0x90, 0x01})},   // 2^7
-		{8, new(big.Int).SetBytes([]byte{0xf9, 0x87, 0xa7, 0x25, 0x30, 0x42, 0x46, 0x85})},   // 2^8
+		{0, new(big.Int).SetBytes([]byte{0xff, 0xf9, 0x71, 0x63, 0xe1, 0x37, 0x66, 0x35})}, // 2^0
+		{1, new(big.Int).SetBytes([]byte{0xff, 0xf2, 0xe5, 0x0f, 0x62, 0x6c, 0x4c, 0x95})}, // 2^1
+		{2, new(big.Int).SetBytes([]byte{0xff, 0xe5, 0xca, 0xca, 0x7e, 0x10, 0xe4, 0x46})}, // 2^2
+		{3, new(big.Int).SetBytes([]byte{0xff, 0xcb, 0x9a, 0x97, 0x93, 0x42, 0xa9, 0x50})}, // 2^3
+		{4, new(big.Int).SetBytes([]byte{0xff, 0x97, 0x38, 0x3c, 0x7e, 0x70, 0x01, 0x2a})}, // 2^4
+		{5, new(big.Int).SetBytes([]byte{0xff, 0x2e, 0xa1, 0x34, 0x34, 0xc3, 0x39, 0x69})}, // 2^5
+		{6, new(big.Int).SetBytes([]byte{0xfe, 0x5d, 0xee, 0x04, 0x6a, 0x99, 0xa1, 0x2d})}, // 2^6
+		{7, new(big.Int).SetBytes([]byte{0xfc, 0xbe, 0x86, 0xc7, 0x90, 0x67, 0x90, 0x01})}, // 2^7
+		{8, new(big.Int).SetBytes([]byte{0xf9, 0x87, 0xa7, 0x25, 0x30, 0x42, 0x46, 0x85})}, // 2^8
 	}
 
 	// Multiply by relevant factors

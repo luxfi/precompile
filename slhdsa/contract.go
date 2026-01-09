@@ -50,9 +50,9 @@ const (
 // Size constants for each mode
 const (
 	// Public key sizes (2*n where n is security level parameter)
-	SLH128PublicKeySize = 32  // 128-bit security
-	SLH192PublicKeySize = 48  // 192-bit security
-	SLH256PublicKeySize = 64  // 256-bit security
+	SLH128PublicKeySize = 32 // 128-bit security
+	SLH192PublicKeySize = 48 // 192-bit security
+	SLH256PublicKeySize = 64 // 256-bit security
 
 	// Signature sizes vary significantly by mode
 	SLHSHA2_128sSignatureSize  = 7856
@@ -69,9 +69,9 @@ const (
 	SLHSHAKE_256fSignatureSize = 49856
 
 	// Input format fields
-	ModeByte       = 1  // Mode indicator byte
-	PubKeyLenSize  = 2  // Size of public key length field (uint16)
-	MessageLenSize = 2  // Size of message length field (uint16)
+	ModeByte       = 1 // Mode indicator byte
+	PubKeyLenSize  = 2 // Size of public key length field (uint16)
+	MessageLenSize = 2 // Size of message length field (uint16)
 )
 
 // Gas costs - adjusted per mode based on computational complexity

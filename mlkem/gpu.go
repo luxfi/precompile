@@ -1,4 +1,4 @@
-//go:build gpu
+//go:build cgo
 
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
@@ -33,12 +33,12 @@ const (
 
 // Batch gas costs
 const (
-	MLKEMBatchBaseGas           uint64 = 30_000 // Fixed overhead
-	MLKEMBatchEncapsPerOpGas512 uint64 = 35_000 // Per-op GPU cost for ML-KEM-512
-	MLKEMBatchEncapsPerOpGas768 uint64 = 50_000 // Per-op GPU cost for ML-KEM-768
+	MLKEMBatchBaseGas            uint64 = 30_000 // Fixed overhead
+	MLKEMBatchEncapsPerOpGas512  uint64 = 35_000 // Per-op GPU cost for ML-KEM-512
+	MLKEMBatchEncapsPerOpGas768  uint64 = 50_000 // Per-op GPU cost for ML-KEM-768
 	MLKEMBatchEncapsPerOpGas1024 uint64 = 70_000 // Per-op GPU cost for ML-KEM-1024
-	MLKEMBatchDecapsPerOpGas512 uint64 = 40_000
-	MLKEMBatchDecapsPerOpGas768 uint64 = 60_000
+	MLKEMBatchDecapsPerOpGas512  uint64 = 40_000
+	MLKEMBatchDecapsPerOpGas768  uint64 = 60_000
 	MLKEMBatchDecapsPerOpGas1024 uint64 = 80_000
 )
 
@@ -51,10 +51,11 @@ func (p *mlkemBatchPrecompile) Address() common.Address {
 
 // RequiredGas calculates gas for batch operations
 // Input format:
-//   [0]     = operation (0x11 = batch encaps, 0x12 = batch decaps)
-//   [1]     = mode byte (0x00 = 512, 0x01 = 768, 0x02 = 1024)
-//   [2:4]   = count (uint16 big-endian)
-//   [4:...] = operation-specific data
+//
+//	[0]     = operation (0x11 = batch encaps, 0x12 = batch decaps)
+//	[1]     = mode byte (0x00 = 512, 0x01 = 768, 0x02 = 1024)
+//	[2:4]   = count (uint16 big-endian)
+//	[4:...] = operation-specific data
 func (p *mlkemBatchPrecompile) RequiredGas(input []byte) uint64 {
 	if len(input) < 4 {
 		return MLKEMBatchBaseGas
@@ -109,18 +110,22 @@ func (p *mlkemBatchPrecompile) RequiredGas(input []byte) uint64 {
 // Input format depends on operation:
 //
 // Batch Encapsulate (0x11):
-//   [0]     = 0x11
-//   [1]     = mode
-//   [2:4]   = count
-//   [4:...] = count * pubKey (mode-dependent size)
+//
+//	[0]     = 0x11
+//	[1]     = mode
+//	[2:4]   = count
+//	[4:...] = count * pubKey (mode-dependent size)
+//
 // Output: for each: ciphertext || sharedSecret (32 bytes)
 //
 // Batch Decapsulate (0x12):
-//   [0]     = 0x12
-//   [1]     = mode
-//   [2:4]   = count
-//   [4:4+privKeySize] = private key
-//   [4+privKeySize:...] = count * ciphertext
+//
+//	[0]     = 0x12
+//	[1]     = mode
+//	[2:4]   = count
+//	[4:4+privKeySize] = private key
+//	[4+privKeySize:...] = count * ciphertext
+//
 // Output: count * sharedSecret (32 bytes each)
 func (p *mlkemBatchPrecompile) Run(
 	accessibleState contract.AccessibleState,

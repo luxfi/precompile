@@ -25,20 +25,20 @@ import (
 
 // Precompile addresses (0x0301-0x030F reserved for attestation)
 const (
-	AddressNVTrust       = "0x0301"
-	AddressTPM           = "0x0302"
-	AddressCompute       = "0x0303"
-	AddressCreate        = "0x0304"
-	AddressDeviceStatus  = "0x0305"
+	AddressNVTrust      = "0x0301"
+	AddressTPM          = "0x0302"
+	AddressCompute      = "0x0303"
+	AddressCreate       = "0x0304"
+	AddressDeviceStatus = "0x0305"
 )
 
 // Gas costs
 const (
-	GasVerifyNVTrust    uint64 = 50000 // GPU attestation verification
-	GasVerifyTPM        uint64 = 25000 // TPM attestation verification
-	GasVerifyCompute    uint64 = 35000 // Compute attestation verification
-	GasCreateAttest     uint64 = 75000 // Create new attestation
-	GasGetDeviceStatus  uint64 = 5000  // Query device status
+	GasVerifyNVTrust   uint64 = 50000 // GPU attestation verification
+	GasVerifyTPM       uint64 = 25000 // TPM attestation verification
+	GasVerifyCompute   uint64 = 35000 // Compute attestation verification
+	GasCreateAttest    uint64 = 75000 // Create new attestation
+	GasGetDeviceStatus uint64 = 5000  // Query device status
 )
 
 // Errors
@@ -73,11 +73,11 @@ type VerifyNVTrustInput struct {
 
 // VerifyNVTrustOutput represents output from GPU attestation verification
 type VerifyNVTrustOutput struct {
-	Verified    bool   `json:"verified"`
-	TrustScore  uint8  `json:"trust_score"`
-	HardwareCC  bool   `json:"hardware_cc"`
-	RIMVerified bool   `json:"rim_verified"`
-	Mode        uint8  `json:"mode"` // 0=Local, 1=Software
+	Verified    bool  `json:"verified"`
+	TrustScore  uint8 `json:"trust_score"`
+	HardwareCC  bool  `json:"hardware_cc"`
+	RIMVerified bool  `json:"rim_verified"`
+	Mode        uint8 `json:"mode"` // 0=Local, 1=Software
 }
 
 // VerifyNVTrust verifies NVIDIA GPU attestation using local nvtrust
@@ -147,10 +147,10 @@ type VerifyTPMInput struct {
 
 // VerifyTPMOutput represents output from TPM attestation verification
 type VerifyTPMOutput struct {
-	Verified      bool   `json:"verified"`
-	TEEType       uint8  `json:"tee_type"`
-	TrustScore    uint8  `json:"trust_score"`
-	Measurement   []byte `json:"measurement"`
+	Verified    bool   `json:"verified"`
+	TEEType     uint8  `json:"tee_type"`
+	TrustScore  uint8  `json:"trust_score"`
+	Measurement []byte `json:"measurement"`
 }
 
 // VerifyTPM verifies CPU TEE attestation (SGX, SEV-SNP, TDX)
@@ -229,21 +229,21 @@ func calculateTPMTrustScore(teeType attestation.TEEType) uint8 {
 
 // VerifyComputeInput represents input for compute result attestation
 type VerifyComputeInput struct {
-	TaskID       [32]byte `json:"task_id"`
-	ProviderID   [32]byte `json:"provider_id"`
-	ResultHash   [32]byte `json:"result_hash"`
-	ComputeTime  uint64   `json:"compute_time_ms"`
-	ModelHash    [32]byte `json:"model_hash"`
-	TEEQuote     []byte   `json:"tee_quote"`
-	Signature    []byte   `json:"signature"`
+	TaskID      [32]byte `json:"task_id"`
+	ProviderID  [32]byte `json:"provider_id"`
+	ResultHash  [32]byte `json:"result_hash"`
+	ComputeTime uint64   `json:"compute_time_ms"`
+	ModelHash   [32]byte `json:"model_hash"`
+	TEEQuote    []byte   `json:"tee_quote"`
+	Signature   []byte   `json:"signature"`
 }
 
 // VerifyComputeOutput represents output from compute attestation verification
 type VerifyComputeOutput struct {
-	Verified     bool     `json:"verified"`
-	TrustScore   uint8    `json:"trust_score"`
-	ProviderOK   bool     `json:"provider_ok"`
-	ResultValid  bool     `json:"result_valid"`
+	Verified    bool  `json:"verified"`
+	TrustScore  uint8 `json:"trust_score"`
+	ProviderOK  bool  `json:"provider_ok"`
+	ResultValid bool  `json:"result_valid"`
 }
 
 // VerifyCompute verifies AI compute result attestation
@@ -306,11 +306,11 @@ func VerifyCompute(input []byte) ([]byte, error) {
 
 // CreateAttestationInput represents input for creating new attestation
 type CreateAttestationInput struct {
-	DeviceType   uint8    `json:"device_type"` // 0=GPU, 1=CPU_SGX, 2=CPU_SEVSNP, 3=CPU_TDX
-	DeviceID     [32]byte `json:"device_id"`
-	Model        string   `json:"model"`
-	Evidence     []byte   `json:"evidence"` // Raw attestation evidence
-	Nonce        [32]byte `json:"nonce"`
+	DeviceType uint8    `json:"device_type"` // 0=GPU, 1=CPU_SGX, 2=CPU_SEVSNP, 3=CPU_TDX
+	DeviceID   [32]byte `json:"device_id"`
+	Model      string   `json:"model"`
+	Evidence   []byte   `json:"evidence"` // Raw attestation evidence
+	Nonce      [32]byte `json:"nonce"`
 }
 
 // CreateAttestationOutput represents output from attestation creation
@@ -409,13 +409,13 @@ type GetDeviceStatusInput struct {
 
 // GetDeviceStatusOutput represents output from device status query
 type GetDeviceStatusOutput struct {
-	Found       bool   `json:"found"`
-	Attested    bool   `json:"attested"`
-	TrustScore  uint8  `json:"trust_score"`
-	LastSeen    uint64 `json:"last_seen"` // Unix timestamp
-	HardwareCC  bool   `json:"hardware_cc"`
-	Mode        uint8  `json:"mode"`
-	JobCount    uint32 `json:"job_count"`
+	Found      bool   `json:"found"`
+	Attested   bool   `json:"attested"`
+	TrustScore uint8  `json:"trust_score"`
+	LastSeen   uint64 `json:"last_seen"` // Unix timestamp
+	HardwareCC bool   `json:"hardware_cc"`
+	Mode       uint8  `json:"mode"`
+	JobCount   uint32 `json:"job_count"`
 }
 
 // GetDeviceStatus returns the attestation status of a device

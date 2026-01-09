@@ -14,17 +14,17 @@ import (
 // YieldVault represents a yield-generating vault
 type YieldVault struct {
 	Address         common.Address
-	Asset           Currency         // Underlying asset
-	TotalAssets     *big.Int         // Total assets in vault
-	TotalShares     *big.Int         // Total shares issued
-	Strategy        VaultStrategy    // Active strategy
-	PerformanceFee  uint32           // Fee on profits (basis points)
-	ManagementFee   uint32           // Annual management fee (basis points)
-	DepositLimit    *big.Int         // Max deposits
+	Asset           Currency      // Underlying asset
+	TotalAssets     *big.Int      // Total assets in vault
+	TotalShares     *big.Int      // Total shares issued
+	Strategy        VaultStrategy // Active strategy
+	PerformanceFee  uint32        // Fee on profits (basis points)
+	ManagementFee   uint32        // Annual management fee (basis points)
+	DepositLimit    *big.Int      // Max deposits
 	WithdrawEnabled bool
 	DepositEnabled  bool
-	LastHarvest     int64            // Last harvest timestamp
-	Strategist      common.Address   // Strategy manager
+	LastHarvest     int64          // Last harvest timestamp
+	Strategist      common.Address // Strategy manager
 }
 
 // VaultStrategy represents a yield strategy
