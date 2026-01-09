@@ -8,7 +8,7 @@ require (
 	github.com/crate-crypto/go-kzg-4844 v1.1.0
 	github.com/holiman/uint256 v1.3.2
 	github.com/luxfi/ai v0.0.0-20251225021023-3f15131f2bd1
-	github.com/luxfi/consensus v1.22.52
+	github.com/luxfi/consensus v1.22.51
 	github.com/luxfi/crypto v1.17.38
 	github.com/luxfi/database v1.17.35
 	github.com/luxfi/fhe v1.7.6-0.20260106060801-28e308e4c2f8
