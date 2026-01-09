@@ -45,9 +45,9 @@ type Poseidon2Hasher struct {
 	cacheMax int
 
 	// Statistics
-	TotalHashes   uint64
-	CacheHits     uint64
-	CacheMisses   uint64
+	TotalHashes uint64
+	CacheHits   uint64
+	CacheMisses uint64
 }
 
 // NewPoseidon2Hasher creates a new Poseidon2 hasher
@@ -172,11 +172,11 @@ func (p *Poseidon2Hasher) NullifierHash(nullifierKey, noteCommitment [32]byte, l
 	input := make([]byte, 96)
 	copy(input[:32], nullifierKey[:])
 	copy(input[32:64], noteCommitment[:])
-	
+
 	// Encode leaf index as 32-byte big-endian
 	leafBytes := new(big.Int).SetUint64(leafIndex).Bytes()
 	copy(input[96-len(leafBytes):96], leafBytes)
-	
+
 	return p.Hash(input)
 }
 
@@ -189,20 +189,20 @@ func (p *Poseidon2Hasher) NoteCommitment(
 	blindingFactor [32]byte,
 ) ([32]byte, error) {
 	input := make([]byte, 128)
-	
+
 	// Amount as 32-byte big-endian
 	amountBytes := amount.Bytes()
 	copy(input[32-len(amountBytes):32], amountBytes)
-	
+
 	// Asset ID
 	copy(input[32:64], assetId[:])
-	
+
 	// Owner address (padded to 32 bytes)
 	copy(input[64+12:96], owner[:])
-	
+
 	// Blinding factor
 	copy(input[96:], blindingFactor[:])
-	
+
 	return p.Hash(input)
 }
 
@@ -211,17 +211,17 @@ func (p *Poseidon2Hasher) MerkleRoot(leaves [][32]byte) ([32]byte, error) {
 	if len(leaves) == 0 {
 		return [32]byte{}, errors.New("empty leaves")
 	}
-	
+
 	// Pad to power of 2
 	n := 1
 	for n < len(leaves) {
 		n *= 2
 	}
-	
+
 	paddedLeaves := make([][32]byte, n)
 	copy(paddedLeaves, leaves)
 	// Zero-pad remaining leaves (default [32]byte{} is zero)
-	
+
 	// Build tree bottom-up
 	current := paddedLeaves
 	for len(current) > 1 {
@@ -235,7 +235,7 @@ func (p *Poseidon2Hasher) MerkleRoot(leaves [][32]byte) ([32]byte, error) {
 		}
 		current = next
 	}
-	
+
 	return current[0], nil
 }
 
@@ -244,19 +244,19 @@ func (p *Poseidon2Hasher) MerkleProof(leaves [][32]byte, index int) ([][32]byte,
 	if len(leaves) == 0 || index >= len(leaves) {
 		return nil, nil, errors.New("invalid index")
 	}
-	
+
 	// Pad to power of 2
 	n := 1
 	for n < len(leaves) {
 		n *= 2
 	}
-	
+
 	paddedLeaves := make([][32]byte, n)
 	copy(paddedLeaves, leaves)
-	
+
 	var proof [][32]byte
 	var isLeft []bool
-	
+
 	current := paddedLeaves
 	idx := index
 	for len(current) > 1 {
@@ -264,7 +264,7 @@ func (p *Poseidon2Hasher) MerkleProof(leaves [][32]byte, index int) ([][32]byte,
 		siblingIdx := idx ^ 1
 		proof = append(proof, current[siblingIdx])
 		isLeft = append(isLeft, idx%2 == 0)
-		
+
 		// Build next level
 		next := make([][32]byte, len(current)/2)
 		for i := 0; i < len(next); i++ {
@@ -277,7 +277,7 @@ func (p *Poseidon2Hasher) MerkleProof(leaves [][32]byte, index int) ([][32]byte,
 		current = next
 		idx = idx / 2
 	}
-	
+
 	return proof, isLeft, nil
 }
 
@@ -291,7 +291,7 @@ func (p *Poseidon2Hasher) VerifyMerkleProof(
 	if len(proof) != len(isLeft) {
 		return false, errors.New("proof and isLeft length mismatch")
 	}
-	
+
 	current := leaf
 	for i := 0; i < len(proof); i++ {
 		var left, right [32]byte
@@ -302,14 +302,14 @@ func (p *Poseidon2Hasher) VerifyMerkleProof(
 			left = proof[i]
 			right = current
 		}
-		
+
 		hash, err := p.HashPair(left, right)
 		if err != nil {
 			return false, err
 		}
 		current = hash
 	}
-	
+
 	return current == root, nil
 }
 

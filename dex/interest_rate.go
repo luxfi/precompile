@@ -53,10 +53,10 @@ var (
 func DefaultInterestRateModel() *InterestRateModel {
 	return &InterestRateModel{
 		BaseRate:           big.NewInt(0),
-		Slope1:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(4), RAY), big.NewInt(100)),   // 4%
-		Slope2:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(75), RAY), big.NewInt(100)),  // 75%
-		OptimalUtilization: new(big.Int).Div(new(big.Int).Mul(big.NewInt(80), RAY), big.NewInt(100)),  // 80%
-		ReserveFactor:      new(big.Int).Div(new(big.Int).Mul(big.NewInt(10), RAY), big.NewInt(100)),  // 10%
+		Slope1:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(4), RAY), big.NewInt(100)),  // 4%
+		Slope2:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(75), RAY), big.NewInt(100)), // 75%
+		OptimalUtilization: new(big.Int).Div(new(big.Int).Mul(big.NewInt(80), RAY), big.NewInt(100)), // 80%
+		ReserveFactor:      new(big.Int).Div(new(big.Int).Mul(big.NewInt(10), RAY), big.NewInt(100)), // 10%
 	}
 }
 
@@ -65,10 +65,10 @@ func DefaultInterestRateModel() *InterestRateModel {
 func StablecoinInterestRateModel() *InterestRateModel {
 	return &InterestRateModel{
 		BaseRate:           big.NewInt(0),
-		Slope1:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(2), RAY), big.NewInt(100)),   // 2%
-		Slope2:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(60), RAY), big.NewInt(100)),  // 60%
-		OptimalUtilization: new(big.Int).Div(new(big.Int).Mul(big.NewInt(90), RAY), big.NewInt(100)),  // 90%
-		ReserveFactor:      new(big.Int).Div(new(big.Int).Mul(big.NewInt(5), RAY), big.NewInt(100)),   // 5%
+		Slope1:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(2), RAY), big.NewInt(100)),  // 2%
+		Slope2:             new(big.Int).Div(new(big.Int).Mul(big.NewInt(60), RAY), big.NewInt(100)), // 60%
+		OptimalUtilization: new(big.Int).Div(new(big.Int).Mul(big.NewInt(90), RAY), big.NewInt(100)), // 90%
+		ReserveFactor:      new(big.Int).Div(new(big.Int).Mul(big.NewInt(5), RAY), big.NewInt(100)),  // 5%
 	}
 }
 

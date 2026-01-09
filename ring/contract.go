@@ -64,14 +64,14 @@ const (
 
 // Gas costs
 const (
-	GasSignBase           = 5000
-	GasSignPerMember      = 3000
-	GasVerifyBase         = 4000
-	GasVerifyPerMember    = 2500
-	GasComputeKeyImage    = 3000
-	GasBatchVerifyBase    = 3000
-	GasBatchDiscount      = 80 // 80% of individual cost
-	GasPerByte            = 5
+	GasSignBase        = 5000
+	GasSignPerMember   = 3000
+	GasVerifyBase      = 4000
+	GasVerifyPerMember = 2500
+	GasComputeKeyImage = 3000
+	GasBatchVerifyBase = 3000
+	GasBatchDiscount   = 80 // 80% of individual cost
+	GasPerByte         = 5
 )
 
 type ringSignaturePrecompile struct{}

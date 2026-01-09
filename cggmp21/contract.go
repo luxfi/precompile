@@ -33,15 +33,15 @@ var (
 const (
 	// Gas costs for CGGMP21 threshold signature verification
 	// CGGMP21 is more expensive than FROST but has identifiable aborts
-	CGGMP21VerifyBaseGas    uint64 = 75_000  // Base cost for ECDSA threshold verification
+	CGGMP21VerifyBaseGas      uint64 = 75_000 // Base cost for ECDSA threshold verification
 	CGGMP21VerifyPerSignerGas uint64 = 10_000 // Cost per signer in threshold
 
 	// CGGMP21 uses standard ECDSA signatures
-	CGGMP21PublicKeySize  = 65 // Uncompressed public key (0x04 || x || y)
-	CGGMP21SignatureSize  = 65 // ECDSA signature (r || s || v)
+	CGGMP21PublicKeySize   = 65 // Uncompressed public key (0x04 || x || y)
+	CGGMP21SignatureSize   = 65 // ECDSA signature (r || s || v)
 	CGGMP21MessageHashSize = 32 // 32-byte message hash
-	ThresholdSize         = 4  // uint32 threshold t
-	TotalSignersSize      = 4  // uint32 total signers n
+	ThresholdSize          = 4  // uint32 threshold t
+	TotalSignersSize       = 4  // uint32 total signers n
 
 	// Minimum input size
 	MinInputSize = ThresholdSize + TotalSignersSize + CGGMP21PublicKeySize + CGGMP21MessageHashSize + CGGMP21SignatureSize
@@ -158,7 +158,7 @@ func verifyECDSASignature(publicKeyBytes, messageHash, signatureBytes []byte) (b
 	// Verify signature
 	// CGGMP21 produces standard ECDSA signatures that can be verified normally
 	sig := make([]byte, 64)
-	copy(sig[0:32], signatureBytes[0:32])  // r
+	copy(sig[0:32], signatureBytes[0:32])   // r
 	copy(sig[32:64], signatureBytes[32:64]) // s
 
 	valid := crypto.VerifySignature(
@@ -198,7 +198,7 @@ func recoverPublicKey(messageHash, signature []byte) (*ecdsa.PublicKey, error) {
 
 	// Normalize signature for ecrecover
 	sig := make([]byte, 65)
-	copy(sig[0:32], signature[0:32])  // r
+	copy(sig[0:32], signature[0:32])   // r
 	copy(sig[32:64], signature[32:64]) // s
 	sig[64] = v
 

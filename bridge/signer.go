@@ -32,16 +32,16 @@ type BridgeSigner struct {
 
 // SigningSession represents an active signing request
 type SigningSession struct {
-	SessionID     [32]byte
-	MessageHash   [32]byte
-	RequestedBy   common.Address
-	RequestedAt   uint64
-	ExpiresAt     uint64
-	Status        SigningStatus
-	Signatures    map[[20]byte][]byte // NodeID -> signature
-	FinalSig      []byte              // Combined threshold signature
-	CallbackAddr  common.Address      // Contract to call when done
-	CallbackData  []byte              // Data for callback
+	SessionID    [32]byte
+	MessageHash  [32]byte
+	RequestedBy  common.Address
+	RequestedAt  uint64
+	ExpiresAt    uint64
+	Status       SigningStatus
+	Signatures   map[[20]byte][]byte // NodeID -> signature
+	FinalSig     []byte              // Combined threshold signature
+	CallbackAddr common.Address      // Contract to call when done
+	CallbackData []byte              // Data for callback
 }
 
 // SigningStatus represents the status of a signing session

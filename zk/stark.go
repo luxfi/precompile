@@ -41,8 +41,8 @@ const (
 	ExtFieldInvAddr = "0x0515" // Extension field inverse
 
 	// FRI (Fast Reed-Solomon IOP) primitives
-	FRIFoldAddr   = "0x0516" // FRI folding operation
-	FRIQueryAddr  = "0x0517" // FRI query verification
+	FRIFoldAddr  = "0x0516" // FRI folding operation
+	FRIQueryAddr = "0x0517" // FRI query verification
 
 	// Hash/Transcript primitives
 	PoseidonStarkAddr = "0x0518" // Poseidon for STARK (different params than BN254)
@@ -175,10 +175,10 @@ func ExtInv(x ExtensionField) ExtensionField {
 // FRIVerifier handles FRI (Fast Reed-Solomon IOP) verification
 type FRIVerifier struct {
 	// Configuration
-	BlowupFactor    uint64 // Typical: 8 or 16
-	NumQueries      uint64 // Typical: 30-50
-	FoldingFactor   uint64 // Typical: 2 or 4
-	MaxDegree       uint64 // Maximum polynomial degree
+	BlowupFactor  uint64 // Typical: 8 or 16
+	NumQueries    uint64 // Typical: 30-50
+	FoldingFactor uint64 // Typical: 2 or 4
+	MaxDegree     uint64 // Maximum polynomial degree
 
 	field GoldilocksField
 }
@@ -202,9 +202,9 @@ type FRICommitment struct {
 
 // FRIQueryResponse contains data for answering a FRI query
 type FRIQueryResponse struct {
-	Index       uint64
-	Values      []uint64       // Values at each layer
-	AuthPaths   [][][32]byte   // Merkle proofs for each layer
+	Index     uint64
+	Values    []uint64     // Values at each layer
+	AuthPaths [][][32]byte // Merkle proofs for each layer
 }
 
 // FoldLayer performs one FRI folding step
@@ -292,7 +292,7 @@ type STARKProof struct {
 	FRIQueries    []FRIQueryResponse
 
 	// Out-of-domain evaluations
-	OODTraceEvals    []uint64
+	OODTraceEvals     []uint64
 	OODConstraintEval uint64
 
 	// Proof of work (optional grinding)
@@ -302,8 +302,8 @@ type STARKProof struct {
 // STARKVerifier verifies STARK proofs
 type STARKVerifier struct {
 	// Program/circuit configuration
-	ProgramHash [32]byte // Hash of the AIR constraints
-	TraceWidth  uint64   // Number of trace columns
+	ProgramHash    [32]byte // Hash of the AIR constraints
+	TraceWidth     uint64   // Number of trace columns
 	NumConstraints uint64
 
 	// FRI parameters

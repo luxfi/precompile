@@ -45,12 +45,12 @@ var (
 
 // Operation selectors
 const (
-	OpEncrypt          = 0x01
-	OpDecrypt          = 0x02
+	OpEncrypt           = 0x01
+	OpDecrypt           = 0x02
 	OpEncryptWithParams = 0x03
 	OpDecryptWithParams = 0x04
-	OpECDH             = 0x10
-	OpDeriveKey        = 0x11
+	OpECDH              = 0x10
+	OpDeriveKey         = 0x11
 )
 
 // Curve IDs

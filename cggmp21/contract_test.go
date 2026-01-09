@@ -216,10 +216,10 @@ func TestCGGMP21Verify_InputTooShort(t *testing.T) {
 
 func TestCGGMP21Verify_GasCost(t *testing.T) {
 	tests := []struct {
-		name          string
-		threshold     uint32
-		totalSigners  uint32
-		expectedGas   uint64
+		name         string
+		threshold    uint32
+		totalSigners uint32
+		expectedGas  uint64
 	}{
 		{"2-of-3", 2, 3, CGGMP21VerifyBaseGas + 3*CGGMP21VerifyPerSignerGas},
 		{"3-of-5", 3, 5, CGGMP21VerifyBaseGas + 5*CGGMP21VerifyPerSignerGas},

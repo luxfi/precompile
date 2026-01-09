@@ -3,7 +3,7 @@
 
 //go:build !cgo
 
-// NOTE: Pure Go FHE implementation. For GPU acceleration, build with -tags=luxgpu
+// NOTE: Pure Go FHE implementation. For GPU acceleration, build with
 package fhe
 
 import (
