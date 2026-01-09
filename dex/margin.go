@@ -23,14 +23,14 @@ type MarginAccountType uint8
 
 // Default margin parameters
 const (
-	DefaultMaxLeverage         = 100   // 100x for cross margin
-	IsolatedMaxLeverage        = 200   // 200x for isolated margin
-	PortfolioMaxLeverage       = 1111  // 1111x for portfolio margin (pro traders)
-	DefaultMaintenanceMargin   = 500   // 0.5% (basis points)
-	DefaultInitialMargin       = 1000  // 1% (basis points)
-	DefaultLiquidationPenalty  = 500   // 0.5% goes to insurance fund
-	DefaultLiquidatorReward    = 250   // 0.25% to liquidator
-	MarginPrecision            = 10000 // Basis point precision
+	DefaultMaxLeverage        = 100   // 100x for cross margin
+	IsolatedMaxLeverage       = 200   // 200x for isolated margin
+	PortfolioMaxLeverage      = 1111  // 1111x for portfolio margin (pro traders)
+	DefaultMaintenanceMargin  = 500   // 0.5% (basis points)
+	DefaultInitialMargin      = 1000  // 1% (basis points)
+	DefaultLiquidationPenalty = 500   // 0.5% goes to insurance fund
+	DefaultLiquidatorReward   = 250   // 0.25% to liquidator
+	MarginPrecision           = 10000 // Basis point precision
 )
 
 // MarginAccount represents a user's margin trading account
@@ -51,15 +51,15 @@ type MarginPosition struct {
 	MarketID         [32]byte
 	Side             PositionSide
 	Size             *big.Int
-	EntryPrice       *big.Int       // Q96
-	MarkPrice        *big.Int       // Q96
-	Margin           *big.Int       // Allocated margin
+	EntryPrice       *big.Int // Q96
+	MarkPrice        *big.Int // Q96
+	Margin           *big.Int // Allocated margin
 	UnrealizedPnL    *big.Int
 	RealizedPnL      *big.Int
 	Leverage         uint32
-	LiquidationPrice *big.Int       // Q96
-	StopLoss         *big.Int       // Q96 (optional)
-	TakeProfit       *big.Int       // Q96 (optional)
+	LiquidationPrice *big.Int // Q96
+	StopLoss         *big.Int // Q96 (optional)
+	TakeProfit       *big.Int // Q96 (optional)
 	IsIsolated       bool
 }
 

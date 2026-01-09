@@ -390,8 +390,8 @@ func TestRegisterRollup(t *testing.T) {
 		owner,
 		vkID,
 		ProofSystemGroth16,
-		1000,   // max tx per batch
-		60,     // batch interval
+		1000, // max tx per batch
+		60,   // batch interval
 		sequencer,
 	)
 
@@ -806,10 +806,10 @@ func TestGroth16WithRealCurvePoints(t *testing.T) {
 		owner,
 		ProofSystemGroth16,
 		CircuitTransfer,
-		g1Infinity,  // alpha (G1)
-		g2Infinity,  // beta (G2)
-		g2Infinity,  // gamma (G2)
-		g2Infinity,  // delta (G2)
+		g1Infinity,                       // alpha (G1)
+		g2Infinity,                       // beta (G2)
+		g2Infinity,                       // gamma (G2)
+		g2Infinity,                       // delta (G2)
 		[][]byte{g1Infinity, g1Infinity}, // IC points (G1)
 	)
 	if err != nil {

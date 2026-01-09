@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/luxfi/database/memdb"
-	gvm "github.com/luxfi/node/vms/graphvm"
+	gvm "github.com/luxfi/vm/vms/graphvm"
 	"github.com/stretchr/testify/require"
 )
 
@@ -142,12 +142,12 @@ func TestGraphQLContractRun(t *testing.T) {
 
 	// Run the contract
 	result, remainingGas, runErr := GraphContractInstance.Run(
-		nil,                                  // accessibleState
-		ContractGraphQLAddress,               // caller
-		ContractGraphQLAddress,               // addr
-		input,                                // input
-		1_000_000,                            // suppliedGas
-		true,                                 // readOnly
+		nil,                    // accessibleState
+		ContractGraphQLAddress, // caller
+		ContractGraphQLAddress, // addr
+		input,                  // input
+		1_000_000,              // suppliedGas
+		true,                   // readOnly
 	)
 
 	require.NoError(t, runErr)

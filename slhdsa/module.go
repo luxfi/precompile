@@ -4,8 +4,8 @@
 package slhdsa
 
 import (
-	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 )
 
 var (

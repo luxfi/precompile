@@ -1,20 +1,65 @@
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-//go:build gpu
+//go:build cgo
 
 // Package ringtailthreshold provides GPU-accelerated Ringtail threshold signature
 // verification precompile with Metal/CUDA acceleration via luxcpp/lattice.
 package ringtailthreshold
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../../luxcpp/lattice/include
-#cgo LDFLAGS: -L${SRCDIR}/../../../luxcpp/lattice/build-local -lluxlattice -lstdc++
+#cgo CFLAGS: -I${SRCDIR}/../../cpp/lattice/include
+#cgo LDFLAGS: -L${SRCDIR}/../../cpp/lattice/build-local -lluxlattice -lstdc++
 #cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework MetalPerformanceShaders
+
+// Map lux_lattice_ functions (in header) to lattice_ functions (in library)
+#define lux_lattice_gpu_available      lattice_gpu_available
+#define lux_lattice_get_backend        lattice_get_backend
+#define lux_lattice_clear_cache        lattice_clear_cache
+#define lux_lattice_ntt_create         lattice_ntt_create
+#define lux_lattice_ntt_destroy        lattice_ntt_destroy
+#define lux_lattice_ntt_get_params     lattice_ntt_get_params
+#define lux_lattice_ntt_forward        lattice_ntt_forward
+#define lux_lattice_ntt_inverse        lattice_ntt_inverse
+#define lux_lattice_ntt_batch_forward  lattice_ntt_batch_forward
+#define lux_lattice_ntt_batch_inverse  lattice_ntt_batch_inverse
+#define lux_lattice_poly_mul_ntt       lattice_poly_mul_ntt
+#define lux_lattice_poly_mul           lattice_poly_mul
+#define lux_lattice_poly_add           lattice_poly_add
+#define lux_lattice_poly_sub           lattice_poly_sub
+#define lux_lattice_poly_scalar_mul    lattice_poly_scalar_mul
+#define lux_lattice_sample_gaussian    lattice_sample_gaussian
+#define lux_lattice_sample_uniform     lattice_sample_uniform
+#define lux_lattice_sample_ternary     lattice_sample_ternary
+#define lux_lattice_find_primitive_root lattice_find_primitive_root
+#define lux_lattice_mod_inverse        lattice_mod_inverse
+#define lux_lattice_is_ntt_prime       lattice_is_ntt_prime
 
 #include <lux/lattice/lattice.h>
 #include <stdlib.h>
 #include <string.h>
+
+// Short aliases for Go code readability (hides lux_lattice_ prefix)
+// Types
+#define NTTContext                 LuxLatticeNTTContext
+
+// Library functions
+
+// NTT context management
+
+// Polynomial operations
+
+// Sampling
+
+// Utility
+
+// Error codes
+#define LATTICE_SUCCESS            LUX_LATTICE_SUCCESS
+#define LATTICE_ERROR_INVALID_N    LUX_LATTICE_ERROR_INVALID_N
+#define LATTICE_ERROR_INVALID_Q    LUX_LATTICE_ERROR_INVALID_Q
+#define LATTICE_ERROR_NULL_PTR     LUX_LATTICE_ERROR_NULL_PTR
+#define LATTICE_ERROR_GPU          LUX_LATTICE_ERROR_GPU
+#define LATTICE_ERROR_MEMORY       LUX_LATTICE_ERROR_MEMORY
 
 // Helper to copy coefficients to C array
 static void copy_coeffs_to_c(uint64_t* dest, uint64_t* src, uint32_t n) {
@@ -39,7 +84,6 @@ import (
 
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v7/ring"
-	"github.com/luxfi/lattice/v7/utils/structs"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/ringtail/sign"
 	"github.com/luxfi/ringtail/threshold"
@@ -57,12 +101,12 @@ var (
 	gpuBackend   string
 
 	// NTT context cache (keyed by N and Q)
-	nttContexts   = make(map[string]*C.LatticeNTTContext)
+	nttContexts   = make(map[string]*C.NTTContext)
 	nttContextsMu sync.RWMutex
 
 	// Default Ringtail parameters for NTT context
 	// These should match the sign.go constants
-	DefaultN uint32 = 1024 // Ring dimension
+	DefaultN uint32 = 1024       // Ring dimension
 	DefaultQ uint64 = 0x7ffe0001 // NTT-friendly prime
 )
 
@@ -94,7 +138,7 @@ func IsGPUAvailable() bool {
 }
 
 // getNTTContext gets or creates an NTT context for the given parameters
-func getNTTContext(N uint32, Q uint64) *C.LatticeNTTContext {
+func getNTTContext(N uint32, Q uint64) *C.NTTContext {
 	key := fmt.Sprintf("%d_%d", N, Q)
 
 	nttContextsMu.RLock()
@@ -203,7 +247,7 @@ func gpuBatchNTT(polys [][]uint64, N uint32, Q uint64) ([][]uint64, error) {
 	}
 
 	count := len(polys)
-	
+
 	// Allocate C arrays for pointers
 	polyPtrs := make([]*C.uint64_t, count)
 	cArrays := make([]unsafe.Pointer, count)
@@ -264,9 +308,15 @@ func gpuPolyMulNTT(a, b []uint64, N uint32, Q uint64) ([]uint64, error) {
 	cB := C.malloc(size)
 	cResult := C.malloc(size)
 	if cA == nil || cB == nil || cResult == nil {
-		if cA != nil { C.free(cA) }
-		if cB != nil { C.free(cB) }
-		if cResult != nil { C.free(cResult) }
+		if cA != nil {
+			C.free(cA)
+		}
+		if cB != nil {
+			C.free(cB)
+		}
+		if cResult != nil {
+			C.free(cResult)
+		}
 		return nil, errors.New("failed to allocate memory")
 	}
 	defer C.free(cA)
@@ -309,7 +359,7 @@ func (p *ringtailThresholdPrecompileGPU) Address() common.Address {
 func (p *ringtailThresholdPrecompileGPU) RequiredGas(input []byte) uint64 {
 	initGPU()
 	baseCost := RingtailThresholdGasCost(input)
-	
+
 	// GPU acceleration reduces gas by 40% when available
 	if gpuAvailable {
 		return baseCost * 60 / 100
@@ -391,7 +441,7 @@ func verifyThresholdSignatureGPU(thresholdVal, totalParties uint32, messageHash,
 
 	// Get ring parameters for GPU
 	N := uint32(params.R.N())
-	Q := params.R.Modulus()
+	Q := params.R.Modulus().Uint64()
 
 	// Deserialize signature components with GPU-accelerated NTT
 	sig, groupKey, err := deserializeSignatureGPU(params, signatureBytes, N, Q)
@@ -426,7 +476,7 @@ func deserializeSignatureGPU(params *threshold.Params, data []byte, N uint32, Q 
 	if err := deserializePoly(buf, r, c); err != nil {
 		return nil, nil, fmt.Errorf("deserialize c: %w", err)
 	}
-	
+
 	// GPU-accelerated NTT for c
 	cCoeffs := polyToUint64(c, r)
 	cNTT, err := gpuNTT(cCoeffs, N, Q)
@@ -540,10 +590,9 @@ func deserializeSignatureGPU(params *threshold.Params, data []byte, N uint32, Q 
 func polyToUint64(p ring.Poly, r *ring.Ring) []uint64 {
 	n := r.N()
 	result := make([]uint64, n)
+	// Access coefficients directly from level 0
 	for i := 0; i < n; i++ {
-		// Get coefficient as big.Int and convert to uint64
-		coeff := r.GetCoeff(p, i)
-		result[i] = coeff.Uint64()
+		result[i] = p.Coeffs[0][i]
 	}
 	return result
 }
@@ -594,7 +643,7 @@ func BatchVerifyRingtail(signatures, publicKeys [][]byte, messages [][]byte) ([]
 	}
 
 	N := uint32(params.R.N())
-	Q := params.R.Modulus()
+	Q := params.R.Modulus().Uint64()
 
 	for i := range signatures {
 		sig, groupKey, err := deserializeSignatureGPU(params, signatures[i], N, Q)
@@ -657,7 +706,7 @@ func ClearGPUCache() {
 	for _, ctx := range nttContexts {
 		C.lattice_ntt_destroy(ctx)
 	}
-	nttContexts = make(map[string]*C.LatticeNTTContext)
+	nttContexts = make(map[string]*C.NTTContext)
 
 	C.lattice_clear_cache()
 }

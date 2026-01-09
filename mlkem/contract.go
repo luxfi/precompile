@@ -25,18 +25,18 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &mlkemPrecompile{}
 
-	ErrInvalidInputLength    = errors.New("invalid input length")
-	ErrInvalidMode           = errors.New("invalid ML-KEM mode")
-	ErrUnsupportedMode       = errors.New("unsupported ML-KEM mode")
-	ErrUnsupportedOperation  = errors.New("unsupported operation")
-	ErrEncapsulationFailed   = errors.New("encapsulation failed")
-	ErrDecapsulationFailed   = errors.New("decapsulation failed")
+	ErrInvalidInputLength   = errors.New("invalid input length")
+	ErrInvalidMode          = errors.New("invalid ML-KEM mode")
+	ErrUnsupportedMode      = errors.New("unsupported ML-KEM mode")
+	ErrUnsupportedOperation = errors.New("unsupported operation")
+	ErrEncapsulationFailed  = errors.New("encapsulation failed")
+	ErrDecapsulationFailed  = errors.New("decapsulation failed")
 )
 
 // Operation selectors
 const (
-	OpEncapsulate   = 0x01 // Generate shared secret + ciphertext from public key
-	OpDecapsulate   = 0x02 // Recover shared secret from ciphertext using private key
+	OpEncapsulate = 0x01 // Generate shared secret + ciphertext from public key
+	OpDecapsulate = 0x02 // Recover shared secret from ciphertext using private key
 )
 
 // ML-KEM modes (FIPS 203)
@@ -78,7 +78,7 @@ const (
 	MLKEM1024EncapsulateGas uint64 = 100_000 // Larger, slower
 
 	// Decapsulation gas costs per mode
-	MLKEM512DecapsulateGas  uint64 = 60_000  // Slightly more than encaps
+	MLKEM512DecapsulateGas  uint64 = 60_000 // Slightly more than encaps
 	MLKEM768DecapsulateGas  uint64 = 90_000
 	MLKEM1024DecapsulateGas uint64 = 120_000
 )
@@ -133,23 +133,28 @@ func (p *mlkemPrecompile) RequiredGas(input []byte) uint64 {
 
 // Run implements the ML-KEM precompile
 // Input format:
-//   [0]     = operation byte (0x01 = encapsulate, 0x02 = decapsulate)
-//   [1]     = mode byte (0x00 = 512, 0x01 = 768, 0x02 = 1024)
-//   [2:...] = operation-specific data
+//
+//	[0]     = operation byte (0x01 = encapsulate, 0x02 = decapsulate)
+//	[1]     = mode byte (0x00 = 512, 0x01 = 768, 0x02 = 1024)
+//	[2:...] = operation-specific data
 //
 // Encapsulate input:
-//   [2:2+pubKeySize] = public key
+//
+//	[2:2+pubKeySize] = public key
 //
 // Encapsulate output:
-//   [0:ctSize]       = ciphertext
-//   [ctSize:ctSize+32] = shared secret (32 bytes)
+//
+//	[0:ctSize]       = ciphertext
+//	[ctSize:ctSize+32] = shared secret (32 bytes)
 //
 // Decapsulate input:
-//   [2:2+privKeySize] = private key
-//   [2+privKeySize:2+privKeySize+ctSize] = ciphertext
+//
+//	[2:2+privKeySize] = private key
+//	[2+privKeySize:2+privKeySize+ctSize] = ciphertext
 //
 // Decapsulate output:
-//   [0:32] = shared secret (32 bytes)
+//
+//	[0:32] = shared secret (32 bytes)
 func (p *mlkemPrecompile) Run(
 	accessibleState contract.AccessibleState,
 	caller common.Address,

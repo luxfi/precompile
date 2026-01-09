@@ -30,58 +30,58 @@ type TeleportBridge struct {
 	Threshold uint32 // Required signatures
 
 	// Fee configuration
-	FeeRate    uint32 // Basis points
-	MinFee     *big.Int
-	MaxFee     *big.Int
+	FeeRate uint32 // Basis points
+	MinFee  *big.Int
+	MaxFee  *big.Int
 
 	// Liquidity pools per chain/token
 	Liquidity map[uint32]map[common.Address]*big.Int
 
 	// Statistics
-	TotalBridged   map[common.Address]*big.Int
-	TotalFees      *big.Int
+	TotalBridged map[common.Address]*big.Int
+	TotalFees    *big.Int
 
 	mu sync.RWMutex
 }
 
 // BridgedToken represents a token that can be bridged
 type BridgedToken struct {
-	LocalAddress   common.Address // Address on this chain
-	RemoteAddress  common.Address // Address on remote chain
-	ChainID        uint32
-	Decimals       uint8
-	DailyLimit     *big.Int // Maximum per 24h
-	SingleTxLimit  *big.Int // Maximum per transaction
-	MinAmount      *big.Int // Minimum transfer amount
-	IsPaused       bool
-	TotalLocked    *big.Int // Total locked on this side
-	TotalMinted    *big.Int // Total minted (for wrapped tokens)
+	LocalAddress  common.Address // Address on this chain
+	RemoteAddress common.Address // Address on remote chain
+	ChainID       uint32
+	Decimals      uint8
+	DailyLimit    *big.Int // Maximum per 24h
+	SingleTxLimit *big.Int // Maximum per transaction
+	MinAmount     *big.Int // Minimum transfer amount
+	IsPaused      bool
+	TotalLocked   *big.Int // Total locked on this side
+	TotalMinted   *big.Int // Total minted (for wrapped tokens)
 }
 
 // OmnichainRouter handles multi-chain liquidity routing
 // Address: 0x0441
 type OmnichainRouter struct {
-	Bridge   *TeleportBridge
-	Routes   map[uint32]map[uint32]*Route // srcChain -> dstChain -> Route
-	Pools    map[uint32]*ChainPool        // chainID -> pool
-	mu       sync.RWMutex
+	Bridge *TeleportBridge
+	Routes map[uint32]map[uint32]*Route // srcChain -> dstChain -> Route
+	Pools  map[uint32]*ChainPool        // chainID -> pool
+	mu     sync.RWMutex
 }
 
 // Route represents a path between two chains
 type Route struct {
 	SourceChain uint32
 	DestChain   uint32
-	Fee         uint32   // Additional routing fee (basis points)
+	Fee         uint32 // Additional routing fee (basis points)
 	IsActive    bool
 	MaxCapacity *big.Int // Maximum daily capacity
 	UsedToday   *big.Int
-	LastReset   int64    // Unix timestamp
+	LastReset   int64 // Unix timestamp
 }
 
 // ChainPool represents liquidity available on a chain
 type ChainPool struct {
-	ChainID     uint32
-	Tokens      map[common.Address]*big.Int // Token -> liquidity
+	ChainID       uint32
+	Tokens        map[common.Address]*big.Int // Token -> liquidity
 	TotalValueUSD *big.Int
 }
 
@@ -93,8 +93,8 @@ func NewTeleportBridge(threshold uint32) *TeleportBridge {
 		SupportedTokens:    make(map[uint32]map[common.Address]*BridgedToken),
 		Operators:          make([]common.Address, 0),
 		Threshold:          threshold,
-		FeeRate:            30, // 0.3%
-		MinFee:             big.NewInt(1e15), // 0.001 tokens
+		FeeRate:            30,                                                   // 0.3%
+		MinFee:             big.NewInt(1e15),                                     // 0.001 tokens
 		MaxFee:             new(big.Int).Mul(big.NewInt(1e10), big.NewInt(1e10)), // 100 tokens (1e20)
 		Liquidity:          make(map[uint32]map[common.Address]*big.Int),
 		TotalBridged:       make(map[common.Address]*big.Int),
