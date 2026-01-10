@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/luxfi/database/memdb"
-	gvm "github.com/luxfi/vm/vms/graphvm"
+	gvm "github.com/luxfi/vm/manager/graphvm"
 	"github.com/stretchr/testify/require"
 )
 
