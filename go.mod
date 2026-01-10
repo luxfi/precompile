@@ -1,6 +1,6 @@
 module github.com/luxfi/precompile
 
-go 1.25.5
+go 1.22
 
 require (
 	github.com/cloudflare/circl v1.6.2
@@ -72,7 +72,7 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/luxfi/cache v1.2.0 // indirect
 	github.com/luxfi/codec v1.1.2 // indirect
-	github.com/luxfi/constants v1.4.3 // indirect
+	github.com/luxfi/constants v1.4.2 // indirect
 	github.com/luxfi/container v0.0.2 // indirect
 	github.com/luxfi/gpu v0.30.0 // indirect
 	github.com/luxfi/ids v1.2.9 // indirect
@@ -95,14 +95,14 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkg/sftp v1.13.5 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/posthog/posthog-go v1.6.1 // indirect
+	github.com/posthog/posthog-go v1.8.2 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/shirou/gopsutil v3.21.11+incompatible // indirect
-	github.com/spf13/cobra v1.9.1 // indirect
+	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/supranational/blst v0.3.16 // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20220614013038-64ee5596c38a // indirect
@@ -114,6 +114,7 @@ require (
 	go.opentelemetry.io/otel v1.39.0 // indirect
 	go.opentelemetry.io/otel/metric v1.39.0 // indirect
 	go.opentelemetry.io/otel/trace v1.39.0 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/mock v0.6.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect
