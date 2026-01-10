@@ -205,8 +205,6 @@ github.com/luxfi/threshold v1.5.0 h1:TaH4+A1ivOEy+QVzNW+D17amFud4EonBtBRb+GV0/iM
 github.com/luxfi/threshold v1.5.0/go.mod h1:r9JTJxnukjUAArZjy1OYEE0Q/wcAIPaVWBaz2s3IGzg=
 github.com/luxfi/tls v1.0.2 h1:iWnoBVXmrvOu2Pzs16gMXfZQYpyOGVp92bEmMTW/NzM=
 github.com/luxfi/tls v1.0.2/go.mod h1:t6Fr+KYKDZEz1KxciGHzRrj/KsQIx8V3iG/8YiSqpvU=
-github.com/luxfi/version v1.0.1 h1:T/1KYWEMmsrNQk7pN7PFPAwh/7XbeX7cFAKLBqI37Sk=
-github.com/luxfi/version v1.0.1/go.mod h1:Y5fPkQ2DB0XRBCxgSPXp4ISzL1/jptKnmFknShRJCyg=
 github.com/luxfi/vm v1.0.16 h1:IOTuMZUAKJ5i40GcWHs9FqhnC4Dd/j2Rq34kdPPYb1U=
 github.com/luxfi/vm v1.0.16/go.mod h1:WVRRGWk2xbCDEMfsYmTrDIo839O1eIInlR8JT+BhZgo=
 github.com/luxfi/warp v1.18.4 h1:Kmex4CJLjrVOby/IB3x166keNRK//966ImjU9dqTwFU=
