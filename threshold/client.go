@@ -14,8 +14,7 @@ import (
 	luxcrypto "github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
 
-	"github.com/luxfi/log"
-	"github.com/luxfi/log/level"
+	log "github.com/luxfi/log"
 	"github.com/luxfi/threshold/pkg/ecdsa"
 	"github.com/luxfi/threshold/pkg/math/curve"
 	"github.com/luxfi/threshold/pkg/party"
@@ -49,7 +48,7 @@ type ThresholdClient struct {
 
 // NewThresholdClient creates a new threshold client
 func NewThresholdClient() *ThresholdClient {
-	logger := log.NewTestLogger(level.Info)
+	logger := log.NewTestLogger(log.InfoLevel)
 	return &ThresholdClient{
 		pool:            pool.NewPool(0), // 0 = use all CPUs
 		log:             logger,
