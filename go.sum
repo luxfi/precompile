@@ -182,7 +182,7 @@ github.com/luxfi/ids v1.2.9/go.mod h1:khJOEdOPxd22yn0jcVrnbX1ADa0GHn5Y74gvCzN5BY
 github.com/luxfi/lattice/v7 v7.0.0 h1:d1vgan6mlb2KtwYfPc1g69uxVYaoVYZmlrIm4aCO88w=
 github.com/luxfi/lattice/v7 v7.0.0/go.mod h1:PFDdOkuGTQ0cbJMbKojzEJMGWUQmZW+wK9/wJ9F9fOs=
 github.com/luxfi/log v1.2.1 h1:L2JM8MjGPF8rBnY+EXODS9x5OQTGSgeQ1SPFmeB+oPY=
-github.com/luxfi/log v1.2.1/go.mod h1:0vJzb4Hl9fvgwWDMKcbCD/SYH3bO0iSmgZMcYdfdl1o=
+github.com/luxfi/logger v1.3.0 h1:Bo0jw40+QTqSBttGCkWe94tVz405Oo5w8qPgCo6Qp1g=
 github.com/luxfi/math v1.2.3 h1:BgvIFw/srPXFLbcqtoDhLJOfmBsn86GPA1iWgsoyUb4=
 github.com/luxfi/math v1.2.3/go.mod h1:C8STnF2H+D6rqBPt248CiWY2TGuJgdtv/+4UqrT15iM=
 github.com/luxfi/math/big v0.1.0 h1:Vz4c0RsZVPdIKPsHPgAJChH/R3p15WHRUz7LkLf+NIQ=
@@ -209,6 +209,8 @@ github.com/luxfi/vm v1.0.16 h1:IOTuMZUAKJ5i40GcWHs9FqhnC4Dd/j2Rq34kdPPYb1U=
 github.com/luxfi/vm v1.0.16/go.mod h1:WVRRGWk2xbCDEMfsYmTrDIo839O1eIInlR8JT+BhZgo=
 github.com/luxfi/warp v1.18.4 h1:Kmex4CJLjrVOby/IB3x166keNRK//966ImjU9dqTwFU=
 github.com/luxfi/warp v1.18.4/go.mod h1:5kXaZGYBBzOFyzPoDukVynvTTPskElrA8EQ5TVgovqc=
+github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHPsaIE=
+github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/melbahja/goph v1.4.0 h1:z0PgDbBFe66lRYl3v5dGb9aFgPy0kotuQ37QOwSQFqs=
 github.com/melbahja/goph v1.4.0/go.mod h1:uG+VfK2Dlhk+O32zFrRlc3kYKTlV6+BtvPWd/kK7U68=
 github.com/minio/sha256-simd v1.0.1 h1:6kaan5IFmwTNynnKKpDHe6FWHohJOHhCPchzK49dzMM=
