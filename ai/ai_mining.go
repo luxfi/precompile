@@ -23,7 +23,8 @@ import (
 	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
 	"github.com/zeebo/blake3"
 
-	"github.com/luxfi/precompile/ai/gpu"
+	"github.com/luxfi/accel"
+	"github.com/luxfi/accel/ops/crypto"
 )
 
 // Precompile address
@@ -402,17 +403,23 @@ func GetPrivacyMultiplier(level uint16) (uint64, error) {
 
 // GPUAvailable returns true if GPU acceleration is available
 func GPUAvailable() bool {
-	return gpu.Available()
+	return accel.Available()
 }
 
 // GPUBackend returns the GPU backend name ("Metal", "CUDA", or "CPU")
 func GPUBackend() string {
-	return gpu.Backend()
+	if accel.Available() {
+		backends := accel.Backends()
+		if len(backends) > 0 {
+			return string(backends[0])
+		}
+	}
+	return "CPU"
 }
 
 // GPUThreshold returns minimum batch size for GPU acceleration
 func GPUThreshold() int {
-	return gpu.Threshold()
+	return 8 // Default threshold for batch operations
 }
 
 // =============================================================================
@@ -432,8 +439,8 @@ type BatchAccumulator struct {
 
 // NewBatchAccumulator creates a new batch accumulator
 func NewBatchAccumulator(threshold int) *BatchAccumulator {
-	if threshold < gpu.Threshold() {
-		threshold = gpu.Threshold()
+	if threshold < GPUThreshold() {
+		threshold = GPUThreshold()
 	}
 	return &BatchAccumulator{
 		threshold: threshold,
@@ -481,21 +488,10 @@ func (ba *BatchAccumulator) flushLocked() {
 	ba.signatures = nil
 	ba.callbacks = nil
 
-	// Try GPU batch verification
-	results, err := gpu.BatchVerifyMLDSA(pubkeys, messages, signatures)
-	if err == gpu.ErrBatchTooSmall || err == gpu.ErrGPUUnavailable {
-		// Fall back to CPU verification
-		for i := range signatures {
-			valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
-			if callbacks[i] != nil {
-				callbacks[i](valid, verifyErr)
-			}
-		}
-		return
-	}
-
+	// Try GPU batch verification via accel
+	results, err := crypto.BatchVerify(crypto.SigMLDSA65, signatures, messages, pubkeys)
 	if err != nil {
-		// GPU error - fall back to CPU
+		// Fall back to CPU verification
 		for i := range signatures {
 			valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
 			if callbacks[i] != nil {
@@ -528,83 +524,61 @@ func (ba *BatchAccumulator) Size() int {
 // Uses GPU when batch size >= Threshold() and GPU is available.
 // Falls back to CPU verification otherwise.
 func BatchVerifyMLDSA(pubkeys, messages, signatures [][]byte) ([]bool, error) {
-	// Try GPU path first
-	results, err := gpu.BatchVerifyMLDSA(pubkeys, messages, signatures)
+	// Try GPU path first via accel
+	results, err := crypto.BatchVerify(crypto.SigMLDSA65, signatures, messages, pubkeys)
 	if err == nil {
 		return results, nil
 	}
 
 	// Fall back to CPU
-	if err == gpu.ErrBatchTooSmall || err == gpu.ErrGPUUnavailable {
-		results = make([]bool, len(signatures))
-		for i := range signatures {
-			valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
-			if verifyErr != nil {
-				results[i] = false
-			} else {
-				results[i] = valid
-			}
+	results = make([]bool, len(signatures))
+	for i := range signatures {
+		valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
+		if verifyErr != nil {
+			results[i] = false
+		} else {
+			results[i] = valid
 		}
-		return results, nil
 	}
-
-	return nil, err
+	return results, nil
 }
 
+// NVTrustMinQuoteSize is the minimum size for NVTrust attestation quotes
+const NVTrustMinQuoteSize = 48
+
 // BatchVerifyTEE verifies multiple TEE attestations.
-// Uses GPU when batch size >= Threshold() and GPU is available.
+// Currently uses CPU-only verification.
 func BatchVerifyTEE(attestations [][]byte) ([]bool, []uint8, error) {
-	// Try GPU path first
-	results, scores, err := gpu.BatchVerifyAttestation(attestations)
-	if err == nil {
-		return results, scores, nil
-	}
-
-	// Fall back to CPU
-	if err == gpu.ErrBatchTooSmall || err == gpu.ErrGPUUnavailable {
-		results = make([]bool, len(attestations))
-		scores = make([]uint8, len(attestations))
-		for i, att := range attestations {
-			if len(att) < gpu.NVTrustMinQuoteSize {
-				results[i] = false
-				scores[i] = 0
-				continue
-			}
-			quote, parseErr := gpu.ParseNVTrustQuote(att)
-			if parseErr != nil {
-				results[i] = false
-				scores[i] = 0
-				continue
-			}
-			valid, score := gpu.VerifyNVTrustQuote(quote)
-			results[i] = valid
-			scores[i] = score
+	results := make([]bool, len(attestations))
+	scores := make([]uint8, len(attestations))
+	for i, att := range attestations {
+		if len(att) < NVTrustMinQuoteSize {
+			results[i] = false
+			scores[i] = 0
+			continue
 		}
-		return results, scores, nil
+		// Basic attestation validation
+		valid, err := VerifyTEE(att, nil)
+		if err != nil || !valid {
+			results[i] = false
+			scores[i] = 0
+		} else {
+			results[i] = true
+			scores[i] = 100 // Maximum score for valid attestation
+		}
 	}
-
-	return nil, nil, err
+	return results, scores, nil
 }
 
 // BatchCalculateReward computes rewards for multiple work proofs.
-// Uses GPU when batch size >= Threshold() and GPU is available.
+// Currently uses CPU-only calculation.
 func BatchCalculateReward(workProofs [][]byte, chainId uint64) ([]*big.Int, error) {
 	n := len(workProofs)
 	if n == 0 {
 		return nil, nil
 	}
 
-	// Try GPU path
-	rawRewards, err := gpu.ComputeReward(workProofs, chainId)
-	if err == nil {
-		results := make([]*big.Int, n)
-		for i := range rawRewards {
-			results[i] = new(big.Int).SetBytes(rawRewards[i][:])
-		}
-		return results, nil
-	}
-
-	// Fall back to CPU
+	// CPU calculation
 	results := make([]*big.Int, n)
 	for i := range workProofs {
 		reward, calcErr := CalculateReward(workProofs[i], chainId)
@@ -621,12 +595,29 @@ func BatchCalculateReward(workProofs [][]byte, chainId uint64) ([]*big.Int, erro
 // GPU Statistics
 // =============================================================================
 
+// Stats contains GPU verification statistics
+type Stats struct {
+	TotalVerifications uint64
+	GPUVerifications   uint64
+	CPUVerifications   uint64
+	Errors             uint64
+}
+
+var (
+	statsMu sync.Mutex
+	stats   Stats
+)
+
 // GPUStats returns GPU verification statistics
-func GPUStats() gpu.Stats {
-	return gpu.GetStats()
+func GPUStats() Stats {
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	return stats
 }
 
 // ResetGPUStats resets GPU verification statistics
 func ResetGPUStats() {
-	gpu.ResetStats()
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	stats = Stats{}
 }

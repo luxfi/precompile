@@ -14,7 +14,7 @@ require (
 	github.com/luxfi/fhe v1.7.6-0.20260106060801-28e308e4c2f8
 	github.com/luxfi/geth v1.16.69
 	github.com/luxfi/lattice/v7 v7.0.0
-	github.com/luxfi/log v1.2.1
+	github.com/luxfi/log v1.3.0
 	github.com/luxfi/ringtail v0.2.0
 	github.com/luxfi/threshold v1.5.0
 	github.com/luxfi/warp v1.18.4
@@ -71,9 +71,10 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/luxfi/cache v1.2.0 // indirect
 	github.com/luxfi/codec v1.1.2 // indirect
+	github.com/luxfi/constants v1.4.3 // indirect
 	github.com/luxfi/container v0.0.2 // indirect
-	github.com/luxfi/gpu v0.30.0 // indirect
 	github.com/luxfi/ids v1.2.9 // indirect
+	github.com/luxfi/log v1.2.1 // indirect
 	github.com/luxfi/math v1.2.3 // indirect
 	github.com/luxfi/math/big v0.1.0 // indirect
 	github.com/luxfi/metric v1.4.10 // indirect
@@ -84,6 +85,8 @@ require (
 	github.com/luxfi/sdk v1.16.42 // indirect
 	github.com/luxfi/tls v1.0.2 // indirect
 	github.com/luxfi/vm v1.0.16 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/melbahja/goph v1.4.0 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
@@ -140,3 +143,7 @@ exclude (
 	github.com/luxfi/precompiles v0.1.10
 	github.com/luxfi/precompiles v0.1.11
 )
+
+replace github.com/luxfi/api => ../api
+
+replace github.com/luxfi/consensus => ../consensus
