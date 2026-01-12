@@ -1,9 +1,8 @@
 // Copyright (C) 2019-2024, Lux Partners Limited. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-//go:build !cgo
-
-// NOTE: Pure Go FHE implementation. For GPU acceleration, build with
+// Pure Go FHE implementation using github.com/luxfi/fhe.
+// GPU acceleration available via github.com/luxfi/accel when CGO enabled.
 package fhe
 
 import (
