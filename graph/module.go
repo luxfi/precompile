@@ -10,9 +10,9 @@ import (
 	"github.com/luxfi/database"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
+	gvm "github.com/luxfi/precompile/graph/graphvm"
 	"github.com/luxfi/precompile/modules"
 	"github.com/luxfi/precompile/precompileconfig"
-	gvm "github.com/luxfi/vm/manager/graphvm"
 )
 
 var _ contract.Configurator = (*configurator)(nil)
