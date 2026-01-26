@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/luxfi/accel"
 	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -179,14 +180,18 @@ func (p *mldsaVerifyPrecompile) Run(
 	// Extract message
 	message := input[sigEnd:expectedSize]
 
-	// Parse public key from bytes
-	pub, err := mldsa.PublicKeyFromBytes(publicKey, mldsaMode)
-	if err != nil {
-		return nil, suppliedGas - gasCost, fmt.Errorf("invalid public key: %w", err)
+	// Try GPU-accelerated verification first
+	var valid bool
+	if gpuValid, gpuUsed := verifyGPU(message, signature, publicKey); gpuUsed {
+		valid = gpuValid
+	} else {
+		// CPU fallback: Parse public key and verify
+		pub, err := mldsa.PublicKeyFromBytes(publicKey, mldsaMode)
+		if err != nil {
+			return nil, suppliedGas - gasCost, fmt.Errorf("invalid public key: %w", err)
+		}
+		valid = pub.Verify(message, signature, nil)
 	}
-
-	// Verify signature using public key method
-	valid := pub.Verify(message, signature, nil)
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)
 	result := make([]byte, 32)
@@ -205,6 +210,49 @@ func readUint256(b []byte) uint64 {
 	// Only read last 8 bytes (assume high bytes are 0 for reasonable message lengths)
 	return uint64(b[24])<<56 | uint64(b[25])<<48 | uint64(b[26])<<40 | uint64(b[27])<<32 |
 		uint64(b[28])<<24 | uint64(b[29])<<16 | uint64(b[30])<<8 | uint64(b[31])
+}
+
+// verifyGPU attempts GPU-accelerated ML-DSA signature verification.
+// Returns (valid, true) if GPU was used, (false, false) if GPU unavailable.
+func verifyGPU(message, signature, publicKey []byte) (valid bool, gpuUsed bool) {
+	if !accel.Available() {
+		return false, false
+	}
+
+	sess, err := accel.NewSession()
+	if err != nil {
+		return false, false
+	}
+	defer sess.Close()
+
+	lattice := sess.Lattice()
+
+	// Create tensors for GPU operation
+	msgTensor, err := accel.NewTensorWithData[byte](sess, []int{len(message)}, message)
+	if err != nil {
+		return false, false
+	}
+	defer msgTensor.Close()
+
+	sigTensor, err := accel.NewTensorWithData[byte](sess, []int{len(signature)}, signature)
+	if err != nil {
+		return false, false
+	}
+	defer sigTensor.Close()
+
+	pkTensor, err := accel.NewTensorWithData[byte](sess, []int{len(publicKey)}, publicKey)
+	if err != nil {
+		return false, false
+	}
+	defer pkTensor.Close()
+
+	// Perform GPU-accelerated verification
+	result, err := lattice.DilithiumVerify(msgTensor.Untyped(), sigTensor.Untyped(), pkTensor.Untyped())
+	if err != nil {
+		return false, false
+	}
+
+	return result, true
 }
 
 // Legacy input format support (for backwards compatibility with ML-DSA-65 only)
