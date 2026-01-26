@@ -4,14 +4,14 @@
 package frost
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 
-	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
+	"github.com/luxfi/threshold/pkg/math/curve"
+	"github.com/luxfi/threshold/protocols/frost/sign"
 )
 
 var (
@@ -126,35 +126,28 @@ func (p *frostVerifyPrecompile) Run(
 	return result, suppliedGas - gasCost, nil
 }
 
-// verifySchnorrSignature verifies a Schnorr signature
-// This is a simplified implementation for Ed25519-style Schnorr
+// verifySchnorrSignature verifies a FROST Schnorr signature using the threshold library.
+// This uses the actual FROST implementation from github.com/luxfi/threshold/protocols/frost/sign.
 func verifySchnorrSignature(publicKey, messageHash, signature []byte) bool {
 	if len(publicKey) != 32 || len(messageHash) != 32 || len(signature) != 64 {
 		return false
 	}
 
-	// Extract R from signature for challenge computation
-	R := signature[0:32]
-	// Note: s = signature[32:64] would be used in full Schnorr verification
+	// Use secp256k1 curve (Ethereum-compatible)
+	group := curve.Secp256k1{}
 
-	// Compute challenge: c = H(R || P || m)
-	// This is used to verify the Schnorr equation: s*G = R + c*P
-	hasher := sha256.New()
-	hasher.Write(R)
-	hasher.Write(publicKey)
-	hasher.Write(messageHash)
-	_ = hasher.Sum(nil) // challenge - used in full implementation
-
-	// For production, use proper Ed25519 or secp256k1 Schnorr verification
-	// This is a placeholder that uses Ethereum's secp256k1 for now
-
-	// Use standard ECDSA verification as fallback
-	// Real implementation would use Schnorr verification
-	pk, err := crypto.UnmarshalPubkey(append([]byte{0x04}, publicKey...))
+	// Parse the x-only public key using LiftX
+	pubPoint, err := group.LiftX(publicKey)
 	if err != nil {
 		return false
 	}
 
-	// For now, verify as ECDSA (production would use Schnorr)
-	return crypto.VerifySignature(crypto.FromECDSAPub(pk), messageHash, signature[:64])
+	// Parse the signature (R_x || z format, 64 bytes)
+	var sig sign.Signature
+	if err := sig.UnmarshalBinary(group, signature); err != nil {
+		return false
+	}
+
+	// Verify using the actual FROST Schnorr verification
+	return sig.Verify(pubPoint, messageHash)
 }

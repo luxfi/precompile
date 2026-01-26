@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/luxfi/accel"
 	"github.com/luxfi/crypto/mlkem"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -209,7 +210,15 @@ func (p *mlkemPrecompile) encapsulate(mode uint8, input []byte) ([]byte, error) 
 			ErrInvalidInputLength, pubKeySize, len(input))
 	}
 
-	// Parse public key
+	// Try GPU-accelerated encapsulation first
+	if ct, ss, gpuUsed := encapsulateGPU(input, ctSize, sharedSize); gpuUsed {
+		result := make([]byte, ctSize+sharedSize)
+		copy(result[:ctSize], ct)
+		copy(result[ctSize:], ss)
+		return result, nil
+	}
+
+	// CPU fallback: Parse public key
 	pk, err := mlkem.PublicKeyFromBytes(input, mlkemMode)
 	if err != nil {
 		return nil, fmt.Errorf("invalid public key: %w", err)
@@ -231,7 +240,7 @@ func (p *mlkemPrecompile) encapsulate(mode uint8, input []byte) ([]byte, error) 
 
 // decapsulate recovers the shared secret from a ciphertext using a private key
 func (p *mlkemPrecompile) decapsulate(mode uint8, input []byte) ([]byte, error) {
-	_, privKeySize, ctSize, _, _, _, mlkemMode, err := getModeParams(mode)
+	_, privKeySize, ctSize, sharedSize, _, _, mlkemMode, err := getModeParams(mode)
 	if err != nil {
 		return nil, err
 	}
@@ -243,10 +252,16 @@ func (p *mlkemPrecompile) decapsulate(mode uint8, input []byte) ([]byte, error) 
 			ErrInvalidInputLength, expectedLen, privKeySize, ctSize, len(input))
 	}
 
-	// Parse private key
+	// Parse private key and ciphertext
 	privKeyBytes := input[:privKeySize]
 	ciphertext := input[privKeySize:]
 
+	// Try GPU-accelerated decapsulation first
+	if ss, gpuUsed := decapsulateGPU(ciphertext, privKeyBytes, sharedSize); gpuUsed {
+		return ss, nil
+	}
+
+	// CPU fallback
 	sk, err := mlkem.PrivateKeyFromBytes(privKeyBytes, mlkemMode)
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key: %w", err)
@@ -259,4 +274,105 @@ func (p *mlkemPrecompile) decapsulate(mode uint8, input []byte) ([]byte, error) 
 	}
 
 	return sharedSecret, nil
+}
+
+// encapsulateGPU attempts GPU-accelerated ML-KEM encapsulation.
+// Returns (ciphertext, sharedSecret, true) if GPU was used, (nil, nil, false) if unavailable.
+func encapsulateGPU(publicKey []byte, ctSize, ssSize int) (ct []byte, ss []byte, gpuUsed bool) {
+	if !accel.Available() {
+		return nil, nil, false
+	}
+
+	sess, err := accel.NewSession()
+	if err != nil {
+		return nil, nil, false
+	}
+	defer sess.Close()
+
+	lattice := sess.Lattice()
+
+	// Create tensors for GPU operation
+	pkTensor, err := accel.NewTensorWithData[byte](sess, []int{len(publicKey)}, publicKey)
+	if err != nil {
+		return nil, nil, false
+	}
+	defer pkTensor.Close()
+
+	ctTensor, err := accel.NewTensor[byte](sess, []int{ctSize})
+	if err != nil {
+		return nil, nil, false
+	}
+	defer ctTensor.Close()
+
+	ssTensor, err := accel.NewTensor[byte](sess, []int{ssSize})
+	if err != nil {
+		return nil, nil, false
+	}
+	defer ssTensor.Close()
+
+	// Perform GPU-accelerated encapsulation
+	if err := lattice.KyberEncaps(pkTensor.Untyped(), ctTensor.Untyped(), ssTensor.Untyped()); err != nil {
+		return nil, nil, false
+	}
+
+	// Extract results from GPU
+	ctResult, err := ctTensor.ToSlice()
+	if err != nil {
+		return nil, nil, false
+	}
+
+	ssResult, err := ssTensor.ToSlice()
+	if err != nil {
+		return nil, nil, false
+	}
+
+	return ctResult, ssResult, true
+}
+
+// decapsulateGPU attempts GPU-accelerated ML-KEM decapsulation.
+// Returns (sharedSecret, true) if GPU was used, (nil, false) if unavailable.
+func decapsulateGPU(ciphertext, privateKey []byte, ssSize int) (ss []byte, gpuUsed bool) {
+	if !accel.Available() {
+		return nil, false
+	}
+
+	sess, err := accel.NewSession()
+	if err != nil {
+		return nil, false
+	}
+	defer sess.Close()
+
+	lattice := sess.Lattice()
+
+	// Create tensors for GPU operation
+	ctTensor, err := accel.NewTensorWithData[byte](sess, []int{len(ciphertext)}, ciphertext)
+	if err != nil {
+		return nil, false
+	}
+	defer ctTensor.Close()
+
+	skTensor, err := accel.NewTensorWithData[byte](sess, []int{len(privateKey)}, privateKey)
+	if err != nil {
+		return nil, false
+	}
+	defer skTensor.Close()
+
+	ssTensor, err := accel.NewTensor[byte](sess, []int{ssSize})
+	if err != nil {
+		return nil, false
+	}
+	defer ssTensor.Close()
+
+	// Perform GPU-accelerated decapsulation
+	if err := lattice.KyberDecaps(ctTensor.Untyped(), skTensor.Untyped(), ssTensor.Untyped()); err != nil {
+		return nil, false
+	}
+
+	// Extract result from GPU
+	ssResult, err := ssTensor.ToSlice()
+	if err != nil {
+		return nil, false
+	}
+
+	return ssResult, true
 }
