@@ -11,7 +11,7 @@ import (
 
 	"github.com/luxfi/database"
 	"github.com/luxfi/database/memdb"
-	gvm "github.com/luxfi/vm/manager/graphvm"
+	gvm "github.com/luxfi/precompile/graph/graphvm"
 	"github.com/stretchr/testify/require"
 )
 

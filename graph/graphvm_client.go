@@ -9,7 +9,7 @@ import (
 	"fmt"
 
 	"github.com/luxfi/database"
-	gvm "github.com/luxfi/vm/manager/graphvm"
+	gvm "github.com/luxfi/precompile/graph/graphvm"
 )
 
 // GraphVMClient implements GChainClient by wrapping a real gvm.QueryExecutor.
