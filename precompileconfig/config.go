@@ -7,9 +7,8 @@ package precompileconfig
 import (
 	"context"
 
-	"github.com/luxfi/consensus/runtime"
-	"github.com/luxfi/consensus/engine/chain/block"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/runtime"
 	"github.com/luxfi/warp"
 )
 
@@ -34,9 +33,8 @@ type Config interface {
 // PredicateContext is the context passed in to the Predicater interface to verify
 // a precompile predicate within a specific ProposerVM wrapper.
 type PredicateContext struct {
-	ConsensusCtx *runtime.Runtime
-	// ProposerVMBlockCtx defines the ProposerVM context the predicate is verified within
-	ProposerVMBlockCtx *block.Context
+	// Runtime provides chain wiring and optional P-Chain height for block-specific checks.
+	Runtime *runtime.Runtime
 }
 
 // Predicater is an optional interface for StatefulPrecompileContracts to implement.
