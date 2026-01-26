@@ -411,7 +411,7 @@ func GPUBackend() string {
 	if accel.Available() {
 		backends := accel.Backends()
 		if len(backends) > 0 {
-			return string(backends[0])
+			return backends[0].String()
 		}
 	}
 	return "CPU"
