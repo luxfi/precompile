@@ -48,6 +48,15 @@ const (
 	ChainPolygon   uint32 = 137    // Polygon PoS
 	ChainBSC       uint32 = 56     // BNB Smart Chain
 	ChainAvalanche uint32 = 43114  // Avalanche C-Chain
+	ChainPars      uint32 = 6133   // Pars Network mainnet
+	ChainParsTest  uint32 = 6132   // Pars Network testnet
+
+	// Non-EVM chains (use virtual chain IDs for bridge tracking)
+	// These don't have native EVM chain IDs but are tracked by the bridge
+	ChainSolana  uint32 = 900001 // Solana mainnet
+	ChainBitcoin uint32 = 900002 // Bitcoin mainnet
+	ChainXRP     uint32 = 900003 // XRP Ledger mainnet
+	ChainTON     uint32 = 900004 // TON mainnet
 )
 
 // BridgeRequest represents a cross-chain transfer request
