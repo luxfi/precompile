@@ -386,7 +386,8 @@ var ChainPrecompiles = map[string][]string{
 		// PQ (P=2)
 		MLDSACChain, MLKEMCChain, SLHDSACChain, HybridSignCChain,
 		// Crypto (P=3)
-		Poseidon2CChain, Blake3CChain, PedersenCChain, SchnorrCChain, ECIESCChain,
+		ECDSACChain, Ed25519CChain, BLS381CChain, SchnorrCChain,
+		Poseidon2CChain, Blake3CChain, PedersenCChain, ECIESCChain,
 		// Privacy/ZK (P=4)
 		Groth16CChain, PLONKCChain, STARKCChain, KZGCChain, FHECChain, RangeProofCChain,
 		// Threshold (P=5)
@@ -494,6 +495,9 @@ var AllPrecompiles = []PrecompileInfo{
 	{Poseidon2CChain, "POSEIDON2", "ZK-friendly Poseidon2 hash", 20000, []string{"C", "Z"}, "LP-3xxx"},
 	{Blake3CChain, "BLAKE3", "High-performance Blake3 hash", 5000, []string{"C", "Z"}, "LP-3xxx"},
 	{PedersenCChain, "PEDERSEN", "Pedersen commitment", 15000, []string{"C", "Z"}, "LP-3xxx"},
+	{ECDSACChain, "ECDSA_EXT", "Extended ECDSA verification (multi-curve)", 5000, []string{"C"}, "LP-3xxx"},
+	{Ed25519CChain, "ED25519_VERIFY", "Ed25519 signature verification (Solana/TON/XRP)", 3000, []string{"C"}, "LP-3xxx"},
+	{BLS381CChain, "BLS381", "BLS12-381 aggregate signatures", 15000, []string{"C"}, "LP-3xxx"},
 	{SchnorrCChain, "SCHNORR", "BIP-340 Schnorr signatures", 10000, []string{"C"}, "LP-3xxx"},
 	{ECIESCChain, "ECIES", "Elliptic Curve Integrated Encryption", 25000, []string{"C"}, "LP-3xxx"},
 
