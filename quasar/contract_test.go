@@ -305,9 +305,9 @@ func TestRingtailPrecompile_TruncatedPubKey(t *testing.T) {
 
 	// [mode(1)] [pubkey_len(2)] but pubkey is truncated
 	input := make([]byte, 10)
-	input[0] = 0x01            // mode
-	input[1] = 0x00            // pubkey_len high byte
-	input[2] = 0x20            // pubkey_len low byte = 32
+	input[0] = 0x01 // mode
+	input[1] = 0x00 // pubkey_len high byte
+	input[2] = 0x20 // pubkey_len low byte = 32
 	// Only 7 bytes of pubkey follow (input[3:10])
 
 	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, RingtailVerifyGas, true)
@@ -321,9 +321,9 @@ func TestRingtailPrecompile_TruncatedMessage(t *testing.T) {
 	// Build input with pubkey present but message truncated
 	pubKeyLen := 32
 	input := make([]byte, 3+pubKeyLen+2) // mode + pubkey_len + pubkey + msg_len (no msg body)
-	input[0] = 0x01                       // mode
-	input[1] = 0x00                       // pubkey_len high
-	input[2] = byte(pubKeyLen)            // pubkey_len low
+	input[0] = 0x01                      // mode
+	input[1] = 0x00                      // pubkey_len high
+	input[2] = byte(pubKeyLen)           // pubkey_len low
 	// pubkey bytes: input[3:35]
 	input[3+pubKeyLen] = 0x00   // msg_len high
 	input[3+pubKeyLen+1] = 0x10 // msg_len low = 16
@@ -343,9 +343,9 @@ func TestRingtailPrecompile_InvalidPubKey(t *testing.T) {
 	sigLen := 3293 // ML-DSA-65 signature size
 
 	input := make([]byte, 1+2+pubKeyLen+2+msgLen+sigLen)
-	input[0] = 0x01                       // mode (MLDSA65 = 1)
-	input[1] = byte(pubKeyLen >> 8)       // pubkey_len high
-	input[2] = byte(pubKeyLen & 0xFF)     // pubkey_len low
+	input[0] = 0x01                   // mode (MLDSA65 = 1)
+	input[1] = byte(pubKeyLen >> 8)   // pubkey_len high
+	input[2] = byte(pubKeyLen & 0xFF) // pubkey_len low
 	input[3+pubKeyLen] = byte(msgLen >> 8)
 	input[3+pubKeyLen+1] = byte(msgLen & 0xFF)
 	// Leave everything zeros - invalid pubkey
