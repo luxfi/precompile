@@ -153,11 +153,11 @@ func (m *MockPrecompileEnv) ReadOnly() bool {
 
 // MockAccessibleState implements AccessibleState interface for testing
 type MockAccessibleState struct {
-	stateDB        StateDB
-	blockContext   BlockContext
-	chainConfig    precompileconfig.ChainConfig
-	precompileEnv  PrecompileEnvironment
-	activated      bool // for activation tests
+	stateDB       StateDB
+	blockContext  BlockContext
+	chainConfig   precompileconfig.ChainConfig
+	precompileEnv PrecompileEnvironment
+	activated     bool // for activation tests
 }
 
 func NewMockAccessibleState(stateDB StateDB, blockContext BlockContext) *MockAccessibleState {

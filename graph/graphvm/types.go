@@ -130,8 +130,8 @@ func containsField(query, field string) bool {
 	// Simple string match - real implementation would parse AST
 	return len(query) > 0 && len(field) > 0 &&
 		(contains(query, field+" ") || contains(query, field+"{") ||
-		 contains(query, field+"(") || contains(query, field+"}") ||
-		 contains(query, field+"\n") || contains(query, field+"\t"))
+			contains(query, field+"(") || contains(query, field+"}") ||
+			contains(query, field+"\n") || contains(query, field+"\t"))
 }
 
 func contains(s, substr string) bool {
