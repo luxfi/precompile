@@ -134,7 +134,7 @@ func TestHashDeterminism(t *testing.T) {
 	result1 := p.hash256(input)
 	result2 := p.hash256(input)
 
-	require.True(t, bytes.Equal(result1, result2), "Blake3 should be deterministic")
+	require.Equal(t, result1, result2, "Blake3 should be deterministic")
 }
 
 func TestHashDifferentInputs(t *testing.T) {
@@ -209,7 +209,7 @@ func TestMerkleRootDeterminism(t *testing.T) {
 	result2, _, err := p.merkleRoot(data)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(result1, result2), "Merkle root should be deterministic")
+	require.Equal(t, result1, result2, "Merkle root should be deterministic")
 }
 
 func TestDeriveKey(t *testing.T) {

@@ -4,7 +4,6 @@
 package babyjubjub
 
 import (
-	"bytes"
 	"math/big"
 	"testing"
 
@@ -48,7 +47,7 @@ func TestPointAdd_Identity(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(ret, genBytes), "G + O should equal G")
+	require.Equal(t, ret, genBytes, "G + O should equal G")
 }
 
 func TestPointAdd_DoubleGenerator(t *testing.T) {
@@ -71,7 +70,7 @@ func TestPointAdd_DoubleGenerator(t *testing.T) {
 	// Verify via ScalarMul: 2*G
 	twoG := scalarMulRef(&gen, big.NewInt(2))
 	expected := encodeTestPoint(&twoG)
-	require.True(t, bytes.Equal(ret, expected), "G+G should equal 2*G")
+	require.Equal(t, ret, expected, "G+G should equal 2*G")
 }
 
 func TestScalarMul_One(t *testing.T) {
@@ -91,7 +90,7 @@ func TestScalarMul_One(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(ret, genBytes), "1*G should equal G")
+	require.Equal(t, ret, genBytes, "1*G should equal G")
 }
 
 func TestScalarMul_Two(t *testing.T) {
@@ -120,7 +119,7 @@ func TestScalarMul_Two(t *testing.T) {
 	addRet, _, err := p.Run(nil, common.Address{}, ContractAddress, addInput, addGas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(ret, addRet), "2*G via ScalarMul should equal G+G")
+	require.Equal(t, ret, addRet, "2*G via ScalarMul should equal G+G")
 }
 
 func TestScalarMul_Zero(t *testing.T) {
@@ -145,7 +144,7 @@ func TestScalarMul_Zero(t *testing.T) {
 	identity.X.SetZero()
 	identity.Y.SetOne()
 	expected := encodeTestPoint(&identity)
-	require.True(t, bytes.Equal(ret, expected), "0*G should be identity")
+	require.Equal(t, ret, expected, "0*G should be identity")
 }
 
 func TestInCurve_ValidPoint(t *testing.T) {

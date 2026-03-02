@@ -4,7 +4,6 @@
 package pasta
 
 import (
-	"bytes"
 	"math/big"
 	"testing"
 
@@ -49,7 +48,7 @@ func TestPallas_PointAdd_Identity(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(ret, ptBytes), "P + identity should equal P")
+	require.Equal(t, ret, ptBytes, "P + identity should equal P")
 }
 
 func TestPallas_PointAdd_Commutative(t *testing.T) {
@@ -81,7 +80,7 @@ func TestPallas_PointAdd_Commutative(t *testing.T) {
 	ret2, _, err := p.Run(nil, common.Address{}, ContractAddress, input2, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(ret1, ret2), "point addition must be commutative")
+	require.Equal(t, ret1, ret2, "point addition must be commutative")
 }
 
 func TestPallas_ScalarMul_One(t *testing.T) {
@@ -100,7 +99,7 @@ func TestPallas_ScalarMul_One(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(ret, ptBytes), "1*P should equal P")
+	require.Equal(t, ret, ptBytes, "1*P should equal P")
 }
 
 func TestPallas_ScalarMul_Zero(t *testing.T) {
@@ -121,7 +120,7 @@ func TestPallas_ScalarMul_Zero(t *testing.T) {
 	require.NoError(t, err)
 
 	identity := make([]byte, PointLen)
-	require.True(t, bytes.Equal(ret, identity), "0*P should be infinity")
+	require.Equal(t, ret, identity, "0*P should be infinity")
 }
 
 func TestPallas_ScalarMul_DoubleEqualsAdd(t *testing.T) {
@@ -150,7 +149,7 @@ func TestPallas_ScalarMul_DoubleEqualsAdd(t *testing.T) {
 	addResult, _, err := p.Run(nil, common.Address{}, ContractAddress, addInput, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(mulResult, addResult), "2*P should equal P+P")
+	require.Equal(t, mulResult, addResult, "2*P should equal P+P")
 }
 
 func TestPallas_ScalarMul_ResultOnCurve(t *testing.T) {
@@ -199,7 +198,7 @@ func TestVesta_PointAdd(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(ret, ptBytes), "Vesta: P + O should equal P")
+	require.Equal(t, ret, ptBytes, "Vesta: P + O should equal P")
 }
 
 func TestVesta_ScalarMul(t *testing.T) {
@@ -266,7 +265,7 @@ func TestMSM_Pallas(t *testing.T) {
 	expected, _, err := p.Run(nil, common.Address{}, ContractAddress, mulInput, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(msmResult, expected), "MSM(3*P + 5*P) should equal 8*P")
+	require.Equal(t, msmResult, expected, "MSM(3*P + 5*P) should equal 8*P")
 }
 
 func TestMSM_SinglePair(t *testing.T) {
@@ -296,7 +295,7 @@ func TestMSM_SinglePair(t *testing.T) {
 	smResult, _, err := p.Run(nil, common.Address{}, ContractAddress, smInput, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(msmResult, smResult), "MSM with 1 pair should match ScalarMul")
+	require.Equal(t, msmResult, smResult, "MSM with 1 pair should match ScalarMul")
 }
 
 func TestInvalidCurve(t *testing.T) {
