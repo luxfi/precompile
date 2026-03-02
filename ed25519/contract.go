@@ -14,13 +14,10 @@ import (
 
 	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 )
 
 const (
-	// Ed25519VerifyAddress is the precompile address for Ed25519 verification
-	// Page 3 (Crypto), C-Chain (2), Item 0x11
-	Ed25519VerifyAddress = "0x3211000000000000000000000000000000000000"
-
 	// Ed25519VerifyGas is the gas cost for signature verification
 	// Ed25519 is ~2x faster than secp256k1 ECDSA in practice
 	Ed25519VerifyGas = 3_000
@@ -40,8 +37,13 @@ const (
 )
 
 var (
-	// Address is the precompile address as common.Address
-	Address = common.HexToAddress(Ed25519VerifyAddress)
+	// ContractAddress is the precompile address
+	ContractAddress = common.HexToAddress("0x3211000000000000000000000000000000000000")
+
+	// Ed25519VerifyPrecompile is the singleton instance
+	Ed25519VerifyPrecompile = &ed25519VerifyPrecompile{}
+
+	_ contract.StatefulPrecompiledContract = &ed25519VerifyPrecompile{}
 
 	// Success return value (32 bytes, value 1)
 	successResult = common.LeftPadBytes([]byte{1}, 32)
@@ -50,20 +52,11 @@ var (
 	ErrInvalidInputLength = errors.New("ed25519: invalid input length")
 )
 
-// Contract implements the Ed25519 signature verification precompile.
-//
-// This precompile verifies Ed25519 signatures, enabling native verification of
-// signatures from Solana (Phantom), TON, XRP (Ed25519 mode), and other
-// Ed25519-based wallet systems directly within EVM smart contracts.
-type Contract struct{}
-
-// Address returns the precompile address
-func (c *Contract) Address() common.Address {
-	return Address
-}
+// ed25519VerifyPrecompile implements StatefulPrecompiledContract for Ed25519 verification.
+type ed25519VerifyPrecompile struct{}
 
 // RequiredGas returns the gas required to execute the precompile
-func (c *Contract) RequiredGas(input []byte) uint64 {
+func (c *ed25519VerifyPrecompile) RequiredGas(input []byte) uint64 {
 	return Ed25519VerifyGas
 }
 
@@ -77,9 +70,22 @@ func (c *Contract) RequiredGas(input []byte) uint64 {
 // Output:
 //   - Success: 32 bytes with value 1
 //   - Failure: empty bytes (invalid signature or key)
-func (c *Contract) Run(input []byte) ([]byte, error) {
+func (c *ed25519VerifyPrecompile) Run(
+	accessibleState contract.AccessibleState,
+	caller common.Address,
+	addr common.Address,
+	input []byte,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	gasCost := c.RequiredGas(input)
+	if suppliedGas < gasCost {
+		return nil, 0, contract.ErrOutOfGas
+	}
+	remainingGas := suppliedGas - gasCost
+
 	if len(input) != InputLength {
-		return nil, nil
+		return nil, remainingGas, nil
 	}
 
 	// Extract components
@@ -89,7 +95,7 @@ func (c *Contract) Run(input []byte) ([]byte, error) {
 
 	// Validate public key length
 	if len(publicKey) != ed25519.PublicKeySize {
-		return nil, nil
+		return nil, remainingGas, nil
 	}
 
 	// Try GPU-accelerated batch verification (batch of 1)
@@ -99,22 +105,17 @@ func (c *Contract) Run(input []byte) ([]byte, error) {
 		[][]byte{message},
 		[][]byte{publicKey},
 	); err == nil && len(results) == 1 && results[0] {
-		return successResult, nil
+		return successResult, remainingGas, nil
 	} else if err == nil && len(results) == 1 && !results[0] {
-		return nil, nil
+		return nil, remainingGas, nil
 	}
 
 	// CPU fallback
 	if ed25519.Verify(publicKey, message, signature) {
-		return successResult, nil
+		return successResult, remainingGas, nil
 	}
 
-	return nil, nil
-}
-
-// Name returns the precompile name
-func (c *Contract) Name() string {
-	return "ED25519_VERIFY"
+	return nil, remainingGas, nil
 }
 
 // Verify is a convenience function for direct Ed25519 verification.

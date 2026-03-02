@@ -4,18 +4,11 @@
 package mlkem
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/luxfi/crypto/mlkem"
 	"github.com/luxfi/geth/common"
 )
-
-// mockAccessibleState implements contract.AccessibleState for testing
-type mockAccessibleState struct{}
-
-func (m *mockAccessibleState) GetStateDB() interface{}      { return nil }
-func (m *mockAccessibleState) GetBlockContext() interface{} { return nil }
 
 func TestMLKEMPrecompileAddress(t *testing.T) {
 	expected := common.HexToAddress("0x0200000000000000000000000000000000000007")
@@ -35,10 +28,8 @@ func TestRequiredGas(t *testing.T) {
 		{"encapsulate 512", []byte{OpEncapsulate, ModeMLKEM512}, MLKEM512EncapsulateGas},
 		{"encapsulate 768", []byte{OpEncapsulate, ModeMLKEM768}, MLKEM768EncapsulateGas},
 		{"encapsulate 1024", []byte{OpEncapsulate, ModeMLKEM1024}, MLKEM1024EncapsulateGas},
-		{"decapsulate 512", []byte{OpDecapsulate, ModeMLKEM512}, MLKEM512DecapsulateGas},
-		{"decapsulate 768", []byte{OpDecapsulate, ModeMLKEM768}, MLKEM768DecapsulateGas},
-		{"decapsulate 1024", []byte{OpDecapsulate, ModeMLKEM1024}, MLKEM1024DecapsulateGas},
 		{"invalid mode", []byte{OpEncapsulate, 0xFF}, MLKEM768EncapsulateGas},
+		{"decapsulate rejected", []byte{0x02, ModeMLKEM768}, MLKEM768EncapsulateGas},
 	}
 
 	for _, tt := range tests {
@@ -51,7 +42,7 @@ func TestRequiredGas(t *testing.T) {
 	}
 }
 
-func TestEncapsulateDecapsulate(t *testing.T) {
+func TestEncapsulate(t *testing.T) {
 	modes := []struct {
 		name      string
 		mode      uint8
@@ -64,26 +55,23 @@ func TestEncapsulateDecapsulate(t *testing.T) {
 
 	for _, m := range modes {
 		t.Run(m.name, func(t *testing.T) {
-			// Generate key pair
-			pk, sk, err := mlkem.GenerateKey(m.mlkemMode)
+			pk, _, err := mlkem.GenerateKey(m.mlkemMode)
 			if err != nil {
 				t.Fatalf("failed to generate key pair: %v", err)
 			}
 
-			// Build encapsulate input
-			encInput := make([]byte, 2+len(pk.Bytes()))
+			encInput := make([]byte, 2+SeedSize+len(pk.Bytes()))
 			encInput[0] = OpEncapsulate
 			encInput[1] = m.mode
-			copy(encInput[2:], pk.Bytes())
+			copy(encInput[2+SeedSize:], pk.Bytes())
 
-			// Run encapsulate
 			result, remainingGas, err := MLKEMPrecompile.Run(
-				nil, // accessibleState not used
+				nil,
 				common.Address{},
 				ContractAddress,
 				encInput,
-				1_000_000, // suppliedGas
-				false,     // readOnly
+				1_000_000,
+				false,
 			)
 			if err != nil {
 				t.Fatalf("encapsulate failed: %v", err)
@@ -92,43 +80,36 @@ func TestEncapsulateDecapsulate(t *testing.T) {
 				t.Error("expected remaining gas > 0")
 			}
 
-			// Parse result: ciphertext || sharedSecret
 			ctSize := mlkem.GetCiphertextSize(m.mlkemMode)
 			if len(result) != ctSize+32 {
 				t.Fatalf("expected result length %d, got %d", ctSize+32, len(result))
 			}
-
-			ciphertext := result[:ctSize]
-			sharedSecret1 := result[ctSize:]
-
-			// Build decapsulate input
-			decInput := make([]byte, 2+len(sk.Bytes())+len(ciphertext))
-			decInput[0] = OpDecapsulate
-			decInput[1] = m.mode
-			copy(decInput[2:], sk.Bytes())
-			copy(decInput[2+len(sk.Bytes()):], ciphertext)
-
-			// Run decapsulate
-			sharedSecret2, remainingGas, err := MLKEMPrecompile.Run(
-				nil,
-				common.Address{},
-				ContractAddress,
-				decInput,
-				1_000_000,
-				false,
-			)
-			if err != nil {
-				t.Fatalf("decapsulate failed: %v", err)
-			}
-			if remainingGas == 0 {
-				t.Error("expected remaining gas > 0")
-			}
-
-			// Verify shared secrets match
-			if !bytes.Equal(sharedSecret1, sharedSecret2) {
-				t.Error("shared secrets do not match")
-			}
 		})
+	}
+}
+
+func TestDecapsulateRejected(t *testing.T) {
+	// Verify that the old OpDecapsulate (0x02) is rejected
+	pk, _, err := mlkem.GenerateKey(mlkem.MLKEM768)
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	input := make([]byte, 2+SeedSize+len(pk.Bytes()))
+	input[0] = 0x02 // Old OpDecapsulate
+	input[1] = ModeMLKEM768
+	copy(input[2+SeedSize:], pk.Bytes())
+
+	_, _, err = MLKEMPrecompile.Run(
+		nil,
+		common.Address{},
+		ContractAddress,
+		input,
+		1_000_000,
+		false,
+	)
+	if err == nil {
+		t.Error("expected error for decapsulate operation")
 	}
 }
 
@@ -142,7 +123,6 @@ func TestInvalidInputs(t *testing.T) {
 		{"invalid op", []byte{0xFF, ModeMLKEM768}},
 		{"encapsulate no key", []byte{OpEncapsulate, ModeMLKEM768}},
 		{"encapsulate wrong size", []byte{OpEncapsulate, ModeMLKEM768, 0x01, 0x02, 0x03}},
-		{"decapsulate no data", []byte{OpDecapsulate, ModeMLKEM768}},
 	}
 
 	for _, tt := range tests {
@@ -163,24 +143,22 @@ func TestInvalidInputs(t *testing.T) {
 }
 
 func TestOutOfGas(t *testing.T) {
-	// Generate a valid key for testing
 	pk, _, err := mlkem.GenerateKey(mlkem.MLKEM768)
 	if err != nil {
 		t.Fatalf("failed to generate key: %v", err)
 	}
 
-	input := make([]byte, 2+len(pk.Bytes()))
+	input := make([]byte, 2+SeedSize+len(pk.Bytes()))
 	input[0] = OpEncapsulate
 	input[1] = ModeMLKEM768
-	copy(input[2:], pk.Bytes())
+	copy(input[2+SeedSize:], pk.Bytes())
 
-	// Run with insufficient gas
 	_, _, err = MLKEMPrecompile.Run(
 		nil,
 		common.Address{},
 		ContractAddress,
 		input,
-		100, // Very low gas
+		100,
 		false,
 	)
 	if err == nil || err.Error() != "out of gas" {
@@ -201,39 +179,10 @@ func BenchmarkEncapsulate(b *testing.B) {
 
 	for _, m := range modes {
 		pk, _, _ := mlkem.GenerateKey(m.mlkemMode)
-		input := make([]byte, 2+len(pk.Bytes()))
+		input := make([]byte, 2+SeedSize+len(pk.Bytes()))
 		input[0] = OpEncapsulate
 		input[1] = m.mode
-		copy(input[2:], pk.Bytes())
-
-		b.Run(m.name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				MLKEMPrecompile.Run(nil, common.Address{}, ContractAddress, input, 1_000_000, false)
-			}
-		})
-	}
-}
-
-func BenchmarkDecapsulate(b *testing.B) {
-	modes := []struct {
-		name      string
-		mode      uint8
-		mlkemMode mlkem.Mode
-	}{
-		{"ML-KEM-512", ModeMLKEM512, mlkem.MLKEM512},
-		{"ML-KEM-768", ModeMLKEM768, mlkem.MLKEM768},
-		{"ML-KEM-1024", ModeMLKEM1024, mlkem.MLKEM1024},
-	}
-
-	for _, m := range modes {
-		pk, sk, _ := mlkem.GenerateKey(m.mlkemMode)
-		ct, _, _ := pk.Encapsulate()
-
-		input := make([]byte, 2+len(sk.Bytes())+len(ct))
-		input[0] = OpDecapsulate
-		input[1] = m.mode
-		copy(input[2:], sk.Bytes())
-		copy(input[2+len(sk.Bytes()):], ct)
+		copy(input[2+SeedSize:], pk.Bytes())
 
 		b.Run(m.name, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {

@@ -28,13 +28,13 @@ type GConfig struct {
 // GraphQLRequest represents a GraphQL query request
 type GraphQLRequest struct {
 	Query         string
-	Variables     map[string]interface{}
+	Variables     map[string]any
 	OperationName string
 }
 
 // GraphQLResponse represents a GraphQL query response
 type GraphQLResponse struct {
-	Data   interface{}
+	Data   any
 	Errors []GraphQLError
 }
 
@@ -45,7 +45,7 @@ type GraphQLError struct {
 }
 
 // ResolverFunc is a function type for custom resolvers
-type ResolverFunc func(ctx context.Context, db database.Database, args map[string]interface{}) (interface{}, error)
+type ResolverFunc func(ctx context.Context, db database.Database, args map[string]any) (any, error)
 
 // QueryExecutor executes GraphQL queries against the graph database
 type QueryExecutor struct {
@@ -73,7 +73,7 @@ func (e *QueryExecutor) Execute(ctx context.Context, req *GraphQLRequest) *Graph
 
 	// Mock implementation - parses query and returns appropriate mock data
 	query := req.Query
-	data := make(map[string]interface{})
+	data := make(map[string]any)
 
 	// Check for custom resolvers first
 	for name, resolver := range e.resolvers {
@@ -91,7 +91,7 @@ func (e *QueryExecutor) Execute(ctx context.Context, req *GraphQLRequest) *Graph
 
 	// Handle known mock queries
 	if containsField(query, "chainInfo") {
-		data["chainInfo"] = map[string]interface{}{
+		data["chainInfo"] = map[string]any{
 			"vmName":   "graphvm",
 			"version":  "1.0.0",
 			"readOnly": true,
@@ -101,8 +101,8 @@ func (e *QueryExecutor) Execute(ctx context.Context, req *GraphQLRequest) *Graph
 		data["balance"] = "0"
 	}
 	if containsField(query, "chains") {
-		data["chains"] = []interface{}{
-			map[string]interface{}{
+		data["chains"] = []any{
+			map[string]any{
 				"id":   "mainnet",
 				"name": "Lux Mainnet",
 				"type": "L1",

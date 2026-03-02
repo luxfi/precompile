@@ -138,7 +138,7 @@ func lsb256(x *big.Int) int {
 		return 0
 	}
 	// The position of the lowest set bit
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		if x.Bit(i) != 0 {
 			return i
 		}

@@ -66,11 +66,11 @@ func TestGraphVMClientQuery(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 
-		var data map[string]interface{}
+		var data map[string]any
 		err = json.Unmarshal(result, &data)
 		require.NoError(t, err)
 
-		chainInfo, ok := data["chainInfo"].(map[string]interface{})
+		chainInfo, ok := data["chainInfo"].(map[string]any)
 		require.True(t, ok, "expected chainInfo in response")
 		require.Equal(t, "graphvm", chainInfo["vmName"])
 		require.Equal(t, true, chainInfo["readOnly"])
@@ -82,7 +82,7 @@ func TestGraphVMClientQuery(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 
-		var data map[string]interface{}
+		var data map[string]any
 		err = json.Unmarshal(result, &data)
 		require.NoError(t, err)
 		require.Contains(t, data, "balance")
@@ -94,11 +94,11 @@ func TestGraphVMClientQuery(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 
-		var data map[string]interface{}
+		var data map[string]any
 		err = json.Unmarshal(result, &data)
 		require.NoError(t, err)
 
-		chains, ok := data["chains"].([]interface{})
+		chains, ok := data["chains"].([]any)
 		require.True(t, ok, "expected chains array")
 		require.GreaterOrEqual(t, len(chains), 1)
 	})
@@ -190,9 +190,9 @@ func TestGraphVMClientRegisterResolver(t *testing.T) {
 
 	// Register custom resolver
 	customResolverCalled := false
-	client.RegisterResolver("customQuery", func(ctx context.Context, db2 database.Database, args map[string]interface{}) (interface{}, error) {
+	client.RegisterResolver("customQuery", func(ctx context.Context, db2 database.Database, args map[string]any) (any, error) {
 		customResolverCalled = true
-		return map[string]interface{}{"custom": "data"}, nil
+		return map[string]any{"custom": "data"}, nil
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -15,7 +15,7 @@ import (
 func bigExp(base, exp int64) *big.Int {
 	result := big.NewInt(1)
 	b := big.NewInt(base)
-	for i := int64(0); i < exp; i++ {
+	for range exp {
 		result.Mul(result, b)
 	}
 	return result
@@ -587,7 +587,7 @@ func TestNonceIncrement(t *testing.T) {
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
 
-	for i := uint64(0); i < 5; i++ {
+	for i := range uint64(5) {
 		_, _ = gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
 		if gw.Nonces[sender] != i+1 {
 			t.Errorf("Expected nonce %d, got %d", i+1, gw.Nonces[sender])
