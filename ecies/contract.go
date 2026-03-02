@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"hash"
 
+	"github.com/luxfi/accel"
 	"github.com/luxfi/crypto/secp256k1"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -250,16 +251,19 @@ func (p *eciesPrecompile) encrypt(curveID byte, input []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// ECDH: compute shared secret
-	sx, _ := curve.ScalarMult(x, y, ephPriv.D.Bytes())
-	sharedSecret := sx.Bytes()
-
-	// Ensure shared secret is correct length
+	// ECDH: compute shared secret (GPU fast path for secp256k1)
 	byteLen := (curve.Params().BitSize + 7) / 8
-	if len(sharedSecret) < byteLen {
-		padded := make([]byte, byteLen)
-		copy(padded[byteLen-len(sharedSecret):], sharedSecret)
-		sharedSecret = padded
+	sharedSecret, gpuUsed := ecdhGPU(curveID, ephPriv.D.Bytes(),
+		common.LeftPadBytes(x.Bytes(), byteLen),
+		common.LeftPadBytes(y.Bytes(), byteLen))
+	if !gpuUsed {
+		sx, _ := curve.ScalarMult(x, y, ephPriv.D.Bytes())
+		sharedSecret = sx.Bytes()
+		if len(sharedSecret) < byteLen {
+			padded := make([]byte, byteLen)
+			copy(padded[byteLen-len(sharedSecret):], sharedSecret)
+			sharedSecret = padded
+		}
 	}
 
 	// Key derivation using Concat KDF (NIST SP 800-56A)
@@ -354,16 +358,19 @@ func (p *eciesPrecompile) decrypt(curveID byte, input []byte) ([]byte, error) {
 		return nil, ErrInvalidPublicKey
 	}
 
-	// ECDH: compute shared secret
-	sx, _ := curve.ScalarMult(ephX, ephY, recipientSk)
-	sharedSecret := sx.Bytes()
-
-	// Ensure shared secret is correct length
+	// ECDH: compute shared secret (GPU fast path for secp256k1)
 	byteLen := (curve.Params().BitSize + 7) / 8
-	if len(sharedSecret) < byteLen {
-		padded := make([]byte, byteLen)
-		copy(padded[byteLen-len(sharedSecret):], sharedSecret)
-		sharedSecret = padded
+	sharedSecret, gpuUsed := ecdhGPU(curveID, recipientSk,
+		common.LeftPadBytes(ephX.Bytes(), byteLen),
+		common.LeftPadBytes(ephY.Bytes(), byteLen))
+	if !gpuUsed {
+		sx, _ := curve.ScalarMult(ephX, ephY, recipientSk)
+		sharedSecret = sx.Bytes()
+		if len(sharedSecret) < byteLen {
+			padded := make([]byte, byteLen)
+			copy(padded[byteLen-len(sharedSecret):], sharedSecret)
+			sharedSecret = padded
+		}
 	}
 
 	// Key derivation
@@ -420,16 +427,53 @@ func (p *eciesPrecompile) ecdh(curveID byte, input []byte) ([]byte, error) {
 		return nil, ErrInvalidPublicKey
 	}
 
-	// Compute shared secret
-	sx, _ := curve.ScalarMult(x, y, privateKey)
-
-	// Return x-coordinate as shared secret
+	// Compute shared secret (GPU fast path for secp256k1)
 	byteLen := (curve.Params().BitSize + 7) / 8
-	sharedSecret := make([]byte, byteLen)
-	sxBytes := sx.Bytes()
-	copy(sharedSecret[byteLen-len(sxBytes):], sxBytes)
+	sharedSecret, gpuUsed := ecdhGPU(curveID, privateKey,
+		common.LeftPadBytes(x.Bytes(), byteLen),
+		common.LeftPadBytes(y.Bytes(), byteLen))
+	if !gpuUsed {
+		sx, _ := curve.ScalarMult(x, y, privateKey)
+		sharedSecret = make([]byte, byteLen)
+		sxBytes := sx.Bytes()
+		copy(sharedSecret[byteLen-len(sxBytes):], sxBytes)
+	}
 
 	return sharedSecret, nil
+}
+
+// ecdhGPU attempts GPU-accelerated ECDH scalar multiplication (shared secret).
+// Returns (sharedSecret, true) if GPU was used, (nil, false) if unavailable.
+//
+// CryptoOps currently exposes ECDSAVerifyBatch which uses the same ec_mul_affine
+// Metal kernel internally, but its API is signature verification, not raw scalar
+// multiply. When CryptoOps gains ECScalarMultBatch or ECDHBatch, this function
+// will dispatch secp256k1 ECDH to the GPU. Until then, it falls through to CPU.
+func ecdhGPU(curveID byte, scalar []byte, pubX, pubY []byte) (sharedSecret []byte, gpuUsed bool) {
+	if !accel.Available() {
+		return nil, false
+	}
+
+	// Only secp256k1 has the Metal kernel (ec_mul_affine in secp256k1_recover.metal).
+	// P-256/P-384 have no GPU path yet.
+	if curveID != CurveSecp256k1 {
+		return nil, false
+	}
+
+	// CryptoOps does not yet expose ECScalarMultBatch / ECDHBatch.
+	// When it does, the implementation will be:
+	//
+	//   sess, err := accel.NewSession()
+	//   ...
+	//   crypto := sess.Crypto()
+	//   scalarTensor := accel.NewTensorWithData[byte](sess, []int{1, 32}, scalar)
+	//   pointTensor  := accel.NewTensorWithData[byte](sess, []int{1, 65}, uncompressedPub)
+	//   resultTensor := accel.NewTensor[byte](sess, []int{1, 32})
+	//   crypto.ECScalarMultBatch(scalarTensor.Untyped(), pointTensor.Untyped(), resultTensor.Untyped())
+	//   return resultTensor.Data(), true
+	//
+	// For now, fall through to CPU.
+	return nil, false
 }
 
 // NIST SP 800-56A Concatenation Key Derivation Function
