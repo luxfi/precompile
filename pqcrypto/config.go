@@ -4,18 +4,17 @@
 package pqcrypto
 
 import (
-	"fmt"
-
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/precompileconfig"
 )
 
 var _ precompileconfig.Config = &Config{}
 
+const ConfigKey = "pqcryptoConfig"
+
 // Address of the PQ crypto precompile (Lux Crypto PQ range 0x9003)
 var (
 	ContractAddress = common.HexToAddress("0x9003")
-	Module          = common.BytesToAddress(ContractAddress.Bytes()).Hex()
 )
 
 // Config implements the precompileconfig.Config interface
@@ -43,14 +42,10 @@ func NewDisableConfig(blockTimestamp *uint64) *Config {
 }
 
 // Key returns the unique key for the PQ crypto precompile config
-func (*Config) Key() string { return Module }
+func (*Config) Key() string { return ConfigKey }
 
 // Verify returns an error if the config is invalid
 func (c *Config) Verify(chainConfig precompileconfig.ChainConfig) error {
-	// Basic validation - check that timestamp is set for enabling
-	if !c.Disable && c.BlockTimestamp == nil {
-		return fmt.Errorf("PQ crypto precompile is enabled but no activation timestamp is set")
-	}
 	return nil
 }
 
@@ -65,5 +60,5 @@ func (c *Config) Equal(cfg precompileconfig.Config) bool {
 
 // String returns a string representation of the config
 func (c *Config) String() string {
-	return fmt.Sprintf("PQCrypto{BlockTimestamp: %v, Disable: %v}", c.BlockTimestamp, c.Disable)
+	return "PQCrypto"
 }
