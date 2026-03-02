@@ -224,9 +224,7 @@ func generateThresholdSignature(thresholdVal, totalParties uint32, message strin
 
 	// Create PRF key for signing session
 	prfKey := make([]byte, sign.KeySize)
-	if _, err := rand.Read(prfKey); err != nil {
-		return nil, nil, err
-	}
+	rand.Read(prfKey)
 
 	// All parties participate
 	signers := make([]int, totalParties)
