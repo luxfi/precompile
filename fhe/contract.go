@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math/big"
 
+	accelfhe "github.com/luxfi/accel/ops/fhe"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -931,7 +932,8 @@ func getCiphertext(hash common.Hash) ([]byte, uint8, bool) {
 	return ct, ciphertextTypes[hash], true
 }
 
-// performFHEOperation executes FHE binary operations using real TFHE library
+// performFHEOperation executes FHE binary operations using GPU acceleration
+// when available, falling back to TFHE library on CPU.
 func performFHEOperation(op string, handle1, handle2 common.Hash, caller common.Address) common.Hash {
 	lhs, lhsType, ok := getCiphertext(handle1)
 	if !ok {
@@ -942,6 +944,16 @@ func performFHEOperation(op string, handle1, handle2 common.Hash, caller common.
 		return common.Hash{}
 	}
 
+	// Try GPU-accelerated FHE operations for arithmetic ops
+	if result := fheOpGPU(op, lhs, rhs); result != nil {
+		resultType := lhsType
+		if op == "lt" || op == "gt" || op == "eq" || op == "ne" || op == "le" || op == "ge" {
+			resultType = TypeEbool
+		}
+		return storeCiphertext(result, resultType)
+	}
+
+	// CPU fallback
 	var result []byte
 	switch op {
 	case "add":
@@ -987,6 +999,68 @@ func performFHEOperation(op string, handle1, handle2 common.Hash, caller common.
 	}
 
 	return storeCiphertext(result, resultType)
+}
+
+// fheOpGPU attempts GPU-accelerated FHE operations.
+// Returns result bytes if GPU succeeded, nil if GPU unavailable or unsupported op.
+func fheOpGPU(op string, lhs, rhs []byte) []byte {
+	// Convert ciphertext bytes to accelfhe format
+	params := accelfhe.Params{
+		Scheme:     accelfhe.SchemeBFV,
+		PolyDegree: 4096,
+		CoeffMods:  []uint64{0x3FFFFFFF000001}, // Standard BFV modulus
+		PlainMod:   65537,
+	}
+
+	ct1 := &accelfhe.Ciphertext{Data: bytesToUint64(lhs), Scheme: accelfhe.SchemeBFV}
+	ct2 := &accelfhe.Ciphertext{Data: bytesToUint64(rhs), Scheme: accelfhe.SchemeBFV}
+
+	var result *accelfhe.Ciphertext
+	var err error
+
+	switch op {
+	case "add":
+		result, err = accelfhe.Add(params, ct1, ct2)
+	case "sub":
+		result, err = accelfhe.Sub(params, ct1, ct2)
+	case "mul":
+		rlk := &accelfhe.RelinKey{Data: nil} // Relin key would come from key store in production
+		result, err = accelfhe.Multiply(params, ct1, ct2, rlk)
+	default:
+		return nil // Unsupported op for GPU, fall through to CPU
+	}
+
+	if err != nil || result == nil {
+		return nil
+	}
+
+	return uint64ToBytes(result.Data)
+}
+
+// bytesToUint64 converts byte slice to uint64 slice for FHE tensor operations.
+func bytesToUint64(b []byte) []uint64 {
+	n := len(b) / 8
+	if n == 0 {
+		return nil
+	}
+	out := make([]uint64, n)
+	for i := 0; i < n; i++ {
+		for j := 0; j < 8 && i*8+j < len(b); j++ {
+			out[i] |= uint64(b[i*8+j]) << (56 - uint(j)*8)
+		}
+	}
+	return out
+}
+
+// uint64ToBytes converts uint64 slice back to bytes.
+func uint64ToBytes(u []uint64) []byte {
+	out := make([]byte, len(u)*8)
+	for i, v := range u {
+		for j := 0; j < 8; j++ {
+			out[i*8+j] = byte(v >> (56 - uint(j)*8))
+		}
+	}
+	return out
 }
 
 // performFHESelect executes conditional selection using real TFHE library

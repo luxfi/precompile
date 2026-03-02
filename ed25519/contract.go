@@ -12,6 +12,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 
+	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/geth/common"
 )
 
@@ -91,7 +92,19 @@ func (c *Contract) Run(input []byte) ([]byte, error) {
 		return nil, nil
 	}
 
-	// Verify Ed25519 signature using Go's standard library
+	// Try GPU-accelerated batch verification (batch of 1)
+	if results, err := accelcrypto.BatchVerify(
+		accelcrypto.SigEd25519,
+		[][]byte{signature},
+		[][]byte{message},
+		[][]byte{publicKey},
+	); err == nil && len(results) == 1 && results[0] {
+		return successResult, nil
+	} else if err == nil && len(results) == 1 && !results[0] {
+		return nil, nil
+	}
+
+	// CPU fallback
 	if ed25519.Verify(publicKey, message, signature) {
 		return successResult, nil
 	}
