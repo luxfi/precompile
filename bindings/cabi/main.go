@@ -32,7 +32,7 @@ import (
 	_ "github.com/luxfi/precompile/cggmp21"
 	_ "github.com/luxfi/precompile/dead"
 	_ "github.com/luxfi/precompile/dex"
-	_ "github.com/luxfi/precompile/ecies"
+	// REMOVED: ecies — secret keys in calldata are public on-chain
 	_ "github.com/luxfi/precompile/fhe"
 	_ "github.com/luxfi/precompile/frost"
 	_ "github.com/luxfi/precompile/graph"
