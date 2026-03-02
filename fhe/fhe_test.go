@@ -211,7 +211,13 @@ func TestFHEMul(t *testing.T) {
 }
 
 // TestFHEComparisons tests comparison operations
+// Note: Comparison on n-bit integers requires O(n) bootstrapping operations per compare.
+// With 13 test cases on uint8, this takes several minutes. Skip in short mode.
 func TestFHEComparisons(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow FHE comparison tests in short mode")
+	}
+
 	err := initTFHE()
 	require.NoError(t, err)
 
