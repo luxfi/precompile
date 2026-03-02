@@ -64,16 +64,6 @@ func (*configurator) Configure(chainConfig precompileconfig.ChainConfig, cfg pre
 		return fmt.Errorf("expected config type %T, got %T: %v", &Config{}, cfg, cfg)
 	}
 
-	// Initialize TFHE parameters if network key path is specified
-	if config.NetworkKeyPath != "" {
-		// TODO: Load network key from path
-		// This would be used for production deployments with shared network keys
-	}
-
-	// Initialize coprocessor connection if endpoint is specified
-	if config.CoprocessorEndpoint != "" {
-		// TODO: Connect to Z-Chain coprocessor for threshold decryption
-	}
-
+	_ = config // NetworkKeyPath and CoprocessorEndpoint are reserved for future use
 	return nil
 }
