@@ -186,29 +186,7 @@ func CalculateReward(workProof []byte, chainId uint64) (*big.Int, error) {
 	reward.Mul(reward, big.NewInt(int64(multiplier)))
 	reward.Div(reward, big.NewInt(10000))
 
-	// Apply chain-specific adjustments if needed
-	reward = applyChainAdjustment(reward, chainId)
-
 	return reward, nil
-}
-
-// applyChainAdjustment applies chain-specific reward adjustments
-func applyChainAdjustment(reward *big.Int, chainId uint64) *big.Int {
-	// Chain ID adjustments for different networks
-	switch chainId {
-	case 96369: // C-Chain mainnet
-		// Standard rate
-		return reward
-	case 36963: // Hanzo EVM
-		// Standard rate
-		return reward
-	case 200200: // Zoo EVM
-		// Standard rate
-		return reward
-	default:
-		// Testnet or unknown chains get standard rate
-		return reward
-	}
 }
 
 // VerifyTEE verifies a TEE attestation receipt (supports NVIDIA NVTrust, Intel SGX, etc.)
@@ -246,23 +224,28 @@ func VerifyTEE(receipt, signature []byte) (bool, error) {
 	return valid, nil
 }
 
-// verifyTEESignature verifies the signature over the receipt
+// verifyTEESignature verifies the signature over the receipt.
+// WARNING: This performs structural validation only. Full cryptographic
+// verification (certificate chain, platform root CA) requires platform-specific
+// SDK integration (NVIDIA NVTrust, Intel SGX, AMD SEV).
 func verifyTEESignature(receipt, signature []byte) (bool, error) {
-	// Platform uses ECDSA P-384 for attestation signatures
-	// Full verification requires platform-specific SDK integration
-
 	if len(signature) == 0 {
 		return false, ErrTEESignatureInvalid
 	}
 
-	// For production:
-	// 1. Parse certificate chain from receipt
-	// 2. Verify chain against platform root CA
-	// 3. Extract public key from leaf certificate
-	// 4. Verify ECDSA P-384 signature over receipt hash
+	// Structural validation: receipt must have device ID (32) + timestamp (8) + nonce (8)
+	if len(receipt) < 48 {
+		return false, ErrInvalidTEEReceipt
+	}
 
-	// Basic validation - extended verification in luxnext
-	return len(signature) > 0, nil
+	// Signature must be at least 64 bytes (ECDSA P-256 minimum)
+	if len(signature) < 64 {
+		return false, ErrTEESignatureInvalid
+	}
+
+	// TODO(security): Wire platform-specific SDK for full cryptographic verification.
+	// Until then, this only validates structure — do NOT rely on this for consensus-critical paths.
+	return true, nil
 }
 
 // IsSpent checks if a work ID has been spent (O(1) state lookup)
