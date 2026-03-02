@@ -64,7 +64,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &babyJubJubPrecompile{}
 
-	ErrInvalidInput   = errors.New("invalid babyjubjub input")
+	ErrInvalidInput   = contract.ErrInvalidInput
 	ErrInvalidOp      = errors.New("invalid babyjubjub operation")
 	ErrNotOnCurve     = errors.New("point not on baby jubjub curve")
 )

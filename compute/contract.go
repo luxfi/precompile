@@ -40,7 +40,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = Precompile
 
-	ErrInvalidInput      = errors.New("invalid compute input")
+	ErrInvalidInput      = contract.ErrInvalidInput
 	ErrUnknownOp         = errors.New("unknown compute operation")
 	ErrNotProvider       = errors.New("caller is not registered provider")
 	ErrJobNotFound       = errors.New("job not found")
