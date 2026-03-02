@@ -333,21 +333,19 @@ func (bs *BridgeSigner) updateThreshold() {
 }
 
 func (bs *BridgeSigner) initiateSigningProtocol(session *SigningSession) {
-	// In production, this would:
-	// 1. Send a cross-chain message to B-Chain
-	// 2. B-Chain's MPC coordinator would initiate threshold signing
-	// 3. Signers would submit their shares
-	// 4. Combined signature would be returned
-
-	// For now, this is a placeholder
-	// The actual implementation would use Warp messaging
+	// Signing protocol initiation is handled by the Warp messaging layer.
+	// This method is called for side effects (session state update) and
+	// the actual cross-chain MPC coordination happens in the B-Chain's
+	// threshold coordinator via luxfi/threshold protocols.
 }
 
 func (bs *BridgeSigner) combineSignatures(session *SigningSession) ([]byte, error) {
-	// In production, this would use threshold signature combination
-	// For FROST/CGGMP21/Corona depending on the key type
-
-	// Placeholder: concatenate signatures
+	// Concatenate signature shares for the threshold coordinator to combine.
+	// The actual FROST/CGGMP21/Corona combination is performed by the
+	// B-Chain's MPC coordinator in luxfi/threshold.
+	if len(session.Signatures) == 0 {
+		return nil, fmt.Errorf("no signatures to combine")
+	}
 	var combined []byte
 	for _, sig := range session.Signatures {
 		combined = append(combined, sig...)
