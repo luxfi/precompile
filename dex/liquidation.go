@@ -312,10 +312,7 @@ func (l *Liquidator) GetLiquidationHistory(limit int) []*LiquidationEvent {
 	}
 
 	// Return most recent
-	start := len(l.liquidations) - limit
-	if start < 0 {
-		start = 0
-	}
+	start := max(len(l.liquidations)-limit, 0)
 
 	result := make([]*LiquidationEvent, limit)
 	copy(result, l.liquidations[start:])

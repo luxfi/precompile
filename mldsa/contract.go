@@ -6,6 +6,7 @@ package mldsa
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/luxfi/accel"
 	accelcrypto "github.com/luxfi/accel/ops/crypto"
@@ -56,7 +57,7 @@ const (
 
 // Operation selectors (first byte of calldata)
 const (
-	OpVerify      uint8 = 0x00 // Single verify (default, backwards-compatible)
+	OpVerify      uint8 = 0x00 // Single verify (default)
 	OpBatchVerify uint8 = 0x10 // Batch verify N signatures
 )
 
@@ -126,6 +127,11 @@ func (p *mldsaVerifyPrecompile) RequiredGas(input []byte) uint64 {
 	msgLenBytes := input[msgLenOffset : msgLenOffset+MessageLenSize]
 	msgLen := readUint256(msgLenBytes)
 
+	// Overflow check: cap at max gas if msgLen would overflow
+	if msgLen > (math.MaxUint64-baseGas)/MLDSAVerifyPerByteGas {
+		return math.MaxUint64
+	}
+
 	// Base cost + per-byte cost for message
 	return baseGas + (msgLen * MLDSAVerifyPerByteGas)
 }
@@ -161,7 +167,7 @@ func (p *mldsaVerifyPrecompile) Run(
 	// Calculate required gas
 	gasCost := p.RequiredGas(input)
 	if suppliedGas < gasCost {
-		return nil, 0, errors.New("out of gas")
+		return nil, 0, contract.ErrOutOfGas
 	}
 
 	// Minimum: mode byte
@@ -214,7 +220,12 @@ func (p *mldsaVerifyPrecompile) Run(
 	// Extract message
 	message := input[sigEnd:expectedSize]
 
-	// Try GPU-accelerated verification first
+	// Consensus safety: by default (no `-tags accel`), verifyGPU's
+	// underlying accel.batchVerifyGPU falls through to CPU via
+	// crypto_default.go. With `-tags accel`, GPU runs but must produce
+	// byte-identical output to CPU for the same mathematical verify
+	// equation. Either way the result is deterministic across validators
+	// built the same way.
 	var valid bool
 	if gpuValid, gpuUsed := verifyGPU(message, signature, publicKey); gpuUsed {
 		valid = gpuValid
@@ -277,7 +288,7 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 	publicKeys := make([][]byte, count)
 
 	offset := 4 // past header
-	for i := 0; i < count; i++ {
+	for i := range count {
 		// pubkey
 		if offset+pubKeySize > len(input) {
 			return nil, remainingGas, fmt.Errorf("%w: entry %d truncated at pubkey", ErrInvalidInputLength, i)
@@ -311,13 +322,15 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 		return nil, remainingGas, fmt.Errorf("%w: %d trailing bytes", ErrInvalidInputLength, len(input)-offset)
 	}
 
-	// Try GPU-accelerated batch verification
+	// Try GPU-accelerated batch verification. Default builds (no -tags
+	// accel) fall through to CPU via accel/crypto_default.go; with accel,
+	// GPU runs but produces the same mathematical result.
 	results, gpuUsed := batchVerifyGPU(signatures, messages, publicKeys)
 
 	if !gpuUsed {
 		// CPU fallback: sequential single verify
 		results = make([]bool, count)
-		for i := 0; i < count; i++ {
+		for i := range count {
 			pub, parseErr := mldsa.PublicKeyFromBytes(publicKeys[i], mldsaMode)
 			if parseErr != nil {
 				results[i] = false
@@ -334,7 +347,7 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 		padded = ((count + 31) / 32) * 32
 	}
 	out := make([]byte, padded)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		if results[i] {
 			out[padded-count+i] = 1
 		}
@@ -409,79 +422,8 @@ func verifyGPU(message, signature, publicKey []byte) (valid bool, gpuUsed bool) 
 	return result, true
 }
 
-// Legacy input format support (for backwards compatibility with ML-DSA-65 only)
-// Detects if input uses legacy format (no mode byte) and handles accordingly
-func (p *mldsaVerifyPrecompile) isLegacyFormat(input []byte) bool {
-	// Legacy format starts directly with public key
-	// New format starts with mode byte (0x44, 0x65, or 0x87)
-	// ML-DSA public keys never start with these bytes
-	if len(input) < 1 {
-		return false
-	}
-	mode := input[0]
-	return mode != ModeMLDSA44 && mode != ModeMLDSA65 && mode != ModeMLDSA87
-}
-
-// RunLegacy handles the legacy ML-DSA-65 only format for backwards compatibility
-func (p *mldsaVerifyPrecompile) RunLegacy(
-	accessibleState contract.AccessibleState,
-	caller common.Address,
-	addr common.Address,
-	input []byte,
-	suppliedGas uint64,
-	readOnly bool,
-) ([]byte, uint64, error) {
-	// Legacy constants (ML-DSA-65 only)
-	const (
-		legacyPubKeySize = 1952
-		legacyMsgLenSize = 32
-		legacySigSize    = 3309
-		legacyMinInput   = legacyPubKeySize + legacyMsgLenSize + legacySigSize
-		legacyBaseGas    = 100_000
-	)
-
-	// Calculate gas
-	gasCost := uint64(legacyBaseGas)
-	if len(input) >= legacyPubKeySize+legacyMsgLenSize {
-		msgLenBytes := input[legacyPubKeySize : legacyPubKeySize+legacyMsgLenSize]
-		msgLen := readUint256(msgLenBytes)
-		gasCost += msgLen * MLDSAVerifyPerByteGas
-	}
-
-	if suppliedGas < gasCost {
-		return nil, 0, errors.New("out of gas")
-	}
-
-	if len(input) < legacyMinInput {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: expected at least %d bytes, got %d",
-			ErrInvalidInputLength, legacyMinInput, len(input))
-	}
-
-	// Parse legacy format
-	publicKey := input[0:legacyPubKeySize]
-	messageLenBytes := input[legacyPubKeySize : legacyPubKeySize+legacyMsgLenSize]
-	signature := input[legacyPubKeySize+legacyMsgLenSize : legacyPubKeySize+legacyMsgLenSize+legacySigSize]
-
-	messageLen := readUint256(messageLenBytes)
-	expectedSize := uint64(legacyMinInput) + messageLen
-	if uint64(len(input)) != expectedSize {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: expected %d bytes total, got %d",
-			ErrInvalidInputLength, expectedSize, len(input))
-	}
-
-	message := input[legacyMinInput:expectedSize]
-
-	pub, err := mldsa.PublicKeyFromBytes(publicKey, mldsa.MLDSA65)
-	if err != nil {
-		return nil, suppliedGas - gasCost, fmt.Errorf("invalid public key: %w", err)
-	}
-
-	valid := pub.Verify(message, signature, nil)
-
-	result := make([]byte, 32)
-	if valid {
-		result[31] = 1
-	}
-
-	return result, suppliedGas - gasCost, nil
-}
+// Legacy format (isLegacyFormat + RunLegacy) removed: the heuristic
+// "first byte isn't 0x44/0x65/0x87 so it's legacy" was never wired into
+// production dispatch and created an ambiguous format-detection path
+// flagged by red review (2026-04-12). All ML-DSA input must now carry
+// an explicit mode byte.

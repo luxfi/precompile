@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/geth/core/vm"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,7 +33,7 @@ func TestVerklePrecompile_ValidWitness(t *testing.T) {
 	// Input: [commitment(32)] [proof(32)] [threshold_met(1)]
 	// Create matching commitment and proof for valid verification
 	commitment := make([]byte, 32)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		commitment[i] = byte(i)
 	}
 	proof := make([]byte, 32)
@@ -71,11 +71,11 @@ func TestVerklePrecompile_InvalidProof(t *testing.T) {
 
 	// Create mismatched commitment and proof
 	commitment := make([]byte, 32)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		commitment[i] = byte(i)
 	}
 	proof := make([]byte, 32)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		proof[i] = byte(255 - i) // Different from commitment
 	}
 	thresholdMet := byte(1)
@@ -107,7 +107,7 @@ func TestVerklePrecompile_OutOfGas(t *testing.T) {
 	input := make([]byte, 65)
 
 	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, VerkleVerifyGas-1, true)
-	require.ErrorIs(t, err, vm.ErrOutOfGas)
+	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
 }
@@ -172,7 +172,7 @@ func TestBLSPrecompile_OutOfGas(t *testing.T) {
 	input := make([]byte, 176)
 
 	ret, remainingGas, err := b.Run(nil, common.Address{}, b.Address(), input, BLSVerifyGas-1, true)
-	require.ErrorIs(t, err, vm.ErrOutOfGas)
+	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
 }
@@ -255,7 +255,7 @@ func TestBLSAggregatePrecompile_OutOfGas(t *testing.T) {
 	requiredGas := b.RequiredGas(input)
 
 	ret, remainingGas, err := b.Run(nil, common.Address{}, b.Address(), input, requiredGas-1, true)
-	require.ErrorIs(t, err, vm.ErrOutOfGas)
+	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
 }
@@ -361,7 +361,7 @@ func TestRingtailPrecompile_OutOfGas(t *testing.T) {
 	input := make([]byte, 100)
 
 	ret, remainingGas, err := r.Run(nil, common.Address{}, r.Address(), input, RingtailVerifyGas-1, true)
-	require.ErrorIs(t, err, vm.ErrOutOfGas)
+	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
 }
@@ -446,7 +446,7 @@ func TestHybridPrecompile_OutOfGas(t *testing.T) {
 	input[97] = 0x10 // ringtail_sig_len = 16
 
 	ret, remainingGas, err := h.Run(nil, common.Address{}, h.Address(), input, HybridVerifyGas-1, true)
-	require.ErrorIs(t, err, vm.ErrOutOfGas)
+	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
 }
@@ -599,7 +599,7 @@ func TestCompressedPrecompile_OutOfGas(t *testing.T) {
 	input := make([]byte, 44)
 
 	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas-1, true)
-	require.ErrorIs(t, err, vm.ErrOutOfGas)
+	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
 }
@@ -733,7 +733,7 @@ func TestGasConsumption_Compressed(t *testing.T) {
 func BenchmarkVerkleVerify(b *testing.B) {
 	v := &verklePrecompile{}
 	input := make([]byte, 65)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		input[i] = byte(i)
 		input[32+i] = byte(i)
 	}

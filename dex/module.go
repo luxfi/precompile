@@ -9,10 +9,10 @@ import (
 	"math/big"
 
 	"github.com/holiman/uint256"
+	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/geth/core/tracing"
 	ethtypes "github.com/luxfi/geth/core/types"
-	"github.com/luxfi/crypto"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
 	"github.com/luxfi/precompile/precompileconfig"
@@ -35,10 +35,10 @@ var (
 	lxFlashAddr  = common.HexToAddress(LXFlashAddress)  // LP-9014 LXFlash
 
 	// Trading & DeFi Extensions
-	lxBookAddr   = common.HexToAddress(LXBookAddress)   // LP-9020 LXBook (CLOB matcher)
-	lxVaultAddr  = common.HexToAddress(LXVaultAddress)  // LP-9030 LXVault
-	lxPriceAddr   = common.HexToAddress(LXPriceAddress)   // LP-9040 LXPrice
-	lxLendAddr   = common.HexToAddress(LXLendAddress)   // LP-9050 LXLend (lending pool)
+	lxBookAddr   = common.HexToAddress(LXBookAddress)    // LP-9020 LXBook (CLOB matcher)
+	lxVaultAddr  = common.HexToAddress(LXVaultAddress)   // LP-9030 LXVault
+	lxPriceAddr  = common.HexToAddress(LXPriceAddress)   // LP-9040 LXPrice
+	lxLendAddr   = common.HexToAddress(LXLendAddress)    // LP-9050 LXLend (lending pool)
 	lxLiquidAddr = common.HexToAddress(LXRepayerAddress) // LP-9060 LXLiquid (self-repaying loans)
 )
 
@@ -576,7 +576,7 @@ func (c *DEXContract) runExtsloadArray(
 	copy(result[32:64], input[offset:offset+32])
 
 	stateDB := state.GetStateDB()
-	for i := uint64(0); i < count; i++ {
+	for i := range count {
 		slotStart := dataStart + i*32
 		slot := common.BytesToHash(input[slotStart : slotStart+32])
 		value := stateDB.GetState(lxPoolAddr, slot)

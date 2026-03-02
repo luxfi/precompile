@@ -214,7 +214,7 @@ func (v *FRIVerifier) FoldLayer(values []uint64, alpha uint64) []uint64 {
 	n := len(values) / 2
 	result := make([]uint64, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		even := values[2*i]
 		odd := values[2*i+1]
 		// g[i] = even + alpha * odd
@@ -480,7 +480,7 @@ func STARKVerifyPrecompile(input []byte) ([]byte, error) {
 	// Parse public inputs
 	offset := 36
 	publicInputs := make([]uint64, publicInputsLen)
-	for i := uint32(0); i < publicInputsLen; i++ {
+	for i := range publicInputsLen {
 		if offset+8 > len(input) {
 			return nil, errors.New("input too short for public inputs")
 		}
