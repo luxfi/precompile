@@ -6,6 +6,7 @@ package mldsa
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/luxfi/accel"
 	accelcrypto "github.com/luxfi/accel/ops/crypto"
@@ -125,6 +126,11 @@ func (p *mldsaVerifyPrecompile) RequiredGas(input []byte) uint64 {
 	// Extract message length from input
 	msgLenBytes := input[msgLenOffset : msgLenOffset+MessageLenSize]
 	msgLen := readUint256(msgLenBytes)
+
+	// Overflow check: cap at max gas if msgLen would overflow
+	if msgLen > (math.MaxUint64-baseGas)/MLDSAVerifyPerByteGas {
+		return math.MaxUint64
+	}
 
 	// Base cost + per-byte cost for message
 	return baseGas + (msgLen * MLDSAVerifyPerByteGas)
@@ -445,7 +451,11 @@ func (p *mldsaVerifyPrecompile) RunLegacy(
 	if len(input) >= legacyPubKeySize+legacyMsgLenSize {
 		msgLenBytes := input[legacyPubKeySize : legacyPubKeySize+legacyMsgLenSize]
 		msgLen := readUint256(msgLenBytes)
-		gasCost += msgLen * MLDSAVerifyPerByteGas
+		if msgLen > (math.MaxUint64-gasCost)/MLDSAVerifyPerByteGas {
+			gasCost = math.MaxUint64
+		} else {
+			gasCost += msgLen * MLDSAVerifyPerByteGas
+		}
 	}
 
 	if suppliedGas < gasCost {
