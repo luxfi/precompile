@@ -361,10 +361,3 @@ func (c *AIMiningContract) RequiredGas(input []byte) uint64 {
 	}
 }
 
-// GetChainId returns the chain ID from the accessible state
-func GetChainId(state contract.AccessibleState) uint64 {
-	// Chain ID is typically available from block context or chain config
-	// For now, return a default value - actual implementation would
-	// depend on how ChainConfig exposes chain ID
-	return 96369 // Default to C-Chain mainnet
-}
