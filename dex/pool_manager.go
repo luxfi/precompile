@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
-	"sync"
 
 	"github.com/holiman/uint256"
 	"github.com/luxfi/crypto"
@@ -39,26 +38,17 @@ var (
 	poolLiquidityPrefix = []byte("pliq")
 	positionPrefix      = []byte("posn")
 	tickPrefix          = []byte("tick")
-	deltaPrefix         = []byte("dlta")
-	lockerPrefix        = []byte("lock")
-	settledPrefix       = []byte("setl")
 	protocolFeePrefix   = []byte("pfee")
 	hookRegistryPrefix  = []byte("hook")
 )
 
 // PoolManager implements the singleton DEX pool manager precompile
 // All pools live in this single contract, enabling:
-// - Flash accounting (net token transfers at end of transaction)
 // - Unified liquidity across all markets
 // - Gas-efficient multi-hop swaps
 // - Native LUX support without wrapping
+// - Atomic settlement (blockchain consensus provides ordering)
 type PoolManager struct {
-	// mu protects concurrent access to shared state
-	mu sync.RWMutex
-
-	// locked prevents reentrancy attacks
-	locked bool
-
 	// pools stores all pool states by pool ID
 	// Key: BLAKE3(poolKey) -> Pool state
 	pools map[[32]byte]*Pool
@@ -67,13 +57,6 @@ type PoolManager struct {
 	// Key: BLAKE3(owner || tickLower || tickUpper || salt) -> Position
 	positions map[[32]byte]*Position
 
-	// currentDeltas tracks balance changes during callback execution
-	// Only valid within a lock() callback, settled at end
-	currentDeltas map[common.Address]map[Currency]*big.Int
-
-	// lockers tracks active callback contexts (for reentrancy)
-	lockers []common.Address
-
 	// protocolFeeController can set protocol fees
 	protocolFeeController common.Address
 }
@@ -81,36 +64,9 @@ type PoolManager struct {
 // NewPoolManager creates a new pool manager instance
 func NewPoolManager() *PoolManager {
 	return &PoolManager{
-		pools:         make(map[[32]byte]*Pool),
-		positions:     make(map[[32]byte]*Position),
-		currentDeltas: make(map[common.Address]map[Currency]*big.Int),
-		lockers:       make([]common.Address, 0),
+		pools:     make(map[[32]byte]*Pool),
+		positions: make(map[[32]byte]*Position),
 	}
-}
-
-// pushLocker adds a caller to the locker stack for direct precompile calls.
-// This enables Swap/ModifyLiquidity without a full lock() callback cycle.
-func (pm *PoolManager) pushLocker(caller common.Address) {
-	pm.lockers = append(pm.lockers, caller)
-	if pm.currentDeltas[caller] == nil {
-		pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-	}
-}
-
-// popLocker removes a caller from the locker stack.
-// F9: Verifies the caller matches the top of the stack before popping.
-// Returns an error if the caller is not the current locker (stack corruption).
-func (pm *PoolManager) popLocker(caller common.Address) error {
-	if len(pm.lockers) == 0 {
-		return fmt.Errorf("popLocker: locker stack is empty")
-	}
-	top := pm.lockers[len(pm.lockers)-1]
-	if top != caller {
-		return fmt.Errorf("popLocker: caller %s does not match top of stack %s", caller.Hex(), top.Hex())
-	}
-	delete(pm.currentDeltas, caller)
-	pm.lockers = pm.lockers[:len(pm.lockers)-1]
-	return nil
 }
 
 // makeStorageKey creates a storage key from prefix and identifier
@@ -192,201 +148,19 @@ func (pm *PoolManager) Initialize(
 }
 
 // =========================================================================
-// Flash Accounting - Lock/Unlock Pattern
-// =========================================================================
-
-// Lock acquires a callback context for flash accounting
-// The caller's callback will be executed, during which token transfers
-// are tracked but not executed. At the end, all deltas must net to zero.
-func (pm *PoolManager) Lock(
-	stateDB StateDB,
-	caller common.Address,
-	data []byte,
-) ([]byte, error) {
-	// Reentrancy guard
-	pm.mu.Lock()
-	if pm.locked {
-		pm.mu.Unlock()
-		return nil, ErrReentrant
-	}
-	pm.locked = true
-	pm.mu.Unlock()
-
-	defer func() {
-		pm.mu.Lock()
-		pm.locked = false
-		pm.mu.Unlock()
-	}()
-
-	// Push caller onto locker stack
-	pm.lockers = append(pm.lockers, caller)
-
-	// Initialize delta tracking for this caller
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
-	// Execute callback (would be EVM call in real implementation)
-	// The callback can call swap, modifyLiquidity, etc.
-	result, err := pm.executeCallback(stateDB, caller, data)
-	if err != nil {
-		pm.cleanupLocker(caller)
-		return nil, err
-	}
-
-	// Verify all deltas are settled
-	if err := pm.verifySettlement(caller); err != nil {
-		pm.cleanupLocker(caller)
-		return nil, err
-	}
-
-	// Pop caller from locker stack
-	pm.cleanupLocker(caller)
-
-	return result, nil
-}
-
-// cleanupLocker removes a caller from the locker stack.
-// F9: Verifies caller identity before popping.
-func (pm *PoolManager) cleanupLocker(caller common.Address) {
-	if len(pm.lockers) > 0 && pm.lockers[len(pm.lockers)-1] == caller {
-		delete(pm.currentDeltas, caller)
-		pm.lockers = pm.lockers[:len(pm.lockers)-1]
-	}
-}
-
-// verifySettlement ensures all deltas for a caller are zero
-func (pm *PoolManager) verifySettlement(caller common.Address) error {
-	deltas, ok := pm.currentDeltas[caller]
-	if !ok {
-		return nil
-	}
-
-	for currency, delta := range deltas {
-		if delta.Sign() != 0 {
-			return fmt.Errorf("%w: currency=%s, delta=%s",
-				ErrNonZeroDelta, currency.Address.Hex(), delta.String())
-		}
-	}
-	return nil
-}
-
-// Settle settles a currency delta for the current locker
-// Called by the locker to pay/receive tokens
-func (pm *PoolManager) Settle(
-	stateDB StateDB,
-	currency Currency,
-	amount *big.Int,
-) error {
-	locker := pm.getCurrentLocker()
-	if locker == (common.Address{}) {
-		return ErrUnauthorized
-	}
-
-	// Update delta (settlement reduces the owed amount)
-	pm.updateDelta(locker, currency, new(big.Int).Neg(amount))
-
-	// Handle actual token transfer
-	if currency.IsNative() {
-		// Native LUX transfer
-		if amount.Sign() > 0 {
-			// Locker is paying pool
-			if err := pm.transferToken(stateDB, currency, locker, poolManagerAddr, amount); err != nil {
-				return err
-			}
-		} else {
-			// Pool is paying locker
-			absAmount := new(big.Int).Abs(amount)
-			if err := pm.transferToken(stateDB, currency, poolManagerAddr, locker, absAmount); err != nil {
-				return err
-			}
-		}
-	} else {
-		// ERC20 transfer via direct state manipulation
-		if err := pm.transferERC20(stateDB, currency, locker, poolManagerAddr, amount); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// Take allows locker to take tokens owed to them
-func (pm *PoolManager) Take(
-	stateDB StateDB,
-	currency Currency,
-	to common.Address,
-	amount *big.Int,
-) error {
-	locker := pm.getCurrentLocker()
-	if locker == (common.Address{}) {
-		return ErrUnauthorized
-	}
-
-	// Update delta (taking increases what locker owes)
-	pm.updateDelta(locker, currency, amount)
-
-	// Transfer tokens to recipient
-	if currency.IsNative() {
-		amountU256, _ := uint256.FromBig(amount)
-		stateDB.SubBalance(poolManagerAddr, amountU256)
-		stateDB.AddBalance(to, amountU256)
-	} else {
-		pm.transferERC20(stateDB, currency, poolManagerAddr, to, amount)
-	}
-
-	return nil
-}
-
-// Sync syncs the reserves for a currency
-// Used after external token transfer to pool manager
-func (pm *PoolManager) Sync(
-	stateDB StateDB,
-	currency Currency,
-) error {
-	// For native currency, sync balance with tracked reserves
-	// For ERC20, sync with actual balance
-	return nil
-}
-
-// getCurrentLocker returns the current callback context owner
-func (pm *PoolManager) getCurrentLocker() common.Address {
-	if len(pm.lockers) == 0 {
-		return common.Address{}
-	}
-	return pm.lockers[len(pm.lockers)-1]
-}
-
-// updateDelta updates the balance delta for a currency
-func (pm *PoolManager) updateDelta(locker common.Address, currency Currency, delta *big.Int) {
-	deltas, ok := pm.currentDeltas[locker]
-	if !ok {
-		deltas = make(map[Currency]*big.Int)
-		pm.currentDeltas[locker] = deltas
-	}
-
-	current, ok := deltas[currency]
-	if !ok {
-		current = big.NewInt(0)
-	}
-
-	deltas[currency] = new(big.Int).Add(current, delta)
-}
-
-// =========================================================================
 // Core DEX Operations
 // =========================================================================
 
-// Swap executes a swap in a pool
+// Swap executes a swap in a pool.
+// The caller is the address performing the swap. Blockchain consensus provides
+// transaction ordering — no lock/locker pattern needed.
 func (pm *PoolManager) Swap(
 	stateDB StateDB,
+	caller common.Address,
 	key PoolKey,
 	params SwapParams,
 	hookData []byte,
 ) (BalanceDelta, error) {
-	locker := pm.getCurrentLocker()
-	if locker == (common.Address{}) {
-		return ZeroBalanceDelta(), ErrUnauthorized
-	}
-
 	poolId := key.ID()
 	pool := pm.getPool(stateDB, poolId)
 
@@ -411,10 +185,6 @@ func (pm *PoolManager) Swap(
 	pool.Tick = newTick
 	pm.setPool(stateDB, poolId, pool)
 
-	// Update caller's deltas
-	pm.updateDelta(locker, key.Currency0, delta.Amount0)
-	pm.updateDelta(locker, key.Currency1, delta.Amount1)
-
 	// Call afterSwap hook if present
 	if key.Hooks != (common.Address{}) {
 		if err := pm.callHook(stateDB, key.Hooks, HookAfterSwap, key, params, delta, hookData); err != nil {
@@ -423,23 +193,21 @@ func (pm *PoolManager) Swap(
 	}
 
 	// Emit Swap event for subgraph indexing
-	emitSwapEvent(stateDB, poolId, locker, delta, pool.SqrtPriceX96, pool.Liquidity, pool.Tick, key.Fee)
+	emitSwapEvent(stateDB, poolId, caller, delta, pool.SqrtPriceX96, pool.Liquidity, pool.Tick, key.Fee)
 
 	return delta, nil
 }
 
-// ModifyLiquidity adds or removes liquidity from a pool
+// ModifyLiquidity adds or removes liquidity from a pool.
+// The caller is the address modifying the position. Blockchain consensus provides
+// transaction ordering — no lock/locker pattern needed.
 func (pm *PoolManager) ModifyLiquidity(
 	stateDB StateDB,
+	caller common.Address,
 	key PoolKey,
 	params ModifyLiquidityParams,
 	hookData []byte,
 ) (BalanceDelta, BalanceDelta, error) {
-	locker := pm.getCurrentLocker()
-	if locker == (common.Address{}) {
-		return ZeroBalanceDelta(), ZeroBalanceDelta(), ErrUnauthorized
-	}
-
 	// Validate tick range
 	if params.TickLower >= params.TickUpper {
 		return ZeroBalanceDelta(), ZeroBalanceDelta(), ErrInvalidTickRange
@@ -470,7 +238,7 @@ func (pm *PoolManager) ModifyLiquidity(
 	}
 
 	// Calculate token amounts for liquidity change
-	callerDelta, feesAccrued := pm.calculateLiquidityAmounts(pool, key, params, locker)
+	callerDelta, feesAccrued := pm.calculateLiquidityAmounts(pool, key, params, caller)
 
 	// Update pool liquidity
 	if params.TickLower <= pool.Tick && pool.Tick < params.TickUpper {
@@ -482,7 +250,7 @@ func (pm *PoolManager) ModifyLiquidity(
 	}
 
 	// Update position
-	positionKey := PositionKey(locker, params.TickLower, params.TickUpper, params.Salt)
+	positionKey := PositionKey(caller, params.TickLower, params.TickUpper, params.Salt)
 	position := pm.getPosition(stateDB, positionKey)
 	newPositionLiquidity := new(big.Int).Add(position.Liquidity, params.LiquidityDelta)
 	// F10: Guard against negative position liquidity
@@ -490,17 +258,13 @@ func (pm *PoolManager) ModifyLiquidity(
 		return ZeroBalanceDelta(), ZeroBalanceDelta(), fmt.Errorf("%w: position liquidity would go negative", ErrInsufficientLiquidity)
 	}
 	position.Liquidity = newPositionLiquidity
-	position.Owner = locker
+	position.Owner = caller
 	position.TickLower = params.TickLower
 	position.TickUpper = params.TickUpper
 	pm.setPosition(stateDB, positionKey, position)
 
 	// Save pool state
 	pm.setPool(stateDB, poolId, pool)
-
-	// Update caller's deltas
-	pm.updateDelta(locker, key.Currency0, callerDelta.Amount0)
-	pm.updateDelta(locker, key.Currency1, callerDelta.Amount1)
 
 	// Call afterAddLiquidity or afterRemoveLiquidity hook
 	if key.Hooks != (common.Address{}) {
@@ -516,24 +280,20 @@ func (pm *PoolManager) ModifyLiquidity(
 	}
 
 	// Emit ModifyLiquidity event for subgraph indexing
-	emitModifyLiquidityEvent(stateDB, poolId, locker, params)
+	emitModifyLiquidityEvent(stateDB, poolId, caller, params)
 
 	return callerDelta, feesAccrued, nil
 }
 
-// Donate donates tokens to a pool's liquidity providers
+// Donate donates tokens to a pool's liquidity providers.
 func (pm *PoolManager) Donate(
 	stateDB StateDB,
+	caller common.Address,
 	key PoolKey,
 	amount0 *big.Int,
 	amount1 *big.Int,
 	hookData []byte,
 ) (BalanceDelta, error) {
-	locker := pm.getCurrentLocker()
-	if locker == (common.Address{}) {
-		return ZeroBalanceDelta(), ErrUnauthorized
-	}
-
 	poolId := key.ID()
 	pool := pm.getPool(stateDB, poolId)
 
@@ -569,8 +329,6 @@ func (pm *PoolManager) Donate(
 	pm.setPool(stateDB, poolId, pool)
 
 	delta := NewBalanceDelta(amount0, amount1)
-	pm.updateDelta(locker, key.Currency0, amount0)
-	pm.updateDelta(locker, key.Currency1, amount1)
 
 	// Call afterDonate hook
 	if key.Hooks != (common.Address{}) {
@@ -586,17 +344,14 @@ func (pm *PoolManager) Donate(
 // Flash Loans
 // =========================================================================
 
-// Flash executes a flash loan
+// Flash executes a flash loan.
 func (pm *PoolManager) Flash(
 	stateDB StateDB,
+	caller common.Address,
 	key PoolKey,
 	params FlashParams,
 	hookData []byte,
 ) (BalanceDelta, error) {
-	locker := pm.getCurrentLocker()
-	if locker == (common.Address{}) {
-		return ZeroBalanceDelta(), ErrUnauthorized
-	}
 
 	poolId := key.ID()
 	pool := pm.getPool(stateDB, poolId)
@@ -615,17 +370,6 @@ func (pm *PoolManager) Flash(
 	// Calculate fees (based on pool fee)
 	fee0 := pm.calculateFlashFee(params.Amount0, key.Fee)
 	fee1 := pm.calculateFlashFee(params.Amount1, key.Fee)
-
-	// Transfer tokens to recipient (creates positive delta)
-	if params.Amount0.Sign() > 0 {
-		pm.updateDelta(locker, key.Currency0, params.Amount0)
-	}
-	if params.Amount1.Sign() > 0 {
-		pm.updateDelta(locker, key.Currency1, params.Amount1)
-	}
-
-	// Execute flash loan callback (in real impl, calls external contract)
-	// Callback should call settle() to repay loan + fees
 
 	// Expected repayment (loan + fee)
 	totalOwed0 := new(big.Int).Add(params.Amount0, fee0)
@@ -1102,16 +846,7 @@ func (pm *PoolManager) autoSettle(stateDB StateDB, caller common.Address, key Po
 			return fmt.Errorf("%w: currency1 settlement: %v", ErrSettlementFailed, err)
 		}
 	}
-	// Clear deltas for this caller
-	delete(pm.currentDeltas, caller)
 	return nil
-}
-
-// executeCallback executes the locker's callback (simplified)
-func (pm *PoolManager) executeCallback(stateDB StateDB, caller common.Address, data []byte) ([]byte, error) {
-	// In real implementation, this would be an EVM call
-	// For testing, we return success
-	return nil, nil
 }
 
 // callHook calls a hook function (simplified)
@@ -1166,15 +901,3 @@ func (pm *PoolManager) GetPosition(
 	return pos, nil
 }
 
-// GetDelta returns the current delta for a currency
-func (pm *PoolManager) GetDelta(locker common.Address, currency Currency) *big.Int {
-	deltas, ok := pm.currentDeltas[locker]
-	if !ok {
-		return big.NewInt(0)
-	}
-	delta, ok := deltas[currency]
-	if !ok {
-		return big.NewInt(0)
-	}
-	return new(big.Int).Set(delta)
-}
