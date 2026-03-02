@@ -12,14 +12,11 @@
 //   - 0x10: G2MSM
 //   - 0x11: Pairing
 //
-// Also includes MapToG1 and MapToG2 via operation selector on G1Add address.
-//
 // Used by: Eth 2.0 validator sigs, cross-chain bridges, zkSNARKs.
 package bls12381
 
 import (
 	"errors"
-	"fmt"
 	"math/big"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -40,9 +37,8 @@ var (
 	G2MSMAddress   = common.HexToAddress("0x0000000000000000000000000000000000000010")
 	PairingAddress = common.HexToAddress("0x0000000000000000000000000000000000000011")
 
-	BLS12381Precompile = &bls12381Precompile{}
-
-	_ contract.StatefulPrecompiledContract = &bls12381Precompile{}
+	// blsOps is the shared operation implementation used by all 7 precompile structs.
+	blsOps = &blsOperations{}
 
 	ErrInvalidInput      = errors.New("invalid BLS12-381 input")
 	ErrPointNotOnCurve   = errors.New("point not on curve")
@@ -53,13 +49,16 @@ var (
 
 // EIP-2537 gas costs
 const (
-	GasG1Add   = 500
-	GasG1Mul   = 12000
-	GasG1MSM   = 12000 // base; discount for multiple points
-	GasG2Add   = 800
-	GasG2Mul   = 45000
-	GasG2MSM   = 45000
-	GasPairing = 115000 // base for one pair
+	GasG1Add  = 500
+	GasG1Mul  = 12000
+	GasG1MSM  = 12000 // per pair, discount applied for multiple
+	GasG2Add  = 800
+	GasG2Mul  = 45000
+	GasG2MSM  = 45000 // per pair, discount applied for multiple
+
+	// EIP-2537 pairing: 65000 base + 43000 per pair
+	GasPairingBase    = 65000
+	GasPairingPerPair = 43000
 
 	// Serialized point sizes (uncompressed, with padding per EIP-2537)
 	G1PointLen  = 128 // 2 * 64 bytes (padded Fp)
@@ -69,49 +68,25 @@ const (
 	PairingPair = G1PointLen + G2PointLen
 )
 
-type bls12381Precompile struct{}
+// blsOperations holds all the BLS12-381 arithmetic. Stateless, thread-safe.
+type blsOperations struct{}
 
-func (p *bls12381Precompile) RequiredGas(input []byte) uint64 {
-	// Dispatched by address in Run, this is a placeholder
-	return GasG1Add
-}
-
-func (p *bls12381Precompile) Run(
-	accessibleState contract.AccessibleState,
-	caller common.Address,
-	addr common.Address,
-	input []byte,
-	suppliedGas uint64,
-	readOnly bool,
-) ([]byte, uint64, error) {
-	switch addr {
-	case G1AddAddress:
-		return p.g1Add(input, suppliedGas)
-	case G1MulAddress:
-		return p.g1Mul(input, suppliedGas)
-	case G1MSMAddress:
-		return p.g1MSM(input, suppliedGas)
-	case G2AddAddress:
-		return p.g2Add(input, suppliedGas)
-	case G2MulAddress:
-		return p.g2Mul(input, suppliedGas)
-	case G2MSMAddress:
-		return p.g2MSM(input, suppliedGas)
-	case PairingAddress:
-		return p.pairing(input, suppliedGas)
-	default:
-		return nil, suppliedGas, fmt.Errorf("unknown BLS12-381 address: %s", addr.Hex())
-	}
-}
-
-// decodeG1 decodes an EIP-2537 G1 point (128 bytes: two 64-byte padded Fp elements)
+// decodeG1 decodes an EIP-2537 G1 point (128 bytes: two 64-byte padded Fp elements).
 func decodeG1(input []byte) (bls12381.G1Affine, error) {
 	if len(input) < G1PointLen {
 		return bls12381.G1Affine{}, ErrInvalidInput
 	}
+
+	// EIP-2537: first 16 bytes of each 64-byte field element must be zero
+	for i := 0; i < 16; i++ {
+		if input[i] != 0 || input[64+i] != 0 {
+			return bls12381.G1Affine{}, ErrInvalidFieldElem
+		}
+	}
+
 	var x, y fp.Element
-	x.SetBytes(input[16:64])   // skip 16 zero-padding bytes
-	y.SetBytes(input[80:128])  // skip 16 zero-padding bytes
+	x.SetBytes(input[16:64])
+	y.SetBytes(input[80:128])
 
 	var pt bls12381.G1Affine
 	pt.X = x
@@ -129,21 +104,29 @@ func decodeG1(input []byte) (bls12381.G1Affine, error) {
 	return pt, nil
 }
 
-// encodeG1 encodes a G1 point to EIP-2537 format (128 bytes)
+// encodeG1 encodes a G1 point to EIP-2537 format (128 bytes).
 func encodeG1(pt *bls12381.G1Affine) []byte {
 	result := make([]byte, G1PointLen)
 	xBytes := pt.X.Bytes()
 	yBytes := pt.Y.Bytes()
-	copy(result[16:64], xBytes[:])  // right-aligned in 64 bytes
-	copy(result[80:128], yBytes[:]) // right-aligned in 64 bytes
+	copy(result[16:64], xBytes[:])
+	copy(result[80:128], yBytes[:])
 	return result
 }
 
-// decodeG2 decodes an EIP-2537 G2 point (256 bytes: two 128-byte padded Fp2 elements)
+// decodeG2 decodes an EIP-2537 G2 point (256 bytes: two 128-byte padded Fp2 elements).
 func decodeG2(input []byte) (bls12381.G2Affine, error) {
 	if len(input) < G2PointLen {
 		return bls12381.G2Affine{}, ErrInvalidInput
 	}
+
+	// EIP-2537: first 16 bytes of each 64-byte sub-element must be zero
+	for i := 0; i < 16; i++ {
+		if input[i] != 0 || input[64+i] != 0 || input[128+i] != 0 || input[192+i] != 0 {
+			return bls12381.G2Affine{}, ErrInvalidFieldElem
+		}
+	}
+
 	// Fp2 = (a0, a1) where each ai is 64 bytes (padded from 48)
 	var xa0, xa1, ya0, ya1 fp.Element
 	xa1.SetBytes(input[16:64])    // x.A1 (imaginary part first per EIP-2537)
@@ -169,7 +152,7 @@ func decodeG2(input []byte) (bls12381.G2Affine, error) {
 	return pt, nil
 }
 
-// encodeG2 encodes a G2 point to EIP-2537 format (256 bytes)
+// encodeG2 encodes a G2 point to EIP-2537 format (256 bytes).
 func encodeG2(pt *bls12381.G2Affine) []byte {
 	result := make([]byte, G2PointLen)
 	xa0Bytes := pt.X.A0.Bytes()
@@ -192,7 +175,7 @@ func decodeScalar(input []byte) (fr.Element, error) {
 	return s, nil
 }
 
-func (p *bls12381Precompile) g1Add(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
+func (o *blsOperations) g1Add(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
 	gas, err := contract.DeductGas(suppliedGas, GasG1Add)
 	if err != nil {
 		return nil, 0, err
@@ -213,7 +196,7 @@ func (p *bls12381Precompile) g1Add(input []byte, suppliedGas uint64) ([]byte, ui
 	return encodeG1(&result), gas, nil
 }
 
-func (p *bls12381Precompile) g1Mul(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
+func (o *blsOperations) g1Mul(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
 	gas, err := contract.DeductGas(suppliedGas, GasG1Mul)
 	if err != nil {
 		return nil, 0, err
@@ -235,13 +218,12 @@ func (p *bls12381Precompile) g1Mul(input []byte, suppliedGas uint64) ([]byte, ui
 	return encodeG1(&result), gas, nil
 }
 
-func (p *bls12381Precompile) g1MSM(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
+func (o *blsOperations) g1MSM(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
 	pairSize := G1PointLen + ScalarLen
 	if len(input) == 0 || len(input)%pairSize != 0 {
 		return nil, suppliedGas, ErrInvalidInput
 	}
 	numPairs := len(input) / pairSize
-	// EIP-2537 MSM discount
 	gasCost := msmGas(uint64(numPairs), GasG1MSM)
 	gas, err := contract.DeductGas(suppliedGas, gasCost)
 	if err != nil {
@@ -272,7 +254,7 @@ func (p *bls12381Precompile) g1MSM(input []byte, suppliedGas uint64) ([]byte, ui
 	return encodeG1(&result), gas, nil
 }
 
-func (p *bls12381Precompile) g2Add(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
+func (o *blsOperations) g2Add(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
 	gas, err := contract.DeductGas(suppliedGas, GasG2Add)
 	if err != nil {
 		return nil, 0, err
@@ -293,7 +275,7 @@ func (p *bls12381Precompile) g2Add(input []byte, suppliedGas uint64) ([]byte, ui
 	return encodeG2(&result), gas, nil
 }
 
-func (p *bls12381Precompile) g2Mul(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
+func (o *blsOperations) g2Mul(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
 	gas, err := contract.DeductGas(suppliedGas, GasG2Mul)
 	if err != nil {
 		return nil, 0, err
@@ -315,7 +297,7 @@ func (p *bls12381Precompile) g2Mul(input []byte, suppliedGas uint64) ([]byte, ui
 	return encodeG2(&result), gas, nil
 }
 
-func (p *bls12381Precompile) g2MSM(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
+func (o *blsOperations) g2MSM(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
 	pairSize := G2PointLen + ScalarLen
 	if len(input) == 0 || len(input)%pairSize != 0 {
 		return nil, suppliedGas, ErrInvalidInput
@@ -351,12 +333,14 @@ func (p *bls12381Precompile) g2MSM(input []byte, suppliedGas uint64) ([]byte, ui
 	return encodeG2(&result), gas, nil
 }
 
-func (p *bls12381Precompile) pairing(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
+func (o *blsOperations) pairing(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
 	if len(input) == 0 || len(input)%PairingPair != 0 {
 		return nil, suppliedGas, ErrInvalidPairingLen
 	}
 	numPairs := len(input) / PairingPair
-	gasCost := GasPairing * uint64(numPairs)
+
+	// EIP-2537: gas = 65000 + 43000 * numPairs
+	gasCost := GasPairingBase + GasPairingPerPair*uint64(numPairs)
 	gas, err := contract.DeductGas(suppliedGas, gasCost)
 	if err != nil {
 		return nil, 0, err
@@ -390,12 +374,22 @@ func (p *bls12381Precompile) pairing(input []byte, suppliedGas uint64) ([]byte, 
 	return result, gas, nil
 }
 
-// msmGas applies EIP-2537 MSM discount multiplier
+// PairingGas computes the EIP-2537 pairing gas cost for the given input length.
+// Exported for use in tests and gas estimation.
+func PairingGas(inputLen int) uint64 {
+	if inputLen == 0 || inputLen%PairingPair != 0 {
+		return 0
+	}
+	numPairs := uint64(inputLen) / uint64(PairingPair)
+	return GasPairingBase + GasPairingPerPair*numPairs
+}
+
+// msmGas applies EIP-2537 MSM discount multiplier.
 func msmGas(numPairs, baseGas uint64) uint64 {
 	if numPairs <= 1 {
 		return baseGas
 	}
-	// Approximate EIP-2537 discount table
+	// EIP-2537 discount table (multiplier/1000)
 	discount := uint64(1000)
 	switch {
 	case numPairs <= 4:
