@@ -17,6 +17,13 @@ var (
 	initializeEventSig      = common.BytesToHash(crypto.Keccak256([]byte("Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)")))
 	swapEventSig            = common.BytesToHash(crypto.Keccak256([]byte("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")))
 	modifyLiquidityEventSig = common.BytesToHash(crypto.Keccak256([]byte("ModifyLiquidity(bytes32,address,int24,int24,int256,bytes32)")))
+
+	// Pause/Freeze event signatures (ATS regulatory compliance)
+	dexPausedEventSig   = common.BytesToHash(crypto.Keccak256([]byte("DEXPaused(address)")))
+	dexResumedEventSig  = common.BytesToHash(crypto.Keccak256([]byte("DEXResumed(address)")))
+	poolPausedEventSig  = common.BytesToHash(crypto.Keccak256([]byte("PoolPaused(bytes32,address)")))
+	poolResumedEventSig = common.BytesToHash(crypto.Keccak256([]byte("PoolResumed(bytes32,address)")))
+	poolFrozenEventSig  = common.BytesToHash(crypto.Keccak256([]byte("PoolFrozen(bytes32,address)")))
 )
 
 // abiEncodeInt24 writes an int24 value right-aligned into a 32-byte ABI word.
@@ -167,5 +174,73 @@ func emitModifyLiquidityEvent(
 			common.BytesToHash(sender.Bytes()),
 		},
 		Data: data,
+	})
+}
+
+// =========================================================================
+// Pause/Freeze Events (ATS Regulatory Compliance)
+// =========================================================================
+
+// emitDEXPausedEvent emits DEXPaused(address caller).
+func emitDEXPausedEvent(stateDB StateDB, caller common.Address) {
+	stateDB.AddLog(&ethtypes.Log{
+		Address: lxPoolAddr,
+		Topics: []common.Hash{
+			dexPausedEventSig,
+			common.BytesToHash(caller.Bytes()),
+		},
+		Data: nil,
+	})
+}
+
+// emitDEXResumedEvent emits DEXResumed(address caller).
+func emitDEXResumedEvent(stateDB StateDB, caller common.Address) {
+	stateDB.AddLog(&ethtypes.Log{
+		Address: lxPoolAddr,
+		Topics: []common.Hash{
+			dexResumedEventSig,
+			common.BytesToHash(caller.Bytes()),
+		},
+		Data: nil,
+	})
+}
+
+// emitPoolPausedEvent emits PoolPaused(bytes32 poolId, address caller).
+func emitPoolPausedEvent(stateDB StateDB, caller common.Address, poolId [32]byte) {
+	stateDB.AddLog(&ethtypes.Log{
+		Address: lxPoolAddr,
+		Topics: []common.Hash{
+			poolPausedEventSig,
+			common.BytesToHash(poolId[:]),
+			common.BytesToHash(caller.Bytes()),
+		},
+		Data: nil,
+	})
+}
+
+// emitPoolResumedEvent emits PoolResumed(bytes32 poolId, address caller).
+func emitPoolResumedEvent(stateDB StateDB, caller common.Address, poolId [32]byte) {
+	stateDB.AddLog(&ethtypes.Log{
+		Address: lxPoolAddr,
+		Topics: []common.Hash{
+			poolResumedEventSig,
+			common.BytesToHash(poolId[:]),
+			common.BytesToHash(caller.Bytes()),
+		},
+		Data: nil,
+	})
+}
+
+// emitPoolFrozenEvent emits PoolFrozen(bytes32 poolId, address caller).
+// This event is permanent — there is no corresponding "unfreeze" event.
+func emitPoolFrozenEvent(stateDB StateDB, caller common.Address, poolId [32]byte) {
+	stateDB.AddLog(&ethtypes.Log{
+		Address: lxPoolAddr,
+		Topics: []common.Hash{
+			poolFrozenEventSig,
+			common.BytesToHash(poolId[:]),
+			common.BytesToHash(caller.Bytes()),
+		},
+		Data: nil,
 	})
 }
