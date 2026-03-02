@@ -13,8 +13,11 @@ import (
 // PRECOMPILE ADDRESS SCHEME - Aligned with LP Numbering (LP-0099)
 // ============================================================================
 //
-// All Lux-native precompiles use trailing-significant 20-byte addresses:
+// LP-numbered precompiles (Pages 2-9) use trailing-significant 20-byte addresses:
 //   Format: 0x0000000000000000000000000000000000PCII
+//
+// Legacy module ranges (math 0x0400..0050, stableswap 0x0400..0060) use
+// leading-significant addresses and are NOT part of the PCII scheme.
 //
 // The address ends with the 16-bit LP number (PCII) for easy identification.
 // The selector encodes:
@@ -314,7 +317,7 @@ const (
 
 // PrecompileAddress calculates address from (P, C, II) nibbles
 // P = Family page (aligned with LP-Pxxx), C = Chain slot, II = Item
-// Returns trailing-significant format: 0x0000000000000000000000000000000000PCII
+// Returns PCII address: 0x0000000000000000000000000000000000PCII
 // The address ends with the LP number (e.g., 9200 for LP-9200 PoolManager)
 func PrecompileAddress(p, c, ii uint8) common.Address {
 	if p > 15 || c > 15 {

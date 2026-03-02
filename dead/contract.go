@@ -79,7 +79,7 @@ var (
 	ErrInvalidAddress  = errors.New("invalid address: cannot be zero")
 	ErrDisabled        = errors.New("dead precompile is disabled")
 	ErrInsufficientGas = errors.New("insufficient gas")
-	ErrInvalidInput    = errors.New("invalid input")
+	ErrInvalidInput    = contract.ErrInvalidInput
 )
 
 // DeadPrecompile implements the stateful precompiled contract interface

@@ -76,7 +76,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &mlkemPrecompile{}
 
-	ErrInvalidInputLength   = errors.New("invalid input length")
+	ErrInvalidInputLength  = contract.ErrInvalidInput
 	ErrInvalidMode          = errors.New("invalid ML-KEM mode")
 	ErrUnsupportedMode      = errors.New("unsupported ML-KEM mode")
 	ErrUnsupportedOperation = errors.New("unsupported operation")
@@ -188,19 +188,19 @@ func (p *mlkemPrecompile) Run(
 	readOnly bool,
 ) ([]byte, uint64, error) {
 	gasCost := p.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	if len(input) < 2 {
-		return nil, suppliedGas - gasCost, ErrInvalidInputLength
+		return nil, remainingGas, ErrInvalidInputLength
 	}
 
 	op := input[0]
 	mode := input[1]
 
 	var result []byte
-	var err error
 
 	switch op {
 	case OpEncapsulate:
@@ -210,10 +210,10 @@ func (p *mlkemPrecompile) Run(
 	}
 
 	if err != nil {
-		return nil, suppliedGas - gasCost, err
+		return nil, remainingGas, err
 	}
 
-	return result, suppliedGas - gasCost, nil
+	return result, remainingGas, nil
 }
 
 // encapsulate generates a shared secret and ciphertext from a public key.

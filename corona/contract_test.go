@@ -13,6 +13,7 @@ import (
 
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v7/ring"
+	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/corona/sign"
 	"github.com/luxfi/corona/threshold"
 	"github.com/stretchr/testify/require"
@@ -158,7 +159,7 @@ func TestCoronaThresholdVerify_InputTooShort(t *testing.T) {
 	precompile := &coronaThresholdPrecompile{}
 	_, _, err := precompile.Run(nil, common.Address{}, precompile.Address(), input, 1_000_000, true)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid input length")
+	require.ErrorIs(t, err, contract.ErrInvalidInput)
 }
 
 // TestCoronaThresholdVerify_GasCost tests gas cost calculation

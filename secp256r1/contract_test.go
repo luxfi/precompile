@@ -22,7 +22,7 @@ func TestContract_Address(t *testing.T) {
 
 func TestContract_RequiredGas(t *testing.T) {
 	c := &Contract{}
-	require.Equal(t, uint64(P256VerifyGas), c.RequiredGas(make([]byte, 160)))
+	require.Equal(t, uint64(GasP256Verify), c.RequiredGas(make([]byte, 160)))
 }
 
 func TestContract_Name(t *testing.T) {

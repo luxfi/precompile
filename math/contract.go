@@ -31,7 +31,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = Precompile
 
-	ErrInvalidInput = errors.New("invalid math input")
+	ErrInvalidInput = contract.ErrInvalidInput
 	// ErrOutOfGas aliases the canonical sentinel so callers can
 	// errors.Is(err, contract.ErrOutOfGas) across every precompile.
 	ErrOutOfGas  = contract.ErrOutOfGas
@@ -47,8 +47,8 @@ const (
 	OpExp           = 0x05
 	OpPow           = 0x06
 
-	BaseGas = 50
-	WordGas = 5
+	GasBase = 50
+	GasWord = 5
 )
 
 // q128 = 2^128 for Q128.128 fixed-point
@@ -71,7 +71,7 @@ func (p *fixedPointMathPrecompile) Run(
 	data := input[1:]
 
 	words := uint64(len(data)+31) / 32
-	gasCost := BaseGas + words*WordGas
+	gasCost := GasBase + words*GasWord
 	gas, err := contract.DeductGas(suppliedGas, gasCost)
 	if err != nil {
 		return nil, 0, err
