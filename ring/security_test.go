@@ -52,7 +52,7 @@ func TestC04_RingSignRejected(t *testing.T) {
 // C-04: Ring ComputeKeyImage (0x04) must not be accepted.
 func TestC04_RingComputeKeyImageRejected(t *testing.T) {
 	privKey := make([]byte, 32)
-	_, _ = rand.Read(privKey)
+	rand.Read(privKey)
 
 	input := []byte{0x04, SchemeLSAGSecp256k1} // 0x04 = old OpComputeKeyImage
 	input = append(input, privKey...)
@@ -149,7 +149,7 @@ func TestM06_RingHashToPointIsValidCurvePoint(t *testing.T) {
 
 	for i := range 20 {
 		seed := make([]byte, 32)
-		_, _ = rand.Read(seed)
+		rand.Read(seed)
 
 		P := hashToPoint(seed)
 		require.NotNil(t, P)

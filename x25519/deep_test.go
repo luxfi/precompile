@@ -85,8 +85,7 @@ func TestScalarMult_RoundTrip(t *testing.T) {
 
 	// Generate random scalar
 	scalar := make([]byte, 32)
-	_, err := rand.Read(scalar)
-	require.NoError(t, err)
+	rand.Read(scalar)
 
 	// Basepoint mul
 	bpInput := make([]byte, 1+32)
@@ -109,8 +108,8 @@ func TestScalarMult_DH(t *testing.T) {
 	// Alice and Bob generate keypairs
 	alicePriv := make([]byte, 32)
 	bobPriv := make([]byte, 32)
-	_, _ = rand.Read(alicePriv)
-	_, _ = rand.Read(bobPriv)
+	rand.Read(alicePriv)
+	rand.Read(bobPriv)
 
 	// Alice public
 	input := make([]byte, 1+32)

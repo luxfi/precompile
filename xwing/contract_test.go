@@ -127,8 +127,7 @@ func TestEncapsulate_MalformedKey(t *testing.T) {
 
 	// Create garbage public key of correct length
 	garbage := make([]byte, scheme.PublicKeySize())
-	_, err := rand.Read(garbage)
-	require.NoError(t, err)
+	rand.Read(garbage)
 
 	input := make([]byte, 1+len(garbage))
 	input[0] = OpEncapsulate

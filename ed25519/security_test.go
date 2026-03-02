@@ -31,7 +31,7 @@ func TestH07_Ed25519ImplementsStatefulInterface(t *testing.T) {
 	require.NoError(t, err)
 
 	message := make([]byte, MessageHashSize)
-	_, _ = rand.Read(message)
+	rand.Read(message)
 
 	signature := ed25519.Sign(priv, message)
 
@@ -72,7 +72,7 @@ func TestH07_Ed25519InvalidSigViaStateful(t *testing.T) {
 	require.NoError(t, err)
 
 	message := make([]byte, MessageHashSize)
-	_, _ = rand.Read(message)
+	rand.Read(message)
 
 	// Invalid signature (all zeros)
 	input := make([]byte, InputLength)
