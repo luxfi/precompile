@@ -61,9 +61,9 @@ func TestH07_Ed25519ImplementsStatefulInterface(t *testing.T) {
 		"Gas must be deducted for verification (remaining=%d, supplied=%d)",
 		remainingGas, suppliedGas)
 
-	expectedRemaining := suppliedGas - Ed25519VerifyGas
+	expectedRemaining := suppliedGas - GasEd25519Verify
 	require.Equal(t, expectedRemaining, remainingGas,
-		"Remaining gas must equal supplied - Ed25519VerifyGas")
+		"Remaining gas must equal supplied - GasEd25519Verify")
 }
 
 // H-07: Ed25519 must reject invalid signatures via StatefulPrecompiledContract.
@@ -99,7 +99,7 @@ func TestH07_Ed25519OutOfGas(t *testing.T) {
 	input := make([]byte, InputLength)
 
 	c := Ed25519VerifyPrecompile
-	_, _, err := c.Run(nil, ContractAddress, ContractAddress, input, Ed25519VerifyGas-1, false)
+	_, _, err := c.Run(nil, ContractAddress, ContractAddress, input, GasEd25519Verify-1, false)
 	require.Error(t, err, "Must fail with insufficient gas")
 }
 

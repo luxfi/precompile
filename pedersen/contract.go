@@ -36,7 +36,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &pedersenPrecompile{}
 
-	ErrInvalidInput = errors.New("invalid pedersen input")
+	ErrInvalidInput = contract.ErrInvalidInput
 	ErrInvalidOp    = errors.New("invalid pedersen operation")
 	ErrTooManyVals  = errors.New("too many values for vector commitment (max 32)")
 )

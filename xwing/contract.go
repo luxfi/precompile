@@ -45,7 +45,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &xwingPrecompile{}
 
-	ErrInvalidInput = errors.New("invalid xwing input")
+	ErrInvalidInput = contract.ErrInvalidInput
 	ErrInvalidOp    = errors.New("invalid xwing operation")
 )
 

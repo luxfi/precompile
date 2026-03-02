@@ -23,8 +23,8 @@ func TestVerklePrecompile_Address(t *testing.T) {
 
 func TestVerklePrecompile_RequiredGas(t *testing.T) {
 	v := &verklePrecompile{}
-	require.Equal(t, uint64(VerkleVerifyGas), v.RequiredGas(nil))
-	require.Equal(t, uint64(VerkleVerifyGas), v.RequiredGas(make([]byte, 100)))
+	require.Equal(t, uint64(GasVerkleVerify), v.RequiredGas(nil))
+	require.Equal(t, uint64(GasVerkleVerify), v.RequiredGas(make([]byte, 100)))
 }
 
 func TestVerklePrecompile_ValidWitness(t *testing.T) {
@@ -43,7 +43,7 @@ func TestVerklePrecompile_ValidWitness(t *testing.T) {
 	input := append(commitment, proof...)
 	input = append(input, thresholdMet)
 
-	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, VerkleVerifyGas, true)
+	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, GasVerkleVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), remainingGas)
 	require.Equal(t, []byte{1}, ret)
@@ -60,7 +60,7 @@ func TestVerklePrecompile_ThresholdNotMet(t *testing.T) {
 	input := append(commitment, proof...)
 	input = append(input, thresholdMet)
 
-	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, VerkleVerifyGas, true)
+	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, GasVerkleVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), remainingGas)
 	require.Equal(t, []byte{0}, ret) // Returns false
@@ -83,7 +83,7 @@ func TestVerklePrecompile_InvalidProof(t *testing.T) {
 	input := append(commitment, proof...)
 	input = append(input, thresholdMet)
 
-	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, VerkleVerifyGas, true)
+	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, GasVerkleVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), remainingGas)
 	require.Equal(t, []byte{0}, ret) // Returns false due to mismatch
@@ -95,7 +95,7 @@ func TestVerklePrecompile_InputTooShort(t *testing.T) {
 	// Input less than 65 bytes
 	input := make([]byte, 64)
 
-	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, VerkleVerifyGas, true)
+	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, GasVerkleVerify, true)
 	require.ErrorIs(t, err, ErrInvalidInput)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
@@ -106,7 +106,7 @@ func TestVerklePrecompile_OutOfGas(t *testing.T) {
 
 	input := make([]byte, 65)
 
-	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, VerkleVerifyGas-1, true)
+	ret, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, GasVerkleVerify-1, true)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
@@ -124,8 +124,8 @@ func TestBLSPrecompile_Address(t *testing.T) {
 
 func TestBLSPrecompile_RequiredGas(t *testing.T) {
 	b := &blsPrecompile{}
-	require.Equal(t, uint64(BLSVerifyGas), b.RequiredGas(nil))
-	require.Equal(t, uint64(BLSVerifyGas), b.RequiredGas(make([]byte, 200)))
+	require.Equal(t, uint64(GasBLSVerify), b.RequiredGas(nil))
+	require.Equal(t, uint64(GasBLSVerify), b.RequiredGas(make([]byte, 200)))
 }
 
 func TestBLSPrecompile_InputTooShort(t *testing.T) {
@@ -146,7 +146,7 @@ func TestBLSPrecompile_InputTooShort(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			input := make([]byte, tc.size)
-			ret, remainingGas, err := b.Run(nil, common.Address{}, b.Address(), input, BLSVerifyGas, true)
+			ret, remainingGas, err := b.Run(nil, common.Address{}, b.Address(), input, GasBLSVerify, true)
 			require.ErrorIs(t, err, ErrInvalidInput)
 			require.Nil(t, ret)
 			require.Equal(t, uint64(0), remainingGas)
@@ -160,7 +160,7 @@ func TestBLSPrecompile_InvalidPubKey(t *testing.T) {
 	// Create invalid pubkey (all zeros is not a valid BLS pubkey)
 	input := make([]byte, 176)
 
-	ret, remainingGas, err := b.Run(nil, common.Address{}, b.Address(), input, BLSVerifyGas, true)
+	ret, remainingGas, err := b.Run(nil, common.Address{}, b.Address(), input, GasBLSVerify, true)
 	require.NoError(t, err) // No error, just returns 0
 	require.Equal(t, []byte{0}, ret)
 	require.Equal(t, uint64(0), remainingGas)
@@ -171,7 +171,7 @@ func TestBLSPrecompile_OutOfGas(t *testing.T) {
 
 	input := make([]byte, 176)
 
-	ret, remainingGas, err := b.Run(nil, common.Address{}, b.Address(), input, BLSVerifyGas-1, true)
+	ret, remainingGas, err := b.Run(nil, common.Address{}, b.Address(), input, GasBLSVerify-1, true)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
@@ -196,9 +196,9 @@ func TestBLSAggregatePrecompile_RequiredGas(t *testing.T) {
 		expected uint64
 	}{
 		{"empty", 0, 0},
-		{"one_sig", 1, BLSAggregateGas},
-		{"two_sigs", 2, 2 * BLSAggregateGas},
-		{"ten_sigs", 10, 10 * BLSAggregateGas},
+		{"one_sig", 1, GasBLSAggregate},
+		{"two_sigs", 2, 2 * GasBLSAggregate},
+		{"ten_sigs", 10, 10 * GasBLSAggregate},
 	}
 
 	for _, tc := range tests {
@@ -272,8 +272,8 @@ func TestCoronaPrecompile_Address(t *testing.T) {
 
 func TestCoronaPrecompile_RequiredGas(t *testing.T) {
 	r := &coronaPrecompile{}
-	require.Equal(t, uint64(CoronaVerifyGas), r.RequiredGas(nil))
-	require.Equal(t, uint64(CoronaVerifyGas), r.RequiredGas(make([]byte, 5000)))
+	require.Equal(t, uint64(GasCoronaVerify), r.RequiredGas(nil))
+	require.Equal(t, uint64(GasCoronaVerify), r.RequiredGas(make([]byte, 5000)))
 }
 
 func TestCoronaPrecompile_InputTooShort(t *testing.T) {
@@ -293,7 +293,7 @@ func TestCoronaPrecompile_InputTooShort(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			input := make([]byte, tc.size)
-			ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, CoronaVerifyGas, true)
+			ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasCoronaVerify, true)
 			require.ErrorIs(t, err, ErrInvalidInput)
 			require.Nil(t, ret)
 		})
@@ -310,7 +310,7 @@ func TestCoronaPrecompile_TruncatedPubKey(t *testing.T) {
 	input[2] = 0x20 // pubkey_len low byte = 32
 	// Only 7 bytes of pubkey follow (input[3:10])
 
-	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, CoronaVerifyGas, true)
+	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasCoronaVerify, true)
 	require.ErrorIs(t, err, ErrInvalidInput)
 	require.Nil(t, ret)
 }
@@ -329,7 +329,7 @@ func TestCoronaPrecompile_TruncatedMessage(t *testing.T) {
 	input[3+pubKeyLen+1] = 0x10 // msg_len low = 16
 	// No message bytes follow
 
-	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, CoronaVerifyGas, true)
+	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasCoronaVerify, true)
 	require.ErrorIs(t, err, ErrInvalidInput)
 	require.Nil(t, ret)
 }
@@ -350,7 +350,7 @@ func TestCoronaPrecompile_InvalidPubKey(t *testing.T) {
 	input[3+pubKeyLen+1] = byte(msgLen & 0xFF)
 	// Leave everything zeros - invalid pubkey
 
-	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, CoronaVerifyGas, true)
+	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasCoronaVerify, true)
 	require.NoError(t, err) // No error, returns 0
 	require.Equal(t, []byte{0}, ret)
 }
@@ -360,7 +360,7 @@ func TestCoronaPrecompile_OutOfGas(t *testing.T) {
 
 	input := make([]byte, 100)
 
-	ret, remainingGas, err := r.Run(nil, common.Address{}, r.Address(), input, CoronaVerifyGas-1, true)
+	ret, remainingGas, err := r.Run(nil, common.Address{}, r.Address(), input, GasCoronaVerify-1, true)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
@@ -378,8 +378,8 @@ func TestHybridPrecompile_Address(t *testing.T) {
 
 func TestHybridPrecompile_RequiredGas(t *testing.T) {
 	h := &hybridPrecompile{}
-	require.Equal(t, uint64(HybridVerifyGas), h.RequiredGas(nil))
-	require.Equal(t, uint64(HybridVerifyGas), h.RequiredGas(make([]byte, 1000)))
+	require.Equal(t, uint64(GasHybridVerify), h.RequiredGas(nil))
+	require.Equal(t, uint64(GasHybridVerify), h.RequiredGas(make([]byte, 1000)))
 }
 
 func TestHybridPrecompile_InputTooShort(t *testing.T) {
@@ -400,7 +400,7 @@ func TestHybridPrecompile_InputTooShort(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			input := make([]byte, tc.size)
-			ret, _, err := h.Run(nil, common.Address{}, h.Address(), input, HybridVerifyGas, true)
+			ret, _, err := h.Run(nil, common.Address{}, h.Address(), input, GasHybridVerify, true)
 			require.ErrorIs(t, err, ErrInvalidInput)
 			require.Nil(t, ret)
 		})
@@ -416,7 +416,7 @@ func TestHybridPrecompile_TruncatedCoronaSig(t *testing.T) {
 	input[96] = 0x10 // corona_sig_len high = 4096 (way larger than remaining)
 	input[97] = 0x00 // corona_sig_len low
 
-	ret, _, err := h.Run(nil, common.Address{}, h.Address(), input, HybridVerifyGas, true)
+	ret, _, err := h.Run(nil, common.Address{}, h.Address(), input, GasHybridVerify, true)
 	require.ErrorIs(t, err, ErrInvalidInput)
 	require.Nil(t, ret)
 }
@@ -433,7 +433,7 @@ func TestHybridPrecompile_InvalidBLSPubKey(t *testing.T) {
 	input[97] = byte(coronaSigLen & 0xFF)
 	// All zeros = invalid keys
 
-	ret, _, err := h.Run(nil, common.Address{}, h.Address(), input, HybridVerifyGas, true)
+	ret, _, err := h.Run(nil, common.Address{}, h.Address(), input, GasHybridVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, []byte{0}, ret) // Returns false
 }
@@ -445,7 +445,7 @@ func TestHybridPrecompile_OutOfGas(t *testing.T) {
 	input[96] = 0x00
 	input[97] = 0x10 // corona_sig_len = 16
 
-	ret, remainingGas, err := h.Run(nil, common.Address{}, h.Address(), input, HybridVerifyGas-1, true)
+	ret, remainingGas, err := h.Run(nil, common.Address{}, h.Address(), input, GasHybridVerify-1, true)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
@@ -463,8 +463,8 @@ func TestCompressedPrecompile_Address(t *testing.T) {
 
 func TestCompressedPrecompile_RequiredGas(t *testing.T) {
 	c := &compressedPrecompile{}
-	require.Equal(t, uint64(CompressedVerifyGas), c.RequiredGas(nil))
-	require.Equal(t, uint64(CompressedVerifyGas), c.RequiredGas(make([]byte, 100)))
+	require.Equal(t, uint64(GasCompressedVerify), c.RequiredGas(nil))
+	require.Equal(t, uint64(GasCompressedVerify), c.RequiredGas(make([]byte, 100)))
 }
 
 func TestCompressedPrecompile_ThresholdMet(t *testing.T) {
@@ -480,7 +480,7 @@ func TestCompressedPrecompile_ThresholdMet(t *testing.T) {
 	input[42] = 0xFF
 	input[43] = 0xFF
 
-	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas, true)
+	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, GasCompressedVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), remainingGas)
 	require.Equal(t, []byte{1}, ret) // Threshold met
@@ -499,7 +499,7 @@ func TestCompressedPrecompile_ThresholdNotMet(t *testing.T) {
 	input[42] = 0x00
 	input[43] = 0x00
 
-	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas, true)
+	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, GasCompressedVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), remainingGas)
 	require.Equal(t, []byte{0}, ret) // Threshold not met
@@ -517,7 +517,7 @@ func TestCompressedPrecompile_ExactThreshold(t *testing.T) {
 	input[42] = 0x3F
 	input[43] = 0x00
 
-	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas, true)
+	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, GasCompressedVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), remainingGas)
 	require.Equal(t, []byte{1}, ret) // Exactly at threshold
@@ -535,7 +535,7 @@ func TestCompressedPrecompile_JustBelowThreshold(t *testing.T) {
 	input[42] = 0x1F
 	input[43] = 0x00
 
-	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas, true)
+	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, GasCompressedVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), remainingGas)
 	require.Equal(t, []byte{0}, ret) // Below threshold
@@ -552,7 +552,7 @@ func TestCompressedPrecompile_AllValidators(t *testing.T) {
 	input[42] = 0xFF
 	input[43] = 0xFF
 
-	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas, true)
+	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, GasCompressedVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), remainingGas)
 	require.Equal(t, []byte{1}, ret)
@@ -563,7 +563,7 @@ func TestCompressedPrecompile_NoValidators(t *testing.T) {
 
 	input := make([]byte, 44) // All zeros
 
-	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas, true)
+	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, GasCompressedVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), remainingGas)
 	require.Equal(t, []byte{0}, ret)
@@ -586,7 +586,7 @@ func TestCompressedPrecompile_InputTooShort(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			input := make([]byte, tc.size)
-			ret, _, err := c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas, true)
+			ret, _, err := c.Run(nil, common.Address{}, c.Address(), input, GasCompressedVerify, true)
 			require.ErrorIs(t, err, ErrInvalidInput)
 			require.Nil(t, ret)
 		})
@@ -598,7 +598,7 @@ func TestCompressedPrecompile_OutOfGas(t *testing.T) {
 
 	input := make([]byte, 44)
 
-	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas-1, true)
+	ret, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, GasCompressedVerify-1, true)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
@@ -700,7 +700,7 @@ func TestGasConsumption_Verkle(t *testing.T) {
 	input := make([]byte, 65)
 	input[64] = 1 // threshold met
 
-	suppliedGas := uint64(VerkleVerifyGas + 1000)
+	suppliedGas := uint64(GasVerkleVerify + 1000)
 	_, remainingGas, err := v.Run(nil, common.Address{}, v.Address(), input, suppliedGas, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1000), remainingGas)
@@ -710,7 +710,7 @@ func TestGasConsumption_BLS(t *testing.T) {
 	b := &blsPrecompile{}
 	input := make([]byte, 176)
 
-	suppliedGas := uint64(BLSVerifyGas + 500)
+	suppliedGas := uint64(GasBLSVerify + 500)
 	_, remainingGas, err := b.Run(nil, common.Address{}, b.Address(), input, suppliedGas, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(500), remainingGas)
@@ -720,7 +720,7 @@ func TestGasConsumption_Compressed(t *testing.T) {
 	c := &compressedPrecompile{}
 	input := make([]byte, 44)
 
-	suppliedGas := uint64(CompressedVerifyGas + 200)
+	suppliedGas := uint64(GasCompressedVerify + 200)
 	_, remainingGas, err := c.Run(nil, common.Address{}, c.Address(), input, suppliedGas, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(200), remainingGas)
@@ -741,7 +741,7 @@ func BenchmarkVerkleVerify(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = v.Run(nil, common.Address{}, v.Address(), input, VerkleVerifyGas, true)
+		_, _, _ = v.Run(nil, common.Address{}, v.Address(), input, GasVerkleVerify, true)
 	}
 }
 
@@ -755,11 +755,11 @@ func BenchmarkCompressedVerify(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas, true)
+		_, _, _ = c.Run(nil, common.Address{}, c.Address(), input, GasCompressedVerify, true)
 	}
 }
 
-func BenchmarkBLSAggregateGas(b *testing.B) {
+func BenchmarkGasBLSAggregate(b *testing.B) {
 	ba := &blsAggregatePrecompile{}
 
 	for _, numSigs := range []int{1, 10, 100} {

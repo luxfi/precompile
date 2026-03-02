@@ -34,7 +34,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = Precompile
 
-	ErrInvalidInput  = errors.New("invalid stableswap input")
+	ErrInvalidInput  = contract.ErrInvalidInput
 	ErrInvalidIndex  = errors.New("invalid token index")
 	ErrZeroLiquidity = errors.New("zero liquidity")
 	ErrConvergence   = errors.New("newton method did not converge")

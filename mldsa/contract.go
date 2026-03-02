@@ -24,7 +24,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &mldsaVerifyPrecompile{}
 
-	ErrInvalidInputLength = errors.New("invalid input length")
+	ErrInvalidInputLength  = contract.ErrInvalidInput
 	ErrInvalidMode        = errors.New("invalid ML-DSA mode")
 	ErrUnsupportedMode    = errors.New("unsupported ML-DSA mode")
 )
@@ -166,13 +166,14 @@ func (p *mldsaVerifyPrecompile) Run(
 ) ([]byte, uint64, error) {
 	// Calculate required gas
 	gasCost := p.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// Minimum: mode byte
 	if len(input) < ModeByte {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: need at least mode byte", ErrInvalidInputLength)
+		return nil, remainingGas, fmt.Errorf("%w: need at least mode byte", ErrInvalidInputLength)
 	}
 
 	// Dispatch batch verify
@@ -184,7 +185,7 @@ func (p *mldsaVerifyPrecompile) Run(
 	mode := input[0]
 	pubKeySize, sigSize, _, mldsaMode, err := getModeParams(mode)
 	if err != nil {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: 0x%02x", ErrUnsupportedMode, mode)
+		return nil, remainingGas, fmt.Errorf("%w: 0x%02x", ErrUnsupportedMode, mode)
 	}
 
 	// Calculate offsets
@@ -198,7 +199,7 @@ func (p *mldsaVerifyPrecompile) Run(
 	// Minimum input size for this mode
 	minInputSize := sigEnd
 	if len(input) < minInputSize {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: expected at least %d bytes for mode 0x%02x, got %d",
+		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes for mode 0x%02x, got %d",
 			ErrInvalidInputLength, minInputSize, mode, len(input))
 	}
 
@@ -213,7 +214,7 @@ func (p *mldsaVerifyPrecompile) Run(
 	// Validate total input size
 	expectedSize := uint64(sigEnd) + messageLen
 	if uint64(len(input)) != expectedSize {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: expected %d bytes total, got %d",
+		return nil, remainingGas, fmt.Errorf("%w: expected %d bytes total, got %d",
 			ErrInvalidInputLength, expectedSize, len(input))
 	}
 
@@ -233,7 +234,7 @@ func (p *mldsaVerifyPrecompile) Run(
 		// CPU fallback: Parse public key and verify
 		pub, err := mldsa.PublicKeyFromBytes(publicKey, mldsaMode)
 		if err != nil {
-			return nil, suppliedGas - gasCost, fmt.Errorf("invalid public key: %w", err)
+			return nil, remainingGas, fmt.Errorf("invalid public key: %w", err)
 		}
 		valid = pub.Verify(message, signature, nil)
 	}
@@ -244,7 +245,7 @@ func (p *mldsaVerifyPrecompile) Run(
 		result[31] = 1
 	}
 
-	return result, suppliedGas - gasCost, nil
+	return result, remainingGas, nil
 }
 
 // runBatchVerify verifies N ML-DSA signatures in a single precompile call.
@@ -262,7 +263,10 @@ func (p *mldsaVerifyPrecompile) Run(
 //
 // Output: count bytes, each 0x00 (invalid) or 0x01 (valid), left-padded to 32-byte alignment
 func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCost uint64) ([]byte, uint64, error) {
-	remainingGas := suppliedGas - gasCost
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	// Minimum header: op(1) + mode(1) + count(2) = 4
 	if len(input) < 4 {
