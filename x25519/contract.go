@@ -9,6 +9,19 @@
 //   - 0x02: Basepoint  — 32-byte private scalar -> 32-byte public key (mult with basepoint)
 //
 // Used by: TLS 1.3, Signal Protocol, age encryption, WireGuard.
+//
+// WARNING: x25519 ScalarMult accepts a scalar in calldata. This scalar is PUBLIC
+// on-chain. Do NOT use this precompile with long-term identity keys. Only use
+// with ephemeral session keys or public scalars where public visibility is
+// acceptable (e.g., verifiable randomness from a hash, commit-reveal DH where
+// the scalar is derived from a public seed, or one-time key agreement where
+// leaking the scalar after use is harmless).
+//
+// The aes, chacha20, and ecies precompiles were deleted for the same reason:
+// symmetric keys and private keys in calldata are irrecoverably exposed. This
+// precompile is retained because X25519 key exchange with ephemeral scalars is
+// a valid on-chain pattern — the shared secret is not in calldata, only the
+// (disposable) scalar is.
 package x25519
 
 import (
