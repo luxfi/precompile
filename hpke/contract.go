@@ -5,6 +5,12 @@
 // for the Lux EVM. Address: 0x9200 (Lux Crypto Privacy range)
 //
 // See LP-3662 for full specification.
+//
+// GPU: Single KEM encap/decap per call — GPU dispatch overhead exceeds CPU
+// execution time. For post-quantum KEM (ML-KEM/Kyber), batch GPU acceleration
+// is available via LatticeOps::KyberEncapsBatch/KyberDecapsBatch in the
+// parallel.BlockExecutor path. Classical ECDH KEMs (P-256, X25519) use the
+// same scalar multiply as ecrecover — batchable at the block level.
 package hpke
 
 import (
