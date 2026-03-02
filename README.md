@@ -108,3 +108,22 @@ CGO is required for `sr25519` (sr25519-donna C library). All other packages are 
 ## License
 
 Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
+
+### ZK-Friendly Curves (0x0500)
+
+| Package | Address | Description | Gas |
+|---------|---------|-------------|-----|
+| `poseidon` | `0x0500..05` | Poseidon/Poseidon2 hash (ZK-optimized, PQ-safe) | 800 |
+| `pedersen` | `0x0500..06` | Pedersen commitment (legacy, NOT PQ-safe) | 6,000 |
+| `babyjubjub` | `0x0500..07` | Baby Jubjub curve (BN254 scalar field, zkEVM) | 3,000 |
+| `pasta` | `0x0500..08` | Pallas + Vesta curves (Halo2 proving) | 5,000 |
+
+### Symmetric & Key Exchange
+
+| Package | Address | Description | Gas |
+|---------|---------|-------------|-----|
+| `aes` | `0x9210` | AES-256-GCM authenticated encryption | 5,000 |
+| `chacha20` | `0x9211` | ChaCha20-Poly1305 stream cipher | 4,000 |
+| `x25519` | `0x9203` | X25519 Diffie-Hellman key exchange | 10,000 |
+| `xwing` | `0x0200..0C` | X-Wing hybrid KEM (X25519 + ML-KEM-768) | 50,000 |
+| `curve25519` | `0x9204` | Raw Curve25519 point operations | 5,000 |
