@@ -10,7 +10,6 @@ import (
 	"github.com/luxfi/crypto/bls"
 	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/geth/core/vm"
 	"github.com/luxfi/precompile/contract"
 )
 
@@ -56,7 +55,7 @@ func (v *verklePrecompile) RequiredGas(input []byte) uint64 {
 
 func (v *verklePrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
 	if suppliedGas < VerkleVerifyGas {
-		return nil, 0, vm.ErrOutOfGas
+		return nil, 0, contract.ErrOutOfGas
 	}
 	remainingGas = suppliedGas - VerkleVerifyGas
 
@@ -98,7 +97,7 @@ func (b *blsPrecompile) RequiredGas(input []byte) uint64 {
 
 func (b *blsPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
 	if suppliedGas < BLSVerifyGas {
-		return nil, 0, vm.ErrOutOfGas
+		return nil, 0, contract.ErrOutOfGas
 	}
 	remainingGas = suppliedGas - BLSVerifyGas
 
@@ -153,7 +152,7 @@ func (b *blsAggregatePrecompile) RequiredGas(input []byte) uint64 {
 func (b *blsAggregatePrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
 	requiredGas := b.RequiredGas(input)
 	if suppliedGas < requiredGas {
-		return nil, 0, vm.ErrOutOfGas
+		return nil, 0, contract.ErrOutOfGas
 	}
 	remainingGas = suppliedGas - requiredGas
 
@@ -203,7 +202,7 @@ func (r *ringtailPrecompile) RequiredGas(input []byte) uint64 {
 
 func (r *ringtailPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
 	if suppliedGas < RingtailVerifyGas {
-		return nil, 0, vm.ErrOutOfGas
+		return nil, 0, contract.ErrOutOfGas
 	}
 	remainingGas = suppliedGas - RingtailVerifyGas
 
@@ -263,7 +262,7 @@ func (h *hybridPrecompile) RequiredGas(input []byte) uint64 {
 
 func (h *hybridPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
 	if suppliedGas < HybridVerifyGas {
-		return nil, 0, vm.ErrOutOfGas
+		return nil, 0, contract.ErrOutOfGas
 	}
 	remainingGas = suppliedGas - HybridVerifyGas
 
@@ -342,7 +341,7 @@ func (c *compressedPrecompile) RequiredGas(input []byte) uint64 {
 
 func (c *compressedPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
 	if suppliedGas < CompressedVerifyGas {
-		return nil, 0, vm.ErrOutOfGas
+		return nil, 0, contract.ErrOutOfGas
 	}
 	remainingGas = suppliedGas - CompressedVerifyGas
 
