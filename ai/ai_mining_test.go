@@ -376,7 +376,10 @@ func TestVerifyTEE(t *testing.T) {
 		byte(nonce >> 8), byte(nonce),
 	})
 
-	signature := []byte("valid signature placeholder")
+	signature := make([]byte, 64) // Minimum valid signature length
+	for i := range signature {
+		signature[i] = byte(i + 1)
+	}
 
 	valid, err := VerifyTEE(receipt, signature)
 	if err != nil {
