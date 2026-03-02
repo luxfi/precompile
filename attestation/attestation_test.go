@@ -28,7 +28,8 @@ func TestVerifyNVTrust_ValidH100(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := VerifyNVTrust(data)
+	now := time.Now()
+	result, err := VerifyNVTrust(data, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestVerifyNVTrust_NonCCGPU(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := VerifyNVTrust(data)
+	result, err := VerifyNVTrust(data, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +108,7 @@ func TestVerifyTPM_SGX(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := VerifyTPM(data)
+	result, err := VerifyTPM(data, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestVerifyTPM_SEVSNP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := VerifyTPM(data)
+	result, err := VerifyTPM(data, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +186,8 @@ func TestCreateAttestation_GPU(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := CreateAttestation(data)
+	now := time.Now()
+	result, err := CreateAttestation(data, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +222,7 @@ func TestCreateAttestation_CPU_SGX(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := CreateAttestation(data)
+	result, err := CreateAttestation(data, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +314,7 @@ func TestRequiredGas(t *testing.T) {
 
 func TestRun_InvalidInput(t *testing.T) {
 	// Test with too short input
-	_, err := Run([]byte{0x01, 0x02})
+	_, err := Run([]byte{0x01, 0x02}, time.Now())
 	if err != ErrInvalidInput {
 		t.Errorf("expected ErrInvalidInput, got %v", err)
 	}
@@ -335,7 +337,7 @@ func TestRun_VerifyNVTrust(t *testing.T) {
 	// Prepend selector
 	callData := append([]byte{0x01, 0x00, 0x00, 0x00}, data...)
 
-	result, err := Run(callData)
+	result, err := Run(callData, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,9 +401,10 @@ func BenchmarkVerifyNVTrust(b *testing.B) {
 
 	data, _ := json.Marshal(input)
 
+	now := time.Now()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		VerifyNVTrust(data)
+		VerifyNVTrust(data, now)
 	}
 }
 
@@ -417,9 +420,10 @@ func BenchmarkVerifyTPM(b *testing.B) {
 
 	data, _ := json.Marshal(input)
 
+	now := time.Now()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		VerifyTPM(data)
+		VerifyTPM(data, now)
 	}
 }
 
@@ -434,8 +438,9 @@ func BenchmarkCreateAttestation(b *testing.B) {
 
 	data, _ := json.Marshal(input)
 
+	now := time.Now()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		CreateAttestation(data)
+		CreateAttestation(data, now)
 	}
 }

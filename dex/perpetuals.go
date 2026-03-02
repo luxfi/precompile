@@ -7,7 +7,6 @@ import (
 	"errors"
 	"math/big"
 	"sync"
-	"time"
 
 	"github.com/luxfi/geth/common"
 )
@@ -46,6 +45,7 @@ func (pe *PerpetualEngine) CreateMarket(
 	initialPrice *big.Int,
 	maxLeverage uint32,
 	maintenanceMargin *big.Int,
+	blockTimestamp int64,
 ) ([32]byte, error) {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
@@ -70,7 +70,7 @@ func (pe *PerpetualEngine) CreateMarket(
 		OpenInterestLong:  big.NewInt(0),
 		OpenInterestShort: big.NewInt(0),
 		FundingRate:       big.NewInt(0),
-		LastFundingTime:   time.Now().Unix(),
+		LastFundingTime:   blockTimestamp,
 		MaxLeverage:       maxLeverage,
 		MaintenanceMargin: maintenanceMargin,
 		InsuranceFund:     big.NewInt(0),
@@ -79,7 +79,7 @@ func (pe *PerpetualEngine) CreateMarket(
 	pe.Markets[marketID] = market
 	pe.FundingStates[marketID] = &FundingState{
 		CumulativeFunding: big.NewInt(0),
-		LastUpdateTime:    time.Now().Unix(),
+		LastUpdateTime:    blockTimestamp,
 		PremiumEMA:        big.NewInt(0),
 		TWAPWindow:        8 * 3600, // 8 hours
 	}
@@ -380,7 +380,7 @@ func (pe *PerpetualEngine) LiquidatePosition(
 }
 
 // UpdateFunding calculates and applies funding rate
-func (pe *PerpetualEngine) UpdateFunding(marketID [32]byte) error {
+func (pe *PerpetualEngine) UpdateFunding(marketID [32]byte, blockTimestamp int64) error {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
 
@@ -390,7 +390,7 @@ func (pe *PerpetualEngine) UpdateFunding(marketID [32]byte) error {
 	}
 
 	fundingState := pe.FundingStates[marketID]
-	now := time.Now().Unix()
+	now := blockTimestamp
 
 	// Only update every 8 hours
 	if now-fundingState.LastUpdateTime < int64(fundingState.TWAPWindow) {

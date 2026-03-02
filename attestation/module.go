@@ -4,6 +4,8 @@
 package attestation
 
 import (
+	"time"
+
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
@@ -94,7 +96,8 @@ func (p *attestationPrecompile) Run(
 		return nil, 0, err
 	}
 
-	result, err := Run(input)
+	blockTimestamp := time.Unix(int64(accessibleState.GetBlockContext().Timestamp()), 0)
+	result, err := Run(input, blockTimestamp)
 	if err != nil {
 		return nil, gas, err
 	}

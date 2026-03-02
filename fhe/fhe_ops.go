@@ -6,7 +6,7 @@
 package fhe
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"math/big"
 	"sync"
@@ -26,7 +26,12 @@ var (
 	initErr   error
 )
 
-// Initialize TFHE components
+// fheKeygenSeed is the domain-separated seed for deterministic FHE keygen.
+// All validators must use the same seed to produce identical keys.
+// Changing this value invalidates all existing ciphertexts on-chain.
+var fheKeygenSeed = sha256.Sum256([]byte("LUX_FHE_KEYGEN_v1"))
+
+// Initialize TFHE components with deterministic keygen for consensus.
 func initTFHE() error {
 	tfheOnce.Do(func() {
 		var err error
@@ -38,8 +43,14 @@ func initTFHE() error {
 			return
 		}
 
-		// Generate keys
-		kg := fhe.NewKeyGenerator(params)
+		// Generate keys deterministically from a fixed seed so every
+		// validator produces identical FHE keys. Using crypto/rand here
+		// would make each node's keys different, breaking consensus.
+		kg, err := fhe.NewKeyGeneratorFromSeed(params, fheKeygenSeed[:])
+		if err != nil {
+			initErr = err
+			return
+		}
 		secretKey, publicKey = kg.GenKeyPair()
 		bsk := kg.GenBootstrapKey(secretKey)
 
@@ -623,10 +634,9 @@ func tfheGetNetworkPublicKey() []byte {
 
 	data, err := publicKey.MarshalBinary()
 	if err != nil {
-		// Return random bytes as fallback
-		result := make([]byte, 32)
-		rand.Read(result)
-		return result
+		// Returning random bytes here would be a consensus violation:
+		// each node would return different data for the same call.
+		return nil
 	}
 
 	return data
