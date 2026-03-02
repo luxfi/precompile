@@ -376,23 +376,15 @@ func (r *LXRouter) executeV4Swap(
 		SqrtPriceLimitX96: sqrtPriceLimitX96,
 	}
 
-	// Auto-lock and execute via pool manager's swap math
-	r.poolManager.pushLocker(caller)
-
+	// Execute via pool manager's swap math
 	delta, newTick, err := r.poolManager.executeSwap(pool, key, params)
 	if err != nil {
-		_ = r.poolManager.popLocker(caller) // best-effort cleanup on error
 		return nil, err
 	}
 
 	// Update pool state
 	pool.Tick = newTick
 	r.poolManager.setPool(stateDB, poolID, pool)
-
-	// Clean up locker
-	if err := r.poolManager.popLocker(caller); err != nil {
-		return nil, err
-	}
 
 	// Return output amount (the side the caller receives is negative in delta)
 	if zeroForOne {
