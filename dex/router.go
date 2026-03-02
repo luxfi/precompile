@@ -341,7 +341,8 @@ func (r *LXRouter) quoteV4(
 	return bestAmount, bestPoolID, bestKey, nil
 }
 
-// executeV4Swap executes a swap through a specific V4 pool, mutating pool state.
+// executeV4Swap executes a swap through a specific V4 pool via the full
+// PoolManager.Swap path (hooks, events, state update).
 // F8: Accepts the actual PoolKey so fees and tick spacing are applied correctly.
 func (r *LXRouter) executeV4Swap(
 	stateDB StateDB,
@@ -352,11 +353,6 @@ func (r *LXRouter) executeV4Swap(
 	amountIn *big.Int,
 	sqrtPriceLimitX96 *big.Int,
 ) (*big.Int, error) {
-	pool, ok := r.poolManager.pools[poolID]
-	if !ok {
-		return nil, ErrPoolNotFound
-	}
-
 	// Determine direction
 	zeroForOne := tokenIn.Hex() < tokenOut.Hex()
 
@@ -376,15 +372,11 @@ func (r *LXRouter) executeV4Swap(
 		SqrtPriceLimitX96: sqrtPriceLimitX96,
 	}
 
-	// Execute via pool manager's swap math
-	delta, newTick, err := r.poolManager.executeSwap(pool, key, params)
+	// Execute through PoolManager.Swap — handles hooks, events, and state update
+	delta, err := r.poolManager.Swap(stateDB, caller, key, params, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	// Update pool state
-	pool.Tick = newTick
-	r.poolManager.setPool(stateDB, poolID, pool)
 
 	// Return output amount (the side the caller receives is negative in delta)
 	if zeroForOne {
