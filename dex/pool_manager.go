@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/holiman/uint256"
+	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
 	ethtypes "github.com/luxfi/geth/core/types"
 	"github.com/zeebo/blake3"
@@ -97,11 +98,19 @@ func (pm *PoolManager) pushLocker(caller common.Address) {
 }
 
 // popLocker removes a caller from the locker stack.
-func (pm *PoolManager) popLocker(caller common.Address) {
-	delete(pm.currentDeltas, caller)
-	if len(pm.lockers) > 0 {
-		pm.lockers = pm.lockers[:len(pm.lockers)-1]
+// F9: Verifies the caller matches the top of the stack before popping.
+// Returns an error if the caller is not the current locker (stack corruption).
+func (pm *PoolManager) popLocker(caller common.Address) error {
+	if len(pm.lockers) == 0 {
+		return fmt.Errorf("popLocker: locker stack is empty")
 	}
+	top := pm.lockers[len(pm.lockers)-1]
+	if top != caller {
+		return fmt.Errorf("popLocker: caller %s does not match top of stack %s", caller.Hex(), top.Hex())
+	}
+	delete(pm.currentDeltas, caller)
+	pm.lockers = pm.lockers[:len(pm.lockers)-1]
+	return nil
 }
 
 // makeStorageKey creates a storage key from prefix and identifier
@@ -235,10 +244,11 @@ func (pm *PoolManager) Lock(
 	return result, nil
 }
 
-// cleanupLocker removes a caller from the locker stack
+// cleanupLocker removes a caller from the locker stack.
+// F9: Verifies caller identity before popping.
 func (pm *PoolManager) cleanupLocker(caller common.Address) {
-	delete(pm.currentDeltas, caller)
-	if len(pm.lockers) > 0 {
+	if len(pm.lockers) > 0 && pm.lockers[len(pm.lockers)-1] == caller {
+		delete(pm.currentDeltas, caller)
 		pm.lockers = pm.lockers[:len(pm.lockers)-1]
 	}
 }
@@ -279,20 +289,21 @@ func (pm *PoolManager) Settle(
 		// Native LUX transfer
 		if amount.Sign() > 0 {
 			// Locker is paying pool
-			amountU256, _ := uint256.FromBig(amount)
-			stateDB.SubBalance(locker, amountU256)
-			stateDB.AddBalance(poolManagerAddr, amountU256)
+			if err := pm.transferToken(stateDB, currency, locker, poolManagerAddr, amount); err != nil {
+				return err
+			}
 		} else {
 			// Pool is paying locker
 			absAmount := new(big.Int).Abs(amount)
-			amountU256, _ := uint256.FromBig(absAmount)
-			stateDB.SubBalance(poolManagerAddr, amountU256)
-			stateDB.AddBalance(locker, amountU256)
+			if err := pm.transferToken(stateDB, currency, poolManagerAddr, locker, absAmount); err != nil {
+				return err
+			}
 		}
 	} else {
-		// ERC20 transfer (handled via callback in real implementation)
-		// For precompile, we track state directly
-		pm.transferERC20(stateDB, currency, locker, poolManagerAddr, amount)
+		// ERC20 transfer via direct state manipulation
+		if err := pm.transferERC20(stateDB, currency, locker, poolManagerAddr, amount); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -464,12 +475,21 @@ func (pm *PoolManager) ModifyLiquidity(
 	// Update pool liquidity
 	if params.TickLower <= pool.Tick && pool.Tick < params.TickUpper {
 		pool.Liquidity = new(big.Int).Add(pool.Liquidity, params.LiquidityDelta)
+		// F10: Guard against negative pool liquidity (e.g., removing more than exists)
+		if pool.Liquidity.Sign() < 0 {
+			return ZeroBalanceDelta(), ZeroBalanceDelta(), fmt.Errorf("%w: pool liquidity would go negative", ErrInsufficientLiquidity)
+		}
 	}
 
 	// Update position
 	positionKey := PositionKey(locker, params.TickLower, params.TickUpper, params.Salt)
 	position := pm.getPosition(stateDB, positionKey)
-	position.Liquidity = new(big.Int).Add(position.Liquidity, params.LiquidityDelta)
+	newPositionLiquidity := new(big.Int).Add(position.Liquidity, params.LiquidityDelta)
+	// F10: Guard against negative position liquidity
+	if newPositionLiquidity.Sign() < 0 {
+		return ZeroBalanceDelta(), ZeroBalanceDelta(), fmt.Errorf("%w: position liquidity would go negative", ErrInsufficientLiquidity)
+	}
+	position.Liquidity = newPositionLiquidity
 	position.Owner = locker
 	position.TickLower = params.TickLower
 	position.TickUpper = params.TickUpper
@@ -666,10 +686,10 @@ func (pm *PoolManager) getPool(stateDB StateDB, poolId [32]byte) *Pool {
 func (pm *PoolManager) setPool(stateDB StateDB, poolId [32]byte, pool *Pool) {
 	pm.pools[poolId] = pool
 
-	// Write sqrtPriceX96
+	// Write sqrtPriceX96 (always non-negative, but guard with safeFillBytes)
 	sqrtPriceKey := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("sqrtPrice")...))
 	var sqrtPriceHash common.Hash
-	pool.SqrtPriceX96.FillBytes(sqrtPriceHash[:])
+	safeFillBytes(pool.SqrtPriceX96, sqrtPriceHash[:])
 	stateDB.SetState(poolManagerAddr, sqrtPriceKey, sqrtPriceHash)
 
 	// Write tick
@@ -678,10 +698,10 @@ func (pm *PoolManager) setPool(stateDB StateDB, poolId [32]byte, pool *Pool) {
 	binary.BigEndian.PutUint32(tickHash[28:32], uint32(pool.Tick))
 	stateDB.SetState(poolManagerAddr, tickKey, tickHash)
 
-	// Write liquidity
+	// Write liquidity (always non-negative after guards, but safeFillBytes for defense in depth)
 	liqKey := makeStorageKey(poolLiquidityPrefix, poolId[:])
 	var liqHash common.Hash
-	pool.Liquidity.FillBytes(liqHash[:])
+	safeFillBytes(pool.Liquidity, liqHash[:])
 	stateDB.SetState(poolManagerAddr, liqKey, liqHash)
 }
 
@@ -714,10 +734,10 @@ func (pm *PoolManager) getPosition(stateDB StateDB, positionKey [32]byte) *Posit
 func (pm *PoolManager) setPosition(stateDB StateDB, positionKey [32]byte, pos *Position) {
 	pm.positions[positionKey] = pos
 
-	// Write liquidity
+	// Write liquidity (always non-negative after guards, but safeFillBytes for defense in depth)
 	liqKey := makeStorageKey(positionPrefix, append(positionKey[:], []byte("liq")...))
 	var liqHash common.Hash
-	pos.Liquidity.FillBytes(liqHash[:])
+	safeFillBytes(pos.Liquidity, liqHash[:])
 	stateDB.SetState(poolManagerAddr, liqKey, liqHash)
 }
 
@@ -766,70 +786,68 @@ func (pm *PoolManager) sqrtPriceX96ToTick(sqrtPriceX96 *big.Int) int24 {
 	return low
 }
 
-// tickToSqrtPriceX96 converts tick to sqrt price (Q64.96 format)
-// sqrtPrice = sqrt(1.0001^tick) * 2^96
+// tickToSqrtPriceX96 converts tick to sqrt price (Q64.96 format).
+// Exact port of Uniswap V3 TickMath.getSqrtRatioAtTick with all 20 magic
+// constants (bits 0-19), supporting the full tick range +/-887272.
+//
+// Each magic constant is 2^128 / sqrt(1.0001^(2^i)) in Q128 format.
+// Multiplying them together for set bits computes 1/sqrt(price) in Q128.
+// For positive ticks (price > 1) we invert at the end.
 func (pm *PoolManager) tickToSqrtPriceX96(tick int24) *big.Int {
-	// For tick 0: sqrtPrice = 2^96
 	if tick == 0 {
 		return new(big.Int).Set(Q96)
 	}
 
-	// Use lookup table approach for efficiency
-	// sqrt(1.0001) = 1.00004999875 (approximately)
-	// We compute sqrt(1.0001^|tick|) and adjust if negative
-
-	absTick := tick
+	absTick := uint32(tick)
 	if tick < 0 {
-		absTick = -tick
+		absTick = uint32(-tick)
 	}
 
-	// Start with 1.0 in Q128 format for precision
+	// Start with 2^128
 	ratio := new(big.Int).Lsh(big.NewInt(1), 128)
 
-	// Magic numbers from Uniswap v3 TickMath
-	// These are sqrt(1.0001^(2^i)) in Q128 format
-	sqrtMagics := []struct {
-		bit   int
-		magic *big.Int
-	}{
-		{0, new(big.Int).SetBytes([]byte{0xff, 0xf9, 0x71, 0x63, 0xe1, 0x37, 0x66, 0x35})}, // 2^0
-		{1, new(big.Int).SetBytes([]byte{0xff, 0xf2, 0xe5, 0x0f, 0x62, 0x6c, 0x4c, 0x95})}, // 2^1
-		{2, new(big.Int).SetBytes([]byte{0xff, 0xe5, 0xca, 0xca, 0x7e, 0x10, 0xe4, 0x46})}, // 2^2
-		{3, new(big.Int).SetBytes([]byte{0xff, 0xcb, 0x9a, 0x97, 0x93, 0x42, 0xa9, 0x50})}, // 2^3
-		{4, new(big.Int).SetBytes([]byte{0xff, 0x97, 0x38, 0x3c, 0x7e, 0x70, 0x01, 0x2a})}, // 2^4
-		{5, new(big.Int).SetBytes([]byte{0xff, 0x2e, 0xa1, 0x34, 0x34, 0xc3, 0x39, 0x69})}, // 2^5
-		{6, new(big.Int).SetBytes([]byte{0xfe, 0x5d, 0xee, 0x04, 0x6a, 0x99, 0xa1, 0x2d})}, // 2^6
-		{7, new(big.Int).SetBytes([]byte{0xfc, 0xbe, 0x86, 0xc7, 0x90, 0x67, 0x90, 0x01})}, // 2^7
-		{8, new(big.Int).SetBytes([]byte{0xf9, 0x87, 0xa7, 0x25, 0x30, 0x42, 0x46, 0x85})}, // 2^8
-	}
+	// Exact Uniswap V3 magic numbers: 2^128 / sqrt(1.0001^(2^i))
+	// Full 128-bit hex values, bits 0-19
+	magics := [20]*big.Int{}
+	magics[0], _ = new(big.Int).SetString("fffcb933bd6fad37aa2d162d1a594001", 16)
+	magics[1], _ = new(big.Int).SetString("fff97272373d413259a46990580e213a", 16)
+	magics[2], _ = new(big.Int).SetString("fff2e50f5f656932ef12357cf3c7fdcc", 16)
+	magics[3], _ = new(big.Int).SetString("ffe5caca7e10e4e61c3624eaa0941cd0", 16)
+	magics[4], _ = new(big.Int).SetString("ffcb9843d60f6159c9db58835c926644", 16)
+	magics[5], _ = new(big.Int).SetString("ff973b41fa98c081472e6896dfb254c0", 16)
+	magics[6], _ = new(big.Int).SetString("ff2ea16466c96a3843ec78b326b52861", 16)
+	magics[7], _ = new(big.Int).SetString("fe5dee046a99a2a811c461f1969c3053", 16)
+	magics[8], _ = new(big.Int).SetString("fcbe86c7900a88aedcffc83b479aa3a4", 16)
+	magics[9], _ = new(big.Int).SetString("f987a7253ac413176f2b074cf7815e54", 16)
+	magics[10], _ = new(big.Int).SetString("f3392b0822b70005940c7a398e4b70f3", 16)
+	magics[11], _ = new(big.Int).SetString("e7159475a2c29b7443b29c7fa6e889d9", 16)
+	magics[12], _ = new(big.Int).SetString("d097f3bdfd2022b8845ad8f792aa5825", 16)
+	magics[13], _ = new(big.Int).SetString("a9f746462d870fdf8a65dc1f90e061e5", 16)
+	magics[14], _ = new(big.Int).SetString("70d869a156d2a1b890bb3df62baf32f7", 16)
+	magics[15], _ = new(big.Int).SetString("31be135f97d08fd981231505542fcfa6", 16)
+	magics[16], _ = new(big.Int).SetString("9aa508b5b7a84e1c677de54f3e99bc9", 16)
+	magics[17], _ = new(big.Int).SetString("5d6af8dedb81196699c329225ee604", 16)
+	magics[18], _ = new(big.Int).SetString("2216e584f5fa1ea926041bedfa", 16)
+	magics[19], _ = new(big.Int).SetString("48a170391f7dc42444e8fa2", 16)
 
-	// Multiply by relevant factors
-	for _, sm := range sqrtMagics {
-		if int(absTick)&(1<<sm.bit) != 0 {
-			ratio.Mul(ratio, sm.magic)
-			ratio.Rsh(ratio, 64)
+	for i := 0; i < 20; i++ {
+		if absTick&(1<<i) != 0 {
+			ratio.Mul(ratio, magics[i])
+			ratio.Rsh(ratio, 128)
 		}
 	}
 
-	// Handle remaining bits for larger ticks (simplified)
-	remaining := int(absTick) >> 9
-	for i := 0; i < remaining; i++ {
-		// Approximate multiplication by sqrt(1.0001^512)
-		ratio.Mul(ratio, big.NewInt(10001))
-		ratio.Div(ratio, big.NewInt(10000))
-	}
-
-	// If negative tick, invert the ratio
-	if tick < 0 {
-		// ratio = 2^256 / ratio (approximately)
+	// If tick > 0, invert: ratio = 2^256 / ratio
+	// The magics represent 1/sqrt(1.0001^(2^i)), so multiplying gives
+	// 1/sqrt(price). For positive ticks (price > 1), invert to get sqrt(price).
+	if tick > 0 {
 		maxU256 := new(big.Int).Lsh(big.NewInt(1), 256)
-		ratio = new(big.Int).Div(maxU256, ratio)
+		ratio.Div(maxU256, ratio)
 	}
 
-	// Convert from Q128 to Q96
+	// Convert from Q128 to Q96: shift right 32 bits
 	result := new(big.Int).Rsh(ratio, 32)
 
-	// Ensure within bounds
 	if result.Cmp(MinSqrtRatio) < 0 {
 		return new(big.Int).Set(MinSqrtRatio)
 	}
@@ -981,10 +999,112 @@ func (pm *PoolManager) calculateFlashFee(amount *big.Int, fee uint24) *big.Int {
 	return feeAmount.Div(feeAmount, big.NewInt(1_000_000))
 }
 
-// transferERC20 handles ERC20 transfers (simplified)
-func (pm *PoolManager) transferERC20(stateDB StateDB, currency Currency, from, to common.Address, amount *big.Int) {
-	// In real implementation, this would call ERC20 transfer
-	// For precompile, we track balances in state
+// transferERC20 handles ERC20 transfers via direct state storage manipulation.
+// Uses OZ 5.x namespaced storage slots.
+func (pm *PoolManager) transferERC20(stateDB StateDB, currency Currency, from, to common.Address, amount *big.Int) error {
+	return pm.transferToken(stateDB, currency, from, to, amount)
+}
+
+// transferToken handles both native and ERC20 token transfers via state manipulation.
+// Returns an error if the sender has insufficient balance. No state is modified on error.
+func (pm *PoolManager) transferToken(stateDB StateDB, currency Currency, from, to common.Address, amount *big.Int) error {
+	if amount.Sign() <= 0 {
+		return nil
+	}
+	if currency.IsNative() {
+		// Check native balance before any state modification
+		fromBal := stateDB.GetBalance(from)
+		amountU256, overflow := uint256.FromBig(amount)
+		if overflow {
+			return fmt.Errorf("%w: amount overflows uint256", ErrInsufficientBalance)
+		}
+		if fromBal.Lt(amountU256) {
+			return fmt.Errorf("%w: native balance %s < transfer %s", ErrInsufficientBalance, fromBal, amountU256)
+		}
+		stateDB.SubBalance(from, amountU256)
+		stateDB.AddBalance(to, amountU256)
+		return nil
+	}
+	// ERC20: manipulate balance storage slots directly.
+	// OZ ERC20Upgradeable (5.x) stores _balances at a namespaced base:
+	//   keccak256("openzeppelin.storage.ERC20") = 0x52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00
+	//   _balances mapping is at offset 0 from that base.
+	//
+	// We use the namespaced slot (OZ 5.x default). Only OZ 5.x ERC20Upgradeable
+	// tokens are supported by this precompile. The previous fallback-on-zero logic
+	// was removed because a zero balance at the namespaced slot is a valid state
+	// (newly created account), and falling back to slot 0 would read/write the
+	// wrong storage location for OZ 5.x tokens, corrupting state.
+	token := currency.Address
+
+	erc20Base, _ := new(big.Int).SetString("52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00", 16)
+
+	fromSlot := erc20BalanceSlot(erc20Base, from)
+	toSlot := erc20BalanceSlot(erc20Base, to)
+
+	fromBal := new(big.Int).SetBytes(stateDB.GetState(token, fromSlot).Bytes())
+
+	// F1: Check balance BEFORE any state modification
+	if fromBal.Cmp(amount) < 0 {
+		return fmt.Errorf("%w: ERC20 %s balance %s < transfer %s",
+			ErrInsufficientBalance, token.Hex(), fromBal, amount)
+	}
+
+	toBal := new(big.Int).SetBytes(stateDB.GetState(token, toSlot).Bytes())
+
+	// Debit from
+	fromBal.Sub(fromBal, amount)
+	var fromHash common.Hash
+	fromBal.FillBytes(fromHash[:])
+	stateDB.SetState(token, fromSlot, fromHash)
+
+	// Credit to
+	toBal.Add(toBal, amount)
+	var toHash common.Hash
+	toBal.FillBytes(toHash[:])
+	stateDB.SetState(token, toSlot, toHash)
+	return nil
+}
+
+// erc20BalanceSlot computes keccak256(abi.encode(address, mappingSlot)) for a
+// Solidity mapping(address => uint256) stored at slot `base`.
+func erc20BalanceSlot(base *big.Int, addr common.Address) common.Hash {
+	key := make([]byte, 64)
+	copy(key[12:32], addr.Bytes()) // left-pad address to 32 bytes
+	safeFillBytes(base, key[32:64])
+	return common.BytesToHash(crypto.Keccak256(key))
+}
+
+// autoSettle handles token transfers for the delta after a swap or liquidity
+// operation. Called by auto-lock wrappers in module.go to settle directly
+// without requiring a separate Lock()/Settle() cycle.
+// Returns an error if any transfer fails (e.g., insufficient balance).
+func (pm *PoolManager) autoSettle(stateDB StateDB, caller common.Address, key PoolKey, delta BalanceDelta) error {
+	if delta.Amount0.Sign() > 0 {
+		// Caller owes token0 to pool
+		if err := pm.transferToken(stateDB, key.Currency0, caller, poolManagerAddr, delta.Amount0); err != nil {
+			return fmt.Errorf("%w: currency0 settlement: %v", ErrSettlementFailed, err)
+		}
+	} else if delta.Amount0.Sign() < 0 {
+		// Pool owes token0 to caller
+		if err := pm.transferToken(stateDB, key.Currency0, poolManagerAddr, caller, new(big.Int).Neg(delta.Amount0)); err != nil {
+			return fmt.Errorf("%w: currency0 settlement: %v", ErrSettlementFailed, err)
+		}
+	}
+	if delta.Amount1.Sign() > 0 {
+		// Caller owes token1 to pool
+		if err := pm.transferToken(stateDB, key.Currency1, caller, poolManagerAddr, delta.Amount1); err != nil {
+			return fmt.Errorf("%w: currency1 settlement: %v", ErrSettlementFailed, err)
+		}
+	} else if delta.Amount1.Sign() < 0 {
+		// Pool owes token1 to caller
+		if err := pm.transferToken(stateDB, key.Currency1, poolManagerAddr, caller, new(big.Int).Neg(delta.Amount1)); err != nil {
+			return fmt.Errorf("%w: currency1 settlement: %v", ErrSettlementFailed, err)
+		}
+	}
+	// Clear deltas for this caller
+	delete(pm.currentDeltas, caller)
+	return nil
 }
 
 // executeCallback executes the locker's callback (simplified)
@@ -999,6 +1119,22 @@ func (pm *PoolManager) callHook(stateDB StateDB, hookAddr common.Address, flag H
 	// In real implementation, this would be an EVM call to hook contract
 	// For now, just return success
 	return nil
+}
+
+// safeFillBytes writes a big.Int into a byte slice without panicking.
+// FillBytes panics on negative values, so this guards against that.
+// For non-negative values, behaves identically to FillBytes.
+// For negative values (which should never reach storage), writes zero.
+func safeFillBytes(v *big.Int, buf []byte) {
+	if v == nil || v.Sign() < 0 {
+		// Zero the buffer -- negative values should never be stored.
+		// The caller should have already rejected negative values upstream.
+		for i := range buf {
+			buf[i] = 0
+		}
+		return
+	}
+	v.FillBytes(buf)
 }
 
 // =========================================================================
