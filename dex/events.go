@@ -37,7 +37,7 @@ func abiEncodeInt24(v int24) []byte {
 	word[31] = byte(b)
 	// Sign-extend: if negative, pad leading bytes with 0xff
 	if v < 0 {
-		for i := 0; i < 28; i++ {
+		for i := range 28 {
 			word[i] = 0xff
 		}
 	}

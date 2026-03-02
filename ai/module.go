@@ -68,7 +68,7 @@ func (*configurator) Configure(
 
 // Config implements the precompileconfig.Config interface
 type Config struct {
-	Upgrade precompileconfig.Upgrade `json:"upgrade,omitempty"`
+	Upgrade precompileconfig.Upgrade `json:"upgrade"`
 }
 
 func (c *Config) Key() string {
@@ -360,4 +360,3 @@ func (c *AIMiningContract) RequiredGas(input []byte) uint64 {
 		return GasCalculateReward
 	}
 }
-

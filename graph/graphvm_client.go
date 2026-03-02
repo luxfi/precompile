@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/luxfi/database"
 	gvm "github.com/luxfi/precompile/graph/graphvm"
@@ -45,7 +46,7 @@ func NewGraphVMClientWithChainID(db database.Database, config *gvm.GConfig, chai
 
 // Query executes a GraphQL query against the GraphVM.
 // This is the main entry point for EVM contracts calling the precompile.
-func (c *GraphVMClient) Query(ctx context.Context, query string, variables map[string]interface{}) ([]byte, error) {
+func (c *GraphVMClient) Query(ctx context.Context, query string, variables map[string]any) ([]byte, error) {
 	if c.executor == nil {
 		return nil, fmt.Errorf("GraphVM client not initialized")
 	}
@@ -62,11 +63,12 @@ func (c *GraphVMClient) Query(ctx context.Context, query string, variables map[s
 	// Check for errors
 	if len(resp.Errors) > 0 {
 		// Return first error as the main error
-		errMsg := resp.Errors[0].Message
+		var errMsg strings.Builder
+		errMsg.WriteString(resp.Errors[0].Message)
 		for i := 1; i < len(resp.Errors); i++ {
-			errMsg += "; " + resp.Errors[i].Message
+			errMsg.WriteString("; " + resp.Errors[i].Message)
 		}
-		return nil, fmt.Errorf("GraphQL error: %s", errMsg)
+		return nil, fmt.Errorf("GraphQL error: %s", errMsg.String())
 	}
 
 	// Marshal the data response to JSON
@@ -81,7 +83,7 @@ func (c *GraphVMClient) Query(ctx context.Context, query string, variables map[s
 // QueryChain executes a query against a specific chain.
 // For the local GraphVM, this checks if chainID matches the connected chain.
 // For cross-chain queries, this would route to the appropriate chain's GraphVM.
-func (c *GraphVMClient) QueryChain(ctx context.Context, chainID uint64, query string, variables map[string]interface{}) ([]byte, error) {
+func (c *GraphVMClient) QueryChain(ctx context.Context, chainID uint64, query string, variables map[string]any) ([]byte, error) {
 	if c.executor == nil {
 		return nil, fmt.Errorf("GraphVM client not initialized")
 	}

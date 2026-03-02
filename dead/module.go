@@ -72,7 +72,7 @@ func (*configurator) Configure(
 // Config implements the precompileconfig.Config interface
 type Config struct {
 	key     string
-	Upgrade precompileconfig.Upgrade `json:"upgrade,omitempty"`
+	Upgrade precompileconfig.Upgrade `json:"upgrade"`
 }
 
 func (c *Config) Key() string {

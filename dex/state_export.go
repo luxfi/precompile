@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"sort"
 	"sync"
@@ -41,21 +42,21 @@ var (
 
 // PoolSnapshot is the JSON-serializable representation of a single pool's state.
 type PoolSnapshot struct {
-	PoolID          string            `json:"poolId"`
-	Key             PoolKeySnapshot   `json:"key"`
-	SqrtPriceX96    string            `json:"sqrtPriceX96"`
-	Tick            int32             `json:"tick"`
-	Liquidity       string            `json:"liquidity"`
-	FeeGrowth0X128  string            `json:"feeGrowth0X128"`
-	FeeGrowth1X128  string            `json:"feeGrowth1X128"`
-	ProtocolFees0   string            `json:"protocolFees0"`
-	ProtocolFees1   string            `json:"protocolFees1"`
-	TickSpacing     int32             `json:"tickSpacing"`
-	LPFee           uint32            `json:"lpFee"`
-	ProtocolFee     uint32            `json:"protocolFee"`
-	Positions       []PositionSnapshot `json:"positions"`
-	Ticks           []TickSnapshot    `json:"ticks"`
-	BitmapWords     []BitmapWord      `json:"bitmapWords"`
+	PoolID         string             `json:"poolId"`
+	Key            PoolKeySnapshot    `json:"key"`
+	SqrtPriceX96   string             `json:"sqrtPriceX96"`
+	Tick           int32              `json:"tick"`
+	Liquidity      string             `json:"liquidity"`
+	FeeGrowth0X128 string             `json:"feeGrowth0X128"`
+	FeeGrowth1X128 string             `json:"feeGrowth1X128"`
+	ProtocolFees0  string             `json:"protocolFees0"`
+	ProtocolFees1  string             `json:"protocolFees1"`
+	TickSpacing    int32              `json:"tickSpacing"`
+	LPFee          uint32             `json:"lpFee"`
+	ProtocolFee    uint32             `json:"protocolFee"`
+	Positions      []PositionSnapshot `json:"positions"`
+	Ticks          []TickSnapshot     `json:"ticks"`
+	BitmapWords    []BitmapWord       `json:"bitmapWords"`
 }
 
 // PoolKeySnapshot is the JSON-serializable representation of a pool key.
@@ -167,9 +168,7 @@ func (pm *PoolManager) ImportState(stateDB StateDB, snap *DEXStateSnapshot) erro
 		}
 		newPools[poolId] = ps.Pool
 		newPoolStates[poolId] = ps
-		for k, v := range positions {
-			newPositions[k] = v
-		}
+		maps.Copy(newPositions, positions)
 	}
 
 	// Atomic swap — only replace state after all parsing succeeded.
@@ -319,9 +318,9 @@ func ReadFromZapDB(db database.Database) (*DEXStateSnapshot, error) {
 
 // StateExporter manages periodic state exports to ZapDB.
 type StateExporter struct {
-	pm       *PoolManager
-	db       database.Database
-	mu       sync.Mutex
+	pm        *PoolManager
+	db        database.Database
+	mu        sync.Mutex
 	exporting bool
 }
 
@@ -372,8 +371,8 @@ func exportPoolState(poolId [32]byte, ps *PoolState) PoolSnapshot {
 		ProtocolFees0:  bigIntToStr(ps.ProtocolFees0),
 		ProtocolFees1:  bigIntToStr(ps.ProtocolFees1),
 		TickSpacing:    ps.TickSpacing,
-		LPFee:         ps.LPFee,
-		ProtocolFee:   ps.ProtocolFee,
+		LPFee:          ps.LPFee,
+		ProtocolFee:    ps.ProtocolFee,
 	}
 
 	// Export positions

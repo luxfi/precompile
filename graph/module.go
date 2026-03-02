@@ -101,7 +101,7 @@ func (*configurator) Configure(
 
 // GraphConfig implements the precompileconfig.Config interface
 type GraphConfig struct {
-	Upgrade        precompileconfig.Upgrade `json:"upgrade,omitempty"`
+	Upgrade        precompileconfig.Upgrade `json:"upgrade"`
 	GChainEndpoint string                   `json:"gChainEndpoint,omitempty"`
 	QueryTimeout   int                      `json:"queryTimeout,omitempty"`
 	MaxCacheSize   int                      `json:"maxCacheSize,omitempty"`

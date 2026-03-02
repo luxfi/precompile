@@ -53,8 +53,8 @@ type PoolState struct {
 	TickBitmap  *TickBitmap            // Initialized tick tracking
 	Positions   map[[32]byte]*Position // Position states keyed by BLAKE3(owner||tickLower||tickUpper||salt)
 	TickSpacing int32                  // From pool key
-	LPFee       uint32                // LP fee in pips (hundredths of a bip)
-	ProtocolFee uint32                // Protocol fee in pips
+	LPFee       uint32                 // LP fee in pips (hundredths of a bip)
+	ProtocolFee uint32                 // Protocol fee in pips
 }
 
 // NewPoolState wraps a Pool with V4 tick-level state.
@@ -91,7 +91,7 @@ func (ps *PoolState) getOrCreateTick(tick int32) *TickInfo {
 // Checks are ordered: DEX pause > pool freeze > pool pause.
 // Freeze takes precedence over pause — a frozen pool cannot be un-paused.
 type PoolManager struct {
-	engine    Engine
+	engine     Engine
 	pools      map[[32]byte]*Pool
 	poolStates map[[32]byte]*PoolState
 	positions  map[[32]byte]*Position
@@ -855,7 +855,7 @@ func (pm *PoolManager) autoSettle(stateDB StateDB, caller common.Address, key Po
 	return nil
 }
 
-func (pm *PoolManager) callHook(stateDB StateDB, hookAddr common.Address, flag HookFlags, args ...interface{}) error {
+func (pm *PoolManager) callHook(stateDB StateDB, hookAddr common.Address, flag HookFlags, args ...any) error {
 	return nil
 }
 

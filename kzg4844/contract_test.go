@@ -271,7 +271,7 @@ func TestKZG4844_BatchVerifyProofs(t *testing.T) {
 	numProofs := 2
 	proofSets := make([][]byte, numProofs)
 
-	for i := 0; i < numProofs; i++ {
+	for i := range numProofs {
 		blob := createValidBlob(t)
 
 		// Compute commitment
@@ -499,7 +499,7 @@ func createValidBlob(t testing.TB) []byte {
 	blob := make([]byte, BlobSize)
 
 	// Fill with small random values that are definitely in field
-	for i := 0; i < BlobElements; i++ {
+	for i := range BlobElements {
 		offset := i * FieldElementSize
 		// Leave first 16 bytes as zero, set small random value in lower bytes
 		// This ensures we're well under the field modulus
@@ -515,7 +515,7 @@ func createValidBlob(t testing.TB) []byte {
 
 func BenchmarkKZG4844_BlobToCommitment(b *testing.B) {
 	blob := make([]byte, BlobSize)
-	for i := 0; i < BlobElements; i++ {
+	for i := range BlobElements {
 		offset := i * FieldElementSize
 		blob[offset+31] = byte(i % 256)
 	}
@@ -532,7 +532,7 @@ func BenchmarkKZG4844_BlobToCommitment(b *testing.B) {
 
 func BenchmarkKZG4844_ComputeProof(b *testing.B) {
 	blob := make([]byte, BlobSize)
-	for i := 0; i < BlobElements; i++ {
+	for i := range BlobElements {
 		offset := i * FieldElementSize
 		blob[offset+31] = byte(i % 256)
 	}
@@ -553,7 +553,7 @@ func BenchmarkKZG4844_ComputeProof(b *testing.B) {
 
 func BenchmarkKZG4844_VerifyProof(b *testing.B) {
 	blob := make([]byte, BlobSize)
-	for i := 0; i < BlobElements; i++ {
+	for i := range BlobElements {
 		offset := i * FieldElementSize
 		blob[offset+31] = byte(i % 256)
 	}
