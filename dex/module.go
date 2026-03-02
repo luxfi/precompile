@@ -241,6 +241,13 @@ func (c *DEXContract) runSwap(
 	}
 
 	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+
+	// Set up temporary locker context for direct precompile calls.
+	// In full V4, lock() initiates an EVM callback; here we emulate it
+	// so that Swap/ModifyLiquidity can proceed without a prior lock().
+	c.poolManager.pushLocker(caller)
+	defer c.poolManager.popLocker(caller)
+
 	delta, err := c.poolManager.Swap(stateAdapter, key, params, hookData)
 	if err != nil {
 		return nil, suppliedGas - GasSwap, err
@@ -274,6 +281,11 @@ func (c *DEXContract) runModifyLiquidity(
 	}
 
 	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+
+	// Set up temporary locker context for direct precompile calls.
+	c.poolManager.pushLocker(caller)
+	defer c.poolManager.popLocker(caller)
+
 	delta, feeDelta, err := c.poolManager.ModifyLiquidity(stateAdapter, key, params, hookData)
 	if err != nil {
 		return nil, suppliedGas - GasAddLiquidity, err
