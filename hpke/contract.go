@@ -195,7 +195,7 @@ func (p *hpkePrecompile) Run(
 
 	switch op {
 	case OpSingleShotSeal:
-		result, err = p.singleShotSeal(input[1:])
+		result, err = p.singleShotSeal(caller, input[1:])
 	default:
 		err = fmt.Errorf("unsupported operation: 0x%02x", op)
 	}
@@ -348,11 +348,21 @@ func (p *hpkePrecompile) parseSealParams(input []byte) (*sealParams, error) {
 	}, nil
 }
 
-func (p *hpkePrecompile) singleShotSeal(input []byte) ([]byte, error) {
+func (p *hpkePrecompile) singleShotSeal(caller common.Address, input []byte) ([]byte, error) {
 	params, err := p.parseSealParams(input)
 	if err != nil {
 		return nil, err
 	}
+
+	// Domain-separate the caller-provided seed by the caller address. Two
+	// different contracts using the same raw seed + same recipient pubkey
+	// must NOT produce the same ciphertext (that would leak plaintext
+	// equality across independent callers). SHA-256 of
+	// "HPKE_SEAL_v1" || caller || raw_seed is the effective seed fed to
+	// the deterministic reader. Same caller + same raw seed + same
+	// recipient still deterministically reproduces the same ciphertext,
+	// preserving consensus.
+	params.seed = deriveEffectiveSeed(caller, params.seed)
 
 	// GPU fast path: accelerate KEM encapsulation for Kyber-based KEMs.
 	// The full HPKE seal is: KEM encap -> key schedule (HKDF) -> AEAD seal.
@@ -365,6 +375,20 @@ func (p *hpkePrecompile) singleShotSeal(input []byte) ([]byte, error) {
 	}
 
 	return p.singleShotSealCPU(params)
+}
+
+// deriveEffectiveSeed domain-separates the caller-provided HPKE seed by
+// the calling contract's address. Prevents cross-caller seed reuse from
+// leaking plaintext equality when two contracts happen to choose the
+// same raw seed for the same recipient.
+func deriveEffectiveSeed(caller common.Address, raw [SeedSize]byte) [SeedSize]byte {
+	h := sha256.New()
+	h.Write([]byte("HPKE_SEAL_v1"))
+	h.Write(caller.Bytes())
+	h.Write(raw[:])
+	var out [SeedSize]byte
+	copy(out[:], h.Sum(nil))
+	return out
 }
 
 func (p *hpkePrecompile) singleShotSealCPU(params *sealParams) ([]byte, error) {

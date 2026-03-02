@@ -26,7 +26,7 @@ const (
 const (
 	GasQuoteBase      uint64 = 5_000  // Quote base cost (single hop)
 	GasQuotePerHop    uint64 = 5_000  // Additional quote cost per hop
-	GasQuote          uint64 = 5_000  // Single-hop quote (backward compat)
+	GasQuote          uint64 = 5_000  // Single-hop quote
 	GasSingleSwap     uint64 = 50_000 // Single-hop routed swap
 	GasMultiHopBase   uint64 = 50_000 // Multi-hop base cost
 	GasMultiHopPerHop uint64 = 50_000 // Additional cost per hop
@@ -94,7 +94,7 @@ type SwapExactInputSingleParams struct {
 //   - V4 binary path: Path is nil, PathKeys + CurrencyIn are set
 //   - Simple path: Path is set (address list), PathKeys is nil
 type SwapExactInputParams struct {
-	// Simple path format (legacy): [tokenIn, tokenMid..., tokenOut]
+	// Simple path format: [tokenIn, tokenMid..., tokenOut]
 	Path []common.Address
 
 	// V4 path format: CurrencyIn + sequence of PathKeys
