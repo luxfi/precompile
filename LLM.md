@@ -4,6 +4,30 @@
 
 This document provides comprehensive documentation for the Lux blockchain ecosystem, including the new DEX precompile system implementing Uniswap v4-style architecture natively at the EVM level.
 
+## GPU Acceleration
+
+All crypto-heavy precompiles have GPU fast paths via `github.com/luxfi/accel` and `github.com/luxfi/accel/ops/*`. The pattern is:
+
+1. Check `accel.Available()` or call `accel/ops/<domain>.BatchVerify()`
+2. On success, use GPU result
+3. On failure, fall back to CPU implementation
+
+### Already Wired (pre-existing)
+- `mldsa/` -- `verifyGPU()` via `accel.LatticeOps.DilithiumVerify`
+- `mlkem/` -- `encapsulateGPU()`/`decapsulateGPU()` via `accel.LatticeOps.KyberEncaps/Decaps`
+- `zk/` -- MSM in `verifier.go` via `sess.ZK().MSM()`
+- `threshold/` -- `VerifyBatchSignatures()` via `accel/ops/crypto.BatchVerify`
+
+### Newly Wired
+- `ed25519/` -- `accelcrypto.BatchVerify(SigEd25519, ...)` in `Run()`
+- `sr25519/` -- `accelcrypto.BatchVerify(SigEd25519, ...)` in `Run()`, CPU fallback to sr25519-donna
+- `slhdsa/` -- `verifySLHDSAGPU()` via `accel.LatticeOps.DilithiumVerify`
+- `frost/` -- `accelcrypto.BatchVerify(SigECDSA, ...)` for Schnorr verification
+- `cggmp21/` -- `accelcrypto.BatchVerify(SigECDSA, ...)` for ECDSA verification
+- `corona/` -- `accellattice.NTTForward()` for polynomial deserialization
+- `blake3/` -- `accelcrypto.Hash(HashBlake3, ...)` for hash256 and Merkle tree batch hashing
+- `fhe/` -- `accelfhe.Add/Sub/Multiply` in `performFHEOperation()` GPU fast path
+
 ## New: DEX Precompiles (Uniswap v4-Style)
 
 ### Architecture Overview
