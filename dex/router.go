@@ -595,7 +595,7 @@ func (r *LXRouter) QuoteExactInputSingle(
 				AmountOut:   extAmount,
 				Venue:       VenueExternal,
 				PoolID:      v.VenueID(),
-				GasEstimate: GasSettle, // settlement via FillAttestation
+				GasEstimate: GasFillAttestation, // settlement via FillAttestation
 			})
 		}
 	}

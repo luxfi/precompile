@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 
+	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -113,10 +114,22 @@ func (p *cggmp21VerifyPrecompile) Run(
 	messageHash := input[73:105]
 	signatureBytes := input[105:170]
 
-	// Verify ECDSA signature
-	valid, err := verifyECDSASignature(publicKeyBytes, messageHash, signatureBytes)
-	if err != nil {
-		return nil, suppliedGas - gasCost, err
+	// Try GPU-accelerated ECDSA verification first
+	var valid bool
+	if results, gpuErr := accelcrypto.BatchVerify(
+		accelcrypto.SigECDSA,
+		[][]byte{signatureBytes[:64]}, // r || s only (64 bytes) for batch verify
+		[][]byte{messageHash},
+		[][]byte{publicKeyBytes},
+	); gpuErr == nil && len(results) == 1 && results[0] {
+		valid = true
+	} else {
+		// CPU fallback
+		var err error
+		valid, err = verifyECDSASignature(publicKeyBytes, messageHash, signatureBytes)
+		if err != nil {
+			return nil, suppliedGas - gasCost, err
+		}
 	}
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)
