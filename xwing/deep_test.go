@@ -40,7 +40,7 @@ func TestDeep_Encapsulate_Valid(t *testing.T) {
 	pubBytes, err := pub.MarshalBinary()
 	require.NoError(t, err)
 
-	input := append([]byte{OpEncapsulate}, pubBytes...)
+	input := append(append([]byte{OpEncapsulate}, make([]byte, SeedSize)...), pubBytes...)
 	gas := XWingPrecompile.RequiredGas(input)
 	ret, _, err := XWingPrecompile.Run(nil, addr0, ContractAddress, input, gas+100000, true)
 	require.NoError(t, err)
@@ -74,7 +74,7 @@ func TestDeep_GasInsufficient(t *testing.T) {
 	scheme := xwing.Scheme()
 	pub, _, _ := scheme.GenerateKeyPair()
 	pubBytes, _ := pub.MarshalBinary()
-	input := append([]byte{OpEncapsulate}, pubBytes...)
+	input := append(append([]byte{OpEncapsulate}, make([]byte, SeedSize)...), pubBytes...)
 	gas := XWingPrecompile.RequiredGas(input)
 	if gas > 0 {
 		_, _, err := XWingPrecompile.Run(nil, addr0, ContractAddress, input, gas-1, true)
@@ -86,7 +86,7 @@ func TestDeep_Concurrent(t *testing.T) {
 	scheme := xwing.Scheme()
 	pub, _, _ := scheme.GenerateKeyPair()
 	pubBytes, _ := pub.MarshalBinary()
-	input := append([]byte{OpEncapsulate}, pubBytes...)
+	input := append(append([]byte{OpEncapsulate}, make([]byte, SeedSize)...), pubBytes...)
 	gas := XWingPrecompile.RequiredGas(input)
 
 	var wg sync.WaitGroup

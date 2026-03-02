@@ -133,7 +133,7 @@ func TestRun_WrongPubKeyLength(t *testing.T) {
 
 func TestRun_InvalidPubKey(t *testing.T) {
 	// Valid size but garbage content -- may error or succeed (ML-KEM accepts most byte arrays)
-	input := make([]byte, 2+MLKEM768PublicKeySize)
+	input := make([]byte, 2+SeedSize+MLKEM768PublicKeySize)
 	input[0] = OpEncapsulate
 	input[1] = ModeMLKEM768
 	result, _, err := MLKEMPrecompile.Run(nil, common.Address{}, ContractAddress, input, 1_000_000, true)
@@ -164,10 +164,10 @@ func testValidEncapsulate(t *testing.T, mode uint8, mlkemMode mlkem.Mode, ctSize
 	require.NoError(t, err)
 
 	pkBytes := pub.Bytes()
-	input := make([]byte, 2+len(pkBytes))
+	input := make([]byte, 2+SeedSize+len(pkBytes))
 	input[0] = OpEncapsulate
 	input[1] = mode
-	copy(input[2:], pkBytes)
+	copy(input[2+SeedSize:], pkBytes)
 
 	result, _, err := MLKEMPrecompile.Run(nil, common.Address{}, ContractAddress, input, 1_000_000, true)
 	require.NoError(t, err)

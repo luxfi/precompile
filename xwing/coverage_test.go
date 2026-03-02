@@ -134,9 +134,9 @@ func TestRun_EncapsulateValid(t *testing.T) {
 	pkBytes, err := pk.MarshalBinary()
 	require.NoError(t, err)
 
-	input := make([]byte, 1+len(pkBytes))
+	input := make([]byte, 1+SeedSize+len(pkBytes))
 	input[0] = OpEncapsulate
-	copy(input[1:], pkBytes)
+	copy(input[1+SeedSize:], pkBytes)
 
 	result, _, err := XWingPrecompile.Run(nil, common.Address{}, ContractAddress, input, 100_000, true)
 	require.NoError(t, err)
