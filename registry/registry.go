@@ -477,10 +477,14 @@ type PrecompileInfo struct {
 
 // AllPrecompiles lists all available precompiles with their metadata
 var AllPrecompiles = []PrecompileInfo{
-	// BLS12-381 (standard EVM)
+	// BLS12-381 (standard EVM, EIP-2537)
 	{BLS12381G1AddAddress, "BLS12381_G1ADD", "BLS12-381 G1 point addition", 500, []string{"C"}, "EIP-2537"},
 	{BLS12381G1MulAddress, "BLS12381_G1MUL", "BLS12-381 G1 scalar multiplication", 12000, []string{"C"}, "EIP-2537"},
-	{BLS12381PairingAddress, "BLS12381_PAIRING", "BLS12-381 pairing check", 115000, []string{"C"}, "EIP-2537"},
+	{BLS12381G1MSMAddress, "BLS12381_G1MSM", "BLS12-381 G1 multi-scalar multiplication", 12000, []string{"C"}, "EIP-2537"},
+	{BLS12381G2AddAddress, "BLS12381_G2ADD", "BLS12-381 G2 point addition", 800, []string{"C"}, "EIP-2537"},
+	{BLS12381G2MulAddress, "BLS12381_G2MUL", "BLS12-381 G2 scalar multiplication", 45000, []string{"C"}, "EIP-2537"},
+	{BLS12381G2MSMAddress, "BLS12381_G2MSM", "BLS12-381 G2 multi-scalar multiplication", 45000, []string{"C"}, "EIP-2537"},
+	{BLS12381PairingAddress, "BLS12381_PAIRING", "BLS12-381 pairing check (65000 + 43000*n)", 108000, []string{"C"}, "EIP-2537"},
 
 	// P-256
 	{P256VerifyAddress, "P256_VERIFY", "secp256r1/P-256 signature verification", 3450, []string{"C"}, "EIP-7212"},
