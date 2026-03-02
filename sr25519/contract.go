@@ -93,7 +93,7 @@ func (p *sr25519VerifyPrecompile) Run(
 ) ([]byte, uint64, error) {
 	gasCost := p.RequiredGas(input)
 	if suppliedGas < gasCost {
-		return nil, 0, errors.New("out of gas")
+		return nil, 0, contract.ErrOutOfGas
 	}
 	remainingGas := suppliedGas - gasCost
 

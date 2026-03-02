@@ -763,7 +763,7 @@ func BenchmarkCheckNullifier(b *testing.B) {
 	zv := NewZKVerifier()
 
 	// Pre-populate some nullifiers
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		nullifier := [32]byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)}
 		zv.Nullifiers[nullifier] = &Nullifier{}
 	}
@@ -904,7 +904,7 @@ func TestPLONKProofSizeValidation(t *testing.T) {
 
 	// PLONK VK needs 9 IC entries (8 G1 selector points + 1 G2 X2 point)
 	ic := make([][]byte, 9)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		ic[i] = g1Point
 	}
 	ic[8] = g2Point
@@ -1245,7 +1245,7 @@ func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32
 	offset := 0
 
 	// vkID (32 bytes with non-zero content)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		data[offset+i] = byte(i + 1)
 	}
 	offset += 32
@@ -1258,7 +1258,7 @@ func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32
 	offset += 4
 
 	// public inputs (numInputs * 32 bytes)
-	for i := 0; i < numInputs; i++ {
+	for i := range numInputs {
 		data[offset+31] = byte(i + 1) // Non-zero value
 		offset += 32
 	}
@@ -1271,7 +1271,7 @@ func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32
 	offset += 4
 
 	// advice commitments (numAdvice * 32 bytes) - non-zero
-	for i := 0; i < numAdvice; i++ {
+	for i := range numAdvice {
 		data[offset] = byte(i + 0x10) // Non-zero
 		offset += 32
 	}
@@ -1284,7 +1284,7 @@ func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32
 	offset += 4
 
 	// instance commitments (numInstance * 32 bytes) - non-zero
-	for i := 0; i < numInstance; i++ {
+	for i := range numInstance {
 		data[offset] = byte(i + 0x20) // Non-zero
 		offset += 32
 	}
@@ -1297,13 +1297,13 @@ func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32
 	offset += 4
 
 	// L points (numRounds * 32 bytes) - non-zero
-	for i := uint32(0); i < numRounds; i++ {
+	for i := range numRounds {
 		data[offset] = byte(i + 0x30) // Non-zero
 		offset += 32
 	}
 
 	// R points (numRounds * 32 bytes) - non-zero
-	for i := uint32(0); i < numRounds; i++ {
+	for i := range numRounds {
 		data[offset] = byte(i + 0x40) // Non-zero
 		offset += 32
 	}
@@ -1568,7 +1568,7 @@ func TestVerifyFflonkPrecompile(t *testing.T) {
 	data := make([]byte, 36+32+len(proof))
 
 	// vkID (32 bytes)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		data[i] = byte(i + 1)
 	}
 
@@ -1700,7 +1700,7 @@ func buildTestFflonkProof(numEvals int) []byte {
 	offset += 48
 
 	// Evaluations: field elements (small values that pass validation)
-	for i := 0; i < numEvals; i++ {
+	for i := range numEvals {
 		proof[offset+31] = byte(i + 1) // Small non-zero value
 		offset += 32
 	}

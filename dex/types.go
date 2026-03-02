@@ -49,13 +49,6 @@ const (
 
 	// Bridge Precompiles (LP-6xxx)
 	TeleportAddress = "0x0000000000000000000000000000000000006010" // LP-6010 Teleport (cross-chain)
-
-	// Deprecated: Old addresses kept for migration reference only
-	// These will be removed in a future release
-	// PoolManagerAddress = "0x0400" // DEPRECATED: Use LXPoolAddress
-	// SwapRouterAddress  = "0x0401" // DEPRECATED: Use LXRouterAddress
-	// HooksAddress       = "0x0402" // DEPRECATED: Use LXHooksAddress
-	// FlashLoanAddress   = "0x0403" // DEPRECATED: Use LXFlashAddress
 )
 
 // Gas costs optimized for HFT operations

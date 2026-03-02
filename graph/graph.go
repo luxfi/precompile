@@ -24,10 +24,10 @@ type StateDB interface {
 // GChainClient interface for communication with G-Chain
 type GChainClient interface {
 	// Query executes a GraphQL query against G-Chain
-	Query(ctx context.Context, query string, variables map[string]interface{}) ([]byte, error)
+	Query(ctx context.Context, query string, variables map[string]any) ([]byte, error)
 
 	// QueryChain executes a query against a specific chain
-	QueryChain(ctx context.Context, chainID uint64, query string, variables map[string]interface{}) ([]byte, error)
+	QueryChain(ctx context.Context, chainID uint64, query string, variables map[string]any) ([]byte, error)
 }
 
 // Precompile address
@@ -172,7 +172,7 @@ func (p *GraphQLPrecompile) Query(
 	ctx, cancel := context.WithTimeout(context.Background(), p.config.QueryTimeout)
 	defer cancel()
 
-	var variables map[string]interface{}
+	var variables map[string]any
 	if len(req.Variables) > 0 {
 		if err := json.Unmarshal(req.Variables, &variables); err != nil {
 			return QueryResponse{}, ErrInvalidQuery
@@ -256,7 +256,7 @@ func (p *GraphQLPrecompile) QueryPredefined(
 	}
 
 	// Build variables from args
-	variables := make(map[string]interface{})
+	variables := make(map[string]any)
 	argNames := []string{"address", "id", "first", "orderBy", "owner"}
 	for i, arg := range args {
 		if i < len(argNames) {
@@ -317,7 +317,7 @@ func (p *GraphQLPrecompile) calculateGasCost(req QueryRequest) uint64 {
 func (p *GraphQLPrecompile) executeMultiChainQuery(
 	ctx context.Context,
 	req QueryRequest,
-	variables map[string]interface{},
+	variables map[string]any,
 ) ([]byte, error) {
 	results := make(map[uint64]json.RawMessage)
 	var mu sync.Mutex
@@ -348,7 +348,7 @@ func (p *GraphQLPrecompile) executeMultiChainQuery(
 	}
 
 	// Combine results
-	combined := map[string]interface{}{
+	combined := map[string]any{
 		"data": results,
 	}
 
