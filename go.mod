@@ -3,6 +3,7 @@ module github.com/luxfi/precompile
 go 1.26.1
 
 require (
+	filippo.io/edwards25519 v1.2.0
 	github.com/ChainSafe/go-schnorrkel v1.1.0
 	github.com/cloudflare/circl v1.6.3
 	github.com/consensys/gnark-crypto v0.20.1
@@ -17,15 +18,16 @@ require (
 	github.com/luxfi/lattice/v7 v7.0.0
 	github.com/luxfi/log v1.4.1
 	github.com/luxfi/corona v0.2.0
+	github.com/luxfi/rpc v1.0.0
 	github.com/luxfi/runtime v1.0.1
 	github.com/luxfi/threshold v1.5.5
 	github.com/luxfi/warp v1.18.5
 	github.com/stretchr/testify v1.11.1
 	github.com/zeebo/blake3 v0.2.4
+	golang.org/x/crypto v0.49.0
 )
 
 require (
-	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/ALTree/bigfloat v0.2.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20260311194731-d5b7577c683d // indirect
@@ -68,7 +70,6 @@ require (
 	github.com/luxfi/metric v1.5.1 // indirect
 	github.com/luxfi/mock v0.1.1 // indirect
 	github.com/luxfi/p2p v1.19.2 // indirect
-	github.com/luxfi/rpc v1.0.0 // indirect
 	github.com/luxfi/sampler v1.0.0 // indirect
 	github.com/luxfi/utils v1.1.4 // indirect
 	github.com/luxfi/validators v1.0.0 // indirect
@@ -96,7 +97,6 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.uber.org/mock v0.6.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
