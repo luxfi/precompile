@@ -1,0 +1,78 @@
+---
+title: Oracle Precompiles
+description: Native price feeds and GraphQL queries
+---
+
+# Oracle Precompiles
+
+Native precompiles for oracle data access and G-Chain GraphQL queries.
+
+## Address
+
+| Address | Precompile | Description |
+|---------|------------|-------------|
+| `0x0500` | GraphQL | Native G-Chain queries |
+
+## Features
+
+- **Native GraphQL** - Query blockchain data without subgraphs
+- **Real-time Data** - Direct access to chain state
+- **Cross-Chain** - Query any Lux chain from C-Chain
+- **Low Latency** - Sub-millisecond response times
+
+## Usage
+
+The GraphQL precompile allows executing queries directly on-chain:
+
+```solidity
+import {IGraphQL} from "@luxfi/precompile/oracle/IGraphQL.sol";
+
+contract QueryExample {
+    IGraphQL constant GRAPHQL = IGraphQL(0x0500);
+
+    function getBlockNumber() external view returns (uint256) {
+        bytes memory query = abi.encodePacked('{ block { number } }');
+        bytes memory result = GRAPHQL.query(query);
+        // Parse result...
+    }
+}
+```
+
+## Schema
+
+The G-Chain GraphQL schema includes:
+
+```graphql
+type Query {
+    block(number: Int, hash: Bytes32): Block
+    transaction(hash: Bytes32!): Transaction
+    account(address: Address!): Account
+    logs(filter: LogFilter!): [Log!]!
+}
+
+type Block {
+    number: Int!
+    hash: Bytes32!
+    timestamp: Int!
+    transactions: [Transaction!]!
+}
+```
+
+## Price Oracle Integration
+
+For price feeds, the Oracle precompile works with the price aggregation system:
+
+```solidity
+import {IOracle} from "@luxfi/contracts/oracle/IOracle.sol";
+
+// The standard Oracle contract aggregates from:
+// - Chainlink
+// - Pyth
+// - TWAP
+// - DEX Precompile (0x0400)
+```
+
+## Related
+
+- **[Lux Standard Contracts](https://standard.lux.network/docs/oracle)** - Oracle aggregation contracts
+- **[G-Chain Documentation](https://docs.lux.network)** - Full G-Chain query reference
