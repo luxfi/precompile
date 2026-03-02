@@ -281,6 +281,12 @@ const (
 	RewardAChain    = "0x7422000000000000000000000000000000000000" // A-Chain Reward
 
 	// =========================================================================
+	// DATA ANCHORING (0x0700) - Privacy/Encryption page
+	// =========================================================================
+	// State checkpoint anchoring for CRDT/off-chain state durability
+	AnchorCChain = "0x0700000000000000000000000000000000000000" // Anchor (checkpoint root storage)
+
+	// =========================================================================
 	// PAGE 9: DEX/MARKETS → LP-9xxx (addresses match LP numbers directly)
 	// =========================================================================
 	// LP-9000: DEX Core Trading Protocol (spec, not precompile)
