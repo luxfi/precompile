@@ -1,3 +1,0 @@
-[submodule "sr25519/donna"]
-	path = sr25519/donna
-	url = https://github.com/TerenceGe/sr25519-donna.git
