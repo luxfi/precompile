@@ -42,10 +42,8 @@ func setupV4Pool(t *testing.T, pm *PoolManager, stateDB StateDB, c0, c1 common.A
 		tickUpper = MaxTick
 	}
 
-	// Add liquidity in lock context
-	pm.lockers = append(pm.lockers, testLP)
-	pm.currentDeltas[testLP] = make(map[Currency]*big.Int)
-	_, _, err = pm.ModifyLiquidity(stateDB, key, ModifyLiquidityParams{
+	// Add liquidity
+	_, _, err = pm.ModifyLiquidity(stateDB, testLP, key, ModifyLiquidityParams{
 		TickLower:      tickLower,
 		TickUpper:      tickUpper,
 		LiquidityDelta: big.NewInt(1_000_000),
@@ -53,8 +51,6 @@ func setupV4Pool(t *testing.T, pm *PoolManager, stateDB StateDB, c0, c1 common.A
 	if err != nil {
 		t.Fatalf("ModifyLiquidity failed: %v", err)
 	}
-	pm.lockers = pm.lockers[:len(pm.lockers)-1]
-	delete(pm.currentDeltas, testLP)
 
 	return key
 }
