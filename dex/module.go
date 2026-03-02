@@ -243,22 +243,13 @@ func (c *DEXContract) runSwap(
 
 	stateAdapter := &poolStateAdapter{state.GetStateDB()}
 
-	// Auto-lock: push caller onto locker stack so Swap can proceed
-	// without a separate Lock() call. Settlement is handled directly.
-	c.poolManager.pushLocker(caller)
-
-	delta, err := c.poolManager.Swap(stateAdapter, key, params, hookData)
+	delta, err := c.poolManager.Swap(stateAdapter, caller, key, params, hookData)
 	if err != nil {
-		_ = c.poolManager.popLocker(caller) // best-effort cleanup on error
 		return nil, suppliedGas - GasSwap, err
 	}
 
 	// Auto-settle: transfer tokens based on the delta
 	if err := c.poolManager.autoSettle(stateAdapter, caller, key, delta); err != nil {
-		_ = c.poolManager.popLocker(caller) // best-effort cleanup on error
-		return nil, suppliedGas - GasSwap, err
-	}
-	if err := c.poolManager.popLocker(caller); err != nil {
 		return nil, suppliedGas - GasSwap, err
 	}
 
@@ -291,22 +282,13 @@ func (c *DEXContract) runModifyLiquidity(
 
 	stateAdapter := &poolStateAdapter{state.GetStateDB()}
 
-	// Auto-lock: push caller onto locker stack so ModifyLiquidity can proceed
-	// without a separate Lock() call. Settlement is handled directly.
-	c.poolManager.pushLocker(caller)
-
-	delta, feeDelta, err := c.poolManager.ModifyLiquidity(stateAdapter, key, params, hookData)
+	delta, feeDelta, err := c.poolManager.ModifyLiquidity(stateAdapter, caller, key, params, hookData)
 	if err != nil {
-		_ = c.poolManager.popLocker(caller) // best-effort cleanup on error
 		return nil, suppliedGas - GasAddLiquidity, err
 	}
 
 	// Auto-settle: transfer tokens based on the delta
 	if err := c.poolManager.autoSettle(stateAdapter, caller, key, delta); err != nil {
-		_ = c.poolManager.popLocker(caller) // best-effort cleanup on error
-		return nil, suppliedGas - GasAddLiquidity, err
-	}
-	if err := c.poolManager.popLocker(caller); err != nil {
 		return nil, suppliedGas - GasAddLiquidity, err
 	}
 
@@ -320,63 +302,33 @@ func (c *DEXContract) runModifyLiquidity(
 }
 
 func (c *DEXContract) runTake(
-	state contract.AccessibleState,
-	caller common.Address,
-	input []byte,
+	_ contract.AccessibleState,
+	_ common.Address,
+	_ []byte,
 	suppliedGas uint64,
-	readOnly bool,
+	_ bool,
 ) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
-	}
-
-	if suppliedGas < GasBalanceUpdate {
-		return nil, 0, fmt.Errorf("out of gas")
-	}
-
-	// Take is handled as part of flash accounting
-	return nil, suppliedGas - GasBalanceUpdate, fmt.Errorf("take must be called within lock callback")
+	return nil, suppliedGas, fmt.Errorf("take not supported: blockchain provides atomic settlement")
 }
 
 func (c *DEXContract) runSettle(
-	state contract.AccessibleState,
-	caller common.Address,
-	input []byte,
+	_ contract.AccessibleState,
+	_ common.Address,
+	_ []byte,
 	suppliedGas uint64,
-	readOnly bool,
+	_ bool,
 ) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
-	}
-
-	if suppliedGas < GasSettlement {
-		return nil, 0, fmt.Errorf("out of gas")
-	}
-
-	// Settle is handled as part of flash accounting
-	return nil, suppliedGas - GasSettlement, fmt.Errorf("settle must be called within lock callback")
+	return nil, suppliedGas, fmt.Errorf("settle not supported: blockchain provides atomic settlement")
 }
 
 func (c *DEXContract) runLock(
-	state contract.AccessibleState,
-	caller common.Address,
-	input []byte,
+	_ contract.AccessibleState,
+	_ common.Address,
+	_ []byte,
 	suppliedGas uint64,
-	readOnly bool,
+	_ bool,
 ) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
-	}
-
-	// Lock initiates flash accounting session
-	// The callback data contains the operations to execute
-	if suppliedGas < GasFlashLoan {
-		return nil, 0, fmt.Errorf("out of gas")
-	}
-
-	// Lock implementation would normally call back to the caller contract
-	// For precompile, we return success and expect nested calls
-	return nil, suppliedGas - GasFlashLoan, nil
+	return nil, suppliedGas, fmt.Errorf("lock not supported: blockchain provides atomic settlement")
 }
 
 func (c *DEXContract) runGetPool(
