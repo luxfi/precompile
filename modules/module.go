@@ -4,8 +4,6 @@
 package modules
 
 import (
-	"bytes"
-
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -20,18 +18,4 @@ type Module struct {
 	Contract contract.StatefulPrecompiledContract
 	// Configurator is used to configure the stateful precompile when the config is enabled.
 	contract.Configurator
-}
-
-type moduleArray []Module
-
-func (u moduleArray) Len() int {
-	return len(u)
-}
-
-func (u moduleArray) Swap(i, j int) {
-	u[i], u[j] = u[j], u[i]
-}
-
-func (m moduleArray) Less(i, j int) bool {
-	return bytes.Compare(m[i].Address.Bytes(), m[j].Address.Bytes()) < 0
 }

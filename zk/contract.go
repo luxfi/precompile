@@ -66,10 +66,14 @@ func (p *zkVerifyPrecompile) Address() common.Address {
 	return ZKVerifyContractAddress
 }
 
+// MinCallGas is charged for any precompile call, including unknown opcodes,
+// to prevent zero-cost abuse.
+const MinCallGas uint64 = 21_000
+
 // RequiredGas calculates gas for ZK operations
 func (p *zkVerifyPrecompile) RequiredGas(input []byte) uint64 {
 	if len(input) < 1 {
-		return 0
+		return MinCallGas
 	}
 
 	op := input[0]
@@ -108,13 +112,13 @@ func (p *zkVerifyPrecompile) RequiredGas(input []byte) uint64 {
 
 	case OpVerifyBatch:
 		if len(input) < 5 {
-			return 0
+			return MinCallGas
 		}
 		numProofs := binary.BigEndian.Uint32(input[1:5])
 		return uint64(numProofs) * GasPerBatchProof
 
 	default:
-		return 0
+		return MinCallGas
 	}
 }
 
@@ -268,7 +272,7 @@ func (p *zkVerifyPrecompile) verifyGroth16(data []byte) (bool, error) {
 	// Parse public inputs
 	offset := 36
 	publicInputs := make([]*big.Int, numInputs)
-	for i := uint32(0); i < numInputs; i++ {
+	for i := range numInputs {
 		publicInputs[i] = new(big.Int).SetBytes(data[offset : offset+32])
 		offset += 32
 	}
@@ -352,7 +356,7 @@ func (p *zkVerifyPrecompile) verifyPLONK(data []byte) (bool, error) {
 	// Parse public inputs
 	offset := 36
 	publicInputs := make([]*big.Int, numInputs)
-	for i := uint32(0); i < numInputs; i++ {
+	for i := range numInputs {
 		publicInputs[i] = new(big.Int).SetBytes(data[offset : offset+32])
 		offset += 32
 	}
@@ -391,7 +395,7 @@ func verifyPLONKStructure(proof []byte) (bool, error) {
 	}
 
 	// Validate that all 9 G1 points are well-formed
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		var point bn256.G1
 		if _, err := point.Unmarshal(proof[i*64 : (i+1)*64]); err != nil {
 			return false, ErrInvalidPointFormat
@@ -445,7 +449,7 @@ func (p *zkVerifyPrecompile) verifyFflonk(data []byte) (bool, error) {
 	// Parse public inputs
 	offset := 36
 	publicInputs := make([]*big.Int, numInputs)
-	for i := uint32(0); i < numInputs; i++ {
+	for i := range numInputs {
 		publicInputs[i] = new(big.Int).SetBytes(data[offset : offset+32])
 		offset += 32
 	}
@@ -526,7 +530,7 @@ func parseFflonkProof(proof []byte) (*FflonkProof, error) {
 	}
 
 	fp.Evaluations = make([]*big.Int, numEvals)
-	for i := 0; i < numEvals; i++ {
+	for i := range numEvals {
 		fp.Evaluations[i] = new(big.Int).SetBytes(proof[offset : offset+32])
 		offset += 32
 	}
@@ -839,7 +843,7 @@ func parseHalo2Proof(data []byte) (*Halo2Proof, error) {
 
 	// Parse public inputs
 	proof.publicInputs = make([]*big.Int, numInputs)
-	for i := uint32(0); i < numInputs; i++ {
+	for i := range numInputs {
 		proof.publicInputs[i] = new(big.Int).SetBytes(data[offset : offset+32])
 		offset += 32
 	}
@@ -856,7 +860,7 @@ func parseHalo2Proof(data []byte) (*Halo2Proof, error) {
 		return nil, errors.New("halo2: insufficient data for advice commitments")
 	}
 	proof.adviceCommitments = make([][]byte, numAdvice)
-	for i := uint32(0); i < numAdvice; i++ {
+	for i := range numAdvice {
 		proof.adviceCommitments[i] = make([]byte, 32)
 		copy(proof.adviceCommitments[i], data[offset:offset+32])
 		offset += 32
@@ -874,7 +878,7 @@ func parseHalo2Proof(data []byte) (*Halo2Proof, error) {
 		return nil, errors.New("halo2: insufficient data for instance commitments")
 	}
 	proof.instanceCommitments = make([][]byte, numInstance)
-	for i := uint32(0); i < numInstance; i++ {
+	for i := range numInstance {
 		proof.instanceCommitments[i] = make([]byte, 32)
 		copy(proof.instanceCommitments[i], data[offset:offset+32])
 		offset += 32
@@ -1506,7 +1510,7 @@ func (p *zkVerifyPrecompile) verifyCommitmentMerkle(data []byte) (bool, error) {
 	// Parse merkle proof
 	merkleProof := make([][]byte, proofLen)
 	offset := 76
-	for i := uint32(0); i < proofLen; i++ {
+	for i := range proofLen {
 		merkleProof[i] = make([]byte, 32)
 		copy(merkleProof[i], data[offset:offset+32])
 		offset += 32
@@ -1533,7 +1537,7 @@ func (p *zkVerifyPrecompile) verifyBatch(data []byte) (bool, error) {
 	}
 
 	offset := 4
-	for i := uint32(0); i < numProofs; i++ {
+	for range numProofs {
 		// Need at least proofType(1) + dataLen(4)
 		if len(data) < offset+5 {
 			return false, ErrInvalidInput

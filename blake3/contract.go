@@ -256,10 +256,7 @@ func (p *blake3Precompile) merkleRoot(data []byte) ([]byte, uint64, error) {
 		return nil, 0, ErrInvalidDataLength
 	}
 
-	numLeaves := binary.BigEndian.Uint32(data[:4])
-	if numLeaves > MaxMerkleLeaves {
-		numLeaves = MaxMerkleLeaves
-	}
+	numLeaves := min(binary.BigEndian.Uint32(data[:4]), MaxMerkleLeaves)
 	if numLeaves == 0 {
 		return make([]byte, DigestLength32), 0, nil
 	}

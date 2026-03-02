@@ -68,7 +68,9 @@ func FROSTVerifyGasCost(input []byte) uint64 {
 	}
 
 	// Extract total signers from input
-	totalSigners := binary.BigEndian.Uint32(input[ThresholdSize : ThresholdSize+TotalSignersSize])
+	totalSigners := min(
+		// Cap totalSigners to prevent gas abuse
+		binary.BigEndian.Uint32(input[ThresholdSize:ThresholdSize+TotalSignersSize]), 1000)
 
 	// Base cost + per-signer cost
 	return FROSTVerifyBaseGas + (uint64(totalSigners) * FROSTVerifyPerSignerGas)
@@ -86,7 +88,7 @@ func (p *frostVerifyPrecompile) Run(
 	// Calculate required gas
 	gasCost := p.RequiredGas(input)
 	if suppliedGas < gasCost {
-		return nil, 0, errors.New("out of gas")
+		return nil, 0, contract.ErrOutOfGas
 	}
 
 	// Input format:

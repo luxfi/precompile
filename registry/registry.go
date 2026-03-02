@@ -121,7 +121,7 @@ const (
 	ECDSACChain   = "0x3210000000000000000000000000000000000000" // Extended ECDSA
 	Ed25519CChain = "0x3211000000000000000000000000000000000000" // Ed25519
 	BLS381CChain  = "0x3212000000000000000000000000000000000000" // BLS12-381
-	SchnorrCChain = "0x3213000000000000000000000000000000000000" // Schnorr (BIP-340)
+	VRFCChain = "0x0000000000000000000000000000000000003213" // ECVRF (RFC 9381)
 
 	// Encryption (II = 0x20-0x2F)
 	AESGCMCChain   = "0x3220000000000000000000000000000000000000" // AES-GCM
@@ -281,6 +281,12 @@ const (
 	RewardAChain    = "0x7422000000000000000000000000000000000000" // A-Chain Reward
 
 	// =========================================================================
+	// DATA ANCHORING (0x0700) - Privacy/Encryption page
+	// =========================================================================
+	// State checkpoint anchoring for CRDT/off-chain state durability
+	AnchorCChain = "0x0700000000000000000000000000000000000000" // Anchor (checkpoint root storage)
+
+	// =========================================================================
 	// PAGE 9: DEX/MARKETS → LP-9xxx (addresses match LP numbers directly)
 	// =========================================================================
 	// LP-9000: DEX Core Trading Protocol (spec, not precompile)
@@ -386,7 +392,7 @@ var ChainPrecompiles = map[string][]string{
 		// PQ (P=2)
 		MLDSACChain, MLKEMCChain, SLHDSACChain, HybridSignCChain,
 		// Crypto (P=3)
-		ECDSACChain, Ed25519CChain, BLS381CChain, SchnorrCChain,
+		ECDSACChain, Ed25519CChain, BLS381CChain, VRFCChain,
 		Poseidon2CChain, Blake3CChain, PedersenCChain, ECIESCChain,
 		// Privacy/ZK (P=4)
 		Groth16CChain, PLONKCChain, STARKCChain, KZGCChain, FHECChain, RangeProofCChain,
@@ -477,10 +483,14 @@ type PrecompileInfo struct {
 
 // AllPrecompiles lists all available precompiles with their metadata
 var AllPrecompiles = []PrecompileInfo{
-	// BLS12-381 (standard EVM)
+	// BLS12-381 (standard EVM, EIP-2537)
 	{BLS12381G1AddAddress, "BLS12381_G1ADD", "BLS12-381 G1 point addition", 500, []string{"C"}, "EIP-2537"},
 	{BLS12381G1MulAddress, "BLS12381_G1MUL", "BLS12-381 G1 scalar multiplication", 12000, []string{"C"}, "EIP-2537"},
-	{BLS12381PairingAddress, "BLS12381_PAIRING", "BLS12-381 pairing check", 115000, []string{"C"}, "EIP-2537"},
+	{BLS12381G1MSMAddress, "BLS12381_G1MSM", "BLS12-381 G1 multi-scalar multiplication", 12000, []string{"C"}, "EIP-2537"},
+	{BLS12381G2AddAddress, "BLS12381_G2ADD", "BLS12-381 G2 point addition", 800, []string{"C"}, "EIP-2537"},
+	{BLS12381G2MulAddress, "BLS12381_G2MUL", "BLS12-381 G2 scalar multiplication", 45000, []string{"C"}, "EIP-2537"},
+	{BLS12381G2MSMAddress, "BLS12381_G2MSM", "BLS12-381 G2 multi-scalar multiplication", 45000, []string{"C"}, "EIP-2537"},
+	{BLS12381PairingAddress, "BLS12381_PAIRING", "BLS12-381 pairing check (65000 + 43000*n)", 108000, []string{"C"}, "EIP-2537"},
 
 	// P-256
 	{P256VerifyAddress, "P256_VERIFY", "secp256r1/P-256 signature verification", 3450, []string{"C"}, "EIP-7212"},
@@ -498,7 +508,7 @@ var AllPrecompiles = []PrecompileInfo{
 	{ECDSACChain, "ECDSA_EXT", "Extended ECDSA verification (multi-curve)", 5000, []string{"C"}, "LP-3xxx"},
 	{Ed25519CChain, "ED25519_VERIFY", "Ed25519 signature verification (Solana/TON/XRP)", 3000, []string{"C"}, "LP-3xxx"},
 	{BLS381CChain, "BLS381", "BLS12-381 aggregate signatures", 15000, []string{"C"}, "LP-3xxx"},
-	{SchnorrCChain, "SCHNORR", "BIP-340 Schnorr signatures", 10000, []string{"C"}, "LP-3xxx"},
+	{VRFCChain, "VRF", "ECVRF-EDWARDS25519-SHA512-ELL2 (RFC 9381)", 20000, []string{"C"}, "LP-3xxx"},
 	{ECIESCChain, "ECIES", "Elliptic Curve Integrated Encryption", 25000, []string{"C"}, "LP-3xxx"},
 
 	// Privacy/ZK (P=4) → LP-4xxx
