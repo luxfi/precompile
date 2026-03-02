@@ -128,11 +128,7 @@ func decodeScalar(data []byte) (*edwards25519.Scalar, error) {
 	}
 	s, err := new(edwards25519.Scalar).SetCanonicalBytes(data[:ScalarLen])
 	if err != nil {
-		// Try clamped/reduced
-		s, err = new(edwards25519.Scalar).SetBytesWithClamping(data[:ScalarLen])
-		if err != nil {
-			return nil, ErrInvalidInput
-		}
+		return nil, ErrInvalidInput
 	}
 	return s, nil
 }

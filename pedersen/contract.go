@@ -68,6 +68,18 @@ func init() {
 	for i := 0; i < 32; i++ {
 		genVi[i] = hashToG1("Lux_Pedersen_Gen_" + string(rune('A'+i)))
 	}
+
+	// Verify all generators are distinct (G, H, V_0..V_31)
+	all := make([]bn254.G1Affine, 0, 34)
+	all = append(all, genG, genH)
+	all = append(all, genVi[:]...)
+	for i := 0; i < len(all); i++ {
+		for j := i + 1; j < len(all); j++ {
+			if all[i].Equal(&all[j]) {
+				panic("pedersen: duplicate generator detected at init")
+			}
+		}
+	}
 }
 
 type pedersenPrecompile struct{}
@@ -255,9 +267,8 @@ func hashToG1(seed string) bn254.G1Affine {
 			}
 		}
 		if counter == 255 {
-			break
+			panic("pedersen: failed to derive independent generator after 256 tries")
 		}
 	}
-	_, _, g1, _ := bn254.Generators()
-	return g1
+	panic("pedersen: unreachable")
 }
