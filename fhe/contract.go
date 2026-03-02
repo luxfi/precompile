@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math/big"
 
+	"github.com/luxfi/accel"
 	accelfhe "github.com/luxfi/accel/ops/fhe"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -1004,6 +1005,13 @@ func performFHEOperation(op string, handle1, handle2 common.Hash, caller common.
 // fheOpGPU attempts GPU-accelerated FHE operations.
 // Returns result bytes if GPU succeeded, nil if GPU unavailable or unsupported op.
 func fheOpGPU(op string, lhs, rhs []byte) []byte {
+	// Only use GPU path when accelerator is actually available and initialized.
+	// The TFHE ciphertext format (bit-level) is incompatible with BFV params here.
+	// GPU acceleration requires proper ciphertext format conversion (not yet implemented).
+	if !accel.Available() {
+		return nil
+	}
+
 	// Convert ciphertext bytes to accelfhe format
 	params := accelfhe.Params{
 		Scheme:     accelfhe.SchemeBFV,
