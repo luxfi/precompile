@@ -30,9 +30,9 @@ func TestEncapsulate_ValidKey(t *testing.T) {
 	require.NoError(t, err)
 
 	// Build precompile input: [OpEncapsulate][pk]
-	input := make([]byte, 1+len(pkBytes))
+	input := make([]byte, 1+SeedSize+len(pkBytes))
 	input[0] = OpEncapsulate
-	copy(input[1:], pkBytes)
+	copy(input[1+SeedSize:], pkBytes)
 
 	gas := p.RequiredGas(input)
 	require.Equal(t, uint64(GasEncapsulate), gas)
@@ -55,7 +55,10 @@ func TestEncapsulate_ValidKey(t *testing.T) {
 	require.Equal(t, ssEncap, ssDecap, "encapsulated and decapsulated shared secrets must match")
 }
 
-func TestEncapsulate_DifferentInvocations(t *testing.T) {
+func TestEncapsulate_Deterministic(t *testing.T) {
+	// Consensus safety: identical (caller, seed, pubkey) MUST produce identical
+	// ciphertext across every validator. The pre-fix test asserted the
+	// opposite — it required NotEqual — which was a chain-splitting bug.
 	p := &xwingPrecompile{}
 	scheme := xwing.Scheme()
 
@@ -65,9 +68,13 @@ func TestEncapsulate_DifferentInvocations(t *testing.T) {
 	pkBytes, err := pk.MarshalBinary()
 	require.NoError(t, err)
 
-	input := make([]byte, 1+len(pkBytes))
+	input := make([]byte, 1+SeedSize+len(pkBytes))
 	input[0] = OpEncapsulate
-	copy(input[1:], pkBytes)
+	// Seed: non-zero so test is meaningful
+	for i := 0; i < SeedSize; i++ {
+		input[1+i] = byte(i + 1)
+	}
+	copy(input[1+SeedSize:], pkBytes)
 
 	gas := p.RequiredGas(input)
 	ret1, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, false)
@@ -76,8 +83,37 @@ func TestEncapsulate_DifferentInvocations(t *testing.T) {
 	ret2, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, false)
 	require.NoError(t, err)
 
-	// Encapsulation uses randomness, so outputs should differ
-	require.NotEqual(t, ret1, ret2, "two encapsulations of the same key should produce different ciphertexts")
+	require.Equal(t, ret1, ret2,
+		"same (caller, seed, pubkey) must produce identical ciphertext — consensus safety")
+}
+
+func TestEncapsulate_DifferentSeedsDiffer(t *testing.T) {
+	// Different seeds with same pubkey + caller → different ciphertexts.
+	p := &xwingPrecompile{}
+	scheme := xwing.Scheme()
+
+	pk, _, err := scheme.GenerateKeyPair()
+	require.NoError(t, err)
+	pkBytes, err := pk.MarshalBinary()
+	require.NoError(t, err)
+
+	buildInput := func(seedByte byte) []byte {
+		in := make([]byte, 1+SeedSize+len(pkBytes))
+		in[0] = OpEncapsulate
+		for i := 0; i < SeedSize; i++ {
+			in[1+i] = seedByte
+		}
+		copy(in[1+SeedSize:], pkBytes)
+		return in
+	}
+
+	in1 := buildInput(0x01)
+	in2 := buildInput(0x02)
+	ret1, _, err := p.Run(nil, common.Address{}, ContractAddress, in1, p.RequiredGas(in1), false)
+	require.NoError(t, err)
+	ret2, _, err := p.Run(nil, common.Address{}, ContractAddress, in2, p.RequiredGas(in2), false)
+	require.NoError(t, err)
+	require.NotEqual(t, ret1, ret2, "different seeds must produce different ciphertexts")
 }
 
 func TestEncapsulate_MultipleKeyPairs(t *testing.T) {
@@ -91,9 +127,9 @@ func TestEncapsulate_MultipleKeyPairs(t *testing.T) {
 		pkBytes, err := pk.MarshalBinary()
 		require.NoError(t, err)
 
-		input := make([]byte, 1+len(pkBytes))
+		input := make([]byte, 1+SeedSize+len(pkBytes))
 		input[0] = OpEncapsulate
-		copy(input[1:], pkBytes)
+		copy(input[1+SeedSize:], pkBytes)
 
 		gas := p.RequiredGas(input)
 		ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, false)
@@ -187,9 +223,9 @@ func TestOutOfGas(t *testing.T) {
 	pkBytes, err := pk.MarshalBinary()
 	require.NoError(t, err)
 
-	input := make([]byte, 1+len(pkBytes))
+	input := make([]byte, 1+SeedSize+len(pkBytes))
 	input[0] = OpEncapsulate
-	copy(input[1:], pkBytes)
+	copy(input[1+SeedSize:], pkBytes)
 
 	_, _, err = p.Run(nil, common.Address{}, ContractAddress, input, 100, false)
 	require.Error(t, err)
@@ -205,9 +241,9 @@ func BenchmarkEncapsulate(b *testing.B) {
 	pkBytes, err := pk.MarshalBinary()
 	require.NoError(b, err)
 
-	input := make([]byte, 1+len(pkBytes))
+	input := make([]byte, 1+SeedSize+len(pkBytes))
 	input[0] = OpEncapsulate
-	copy(input[1:], pkBytes)
+	copy(input[1+SeedSize:], pkBytes)
 	gas := p.RequiredGas(input)
 
 	b.ResetTimer()

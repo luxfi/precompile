@@ -60,10 +60,10 @@ func TestEncapsulate(t *testing.T) {
 				t.Fatalf("failed to generate key pair: %v", err)
 			}
 
-			encInput := make([]byte, 2+len(pk.Bytes()))
+			encInput := make([]byte, 2+SeedSize+len(pk.Bytes()))
 			encInput[0] = OpEncapsulate
 			encInput[1] = m.mode
-			copy(encInput[2:], pk.Bytes())
+			copy(encInput[2+SeedSize:], pk.Bytes())
 
 			result, remainingGas, err := MLKEMPrecompile.Run(
 				nil,
@@ -95,10 +95,10 @@ func TestDecapsulateRejected(t *testing.T) {
 		t.Fatalf("failed to generate key: %v", err)
 	}
 
-	input := make([]byte, 2+len(pk.Bytes()))
+	input := make([]byte, 2+SeedSize+len(pk.Bytes()))
 	input[0] = 0x02 // Old OpDecapsulate
 	input[1] = ModeMLKEM768
-	copy(input[2:], pk.Bytes())
+	copy(input[2+SeedSize:], pk.Bytes())
 
 	_, _, err = MLKEMPrecompile.Run(
 		nil,
@@ -148,10 +148,10 @@ func TestOutOfGas(t *testing.T) {
 		t.Fatalf("failed to generate key: %v", err)
 	}
 
-	input := make([]byte, 2+len(pk.Bytes()))
+	input := make([]byte, 2+SeedSize+len(pk.Bytes()))
 	input[0] = OpEncapsulate
 	input[1] = ModeMLKEM768
-	copy(input[2:], pk.Bytes())
+	copy(input[2+SeedSize:], pk.Bytes())
 
 	_, _, err = MLKEMPrecompile.Run(
 		nil,
@@ -179,10 +179,10 @@ func BenchmarkEncapsulate(b *testing.B) {
 
 	for _, m := range modes {
 		pk, _, _ := mlkem.GenerateKey(m.mlkemMode)
-		input := make([]byte, 2+len(pk.Bytes()))
+		input := make([]byte, 2+SeedSize+len(pk.Bytes()))
 		input[0] = OpEncapsulate
 		input[1] = m.mode
-		copy(input[2:], pk.Bytes())
+		copy(input[2+SeedSize:], pk.Bytes())
 
 		b.Run(m.name, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {

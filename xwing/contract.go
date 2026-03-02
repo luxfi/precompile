@@ -17,6 +17,7 @@
 package xwing
 
 import (
+	"crypto/sha256"
 	"errors"
 
 	"github.com/cloudflare/circl/kem"
@@ -25,6 +26,13 @@ import (
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
+
+// SeedSize is the caller-provided seed length. X-Wing's internal
+// EncapsulationSeedSize is 64; we accept 32 from the caller and expand
+// via SHA-256("XWING_ENCAP_v1" || caller || raw_seed) to 64 bytes.
+// Consensus safety: identical caller + raw seed + pk = identical output
+// on every validator, eliminating the crypto/rand chain split.
+const SeedSize = 32
 
 // Ensure circl KEM interface is satisfied (compile-time check)
 var _ kem.Scheme = xwing.Scheme()
@@ -83,17 +91,26 @@ func (p *xwingPrecompile) Run(
 	switch input[0] {
 	case OpEncapsulate:
 		pkSize := scheme.PublicKeySize()
-		if len(input) < 1+pkSize {
+		// Input: [op(1)][seed(32)][pk(pkSize)]
+		if len(input) < 1+SeedSize+pkSize {
 			return nil, gas, ErrInvalidInput
 		}
-		pk, err := scheme.UnmarshalBinaryPublicKey(input[1 : 1+pkSize])
+		rawSeed := input[1 : 1+SeedSize]
+		pkBytes := input[1+SeedSize : 1+SeedSize+pkSize]
+
+		pk, err := scheme.UnmarshalBinaryPublicKey(pkBytes)
 		if err != nil {
 			return nil, gas, err
 		}
-		ct, ss, err := scheme.Encapsulate(pk)
+
+		// Domain-separate by caller + expand 32-byte raw seed to X-Wing's
+		// required 64-byte seed via iterated SHA-256.
+		seed := expandSeed(caller, rawSeed)
+		ct, ss, err := scheme.EncapsulateDeterministically(pk, seed)
 		if err != nil {
 			return nil, gas, err
 		}
+
 		// Output: [2 bytes ct_len][ct][ss]
 		result := make([]byte, 2+len(ct)+len(ss))
 		result[0] = byte(len(ct) >> 8)
@@ -105,4 +122,26 @@ func (p *xwingPrecompile) Run(
 	default:
 		return nil, gas, ErrInvalidOp
 	}
+}
+
+// expandSeed combines a caller-provided 32-byte seed with the caller
+// address into a 64-byte seed suitable for X-Wing's
+// EncapsulateDeterministically. Identical inputs on every validator
+// produce identical output (consensus-safe). Two different callers
+// cannot collide on the derived seed even if they pick the same raw
+// seed bytes.
+func expandSeed(caller common.Address, raw []byte) []byte {
+	// First half: H("XWING_ENCAP_v1" || caller || raw || 0x00)
+	// Second half: H("XWING_ENCAP_v1" || caller || raw || 0x01)
+	// This is the standard HKDF-lite extract technique for a 64-byte output.
+	out := make([]byte, 64)
+	for i, tag := range []byte{0x00, 0x01} {
+		h := sha256.New()
+		h.Write([]byte("XWING_ENCAP_v1"))
+		h.Write(caller.Bytes())
+		h.Write(raw)
+		h.Write([]byte{tag})
+		copy(out[i*32:(i+1)*32], h.Sum(nil))
+	}
+	return out
 }

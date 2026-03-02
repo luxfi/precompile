@@ -46,9 +46,10 @@ func TestDeep_Encapsulate_768(t *testing.T) {
 	pubBytes, err := pub.MarshalBinary()
 	require.NoError(t, err)
 
-	input := make([]byte, 0, 2+len(pubBytes))
+	input := make([]byte, 0, 2+SeedSize+len(pubBytes))
 	input = append(input, OpEncapsulate)
 	input = append(input, ModeMLKEM768)
+	input = append(input, make([]byte, SeedSize)...) // deterministic seed
 	input = append(input, pubBytes...)
 
 	gas := MLKEMPrecompile.RequiredGas(input)
@@ -58,7 +59,7 @@ func TestDeep_Encapsulate_768(t *testing.T) {
 }
 
 func TestDeep_Encapsulate_InvalidPubKey(t *testing.T) {
-	input := make([]byte, 2+1184)
+	input := make([]byte, 2+SeedSize+1184)
 	input[0] = OpEncapsulate
 	input[1] = ModeMLKEM768
 	gas := MLKEMPrecompile.RequiredGas(input)
@@ -69,7 +70,7 @@ func TestDeep_Encapsulate_InvalidPubKey(t *testing.T) {
 func TestDeep_GasInsufficient(t *testing.T) {
 	pub, _, _ := mlkem768.GenerateKeyPair(nil)
 	pubBytes, _ := pub.MarshalBinary()
-	input := append([]byte{OpEncapsulate, ModeMLKEM768}, pubBytes...)
+	input := append(append([]byte{OpEncapsulate, ModeMLKEM768}, make([]byte, SeedSize)...), pubBytes...)
 	gas := MLKEMPrecompile.RequiredGas(input)
 	if gas > 0 {
 		_, _, err := MLKEMPrecompile.Run(nil, addr0, ContractAddress, input, gas-1, true)
@@ -87,7 +88,7 @@ func TestDeep_GasZero(t *testing.T) {
 func TestDeep_Concurrent(t *testing.T) {
 	pub, _, _ := mlkem768.GenerateKeyPair(nil)
 	pubBytes, _ := pub.MarshalBinary()
-	input := append([]byte{OpEncapsulate, ModeMLKEM768}, pubBytes...)
+	input := append(append([]byte{OpEncapsulate, ModeMLKEM768}, make([]byte, SeedSize)...), pubBytes...)
 	gas := MLKEMPrecompile.RequiredGas(input)
 
 	var wg sync.WaitGroup
