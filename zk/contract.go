@@ -17,7 +17,7 @@ import (
 
 var (
 	// Note: ErrInvalidPublicInputs is defined in types.go
-	ErrInvalidInput         = errors.New("invalid zk input")
+	ErrInvalidInput         = contract.ErrInvalidInput
 	ErrInvalidOperation     = errors.New("invalid operation selector")
 	ErrInvalidProofLength   = errors.New("invalid proof length")
 	ErrVerificationFailed   = errors.New("proof verification failed")
@@ -142,10 +142,10 @@ func (p *zkVerifyPrecompile) Run(
 ) (ret []byte, remainingGas uint64, err error) {
 	// Calculate required gas
 	requiredGas := p.RequiredGas(input)
-	if suppliedGas < requiredGas {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err = contract.DeductGas(suppliedGas, requiredGas)
+	if err != nil {
+		return nil, 0, err
 	}
-	remainingGas = suppliedGas - requiredGas
 
 	if len(input) < 1 {
 		return nil, remainingGas, ErrInvalidInput

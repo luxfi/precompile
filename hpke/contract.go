@@ -40,7 +40,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &hpkePrecompile{}
 
-	ErrInvalidInput       = errors.New("invalid HPKE input")
+	ErrInvalidInput       = contract.ErrInvalidInput
 	ErrInvalidCipherSuite = errors.New("invalid cipher suite")
 )
 
@@ -180,18 +180,18 @@ func (p *hpkePrecompile) Run(
 	readOnly bool,
 ) ([]byte, uint64, error) {
 	gasCost := p.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	if len(input) < 1 {
-		return nil, suppliedGas - gasCost, ErrInvalidInput
+		return nil, remainingGas, ErrInvalidInput
 	}
 
 	op := input[0]
 
 	var result []byte
-	var err error
 
 	switch op {
 	case OpSingleShotSeal:
@@ -201,10 +201,10 @@ func (p *hpkePrecompile) Run(
 	}
 
 	if err != nil {
-		return nil, suppliedGas - gasCost, err
+		return nil, remainingGas, err
 	}
 
-	return result, suppliedGas - gasCost, nil
+	return result, remainingGas, nil
 }
 
 func (p *hpkePrecompile) parseSuite(input []byte) (hpke.Suite, error) {

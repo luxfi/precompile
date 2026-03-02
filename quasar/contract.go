@@ -15,12 +15,12 @@ import (
 
 const (
 	// Gas costs (optimized for Verkle witnesses)
-	VerkleVerifyGas     = 3000  // Ultra-fast with PQ finality assumption
-	BLSVerifyGas        = 5000  // BLS aggregate verification
-	BLSAggregateGas     = 2000  // BLS signature aggregation
-	RingtailVerifyGas   = 8000  // Ringtail (ML-DSA) verification
-	HybridVerifyGas     = 10000 // BLS+Ringtail hybrid verification
-	CompressedVerifyGas = 1000  // Compressed witness verification
+	GasVerkleVerify     = 3000  // Ultra-fast with PQ finality assumption
+	GasBLSVerify        = 5000  // BLS aggregate verification
+	GasBLSAggregate     = 2000  // BLS signature aggregation
+	GasRingtailVerify   = 8000  // Ringtail (ML-DSA) verification
+	GasHybridVerify     = 10000 // BLS+Ringtail hybrid verification
+	GasCompressedVerify = 1000  // Compressed witness verification
 
 	// Precompile addresses
 	VerkleVerifyAddress   = "0x0300000000000000000000000000000000000020"
@@ -36,7 +36,7 @@ var (
 	_ contract.StatefulPrecompiledContract = &blsPrecompile{}
 	_ contract.StatefulPrecompiledContract = &ringtailPrecompile{}
 
-	ErrInvalidInput     = errors.New("invalid input")
+	ErrInvalidInput     = contract.ErrInvalidInput
 	ErrInvalidSignature = errors.New("invalid signature")
 	ErrThresholdNotMet  = errors.New("threshold not met")
 )
@@ -50,14 +50,14 @@ func (v *verklePrecompile) Address() common.Address {
 
 func (v *verklePrecompile) RequiredGas(input []byte) uint64 {
 	// Ultra-low gas cost due to PQ finality assumption
-	return VerkleVerifyGas
+	return GasVerkleVerify
 }
 
 func (v *verklePrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
-	if suppliedGas < VerkleVerifyGas {
+	if suppliedGas < GasVerkleVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
-	remainingGas = suppliedGas - VerkleVerifyGas
+	remainingGas = suppliedGas - GasVerkleVerify
 
 	// Input format: [commitment(32)] [proof(32)] [threshold_met(1)]
 	if len(input) < 65 {
@@ -92,14 +92,14 @@ func (b *blsPrecompile) Address() common.Address {
 }
 
 func (b *blsPrecompile) RequiredGas(input []byte) uint64 {
-	return BLSVerifyGas
+	return GasBLSVerify
 }
 
 func (b *blsPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
-	if suppliedGas < BLSVerifyGas {
+	if suppliedGas < GasBLSVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
-	remainingGas = suppliedGas - BLSVerifyGas
+	remainingGas = suppliedGas - GasBLSVerify
 
 	// Input format: [pubkey(48)] [message(32)] [signature(96)]
 	if len(input) < 176 {
@@ -146,7 +146,7 @@ func (b *blsAggregatePrecompile) Address() common.Address {
 func (b *blsAggregatePrecompile) RequiredGas(input []byte) uint64 {
 	// Gas scales with number of signatures
 	numSigs := len(input) / 96
-	return BLSAggregateGas * uint64(numSigs)
+	return GasBLSAggregate * uint64(numSigs)
 }
 
 func (b *blsAggregatePrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
@@ -197,14 +197,14 @@ func (r *ringtailPrecompile) Address() common.Address {
 }
 
 func (r *ringtailPrecompile) RequiredGas(input []byte) uint64 {
-	return RingtailVerifyGas
+	return GasRingtailVerify
 }
 
 func (r *ringtailPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
-	if suppliedGas < RingtailVerifyGas {
+	if suppliedGas < GasRingtailVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
-	remainingGas = suppliedGas - RingtailVerifyGas
+	remainingGas = suppliedGas - GasRingtailVerify
 
 	// Input format: [mode(1)] [pubkey_len(2)] [pubkey] [msg_len(2)] [msg] [sig]
 	if len(input) < 6 {
@@ -257,14 +257,14 @@ func (h *hybridPrecompile) Address() common.Address {
 }
 
 func (h *hybridPrecompile) RequiredGas(input []byte) uint64 {
-	return HybridVerifyGas
+	return GasHybridVerify
 }
 
 func (h *hybridPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
-	if suppliedGas < HybridVerifyGas {
+	if suppliedGas < GasHybridVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
-	remainingGas = suppliedGas - HybridVerifyGas
+	remainingGas = suppliedGas - GasHybridVerify
 
 	// Input format: [bls_sig(96)] [ringtail_sig_len(2)] [ringtail_sig] [message(32)] [bls_pubkey(48)] [ringtail_pubkey]
 	if len(input) < 178 {
@@ -336,14 +336,14 @@ func (c *compressedPrecompile) Address() common.Address {
 }
 
 func (c *compressedPrecompile) RequiredGas(input []byte) uint64 {
-	return CompressedVerifyGas // Ultra-low gas
+	return GasCompressedVerify // Ultra-low gas
 }
 
 func (c *compressedPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
-	if suppliedGas < CompressedVerifyGas {
+	if suppliedGas < GasCompressedVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
-	remainingGas = suppliedGas - CompressedVerifyGas
+	remainingGas = suppliedGas - GasCompressedVerify
 
 	// Input format: [commitment(16)] [proof(16)] [metadata(8)] [validators(4)]
 	if len(input) < 44 {

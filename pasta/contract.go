@@ -32,7 +32,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &pastaPrecompile{}
 
-	ErrInvalidInput = errors.New("invalid pasta input")
+	ErrInvalidInput = contract.ErrInvalidInput
 	ErrInvalidOp    = errors.New("invalid pasta operation")
 	ErrInvalidCurve = errors.New("invalid curve selector (0x01=Pallas, 0x02=Vesta)")
 	ErrNotOnCurve   = errors.New("point not on curve")

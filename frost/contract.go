@@ -25,7 +25,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &frostVerifyPrecompile{}
 
-	ErrInvalidInputLength  = errors.New("invalid input length")
+	ErrInvalidInputLength  = contract.ErrInvalidInput
 	ErrInvalidThreshold    = errors.New("invalid threshold: t must be > 0 and <= n")
 	ErrInvalidPublicKey    = errors.New("invalid public key")
 	ErrInvalidSignature    = errors.New("invalid signature")
@@ -87,8 +87,9 @@ func (p *frostVerifyPrecompile) Run(
 ) ([]byte, uint64, error) {
 	// Calculate required gas
 	gasCost := p.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// Input format:
@@ -99,7 +100,7 @@ func (p *frostVerifyPrecompile) Run(
 	// [72:136]   = Schnorr signature (64 bytes: R || s)
 
 	if len(input) < MinInputSize {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: expected at least %d bytes, got %d",
+		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes, got %d",
 			ErrInvalidInputLength, MinInputSize, len(input))
 	}
 
@@ -109,7 +110,7 @@ func (p *frostVerifyPrecompile) Run(
 
 	// Validate threshold
 	if threshold == 0 || threshold > totalSigners {
-		return nil, suppliedGas - gasCost, ErrInvalidThreshold
+		return nil, remainingGas, ErrInvalidThreshold
 	}
 
 	// Parse public key, message hash, and signature
@@ -138,7 +139,7 @@ func (p *frostVerifyPrecompile) Run(
 		result[31] = 1
 	}
 
-	return result, suppliedGas - gasCost, nil
+	return result, remainingGas, nil
 }
 
 // liftXCache caches decompressed public key points.
