@@ -37,14 +37,14 @@ const (
 
 	// Lending (LP-905x–906x)
 	LXLendAddress      = "0x0000000000000000000000000000000000009050" // LP-9050 LXLend (lending pool)
-	LXPayAddress = "0x0000000000000000000000000000000000009060" // LP-9060 LXPay (self-repaying loans)
+	LXRepayerAddress = "0x0000000000000000000000000000000000009060" // LP-9060 LXRepayer (self-repaying loans)
 
 	// Liquidation + Transmutation (LP-907x–908x)
 	LXLiquidatorAddress = "0x0000000000000000000000000000000000009070" // LP-9070 LXLiquidator (liquidation engine)
 	LXTransmuterAddress = "0x0000000000000000000000000000000000009080" // LP-9080 LXTransmuter (debt → collateral conversion)
 
 	// Settlement (LP-909x)
-	// LXSettleAddress is defined in fill_attestation.go               // LP-9090 LXSettle (settlement attestation)
+	// LXSettlementAddress is defined in fill_attestation.go               // LP-9090 LXSettlement (settlement attestation)
 	LiquidFXAddress   = LXTransmuterAddress
 
 	// Bridge Precompiles (LP-6xxx)
