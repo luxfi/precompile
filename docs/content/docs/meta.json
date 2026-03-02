@@ -4,6 +4,7 @@
     "index",
     "---Cryptography---",
     "crypto",
+    "sr25519",
     "---DEX---",
     "dex",
     "---Privacy---",
