@@ -35,6 +35,9 @@ const (
 	LiquidatorAddress = "0x0000000000000000000000000000000000009070" // LP-9070 Liquidator (position liquidation)
 	LiquidFXAddress   = "0x0000000000000000000000000000000000009080" // LP-9080 LiquidFX (transmuter)
 
+	// Settlement (LP-909x)
+	// LXFillAttestAddress is defined in fill_attestation.go             // LP-9090 LXFillAttest (broker fill attestation + fraud proofs)
+
 	// Bridge Precompiles (LP-6xxx)
 	TeleportAddress = "0x0000000000000000000000000000000000006010" // LP-6010 Teleport (cross-chain)
 
