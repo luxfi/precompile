@@ -4,7 +4,6 @@
 package pqcrypto
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 
@@ -33,31 +32,36 @@ const (
 
 // Extended methods for signing operations
 
-// mldsaSign creates an ML-DSA signature
+// mldsaSign creates an ML-DSA signature with deterministic randomness.
+// Input format: [mode(1)] [seed(32)] [privkey_len(2)] [privkey] [message]
+//
+// The 32-byte seed ensures consensus safety: identical output across validators.
 func (p *pqCryptoPrecompile) mldsaSign(input []byte) ([]byte, uint64, error) {
-	// Input format: [mode(1)] [privkey_len(2)] [privkey] [message]
-	if len(input) < 4 {
-		return nil, 0, errInvalidInput
+	if len(input) < 1+seedSize+2 {
+		return nil, 0, fmt.Errorf("%w: sign requires mode(1) + seed(%d) + privkey_len(2) + privkey + message", errInvalidInput, seedSize)
 	}
 
 	mode := mldsa.Mode(input[0])
-	privKeyLen := int(input[1])<<8 | int(input[2])
 
-	if len(input) < 3+privKeyLen {
+	var seed [32]byte
+	copy(seed[:], input[1:1+seedSize])
+
+	privKeyLen := int(input[1+seedSize])<<8 | int(input[1+seedSize+1])
+
+	if len(input) < 1+seedSize+2+privKeyLen {
 		return nil, 0, errInvalidInput
 	}
 
-	privKeyBytes := input[3 : 3+privKeyLen]
-	message := input[3+privKeyLen:]
+	privKeyBytes := input[1+seedSize+2 : 1+seedSize+2+privKeyLen]
+	message := input[1+seedSize+2+privKeyLen:]
 
-	// Reconstruct private key
 	privKey, err := mldsa.PrivateKeyFromBytes(mode, privKeyBytes)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Sign message
-	signature, err := privKey.Sign(rand.Reader, message, nil)
+	reader := newDeterministicReader(seed)
+	signature, err := privKey.Sign(reader, message, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -65,31 +69,36 @@ func (p *pqCryptoPrecompile) mldsaSign(input []byte) ([]byte, uint64, error) {
 	return signature, 0, nil
 }
 
-// slhdsaSign creates an SLH-DSA signature
+// slhdsaSign creates an SLH-DSA signature with deterministic randomness.
+// Input format: [mode(1)] [seed(32)] [privkey_len(2)] [privkey] [message]
+//
+// The 32-byte seed ensures consensus safety: identical output across validators.
 func (p *pqCryptoPrecompile) slhdsaSign(input []byte) ([]byte, uint64, error) {
-	// Input format: [mode(1)] [privkey_len(2)] [privkey] [message]
-	if len(input) < 4 {
-		return nil, 0, errInvalidInput
+	if len(input) < 1+seedSize+2 {
+		return nil, 0, fmt.Errorf("%w: sign requires mode(1) + seed(%d) + privkey_len(2) + privkey + message", errInvalidInput, seedSize)
 	}
 
 	mode := slhdsa.Mode(input[0])
-	privKeyLen := int(input[1])<<8 | int(input[2])
 
-	if len(input) < 3+privKeyLen {
+	var seed [32]byte
+	copy(seed[:], input[1:1+seedSize])
+
+	privKeyLen := int(input[1+seedSize])<<8 | int(input[1+seedSize+1])
+
+	if len(input) < 1+seedSize+2+privKeyLen {
 		return nil, 0, errInvalidInput
 	}
 
-	privKeyBytes := input[3 : 3+privKeyLen]
-	message := input[3+privKeyLen:]
+	privKeyBytes := input[1+seedSize+2 : 1+seedSize+2+privKeyLen]
+	message := input[1+seedSize+2+privKeyLen:]
 
-	// Reconstruct private key
 	privKey, err := slhdsa.PrivateKeyFromBytes(mode, privKeyBytes)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Sign message
-	signature, err := privKey.Sign(rand.Reader, message, nil)
+	reader := newDeterministicReader(seed)
+	signature, err := privKey.Sign(reader, message, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -97,26 +106,29 @@ func (p *pqCryptoPrecompile) slhdsaSign(input []byte) ([]byte, uint64, error) {
 	return signature, 0, nil
 }
 
-// mldsaGenKey generates an ML-DSA key pair
+// mldsaGenKey generates an ML-DSA key pair with deterministic randomness.
+// Input format: [mode(1)] [seed(32)]
+//
+// The 32-byte seed ensures consensus safety: identical keys across validators.
 func (p *pqCryptoPrecompile) mldsaGenKey(input []byte) ([]byte, uint64, error) {
-	// Input format: [mode(1)]
-	if len(input) < 1 {
-		return nil, 0, errInvalidInput
+	if len(input) < 1+seedSize {
+		return nil, 0, fmt.Errorf("%w: genkey requires mode(1) + seed(%d)", errInvalidInput, seedSize)
 	}
 
 	mode := mldsa.Mode(input[0])
 
-	// Generate key pair
-	privKey, err := mldsa.GenerateKey(rand.Reader, mode)
+	var seed [32]byte
+	copy(seed[:], input[1:1+seedSize])
+
+	reader := newDeterministicReader(seed)
+	privKey, err := mldsa.GenerateKey(reader, mode)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Serialize keys
 	privBytes := privKey.Bytes()
 	pubBytes := privKey.PublicKey.Bytes()
 
-	// Output format: [privkey_len(2)] [privkey] [pubkey]
 	output := make([]byte, 2+len(privBytes)+len(pubBytes))
 	output[0] = byte(len(privBytes) >> 8)
 	output[1] = byte(len(privBytes))
@@ -126,26 +138,29 @@ func (p *pqCryptoPrecompile) mldsaGenKey(input []byte) ([]byte, uint64, error) {
 	return output, 0, nil
 }
 
-// mlkemGenKey generates an ML-KEM key pair
+// mlkemGenKey generates an ML-KEM key pair with deterministic randomness.
+// Input format: [mode(1)] [seed(32)]
+//
+// The 32-byte seed ensures consensus safety: identical keys across validators.
 func (p *pqCryptoPrecompile) mlkemGenKey(input []byte) ([]byte, uint64, error) {
-	// Input format: [mode(1)]
-	if len(input) < 1 {
-		return nil, 0, errInvalidInput
+	if len(input) < 1+seedSize {
+		return nil, 0, fmt.Errorf("%w: genkey requires mode(1) + seed(%d)", errInvalidInput, seedSize)
 	}
 
 	mode := mlkem.Mode(input[0])
 
-	// Generate key pair - returns (pubKey, privKey, error)
-	pubKey, privKey, err := mlkem.GenerateKeyPair(rand.Reader, mode)
+	var seed [32]byte
+	copy(seed[:], input[1:1+seedSize])
+
+	reader := newDeterministicReader(seed)
+	pubKey, privKey, err := mlkem.GenerateKeyPair(reader, mode)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Serialize keys
 	privBytes := privKey.Bytes()
 	pubBytes := pubKey.Bytes()
 
-	// Output format: [privkey_len(2)] [privkey] [pubkey]
 	output := make([]byte, 2+len(privBytes)+len(pubBytes))
 	output[0] = byte(len(privBytes) >> 8)
 	output[1] = byte(len(privBytes))
@@ -155,26 +170,29 @@ func (p *pqCryptoPrecompile) mlkemGenKey(input []byte) ([]byte, uint64, error) {
 	return output, 0, nil
 }
 
-// slhdsaGenKey generates an SLH-DSA key pair
+// slhdsaGenKey generates an SLH-DSA key pair with deterministic randomness.
+// Input format: [mode(1)] [seed(32)]
+//
+// The 32-byte seed ensures consensus safety: identical keys across validators.
 func (p *pqCryptoPrecompile) slhdsaGenKey(input []byte) ([]byte, uint64, error) {
-	// Input format: [mode(1)]
-	if len(input) < 1 {
-		return nil, 0, errInvalidInput
+	if len(input) < 1+seedSize {
+		return nil, 0, fmt.Errorf("%w: genkey requires mode(1) + seed(%d)", errInvalidInput, seedSize)
 	}
 
 	mode := slhdsa.Mode(input[0])
 
-	// Generate key pair
-	privKey, err := slhdsa.GenerateKey(rand.Reader, mode)
+	var seed [32]byte
+	copy(seed[:], input[1:1+seedSize])
+
+	reader := newDeterministicReader(seed)
+	privKey, err := slhdsa.GenerateKey(reader, mode)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Serialize keys
 	privBytes := privKey.Bytes()
 	pubBytes := privKey.PublicKey.Bytes()
 
-	// Output format: [privkey_len(2)] [privkey] [pubkey]
 	output := make([]byte, 2+len(privBytes)+len(pubBytes))
 	output[0] = byte(len(privBytes) >> 8)
 	output[1] = byte(len(privBytes))

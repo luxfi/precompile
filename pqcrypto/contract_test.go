@@ -121,10 +121,16 @@ func TestMLKEMEncapsulateDecapsulate(t *testing.T) {
 	pub, priv, err := mlkem.GenerateKeyPair(rand.Reader, mlkem.MLKEM512)
 	require.NoError(err)
 
-	// Test encapsulation
+	// Deterministic seed for consensus-safe encapsulation
+	seed := make([]byte, 32)
+	_, err = rand.Read(seed)
+	require.NoError(err)
+
+	// Test encapsulation with seed
 	pubBytes := pub.Bytes()
 	encapInput := []byte(MLKEMEncapsulateSelector[:4])
 	encapInput = append(encapInput, MLKEMMode512)
+	encapInput = append(encapInput, seed...)
 	encapInput = append(encapInput, pubBytes...)
 
 	gas := precompile.RequiredGas(encapInput)
@@ -135,7 +141,6 @@ func TestMLKEMEncapsulateDecapsulate(t *testing.T) {
 	require.NotEmpty(encapResult)
 
 	// Extract ciphertext (first part of result)
-	// For MLKEM512, ciphertext size is defined by mlkem.MLKEM512CiphertextSize
 	ciphertext := encapResult[:mlkem.MLKEM512CiphertextSize]
 	sharedSecret1 := encapResult[mlkem.MLKEM512CiphertextSize:]
 
@@ -153,6 +158,58 @@ func TestMLKEMEncapsulateDecapsulate(t *testing.T) {
 	sharedSecret2, _, err := precompile.Run(nil, common.Address{}, ContractAddress, decapInput, gas, true)
 	require.NoError(err)
 	require.Equal(sharedSecret1, sharedSecret2)
+}
+
+func TestMLKEMEncapsulateDeterministic(t *testing.T) {
+	require := require.New(t)
+	precompile := PQCryptoPrecompile
+
+	// Same seed + same pubkey must produce identical output every time.
+	// This is the core consensus safety property.
+	pub, _, err := mlkem.GenerateKeyPair(rand.Reader, mlkem.MLKEM768)
+	require.NoError(err)
+
+	seed := [32]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20}
+
+	pubBytes := pub.Bytes()
+	encapInput := []byte(MLKEMEncapsulateSelector[:4])
+	encapInput = append(encapInput, MLKEMMode768)
+	encapInput = append(encapInput, seed[:]...)
+	encapInput = append(encapInput, pubBytes...)
+
+	gas := precompile.RequiredGas(encapInput)
+
+	result1, _, err := precompile.Run(nil, common.Address{}, ContractAddress, encapInput, gas, true)
+	require.NoError(err)
+
+	result2, _, err := precompile.Run(nil, common.Address{}, ContractAddress, encapInput, gas, true)
+	require.NoError(err)
+
+	require.Equal(result1, result2, "same seed + same pubkey must produce identical output (consensus safety)")
+}
+
+func TestMLKEMEncapsulateRejectsMissingSeed(t *testing.T) {
+	require := require.New(t)
+	precompile := PQCryptoPrecompile
+
+	pub, _, err := mlkem.GenerateKeyPair(rand.Reader, mlkem.MLKEM512)
+	require.NoError(err)
+
+	// Old format without seed: [selector(4)] [mode(1)] [pubkey]
+	pubBytes := pub.Bytes()
+	encapInput := []byte(MLKEMEncapsulateSelector[:4])
+	encapInput = append(encapInput, MLKEMMode512)
+	encapInput = append(encapInput, pubBytes...)
+
+	gas := precompile.RequiredGas(encapInput)
+
+	// This should fail because the calldata is interpreted as mode(1) + seed(32) + pubkey,
+	// and the pubkey will be the wrong size (missing 32 bytes that were eaten as seed).
+	_, _, err = precompile.Run(nil, common.Address{}, ContractAddress, encapInput, gas, true)
+	require.Error(err, "old-format calldata without seed must be rejected")
 }
 
 func TestMLKEM_AllModes(t *testing.T) {
@@ -177,10 +234,16 @@ func TestMLKEM_AllModes(t *testing.T) {
 			pub, priv, err := mlkem.GenerateKeyPair(rand.Reader, m.mode)
 			require.NoError(err)
 
-			// Encapsulate
+			// Deterministic seed
+			seed := make([]byte, 32)
+			_, err = rand.Read(seed)
+			require.NoError(err)
+
+			// Encapsulate with seed
 			pubBytes := pub.Bytes()
 			encapInput := []byte(MLKEMEncapsulateSelector[:4])
 			encapInput = append(encapInput, m.modeByte)
+			encapInput = append(encapInput, seed...)
 			encapInput = append(encapInput, pubBytes...)
 
 			gas := precompile.RequiredGas(encapInput)
@@ -348,9 +411,13 @@ func BenchmarkPQPrecompile(b *testing.B) {
 	b.Run("ML-KEM-512-Encapsulate", func(b *testing.B) {
 		pub, _, _ := mlkem.GenerateKeyPair(rand.Reader, mlkem.MLKEM512)
 
+		seed := make([]byte, 32)
+		rand.Read(seed)
+
 		pubBytes := pub.Bytes()
 		input := []byte(MLKEMEncapsulateSelector[:4])
 		input = append(input, MLKEMMode512)
+		input = append(input, seed...)
 		input = append(input, pubBytes...)
 
 		gas := precompile.RequiredGas(input)
