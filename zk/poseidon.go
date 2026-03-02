@@ -11,6 +11,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 )
 
 // poseidon2Hasher is the underlying gnark-crypto hasher
@@ -31,7 +32,7 @@ var (
 )
 
 var (
-	ErrInvalidInputLength  = errors.New("invalid input length: must be multiple of 32 bytes")
+	ErrInvalidInputLength  = contract.ErrInvalidInput
 	ErrTooManyInputs       = errors.New("too many inputs: maximum 16 field elements")
 	ErrInvalidFieldElement = errors.New("invalid field element: exceeds BN254 scalar field")
 )

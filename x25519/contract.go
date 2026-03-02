@@ -40,7 +40,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &x25519Precompile{}
 
-	ErrInvalidInput = errors.New("invalid x25519 input")
+	ErrInvalidInput = contract.ErrInvalidInput
 	ErrInvalidOp    = errors.New("invalid x25519 operation")
 	ErrDHFailed     = errors.New("x25519 scalar multiplication failed")
 )

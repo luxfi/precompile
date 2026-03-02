@@ -33,7 +33,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &curve25519Precompile{}
 
-	ErrInvalidInput = errors.New("invalid curve25519 input")
+	ErrInvalidInput = contract.ErrInvalidInput
 	ErrInvalidOp    = errors.New("invalid curve25519 operation")
 	ErrInvalidPoint = errors.New("invalid Edwards25519 point")
 )

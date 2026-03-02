@@ -6,11 +6,11 @@ package secp256r1
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"errors"
 	"math/big"
 
 	"github.com/luxfi/accel"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 )
 
 const (
@@ -18,9 +18,9 @@ const (
 	// Matches RIP-7212/EIP-7212 for cross-ecosystem compatibility
 	P256VerifyAddress = "0x0000000000000000000000000000000000000100"
 
-	// P256VerifyGas is the gas cost for signature verification
+	// GasP256Verify is the gas cost for signature verification
 	// Based on EIP-7212 benchmarking - 100x cheaper than Solidity
-	P256VerifyGas = 3450
+	GasP256Verify = 3450
 
 	// InputLength is the required input length (160 bytes)
 	// 32 (hash) + 32 (r) + 32 (s) + 32 (x) + 32 (y)
@@ -35,7 +35,7 @@ var (
 	successResult = common.LeftPadBytes([]byte{1}, 32)
 
 	// Errors
-	ErrInvalidInputLength = errors.New("secp256r1: invalid input length")
+	ErrInvalidInputLength = contract.ErrInvalidInput
 )
 
 // Contract implements the secp256r1 signature verification precompile
@@ -48,7 +48,7 @@ func (c *Contract) Address() common.Address {
 
 // RequiredGas returns the gas required to execute the precompile
 func (c *Contract) RequiredGas(input []byte) uint64 {
-	return P256VerifyGas
+	return GasP256Verify
 }
 
 // Run executes the secp256r1 signature verification

@@ -10,6 +10,7 @@ import (
 
 	"github.com/luxfi/crypto/slhdsa"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -134,7 +135,7 @@ func TestSLHDSAVerify_InputTooShort(t *testing.T) {
 	)
 
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid input length")
+	require.ErrorIs(t, err, contract.ErrInvalidInput)
 }
 
 // TestSLHDSAVerify_InvalidMode tests rejection of invalid mode byte

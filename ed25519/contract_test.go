@@ -13,8 +13,8 @@ import (
 const testGas = 100_000
 
 func TestRequiredGas(t *testing.T) {
-	if gas := Ed25519VerifyPrecompile.RequiredGas(nil); gas != Ed25519VerifyGas {
-		t.Errorf("expected gas %d, got %d", Ed25519VerifyGas, gas)
+	if gas := Ed25519VerifyPrecompile.RequiredGas(nil); gas != GasEd25519Verify {
+		t.Errorf("expected gas %d, got %d", GasEd25519Verify, gas)
 	}
 }
 
@@ -36,8 +36,8 @@ func TestValidSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if remainingGas != testGas-Ed25519VerifyGas {
-		t.Errorf("expected remaining gas %d, got %d", testGas-Ed25519VerifyGas, remainingGas)
+	if remainingGas != testGas-GasEd25519Verify {
+		t.Errorf("expected remaining gas %d, got %d", testGas-GasEd25519Verify, remainingGas)
 	}
 	if len(result) != 32 || result[31] != 1 {
 		t.Error("expected valid signature to return success")
@@ -109,7 +109,7 @@ func TestInvalidInputLength(t *testing.T) {
 }
 
 func TestOutOfGas(t *testing.T) {
-	_, _, err := Ed25519VerifyPrecompile.Run(nil, ContractAddress, ContractAddress, make([]byte, 128), Ed25519VerifyGas-1, true)
+	_, _, err := Ed25519VerifyPrecompile.Run(nil, ContractAddress, ContractAddress, make([]byte, 128), GasEd25519Verify-1, true)
 	if err == nil {
 		t.Error("expected out of gas error")
 	}

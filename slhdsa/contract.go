@@ -23,7 +23,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &slhdsaVerifyPrecompile{}
 
-	ErrInvalidInputLength = errors.New("invalid input length")
+	ErrInvalidInputLength  = contract.ErrInvalidInput
 	ErrInvalidMode        = errors.New("invalid SLH-DSA mode")
 	ErrUnsupportedMode    = errors.New("unsupported SLH-DSA mode")
 )
@@ -188,27 +188,28 @@ func (p *slhdsaVerifyPrecompile) Run(
 ) ([]byte, uint64, error) {
 	// Calculate required gas
 	gasCost := p.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// Minimum: mode byte + pubkey length
 	minHeader := ModeByte + PubKeyLenSize
 	if len(input) < minHeader {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: need at least %d bytes", ErrInvalidInputLength, minHeader)
+		return nil, remainingGas, fmt.Errorf("%w: need at least %d bytes", ErrInvalidInputLength, minHeader)
 	}
 
 	// Parse mode
 	mode := input[0]
 	pubKeySize, sigSize, _, slhdsaMode, err := getModeParams(mode)
 	if err != nil {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: 0x%02x", ErrUnsupportedMode, mode)
+		return nil, remainingGas, fmt.Errorf("%w: 0x%02x", ErrUnsupportedMode, mode)
 	}
 
 	// Parse public key length
 	pubKeyLen := int(binary.BigEndian.Uint16(input[ModeByte : ModeByte+PubKeyLenSize]))
 	if pubKeyLen != pubKeySize {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: expected pubkey size %d for mode 0x%02x, got %d",
+		return nil, remainingGas, fmt.Errorf("%w: expected pubkey size %d for mode 0x%02x, got %d",
 			ErrInvalidInputLength, pubKeySize, mode, pubKeyLen)
 	}
 
@@ -220,7 +221,7 @@ func (p *slhdsaVerifyPrecompile) Run(
 
 	// Check we have enough input
 	if len(input) < msgLenEnd {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: input too short for message length", ErrInvalidInputLength)
+		return nil, remainingGas, fmt.Errorf("%w: input too short for message length", ErrInvalidInputLength)
 	}
 
 	// Parse message length
@@ -232,7 +233,7 @@ func (p *slhdsaVerifyPrecompile) Run(
 
 	// Validate total input size
 	if len(input) < sigEnd {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: expected at least %d bytes, got %d",
+		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes, got %d",
 			ErrInvalidInputLength, sigEnd, len(input))
 	}
 
@@ -249,7 +250,7 @@ func (p *slhdsaVerifyPrecompile) Run(
 		// CPU fallback: parse public key and verify
 		pub, err := slhdsa.PublicKeyFromBytes(publicKey, slhdsaMode)
 		if err != nil {
-			return nil, suppliedGas - gasCost, fmt.Errorf("invalid public key: %w", err)
+			return nil, remainingGas, fmt.Errorf("invalid public key: %w", err)
 		}
 		valid = pub.Verify(message, signature, nil)
 	}
@@ -260,7 +261,7 @@ func (p *slhdsaVerifyPrecompile) Run(
 		result[31] = 1
 	}
 
-	return result, suppliedGas - gasCost, nil
+	return result, remainingGas, nil
 }
 
 // verifySLHDSAGPU attempts GPU-accelerated SLH-DSA signature verification.
