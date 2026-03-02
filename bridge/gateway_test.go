@@ -6,7 +6,6 @@ package bridge
 import (
 	"math/big"
 	"testing"
-	"time"
 
 	"github.com/luxfi/geth/common"
 )
@@ -44,6 +43,9 @@ func e30() *big.Int { return bigExp(10, 30) }
 
 // fiveE19 returns 5 * 10^19
 func fiveE19() *big.Int { return new(big.Int).Mul(big.NewInt(5), e19()) }
+
+// testBlockTimestamp is a fixed block timestamp for deterministic tests.
+const testBlockTimestamp = uint64(1700000000)
 
 // TestNewBridgeGateway tests gateway creation
 func TestNewBridgeGateway(t *testing.T) {
@@ -116,6 +118,7 @@ func TestRegisterToken(t *testing.T) {
 		big.NewInt(1e17), // min bridge
 		new(big.Int).Mul(big.NewInt(1e12), big.NewInt(1e12)), // max bridge (1e24)
 		new(big.Int).Mul(big.NewInt(1e13), big.NewInt(1e12)), // daily limit (1e25)
+		testBlockTimestamp,
 	)
 
 	if err != nil {
@@ -144,10 +147,10 @@ func TestRegisterTokenDuplicate(t *testing.T) {
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
 
 	// First registration
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1), e24(), e25())
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1), e24(), e25(), testBlockTimestamp)
 
 	// Duplicate registration
-	err := gw.RegisterToken(token, 18, "TEST2", "Test2", big.NewInt(1), e24(), e25())
+	err := gw.RegisterToken(token, 18, "TEST2", "Test2", big.NewInt(1), e24(), e25(), testBlockTimestamp)
 	if err == nil {
 		t.Error("Expected error for duplicate token registration")
 	}
@@ -159,11 +162,11 @@ func TestInitiateBridge(t *testing.T) {
 
 	// Setup token
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25(), testBlockTimestamp)
 
 	// Add liquidity on destination chain
 	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21())
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21(), testBlockTimestamp)
 
 	// Initiate bridge
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
@@ -177,8 +180,9 @@ func TestInitiateBridge(t *testing.T) {
 		amount,
 		ChainLux,
 		ChainEthereum,
-		uint64(time.Now().Add(time.Hour).Unix()),
+		testBlockTimestamp+3600, // 1 hour deadline
 		nil,
+		testBlockTimestamp,
 	)
 
 	if err != nil {
@@ -213,7 +217,7 @@ func TestInitiateBridgeDisabled(t *testing.T) {
 	gw.Enabled = false
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, common.Address{}, big.NewInt(1), 1, 2, 0, nil)
+	_, err := gw.InitiateBridge(sender, sender, common.Address{}, big.NewInt(1), 1, 2, 0, nil, testBlockTimestamp)
 	if err != ErrBridgeDisabled {
 		t.Errorf("Expected ErrBridgeDisabled, got %v", err)
 	}
@@ -225,7 +229,7 @@ func TestInitiateBridgePaused(t *testing.T) {
 	gw.Paused = true
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, common.Address{}, big.NewInt(1), 1, 2, 0, nil)
+	_, err := gw.InitiateBridge(sender, sender, common.Address{}, big.NewInt(1), 1, 2, 0, nil, testBlockTimestamp)
 	if err != ErrBridgeDisabled {
 		t.Errorf("Expected ErrBridgeDisabled, got %v", err)
 	}
@@ -236,7 +240,7 @@ func TestInitiateBridgeChainNotSupported(t *testing.T) {
 	gw := NewBridgeGateway()
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, common.Address{}, big.NewInt(1), ChainLux, 99999, 0, nil)
+	_, err := gw.InitiateBridge(sender, sender, common.Address{}, big.NewInt(1), ChainLux, 99999, 0, nil, testBlockTimestamp)
 	if err != ErrChainNotSupported {
 		t.Errorf("Expected ErrChainNotSupported, got %v", err)
 	}
@@ -249,7 +253,7 @@ func TestInitiateBridgeTokenNotSupported(t *testing.T) {
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
 	unsupportedToken := common.HexToAddress("0xDEADDEADDEADDEADDEADDEADDEADDEADDEADDEAD")
 
-	_, err := gw.InitiateBridge(sender, sender, unsupportedToken, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
+	_, err := gw.InitiateBridge(sender, sender, unsupportedToken, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil, testBlockTimestamp)
 	if err != ErrTokenNotSupported {
 		t.Errorf("Expected ErrTokenNotSupported, got %v", err)
 	}
@@ -260,10 +264,10 @@ func TestInitiateBridgeAmountTooLow(t *testing.T) {
 	gw := NewBridgeGateway()
 
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25(), testBlockTimestamp)
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, token, big.NewInt(1e16), ChainLux, ChainEthereum, 0, nil) // Below min
+	_, err := gw.InitiateBridge(sender, sender, token, big.NewInt(1e16), ChainLux, ChainEthereum, 0, nil, testBlockTimestamp) // Below min
 	if err != ErrAmountTooLow {
 		t.Errorf("Expected ErrAmountTooLow, got %v", err)
 	}
@@ -274,14 +278,14 @@ func TestInitiateBridgeAmountTooHigh(t *testing.T) {
 	gw := NewBridgeGateway()
 
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e20(), e25()) // Max 100 tokens
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e20(), e25(), testBlockTimestamp) // Max 100 tokens
 
 	// Add liquidity
 	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e24())
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e24(), testBlockTimestamp)
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, token, e21(), ChainLux, ChainEthereum, 0, nil) // Above max
+	_, err := gw.InitiateBridge(sender, sender, token, e21(), ChainLux, ChainEthereum, 0, nil, testBlockTimestamp) // Above max
 	if err != ErrAmountTooHigh {
 		t.Errorf("Expected ErrAmountTooHigh, got %v", err)
 	}
@@ -292,12 +296,12 @@ func TestInitiateBridgeInsufficientLiquidity(t *testing.T) {
 	gw := NewBridgeGateway()
 
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25(), testBlockTimestamp)
 
 	// No liquidity added
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
+	_, err := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil, testBlockTimestamp)
 	if err != ErrInsufficientLiquidity {
 		t.Errorf("Expected ErrInsufficientLiquidity, got %v", err)
 	}
@@ -308,14 +312,14 @@ func TestInitiateBridgeDailyLimitExceeded(t *testing.T) {
 	gw := NewBridgeGateway()
 
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e19()) // Daily limit 10 tokens
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e19(), testBlockTimestamp) // Daily limit 10 tokens
 
 	// Add liquidity
 	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e24())
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e24(), testBlockTimestamp)
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, token, e20(), ChainLux, ChainEthereum, 0, nil) // Exceeds daily limit
+	_, err := gw.InitiateBridge(sender, sender, token, e20(), ChainLux, ChainEthereum, 0, nil, testBlockTimestamp) // Exceeds daily limit
 	if err != ErrDailyLimitExceeded {
 		t.Errorf("Expected ErrDailyLimitExceeded, got %v", err)
 	}
@@ -327,17 +331,17 @@ func TestCompleteBridge(t *testing.T) {
 
 	// Setup
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25(), testBlockTimestamp)
 	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21())
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21(), testBlockTimestamp)
 
 	// Initiate
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
+	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil, testBlockTimestamp)
 
 	// Complete with signatures
 	signatures := [][]byte{[]byte("sig1")}
-	err := gw.CompleteBridge(request.ID, signatures)
+	err := gw.CompleteBridge(request.ID, signatures, testBlockTimestamp)
 	if err != nil {
 		t.Fatalf("CompleteBridge failed: %v", err)
 	}
@@ -357,7 +361,7 @@ func TestCompleteBridgeNotFound(t *testing.T) {
 	gw := NewBridgeGateway()
 
 	nonExistent := [32]byte{0xFF}
-	err := gw.CompleteBridge(nonExistent, [][]byte{[]byte("sig")})
+	err := gw.CompleteBridge(nonExistent, [][]byte{[]byte("sig")}, testBlockTimestamp)
 	if err != ErrRequestNotFound {
 		t.Errorf("Expected ErrRequestNotFound, got %v", err)
 	}
@@ -369,16 +373,16 @@ func TestCompleteBridgeAlreadyDone(t *testing.T) {
 
 	// Setup and complete
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25(), testBlockTimestamp)
 	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21())
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21(), testBlockTimestamp)
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
-	_ = gw.CompleteBridge(request.ID, [][]byte{[]byte("sig")})
+	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil, testBlockTimestamp)
+	_ = gw.CompleteBridge(request.ID, [][]byte{[]byte("sig")}, testBlockTimestamp)
 
 	// Try to complete again
-	err := gw.CompleteBridge(request.ID, [][]byte{[]byte("sig")})
+	err := gw.CompleteBridge(request.ID, [][]byte{[]byte("sig")}, testBlockTimestamp)
 	if err != ErrRequestAlreadyDone {
 		t.Errorf("Expected ErrRequestAlreadyDone, got %v", err)
 	}
@@ -390,14 +394,14 @@ func TestCompleteBridgeExpired(t *testing.T) {
 
 	// Setup
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25(), testBlockTimestamp)
 	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21())
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21(), testBlockTimestamp)
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 1, nil) // Already expired
+	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 1, nil, testBlockTimestamp) // Already expired
 
-	err := gw.CompleteBridge(request.ID, [][]byte{[]byte("sig")})
+	err := gw.CompleteBridge(request.ID, [][]byte{[]byte("sig")}, testBlockTimestamp)
 	if err != ErrRequestExpired {
 		t.Errorf("Expected ErrRequestExpired, got %v", err)
 	}
@@ -409,14 +413,14 @@ func TestRefundExpired(t *testing.T) {
 
 	// Setup
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25(), testBlockTimestamp)
 	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21())
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21(), testBlockTimestamp)
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 1, nil) // Already expired
+	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 1, nil, testBlockTimestamp) // Already expired
 
-	err := gw.RefundExpired(request.ID)
+	err := gw.RefundExpired(request.ID, testBlockTimestamp)
 	if err != nil {
 		t.Fatalf("RefundExpired failed: %v", err)
 	}
@@ -436,7 +440,7 @@ func TestAddLiquidity(t *testing.T) {
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
 	amount := e20()
 
-	position, err := gw.AddLiquidity(provider, token, ChainEthereum, amount)
+	position, err := gw.AddLiquidity(provider, token, ChainEthereum, amount, testBlockTimestamp)
 	if err != nil {
 		t.Fatalf("AddLiquidity failed: %v", err)
 	}
@@ -471,7 +475,7 @@ func TestAddLiquidityChainNotSupported(t *testing.T) {
 	provider := common.HexToAddress("0x1234567890123456789012345678901234567890")
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
 
-	_, err := gw.AddLiquidity(provider, token, 99999, big.NewInt(1e18))
+	_, err := gw.AddLiquidity(provider, token, 99999, big.NewInt(1e18), testBlockTimestamp)
 	if err != ErrChainNotSupported {
 		t.Errorf("Expected ErrChainNotSupported, got %v", err)
 	}
@@ -484,8 +488,8 @@ func TestAddLiquidityMultiple(t *testing.T) {
 	provider := common.HexToAddress("0x1234567890123456789012345678901234567890")
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
 
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e20())
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e20())
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e20(), testBlockTimestamp)
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e20(), testBlockTimestamp)
 
 	pool := gw.Pools[ChainEthereum][token]
 	expected := new(big.Int).Mul(big.NewInt(2), e20())
@@ -501,7 +505,7 @@ func TestRemoveLiquidity(t *testing.T) {
 	provider := common.HexToAddress("0x1234567890123456789012345678901234567890")
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
 
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e20())
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e20(), testBlockTimestamp)
 
 	total, err := gw.RemoveLiquidity(provider, token, ChainEthereum, fiveE19())
 	if err != nil {
@@ -527,7 +531,7 @@ func TestRemoveLiquidityInsufficientBalance(t *testing.T) {
 	provider := common.HexToAddress("0x1234567890123456789012345678901234567890")
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
 
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, big.NewInt(1e18))
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, big.NewInt(1e18), testBlockTimestamp)
 
 	_, err := gw.RemoveLiquidity(provider, token, ChainEthereum, e20()) // More than deposited
 	if err != ErrInsufficientLiquidity {
@@ -581,14 +585,14 @@ func TestNonceIncrement(t *testing.T) {
 	gw := NewBridgeGateway()
 
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25(), testBlockTimestamp)
 	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e24())
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e24(), testBlockTimestamp)
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
 
 	for i := range uint64(5) {
-		_, _ = gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
+		_, _ = gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil, testBlockTimestamp)
 		if gw.Nonces[sender] != i+1 {
 			t.Errorf("Expected nonce %d, got %d", i+1, gw.Nonces[sender])
 		}
@@ -619,16 +623,16 @@ func TestSignerThreshold(t *testing.T) {
 func BenchmarkInitiateBridge(b *testing.B) {
 	gw := NewBridgeGateway()
 	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e30())
+	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e30(), testBlockTimestamp)
 	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, new(big.Int).Mul(e24(), big.NewInt(int64(b.N)+1)))
+	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, new(big.Int).Mul(e24(), big.NewInt(int64(b.N)+1)), testBlockTimestamp)
 
 	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
 	amount := big.NewInt(1e18)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = gw.InitiateBridge(sender, sender, token, amount, ChainLux, ChainEthereum, 0, nil)
+		_, _ = gw.InitiateBridge(sender, sender, token, amount, ChainLux, ChainEthereum, 0, nil, testBlockTimestamp)
 	}
 }
 
@@ -650,6 +654,6 @@ func BenchmarkAddLiquidity(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		provider := common.BigToAddress(big.NewInt(int64(i)))
-		_, _ = gw.AddLiquidity(provider, token, ChainEthereum, amount)
+		_, _ = gw.AddLiquidity(provider, token, ChainEthereum, amount, testBlockTimestamp)
 	}
 }

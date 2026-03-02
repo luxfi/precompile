@@ -9,10 +9,64 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/holiman/uint256"
 	"github.com/luxfi/fhe"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/geth/core/tracing"
+	ethtypes "github.com/luxfi/geth/core/types"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
+
+// testStateDB is a minimal in-memory StateDB for FHE tests.
+type testStateDB struct {
+	state map[common.Address]map[common.Hash]common.Hash
+}
+
+func newTestStateDB() *testStateDB {
+	return &testStateDB{state: make(map[common.Address]map[common.Hash]common.Hash)}
+}
+
+func (s *testStateDB) GetState(addr common.Address, key common.Hash) common.Hash {
+	if m, ok := s.state[addr]; ok {
+		return m[key]
+	}
+	return common.Hash{}
+}
+
+func (s *testStateDB) SetState(addr common.Address, key, value common.Hash) common.Hash {
+	if s.state[addr] == nil {
+		s.state[addr] = make(map[common.Hash]common.Hash)
+	}
+	prev := s.state[addr][key]
+	s.state[addr][key] = value
+	return prev
+}
+
+func (s *testStateDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason) {}
+func (s *testStateDB) GetNonce(common.Address) uint64                              { return 0 }
+func (s *testStateDB) GetBalance(common.Address) *uint256.Int                      { return uint256.NewInt(0) }
+func (s *testStateDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return *uint256.NewInt(0)
+}
+func (s *testStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return *uint256.NewInt(0)
+}
+func (s *testStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int  { return big.NewInt(0) }
+func (s *testStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}
+func (s *testStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}
+func (s *testStateDB) CreateAccount(common.Address)                               {}
+func (s *testStateDB) Exist(common.Address) bool                                  { return false }
+func (s *testStateDB) AddLog(*ethtypes.Log)                                       {}
+func (s *testStateDB) Logs() []*ethtypes.Log                                      { return nil }
+func (s *testStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) {
+	return nil, false
+}
+func (s *testStateDB) TxHash() common.Hash  { return common.Hash{} }
+func (s *testStateDB) Snapshot() int         { return 0 }
+func (s *testStateDB) RevertToSnapshot(int) {}
+
+var _ contract.StateDB = (*testStateDB)(nil)
 
 // TestTFHEInitialization tests that the TFHE components initialize correctly
 func TestTFHEInitialization(t *testing.T) {
@@ -535,17 +589,18 @@ func TestGetNetworkPublicKey(t *testing.T) {
 func TestCiphertextStore(t *testing.T) {
 	err := initTFHE()
 	require.NoError(t, err)
+	db := newTestStateDB()
 
 	// Create ciphertext
 	ct := tfheTrivialEncrypt(big.NewInt(42), TypeEuint8)
 	require.NotNil(t, ct)
 
 	// Store it
-	handle := storeCiphertext(ct, TypeEuint8)
+	handle := storeCiphertext(db, ct, TypeEuint8)
 	require.NotEqual(t, common.Hash{}, handle)
 
 	// Retrieve it
-	retrieved, ctType, ok := getCiphertext(handle)
+	retrieved, ctType, ok := getCiphertext(db, handle)
 	require.True(t, ok)
 	require.Equal(t, TypeEuint8, ctType)
 	require.Equal(t, ct, retrieved)
@@ -555,6 +610,7 @@ func TestCiphertextStore(t *testing.T) {
 func TestPerformFHEOperation(t *testing.T) {
 	err := initTFHE()
 	require.NoError(t, err)
+	db := newTestStateDB()
 
 	caller := common.HexToAddress("0x1234567890123456789012345678901234567890")
 
@@ -562,14 +618,14 @@ func TestPerformFHEOperation(t *testing.T) {
 	ct1 := tfheTrivialEncrypt(big.NewInt(10), TypeEuint8)
 	ct2 := tfheTrivialEncrypt(big.NewInt(3), TypeEuint8)
 
-	handle1 := storeCiphertext(ct1, TypeEuint8)
-	handle2 := storeCiphertext(ct2, TypeEuint8)
+	handle1 := storeCiphertext(db, ct1, TypeEuint8)
+	handle2 := storeCiphertext(db, ct2, TypeEuint8)
 
 	// Test add operation
-	resultHandle := performFHEOperation("add", handle1, handle2, caller)
+	resultHandle := performFHEOperation(db, "add", handle1, handle2, caller)
 	require.NotEqual(t, common.Hash{}, resultHandle)
 
-	resultCt, _, ok := getCiphertext(resultHandle)
+	resultCt, _, ok := getCiphertext(db, resultHandle)
 	require.True(t, ok)
 
 	decrypted := tfheDecrypt(resultCt, TypeEuint8)
@@ -580,13 +636,14 @@ func TestPerformFHEOperation(t *testing.T) {
 func TestEncryptValue(t *testing.T) {
 	err := initTFHE()
 	require.NoError(t, err)
+	db := newTestStateDB()
 
 	caller := common.HexToAddress("0x1234567890123456789012345678901234567890")
 
-	handle := encryptValue(42, TypeEuint8, caller)
+	handle := encryptValue(db, 42, TypeEuint8, caller)
 	require.NotEqual(t, common.Hash{}, handle)
 
-	ct, ctType, ok := getCiphertext(handle)
+	ct, ctType, ok := getCiphertext(db, handle)
 	require.True(t, ok)
 	require.Equal(t, TypeEuint8, ctType)
 
@@ -598,16 +655,17 @@ func TestEncryptValue(t *testing.T) {
 func TestEncryptAddress(t *testing.T) {
 	err := initTFHE()
 	require.NoError(t, err)
+	db := newTestStateDB()
 
 	caller := common.HexToAddress("0x1234567890123456789012345678901234567890")
 	// Use a small address that fits in uint64 for testing
 	// Full 160-bit addresses require proper radix integer encryption
 	addr := common.HexToAddress("0x0000000000000000000000000000000012345678")
 
-	handle := encryptAddress(addr, caller)
+	handle := encryptAddress(db, addr, caller)
 	require.NotEqual(t, common.Hash{}, handle)
 
-	ct, ctType, ok := getCiphertext(handle)
+	ct, ctType, ok := getCiphertext(db, handle)
 	require.True(t, ok)
 	require.Equal(t, TypeEaddress, ctType)
 

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"math/big"
 	"sync"
-	"time"
 
 	"github.com/luxfi/geth/common"
 )
@@ -98,6 +97,7 @@ func (gw *BridgeGateway) InitiateBridge(
 	destChain uint32,
 	deadline uint64,
 	data []byte,
+	blockTimestamp uint64,
 ) (*BridgeRequest, error) {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
@@ -126,7 +126,7 @@ func (gw *BridgeGateway) InitiateBridge(
 	}
 
 	// Check daily limit
-	gw.resetDailyLimitIfNeeded(tokenInfo)
+	gw.resetDailyLimitIfNeeded(tokenInfo, blockTimestamp)
 	newTotal := new(big.Int).Add(tokenInfo.BridgedToday, amount)
 	if tokenInfo.DailyLimit.Sign() > 0 && newTotal.Cmp(tokenInfo.DailyLimit) > 0 {
 		return nil, ErrDailyLimitExceeded
@@ -161,7 +161,7 @@ func (gw *BridgeGateway) InitiateBridge(
 		Data:        data,
 		Status:      StatusPending,
 		Signatures:  make([][]byte, 0),
-		CreatedAt:   uint64(time.Now().Unix()),
+		CreatedAt:   blockTimestamp,
 	}
 
 	// Update state
@@ -178,6 +178,7 @@ func (gw *BridgeGateway) InitiateBridge(
 func (gw *BridgeGateway) CompleteBridge(
 	requestID [32]byte,
 	signatures [][]byte,
+	blockTimestamp uint64,
 ) error {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
@@ -191,7 +192,7 @@ func (gw *BridgeGateway) CompleteBridge(
 		return ErrRequestAlreadyDone
 	}
 
-	if request.Deadline > 0 && uint64(time.Now().Unix()) > request.Deadline {
+	if request.Deadline > 0 && blockTimestamp > request.Deadline {
 		request.Status = StatusExpired
 		return ErrRequestExpired
 	}
@@ -212,7 +213,7 @@ func (gw *BridgeGateway) CompleteBridge(
 	// Mark completed
 	request.Status = StatusCompleted
 	request.Signatures = signatures
-	request.CompletedAt = uint64(time.Now().Unix())
+	request.CompletedAt = blockTimestamp
 
 	return nil
 }
@@ -231,7 +232,7 @@ func (gw *BridgeGateway) GetRequest(requestID [32]byte) (*BridgeRequest, error) 
 }
 
 // RefundExpired refunds an expired bridge request
-func (gw *BridgeGateway) RefundExpired(requestID [32]byte) error {
+func (gw *BridgeGateway) RefundExpired(requestID [32]byte, blockTimestamp uint64) error {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
 
@@ -244,7 +245,7 @@ func (gw *BridgeGateway) RefundExpired(requestID [32]byte) error {
 		return ErrRequestAlreadyDone
 	}
 
-	if request.Deadline > 0 && uint64(time.Now().Unix()) <= request.Deadline {
+	if request.Deadline > 0 && blockTimestamp <= request.Deadline {
 		return errors.New("request not yet expired")
 	}
 
@@ -264,6 +265,7 @@ func (gw *BridgeGateway) AddLiquidity(
 	token common.Address,
 	chainID uint32,
 	amount *big.Int,
+	blockTimestamp uint64,
 ) (*LPPosition, error) {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
@@ -290,7 +292,7 @@ func (gw *BridgeGateway) AddLiquidity(
 			Provider:    provider,
 			Amount:      big.NewInt(0),
 			ShareRatio:  big.NewInt(0),
-			DepositTime: uint64(time.Now().Unix()),
+			DepositTime: blockTimestamp,
 			PendingFees: big.NewInt(0),
 		}
 		pool.Providers[provider] = position
@@ -357,6 +359,7 @@ func (gw *BridgeGateway) RegisterToken(
 	minBridge *big.Int,
 	maxBridge *big.Int,
 	dailyLimit *big.Int,
+	blockTimestamp uint64,
 ) error {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
@@ -375,7 +378,7 @@ func (gw *BridgeGateway) RegisterToken(
 		MaxBridge:     maxBridge,
 		DailyLimit:    dailyLimit,
 		BridgedToday:  big.NewInt(0),
-		LastReset:     uint64(time.Now().Unix()),
+		LastReset:     blockTimestamp,
 		Enabled:       true,
 	}
 
@@ -449,12 +452,11 @@ func (gw *BridgeGateway) getOrCreatePool(chainID uint32, token common.Address) *
 	return pool
 }
 
-func (gw *BridgeGateway) resetDailyLimitIfNeeded(token *BridgedToken) {
-	now := uint64(time.Now().Unix())
+func (gw *BridgeGateway) resetDailyLimitIfNeeded(token *BridgedToken, blockTimestamp uint64) {
 	daySeconds := uint64(86400)
-	if now-token.LastReset >= daySeconds {
+	if blockTimestamp-token.LastReset >= daySeconds {
 		token.BridgedToday = big.NewInt(0)
-		token.LastReset = now
+		token.LastReset = blockTimestamp
 	}
 }
 

@@ -93,7 +93,7 @@ type VerifyNVTrustOutput struct {
 // Input: ABI-encoded VerifyNVTrustInput
 // Output: ABI-encoded VerifyNVTrustOutput
 // Gas: 50,000
-func VerifyNVTrust(input []byte) ([]byte, error) {
+func VerifyNVTrust(input []byte, blockTimestamp time.Time) ([]byte, error) {
 	if len(input) < 64 {
 		return nil, ErrInvalidInput
 	}
@@ -112,7 +112,7 @@ func VerifyNVTrust(input []byte) ([]byte, error) {
 		TEEIOEnabled:  vi.TEEIOEnabled,
 		DriverVersion: vi.DriverVersion,
 		VBIOSVersion:  vi.VBIOSVersion,
-		Timestamp:     time.Now(),
+		Timestamp:     blockTimestamp,
 		Mode:          attestation.ModeLocal,
 		LocalEvidence: &attestation.LocalGPUEvidence{
 			SPDMReport:  vi.SPDMReport,
@@ -168,7 +168,7 @@ type VerifyTPMOutput struct {
 // Input: ABI-encoded VerifyTPMInput
 // Output: ABI-encoded VerifyTPMOutput
 // Gas: 25,000
-func VerifyTPM(input []byte) ([]byte, error) {
+func VerifyTPM(input []byte, blockTimestamp time.Time) ([]byte, error) {
 	if len(input) < 64 {
 		return nil, ErrInvalidInput
 	}
@@ -198,7 +198,7 @@ func VerifyTPM(input []byte) ([]byte, error) {
 		Quote:       vi.Quote,
 		Measurement: vi.Measurement,
 		ReportData:  vi.ReportData,
-		Timestamp:   time.Now(),
+		Timestamp:   blockTimestamp,
 		Nonce:       vi.Nonce[:],
 	}
 
@@ -344,7 +344,7 @@ type CreateAttestationOutput struct {
 // Input: ABI-encoded CreateAttestationInput
 // Output: ABI-encoded CreateAttestationOutput
 // Gas: 75,000
-func CreateAttestation(input []byte) ([]byte, error) {
+func CreateAttestation(input []byte, blockTimestamp time.Time) ([]byte, error) {
 	if len(input) < 64 {
 		return nil, ErrInvalidInput
 	}
@@ -363,7 +363,7 @@ func CreateAttestation(input []byte) ([]byte, error) {
 			DeviceID:  string(ci.DeviceID[:]),
 			Model:     ci.Model,
 			CCEnabled: attestation.IsHardwareCCCapable(ci.Model),
-			Timestamp: time.Now(),
+			Timestamp: blockTimestamp,
 			Mode:      attestation.ModeLocal,
 			LocalEvidence: &attestation.LocalGPUEvidence{
 				SPDMReport: ci.Evidence,
@@ -394,7 +394,7 @@ func CreateAttestation(input []byte) ([]byte, error) {
 		quote := &attestation.AttestationQuote{
 			Type:      teeType,
 			Quote:     ci.Evidence,
-			Timestamp: time.Now(),
+			Timestamp: blockTimestamp,
 			Nonce:     ci.Nonce[:],
 		}
 
@@ -414,7 +414,7 @@ func CreateAttestation(input []byte) ([]byte, error) {
 	attestationID := computeAttestationID(ci.DeviceID, ci.Nonce)
 
 	// Attestation valid for 1 hour
-	expiresAt := time.Now().Add(time.Hour).Unix()
+	expiresAt := blockTimestamp.Add(time.Hour).Unix()
 
 	return encodeOutput(&CreateAttestationOutput{
 		Success:       success,
@@ -541,8 +541,10 @@ func RequiredGas(selector [4]byte) uint64 {
 }
 
 // Run executes the attestation precompile
-// This is the main entry point for EVM precompile calls
-func Run(input []byte) ([]byte, error) {
+// This is the main entry point for EVM precompile calls.
+// blockTimestamp must come from the block header to ensure consensus-deterministic
+// results — never use time.Now() in state-modifying precompile paths.
+func Run(input []byte, blockTimestamp time.Time) ([]byte, error) {
 	if len(input) < 4 {
 		return nil, ErrInvalidInput
 	}
@@ -554,13 +556,13 @@ func Run(input []byte) ([]byte, error) {
 
 	switch selector {
 	case [4]byte{0x01, 0x00, 0x00, 0x00}:
-		return VerifyNVTrust(data)
+		return VerifyNVTrust(data, blockTimestamp)
 	case [4]byte{0x02, 0x00, 0x00, 0x00}:
-		return VerifyTPM(data)
+		return VerifyTPM(data, blockTimestamp)
 	case [4]byte{0x03, 0x00, 0x00, 0x00}:
 		return VerifyCompute(data)
 	case [4]byte{0x04, 0x00, 0x00, 0x00}:
-		return CreateAttestation(data)
+		return CreateAttestation(data, blockTimestamp)
 	case [4]byte{0x05, 0x00, 0x00, 0x00}:
 		return GetDeviceStatus(data)
 	default:

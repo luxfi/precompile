@@ -7,7 +7,6 @@ import (
 	"errors"
 	"math/big"
 	"sync"
-	"time"
 
 	"github.com/luxfi/geth/common"
 	"github.com/zeebo/blake3"
@@ -110,6 +109,7 @@ func (tb *TeleportBridge) InitiateTeleport(
 	token common.Address,
 	amount *big.Int,
 	sourceChain uint32,
+	blockTimestamp int64,
 ) (*TeleportRequest, error) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
@@ -140,7 +140,7 @@ func (tb *TeleportBridge) InitiateTeleport(
 	netAmount := new(big.Int).Sub(amount, fee)
 
 	// Generate teleport ID
-	teleportID := tb.generateTeleportID(sender, destChain, recipient, token, amount, time.Now().UnixNano())
+	teleportID := tb.generateTeleportID(sender, destChain, recipient, token, amount, blockTimestamp)
 
 	// Check for duplicate
 	if _, exists := tb.PendingTeleports[teleportID]; exists {
@@ -158,7 +158,7 @@ func (tb *TeleportBridge) InitiateTeleport(
 		Recipient:   recipient,
 		Token:       token,
 		Amount:      netAmount,
-		Timestamp:   time.Now().Unix(),
+		Timestamp:   blockTimestamp,
 		Status:      TeleportPending,
 	}
 
@@ -417,7 +417,7 @@ func NewOmnichainRouter(bridge *TeleportBridge) *OmnichainRouter {
 }
 
 // AddRoute adds a route between two chains
-func (or *OmnichainRouter) AddRoute(srcChain, dstChain uint32, fee uint32, maxCapacity *big.Int) error {
+func (or *OmnichainRouter) AddRoute(srcChain, dstChain uint32, fee uint32, maxCapacity *big.Int, blockTimestamp int64) error {
 	or.mu.Lock()
 	defer or.mu.Unlock()
 
@@ -432,7 +432,7 @@ func (or *OmnichainRouter) AddRoute(srcChain, dstChain uint32, fee uint32, maxCa
 		IsActive:    true,
 		MaxCapacity: maxCapacity,
 		UsedToday:   big.NewInt(0),
-		LastReset:   time.Now().Unix(),
+		LastReset:   blockTimestamp,
 	}
 
 	return nil
@@ -484,6 +484,7 @@ func (or *OmnichainRouter) RouteTransfer(
 	token common.Address,
 	amount *big.Int,
 	srcChain uint32,
+	blockTimestamp int64,
 ) (*TeleportRequest, error) {
 	or.mu.Lock()
 	defer or.mu.Unlock()
@@ -503,15 +504,15 @@ func (or *OmnichainRouter) RouteTransfer(
 	route.UsedToday.Add(route.UsedToday, amount)
 
 	// Initiate teleport
-	return or.Bridge.InitiateTeleport(sender, dstChain, recipient, token, netAmount, srcChain)
+	return or.Bridge.InitiateTeleport(sender, dstChain, recipient, token, netAmount, srcChain, blockTimestamp)
 }
 
 // ResetDailyLimits resets daily capacity limits (should be called daily)
-func (or *OmnichainRouter) ResetDailyLimits() {
+func (or *OmnichainRouter) ResetDailyLimits(blockTimestamp int64) {
 	or.mu.Lock()
 	defer or.mu.Unlock()
 
-	now := time.Now().Unix()
+	now := blockTimestamp
 	for _, chainRoutes := range or.Routes {
 		for _, route := range chainRoutes {
 			// Reset if more than 24 hours since last reset

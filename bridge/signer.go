@@ -76,6 +76,7 @@ func (bs *BridgeSigner) RequestSignature(
 	messageHash [32]byte,
 	callbackAddr common.Address,
 	callbackData []byte,
+	blockTimestamp uint64,
 ) ([32]byte, error) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
@@ -89,17 +90,16 @@ func (bs *BridgeSigner) RequestSignature(
 	}
 
 	// Generate session ID
-	now := uint64(time.Now().Unix())
 	sessionData := append(messageHash[:], requester.Bytes()...)
-	sessionData = append(sessionData, big.NewInt(int64(now)).Bytes()...)
+	sessionData = append(sessionData, big.NewInt(int64(blockTimestamp)).Bytes()...)
 	sessionID := sha256.Sum256(sessionData)
 
 	session := &SigningSession{
 		SessionID:    sessionID,
 		MessageHash:  messageHash,
 		RequestedBy:  requester,
-		RequestedAt:  now,
-		ExpiresAt:    now + uint64(bs.SignTimeout.Seconds()),
+		RequestedAt:  blockTimestamp,
+		ExpiresAt:    blockTimestamp + uint64(bs.SignTimeout.Seconds()),
 		Status:       SigningPending,
 		Signatures:   make(map[[20]byte][]byte),
 		CallbackAddr: callbackAddr,
@@ -133,6 +133,7 @@ func (bs *BridgeSigner) SubmitPartialSignature(
 	sessionID [32]byte,
 	signerNodeID [20]byte,
 	signature []byte,
+	blockTimestamp uint64,
 ) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
@@ -146,7 +147,7 @@ func (bs *BridgeSigner) SubmitPartialSignature(
 		return errors.New("signing session not accepting signatures")
 	}
 
-	if uint64(time.Now().Unix()) > session.ExpiresAt {
+	if blockTimestamp > session.ExpiresAt {
 		session.Status = SigningExpired
 		return errors.New("signing session expired")
 	}
@@ -208,6 +209,7 @@ func (bs *BridgeSigner) RegisterSigner(
 	evmAddress common.Address,
 	publicKeyShare []byte,
 	bond *big.Int,
+	blockTimestamp uint64,
 ) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
@@ -229,8 +231,8 @@ func (bs *BridgeSigner) RegisterSigner(
 		Address:    evmAddress,
 		PublicKey:  publicKeyShare,
 		Bond:       bond,
-		JoinedAt:   uint64(time.Now().Unix()),
-		LastActive: uint64(time.Now().Unix()),
+		JoinedAt:   blockTimestamp,
+		LastActive: blockTimestamp,
 		SignCount:  0,
 		SlashCount: 0,
 		Status:     SignerActive,
@@ -250,7 +252,7 @@ func (bs *BridgeSigner) RegisterSigner(
 }
 
 // RemoveSigner removes a signer from the set
-func (bs *BridgeSigner) RemoveSigner(nodeID [20]byte) error {
+func (bs *BridgeSigner) RemoveSigner(nodeID [20]byte, blockTimestamp uint64) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
@@ -276,14 +278,14 @@ func (bs *BridgeSigner) RemoveSigner(nodeID [20]byte) error {
 	if len(bs.SignerSet.Waitlist) > 0 {
 		// This would trigger a reshare in production
 		bs.SignerSet.Epoch++
-		bs.SignerSet.LastReshare = uint64(time.Now().Unix())
+		bs.SignerSet.LastReshare = blockTimestamp
 	}
 
 	return nil
 }
 
 // SlashSigner reduces a signer's bond due to misbehavior
-func (bs *BridgeSigner) SlashSigner(nodeID [20]byte, slashPercent uint32) error {
+func (bs *BridgeSigner) SlashSigner(nodeID [20]byte, slashPercent uint32, blockTimestamp uint64) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
@@ -300,7 +302,7 @@ func (bs *BridgeSigner) SlashSigner(nodeID [20]byte, slashPercent uint32) error 
 			// Remove if bond drops below minimum
 			if signer.Bond.Cmp(MinSignerBond) < 0 {
 				signer.Status = SignerSlashed
-				return bs.RemoveSigner(nodeID)
+				return bs.RemoveSigner(nodeID, blockTimestamp)
 			}
 
 			return nil
