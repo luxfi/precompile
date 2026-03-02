@@ -32,9 +32,11 @@ var (
 	_ contract.StatefulPrecompiledContract = Precompile
 
 	ErrInvalidInput = errors.New("invalid math input")
-	ErrOutOfGas     = errors.New("out of gas")
-	ErrDivByZero    = errors.New("division by zero")
-	ErrUnknownOp    = errors.New("unknown math operation")
+	// ErrOutOfGas aliases the canonical sentinel so callers can
+	// errors.Is(err, contract.ErrOutOfGas) across every precompile.
+	ErrOutOfGas  = contract.ErrOutOfGas
+	ErrDivByZero = errors.New("division by zero")
+	ErrUnknownOp = errors.New("unknown math operation")
 )
 
 const (
