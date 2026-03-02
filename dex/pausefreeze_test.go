@@ -795,7 +795,7 @@ func TestPauseFreeze_StoragePersistencePauseDEX(t *testing.T) {
 	}
 
 	// All other bytes should be zero.
-	for i := 0; i < 31; i++ {
+	for i := range 31 {
 		if val[i] != 0 {
 			t.Fatalf("expected storage value byte[%d] = 0, got %d", i, val[i])
 		}

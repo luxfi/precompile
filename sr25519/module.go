@@ -41,7 +41,7 @@ func (*configurator) Configure(
 
 // Config implements precompileconfig.Config for sr25519.
 type Config struct {
-	Upgrade precompileconfig.Upgrade `json:"upgrade,omitempty"`
+	Upgrade precompileconfig.Upgrade `json:"upgrade"`
 }
 
 func (c *Config) Key() string        { return ConfigKey }

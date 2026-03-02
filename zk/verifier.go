@@ -263,7 +263,7 @@ func (zv *ZKVerifier) fflonkVerify(
 	}
 
 	evaluations := make([]*big.Int, numEvals)
-	for i := 0; i < numEvals; i++ {
+	for i := range numEvals {
 		evaluations[i] = new(big.Int).SetBytes(proof[evalOffset+i*32 : evalOffset+(i+1)*32])
 	}
 
@@ -808,7 +808,7 @@ func (zv *ZKVerifier) plonkVerify(
 
 	// Parse G1 commitments from proof
 	commitments := make([]*bn256.G1, 9)
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		commitments[i] = new(bn256.G1)
 		if _, err := commitments[i].Unmarshal(proof[i*64 : (i+1)*64]); err != nil {
 			return false
@@ -818,7 +818,7 @@ func (zv *ZKVerifier) plonkVerify(
 	// Parse evaluations
 	evalOffset := 576
 	evaluations := make([]*big.Int, 6)
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		evaluations[i] = new(big.Int).SetBytes(proof[evalOffset+i*32 : evalOffset+(i+1)*32])
 	}
 
@@ -830,7 +830,7 @@ func (zv *ZKVerifier) plonkVerify(
 	}
 
 	vkPoints := make([]*bn256.G1, 8)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		vkPoints[i] = new(bn256.G1)
 		if _, err := vkPoints[i].Unmarshal(vk.IC[i]); err != nil {
 			return false

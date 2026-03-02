@@ -471,10 +471,7 @@ func (vfc *VolatilityFeeCalculator) CalculateFee(observations []TWAPObservation)
 	volatilityBps.Mul(volatilityBps, big.NewInt(int64(vfc.VolatilityScale)))
 	volatilityBps.Div(volatilityBps, big.NewInt(10000))
 
-	fee := vfc.BaseFee + uint24(volatilityBps.Uint64())
-	if fee > vfc.MaxFee {
-		fee = vfc.MaxFee
-	}
+	fee := min(vfc.BaseFee+uint24(volatilityBps.Uint64()), vfc.MaxFee)
 
 	return fee
 }
