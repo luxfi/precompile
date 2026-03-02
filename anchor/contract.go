@@ -36,7 +36,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &anchorPrecompile{}
 
-	ErrInvalidInput       = errors.New("anchor: invalid input")
+	ErrInvalidInput       = contract.ErrInvalidInput
 	ErrInvalidSelector    = errors.New("anchor: unknown function selector")
 	ErrHeightNotMonotonic = errors.New("anchor: height must exceed latest")
 	ErrAnchorNotFound     = errors.New("anchor: not found")

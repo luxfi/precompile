@@ -13,8 +13,12 @@ import (
 	"github.com/luxfi/geth/accounts/abi"
 )
 
-// ErrOutOfGas is returned when the gas is exhausted
-var ErrOutOfGas = errors.New("out of gas")
+// Shared error sentinels for all precompiles.
+var (
+	ErrOutOfGas    = errors.New("out of gas")
+	ErrInvalidInput = errors.New("invalid input")
+	ErrInvalidOp    = errors.New("invalid operation")
+)
 
 // Gas costs for stateful precompiles
 const (

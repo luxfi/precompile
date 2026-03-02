@@ -43,7 +43,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &ringSignaturePrecompile{}
 
-	ErrInvalidInput     = errors.New("invalid ring signature input")
+	ErrInvalidInput     = contract.ErrInvalidInput
 	ErrInvalidScheme    = errors.New("invalid signature scheme")
 	ErrInvalidRingSize  = errors.New("ring size must be >= 2")
 	ErrInvalidSignature = errors.New("invalid ring signature")
@@ -125,19 +125,19 @@ func (p *ringSignaturePrecompile) Run(
 	readOnly bool,
 ) ([]byte, uint64, error) {
 	gasCost := p.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	if len(input) < 3 {
-		return nil, suppliedGas - gasCost, ErrInvalidInput
+		return nil, remainingGas, ErrInvalidInput
 	}
 
 	op := input[0]
 	scheme := input[1]
 
 	var result []byte
-	var err error
 
 	switch op {
 	case OpVerify:
@@ -147,10 +147,10 @@ func (p *ringSignaturePrecompile) Run(
 	}
 
 	if err != nil {
-		return nil, suppliedGas - gasCost, err
+		return nil, remainingGas, err
 	}
 
-	return result, suppliedGas - gasCost, nil
+	return result, remainingGas, nil
 }
 
 // LSAGSignature represents an LSAG ring signature

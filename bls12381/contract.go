@@ -40,7 +40,7 @@ var (
 	// blsOps is the shared operation implementation used by all 7 precompile structs.
 	blsOps = &blsOperations{}
 
-	ErrInvalidInput      = errors.New("invalid BLS12-381 input")
+	ErrInvalidInput      = contract.ErrInvalidInput
 	ErrPointNotOnCurve   = errors.New("point not on curve")
 	ErrPointNotInSubgrp  = errors.New("point not in correct subgroup")
 	ErrInvalidFieldElem  = errors.New("invalid field element")

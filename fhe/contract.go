@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"sync"
 
 	"github.com/luxfi/accel"
 	accelfhe "github.com/luxfi/accel/ops/fhe"
+	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -62,7 +62,7 @@ const (
 )
 
 var (
-	ErrInvalidInput    = errors.New("invalid input")
+	ErrInvalidInput    = contract.ErrInvalidInput
 	ErrTypeMismatch    = errors.New("ciphertext type mismatch")
 	ErrOperationFailed = errors.New("FHE operation failed")
 	ErrNotImplemented  = errors.New("operation not implemented")
@@ -250,7 +250,7 @@ func (c *FHEContract) handleAdd(state contract.AccessibleState, caller common.Ad
 	handle2 := common.BytesToHash(data[32:64])
 
 	// Delegate to Z-Chain FHE coprocessor
-	result := performFHEOperation("add", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "add", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasAdd, nil
 }
@@ -266,7 +266,7 @@ func (c *FHEContract) handleSub(state contract.AccessibleState, caller common.Ad
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("sub", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "sub", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasSub, nil
 }
@@ -282,7 +282,7 @@ func (c *FHEContract) handleMul(state contract.AccessibleState, caller common.Ad
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("mul", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "mul", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasMul, nil
 }
@@ -298,7 +298,7 @@ func (c *FHEContract) handleLt(state contract.AccessibleState, caller common.Add
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("lt", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "lt", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasLt, nil
 }
@@ -314,7 +314,7 @@ func (c *FHEContract) handleGt(state contract.AccessibleState, caller common.Add
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("gt", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "gt", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasGt, nil
 }
@@ -330,7 +330,7 @@ func (c *FHEContract) handleEq(state contract.AccessibleState, caller common.Add
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("eq", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "eq", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasEq, nil
 }
@@ -347,7 +347,7 @@ func (c *FHEContract) handleSelect(state contract.AccessibleState, caller common
 	ifTrue := common.BytesToHash(data[32:64])
 	ifFalse := common.BytesToHash(data[64:96])
 
-	result := performFHESelect(condition, ifTrue, ifFalse, caller)
+	result := performFHESelect(state.GetStateDB(), condition, ifTrue, ifFalse, caller)
 
 	return result.Bytes(), gas - GasSelect, nil
 }
@@ -362,7 +362,7 @@ func (c *FHEContract) handleAsEuint64(state contract.AccessibleState, caller com
 
 	value := new(big.Int).SetBytes(data[:32])
 
-	result := encryptValue(value.Uint64(), TypeEuint64, caller)
+	result := encryptValue(state.GetStateDB(), value.Uint64(), TypeEuint64, caller)
 
 	return result.Bytes(), gas - GasEncrypt, nil
 }
@@ -377,7 +377,7 @@ func (c *FHEContract) handleAsEaddress(state contract.AccessibleState, caller co
 
 	addr := common.BytesToAddress(data[12:32])
 
-	result := encryptAddress(addr, caller)
+	result := encryptAddress(state.GetStateDB(), addr, caller)
 
 	return result.Bytes(), gas - GasEncrypt, nil
 }
@@ -393,7 +393,7 @@ func (c *FHEContract) handleMax(state contract.AccessibleState, caller common.Ad
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("max", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "max", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasMax, nil
 }
@@ -409,7 +409,7 @@ func (c *FHEContract) handleMin(state contract.AccessibleState, caller common.Ad
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("min", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "min", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasMin, nil
 }
@@ -425,7 +425,7 @@ func (c *FHEContract) handleAnd(state contract.AccessibleState, caller common.Ad
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("and", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "and", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasAnd, nil
 }
@@ -441,7 +441,7 @@ func (c *FHEContract) handleOr(state contract.AccessibleState, caller common.Add
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("or", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "or", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasOr, nil
 }
@@ -456,7 +456,7 @@ func (c *FHEContract) handleNot(state contract.AccessibleState, caller common.Ad
 
 	handle := common.BytesToHash(data[:32])
 
-	result := performFHEUnaryOperation("not", handle, caller)
+	result := performFHEUnaryOperation(state.GetStateDB(), "not", handle, caller)
 
 	return result.Bytes(), gas - GasNot, nil
 }
@@ -471,7 +471,7 @@ func (c *FHEContract) handleNeg(state contract.AccessibleState, caller common.Ad
 
 	handle := common.BytesToHash(data[:32])
 
-	result := performFHEUnaryOperation("neg", handle, caller)
+	result := performFHEUnaryOperation(state.GetStateDB(), "neg", handle, caller)
 
 	return result.Bytes(), gas - GasNeg, nil
 }
@@ -486,7 +486,7 @@ func (c *FHEContract) handleRand(state contract.AccessibleState, caller common.A
 
 	ctType := data[0]
 
-	result := generateEncryptedRandom(ctType, caller)
+	result := generateEncryptedRandom(state.GetStateDB(), ctType, caller)
 
 	return result.Bytes(), gas - GasRand, nil
 }
@@ -504,7 +504,7 @@ func (c *FHEContract) handleDiv(state contract.AccessibleState, caller common.Ad
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("div", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "div", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasDiv, nil
 }
@@ -520,7 +520,7 @@ func (c *FHEContract) handleRem(state contract.AccessibleState, caller common.Ad
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("rem", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "rem", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasRem, nil
 }
@@ -538,7 +538,7 @@ func (c *FHEContract) handleScalarAdd(state contract.AccessibleState, caller com
 	handle := common.BytesToHash(data[:32])
 	scalar := new(big.Int).SetBytes(data[32:64])
 
-	result := performFHEScalarOperation("scalarAdd", handle, scalar, caller)
+	result := performFHEScalarOperation(state.GetStateDB(), "scalarAdd", handle, scalar, caller)
 
 	return result.Bytes(), gas - GasAdd, nil
 }
@@ -554,7 +554,7 @@ func (c *FHEContract) handleScalarSub(state contract.AccessibleState, caller com
 	handle := common.BytesToHash(data[:32])
 	scalar := new(big.Int).SetBytes(data[32:64])
 
-	result := performFHEScalarOperation("scalarSub", handle, scalar, caller)
+	result := performFHEScalarOperation(state.GetStateDB(), "scalarSub", handle, scalar, caller)
 
 	return result.Bytes(), gas - GasSub, nil
 }
@@ -570,7 +570,7 @@ func (c *FHEContract) handleScalarMul(state contract.AccessibleState, caller com
 	handle := common.BytesToHash(data[:32])
 	scalar := new(big.Int).SetBytes(data[32:64])
 
-	result := performFHEScalarOperation("scalarMul", handle, scalar, caller)
+	result := performFHEScalarOperation(state.GetStateDB(), "scalarMul", handle, scalar, caller)
 
 	return result.Bytes(), gas - GasMul, nil
 }
@@ -586,7 +586,7 @@ func (c *FHEContract) handleScalarDiv(state contract.AccessibleState, caller com
 	handle := common.BytesToHash(data[:32])
 	scalar := new(big.Int).SetBytes(data[32:64])
 
-	result := performFHEScalarOperation("scalarDiv", handle, scalar, caller)
+	result := performFHEScalarOperation(state.GetStateDB(), "scalarDiv", handle, scalar, caller)
 
 	return result.Bytes(), gas - GasDiv, nil
 }
@@ -602,7 +602,7 @@ func (c *FHEContract) handleScalarRem(state contract.AccessibleState, caller com
 	handle := common.BytesToHash(data[:32])
 	scalar := new(big.Int).SetBytes(data[32:64])
 
-	result := performFHEScalarOperation("scalarRem", handle, scalar, caller)
+	result := performFHEScalarOperation(state.GetStateDB(), "scalarRem", handle, scalar, caller)
 
 	return result.Bytes(), gas - GasRem, nil
 }
@@ -620,7 +620,7 @@ func (c *FHEContract) handleLe(state contract.AccessibleState, caller common.Add
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("le", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "le", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasLe, nil
 }
@@ -636,7 +636,7 @@ func (c *FHEContract) handleGe(state contract.AccessibleState, caller common.Add
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("ge", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "ge", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasGe, nil
 }
@@ -652,7 +652,7 @@ func (c *FHEContract) handleNe(state contract.AccessibleState, caller common.Add
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("ne", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "ne", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasNe, nil
 }
@@ -670,7 +670,7 @@ func (c *FHEContract) handleXor(state contract.AccessibleState, caller common.Ad
 	handle1 := common.BytesToHash(data[:32])
 	handle2 := common.BytesToHash(data[32:64])
 
-	result := performFHEOperation("xor", handle1, handle2, caller)
+	result := performFHEOperation(state.GetStateDB(), "xor", handle1, handle2, caller)
 
 	return result.Bytes(), gas - GasXor, nil
 }
@@ -688,7 +688,7 @@ func (c *FHEContract) handleShl(state contract.AccessibleState, caller common.Ad
 	handle := common.BytesToHash(data[:32])
 	shift := int(data[32])
 
-	result := performFHEShiftOperation("shl", handle, shift, caller)
+	result := performFHEShiftOperation(state.GetStateDB(), "shl", handle, shift, caller)
 
 	return result.Bytes(), gas - GasShl, nil
 }
@@ -704,7 +704,7 @@ func (c *FHEContract) handleShr(state contract.AccessibleState, caller common.Ad
 	handle := common.BytesToHash(data[:32])
 	shift := int(data[32])
 
-	result := performFHEShiftOperation("shr", handle, shift, caller)
+	result := performFHEShiftOperation(state.GetStateDB(), "shr", handle, shift, caller)
 
 	return result.Bytes(), gas - GasShr, nil
 }
@@ -720,7 +720,7 @@ func (c *FHEContract) handleRotl(state contract.AccessibleState, caller common.A
 	handle := common.BytesToHash(data[:32])
 	shift := int(data[32])
 
-	result := performFHEShiftOperation("rotl", handle, shift, caller)
+	result := performFHEShiftOperation(state.GetStateDB(), "rotl", handle, shift, caller)
 
 	return result.Bytes(), gas - GasRotl, nil
 }
@@ -736,7 +736,7 @@ func (c *FHEContract) handleRotr(state contract.AccessibleState, caller common.A
 	handle := common.BytesToHash(data[:32])
 	shift := int(data[32])
 
-	result := performFHEShiftOperation("rotr", handle, shift, caller)
+	result := performFHEShiftOperation(state.GetStateDB(), "rotr", handle, shift, caller)
 
 	return result.Bytes(), gas - GasRotr, nil
 }
@@ -754,7 +754,7 @@ func (c *FHEContract) handleCast(state contract.AccessibleState, caller common.A
 	handle := common.BytesToHash(data[:32])
 	toType := data[32]
 
-	result := performFHECast(handle, toType, caller)
+	result := performFHECast(state.GetStateDB(), handle, toType, caller)
 
 	return result.Bytes(), gas - GasCast, nil
 }
@@ -773,7 +773,7 @@ func (c *FHEContract) handleAsEbool(state contract.AccessibleState, caller commo
 		boolVal = 1
 	}
 
-	result := encryptValue(boolVal, TypeEbool, caller)
+	result := encryptValue(state.GetStateDB(), boolVal, TypeEbool, caller)
 
 	return result.Bytes(), gas - GasEncrypt, nil
 }
@@ -788,7 +788,7 @@ func (c *FHEContract) handleAsEuint4(state contract.AccessibleState, caller comm
 
 	value := new(big.Int).SetBytes(data[:32])
 
-	result := encryptValue(value.Uint64()&0xF, TypeEuint4, caller)
+	result := encryptValue(state.GetStateDB(), value.Uint64()&0xF, TypeEuint4, caller)
 
 	return result.Bytes(), gas - GasEncrypt, nil
 }
@@ -803,7 +803,7 @@ func (c *FHEContract) handleAsEuint8(state contract.AccessibleState, caller comm
 
 	value := new(big.Int).SetBytes(data[:32])
 
-	result := encryptValue(value.Uint64()&0xFF, TypeEuint8, caller)
+	result := encryptValue(state.GetStateDB(), value.Uint64()&0xFF, TypeEuint8, caller)
 
 	return result.Bytes(), gas - GasEncrypt, nil
 }
@@ -818,7 +818,7 @@ func (c *FHEContract) handleAsEuint16(state contract.AccessibleState, caller com
 
 	value := new(big.Int).SetBytes(data[:32])
 
-	result := encryptValue(value.Uint64()&0xFFFF, TypeEuint16, caller)
+	result := encryptValue(state.GetStateDB(), value.Uint64()&0xFFFF, TypeEuint16, caller)
 
 	return result.Bytes(), gas - GasEncrypt, nil
 }
@@ -833,7 +833,7 @@ func (c *FHEContract) handleAsEuint32(state contract.AccessibleState, caller com
 
 	value := new(big.Int).SetBytes(data[:32])
 
-	result := encryptValue(value.Uint64()&0xFFFFFFFF, TypeEuint32, caller)
+	result := encryptValue(state.GetStateDB(), value.Uint64()&0xFFFFFFFF, TypeEuint32, caller)
 
 	return result.Bytes(), gas - GasEncrypt, nil
 }
@@ -848,7 +848,7 @@ func (c *FHEContract) handleAsEuint128(state contract.AccessibleState, caller co
 
 	value := new(big.Int).SetBytes(data[:32])
 
-	result := encryptBigIntValue(value, TypeEuint128, caller)
+	result := encryptBigIntValue(state.GetStateDB(), value, TypeEuint128, caller)
 
 	return result.Bytes(), gas - GasEncrypt, nil
 }
@@ -863,7 +863,7 @@ func (c *FHEContract) handleAsEuint256(state contract.AccessibleState, caller co
 
 	value := new(big.Int).SetBytes(data[:32])
 
-	result := encryptBigIntValue(value, TypeEuint256, caller)
+	result := encryptBigIntValue(state.GetStateDB(), value, TypeEuint256, caller)
 
 	return result.Bytes(), gas - GasEncrypt, nil
 }
@@ -880,7 +880,7 @@ func (c *FHEContract) handleDecrypt(state contract.AccessibleState, caller commo
 
 	handle := common.BytesToHash(data[:32])
 
-	result := performFHEDecrypt(handle, caller)
+	result := performFHEDecrypt(state.GetStateDB(), handle, caller)
 
 	return result.Bytes(), gas - GasDecryptRequest, nil
 }
@@ -896,7 +896,7 @@ func (c *FHEContract) handleVerify(state contract.AccessibleState, caller common
 	ctType := data[0]
 	inputHandle := data[1:]
 
-	result := performFHEVerify(inputHandle, ctType, caller)
+	result := performFHEVerify(state.GetStateDB(), inputHandle, ctType, caller)
 
 	return result.Bytes(), gas - GasEncrypt, nil
 }
@@ -912,54 +912,95 @@ func (c *FHEContract) handleSealOutput(state contract.AccessibleState, caller co
 	handle := common.BytesToHash(data[:32])
 	publicKey := data[32:]
 
-	result := performFHESealOutput(handle, publicKey, caller)
+	result := performFHESealOutput(state.GetStateDB(), handle, publicKey, caller)
 
 	return result, gas - GasEncrypt, nil
 }
 
-// ctStore guards ciphertextStore and ciphertextTypes against concurrent access.
-// Access pattern is read-heavy (getCiphertext called 2x per binary op,
-// storeCiphertext 1x) so RWMutex with RLock on reads is the correct choice.
-var ctStore = struct {
-	sync.RWMutex
-	data  map[common.Hash][]byte
-	types map[common.Hash]uint8
-}{
-	data:  make(map[common.Hash][]byte),
-	types: make(map[common.Hash]uint8),
+// Ciphertext storage layout in StateDB:
+//
+// For a ciphertext with handle H (= keccak256(ct_bytes)):
+//   slot H          -> type (uint8) in low byte, length (uint32) in bytes 1-4
+//   slot keccak(H, i) -> 32-byte chunk i of the ciphertext data
+//
+// This persists ciphertexts to the blockchain state trie, ensuring they survive
+// across blocks and are identical on all validators.
+
+// keccak256Hash computes Keccak256 and returns as common.Hash.
+func keccak256Hash(data ...[]byte) common.Hash {
+	return common.BytesToHash(crypto.Keccak256(data...))
 }
 
-// storeCiphertext saves ciphertext and returns its hash
-func storeCiphertext(ct []byte, ctType uint8) common.Hash {
-	hash := common.BytesToHash(ct)
-	ctStore.Lock()
-	ctStore.data[hash] = ct
-	ctStore.types[hash] = ctType
-	ctStore.Unlock()
-	return hash
+// storeCiphertext persists a ciphertext to the EVM state trie and returns its handle.
+func storeCiphertext(stateDB contract.StateDB, ct []byte, ctType uint8) common.Hash {
+	handle := keccak256Hash(ct)
+
+	// Pack type (1 byte) + length (4 bytes) into a single slot.
+	var meta common.Hash
+	meta[0] = ctType
+	meta[1] = byte(len(ct) >> 24)
+	meta[2] = byte(len(ct) >> 16)
+	meta[3] = byte(len(ct) >> 8)
+	meta[4] = byte(len(ct))
+	stateDB.SetState(ContractAddress, handle, meta)
+
+	// Store ciphertext bytes in 32-byte chunks.
+	for i := 0; i < len(ct); i += 32 {
+		slotIndex := common.BigToHash(big.NewInt(int64(i / 32)))
+		slot := keccak256Hash(handle.Bytes(), slotIndex.Bytes())
+
+		var chunk common.Hash
+		end := i + 32
+		if end > len(ct) {
+			end = len(ct)
+		}
+		copy(chunk[:], ct[i:end])
+		stateDB.SetState(ContractAddress, slot, chunk)
+	}
+
+	return handle
 }
 
-// getCiphertext retrieves ciphertext by hash
-func getCiphertext(hash common.Hash) ([]byte, uint8, bool) {
-	ctStore.RLock()
-	ct, ok := ctStore.data[hash]
-	if !ok {
-		ctStore.RUnlock()
+// getCiphertext reads a ciphertext from the EVM state trie.
+func getCiphertext(stateDB contract.StateDB, handle common.Hash) ([]byte, uint8, bool) {
+	meta := stateDB.GetState(ContractAddress, handle)
+
+	// Zero meta means no ciphertext stored at this handle.
+	if meta == (common.Hash{}) {
 		return nil, 0, false
 	}
-	ctType := ctStore.types[hash]
-	ctStore.RUnlock()
+
+	ctType := meta[0]
+	ctLen := int(meta[1])<<24 | int(meta[2])<<16 | int(meta[3])<<8 | int(meta[4])
+
+	if ctLen == 0 {
+		return nil, 0, false
+	}
+
+	ct := make([]byte, ctLen)
+	for i := 0; i < ctLen; i += 32 {
+		slotIndex := common.BigToHash(big.NewInt(int64(i / 32)))
+		slot := keccak256Hash(handle.Bytes(), slotIndex.Bytes())
+		chunk := stateDB.GetState(ContractAddress, slot)
+
+		end := i + 32
+		if end > ctLen {
+			end = ctLen
+		}
+		copy(ct[i:end], chunk[:end-i])
+	}
+
 	return ct, ctType, true
 }
 
 // performFHEOperation executes FHE binary operations using GPU acceleration
 // when available, falling back to TFHE library on CPU.
-func performFHEOperation(op string, handle1, handle2 common.Hash, caller common.Address) common.Hash {
-	lhs, lhsType, ok := getCiphertext(handle1)
+func performFHEOperation(stateDB contract.StateDB, op string, handle1, handle2 common.Hash, caller common.Address) common.Hash {
+	lhs, lhsType, ok := getCiphertext(stateDB, handle1)
 	if !ok {
 		return common.Hash{}
 	}
-	rhs, _, ok := getCiphertext(handle2)
+	rhs, _, ok := getCiphertext(stateDB, handle2)
 	if !ok {
 		return common.Hash{}
 	}
@@ -970,7 +1011,7 @@ func performFHEOperation(op string, handle1, handle2 common.Hash, caller common.
 		if op == "lt" || op == "gt" || op == "eq" || op == "ne" || op == "le" || op == "ge" {
 			resultType = TypeEbool
 		}
-		return storeCiphertext(result, resultType)
+		return storeCiphertext(stateDB, result, resultType)
 	}
 
 	// CPU fallback
@@ -1018,7 +1059,7 @@ func performFHEOperation(op string, handle1, handle2 common.Hash, caller common.
 		resultType = TypeEbool
 	}
 
-	return storeCiphertext(result, resultType)
+	return storeCiphertext(stateDB, result, resultType)
 }
 
 // fheOpGPU attempts GPU-accelerated FHE operations.
@@ -1091,16 +1132,16 @@ func uint64ToBytes(u []uint64) []byte {
 }
 
 // performFHESelect executes conditional selection using real TFHE library
-func performFHESelect(condition, ifTrue, ifFalse common.Hash, caller common.Address) common.Hash {
-	ctControl, _, ok := getCiphertext(condition)
+func performFHESelect(stateDB contract.StateDB, condition, ifTrue, ifFalse common.Hash, caller common.Address) common.Hash {
+	ctControl, _, ok := getCiphertext(stateDB, condition)
 	if !ok {
 		return common.Hash{}
 	}
-	ctTrue, trueType, ok := getCiphertext(ifTrue)
+	ctTrue, trueType, ok := getCiphertext(stateDB, ifTrue)
 	if !ok {
 		return common.Hash{}
 	}
-	ctFalse, _, ok := getCiphertext(ifFalse)
+	ctFalse, _, ok := getCiphertext(stateDB, ifFalse)
 	if !ok {
 		return common.Hash{}
 	}
@@ -1110,12 +1151,12 @@ func performFHESelect(condition, ifTrue, ifFalse common.Hash, caller common.Addr
 		return common.Hash{}
 	}
 
-	return storeCiphertext(result, trueType)
+	return storeCiphertext(stateDB, result, trueType)
 }
 
 // performFHEUnaryOperation executes FHE unary operations using real TFHE library
-func performFHEUnaryOperation(op string, handle common.Hash, caller common.Address) common.Hash {
-	ct, ctType, ok := getCiphertext(handle)
+func performFHEUnaryOperation(stateDB contract.StateDB, op string, handle common.Hash, caller common.Address) common.Hash {
+	ct, ctType, ok := getCiphertext(stateDB, handle)
 	if !ok {
 		return common.Hash{}
 	}
@@ -1134,43 +1175,43 @@ func performFHEUnaryOperation(op string, handle common.Hash, caller common.Addre
 		return common.Hash{}
 	}
 
-	return storeCiphertext(result, ctType)
+	return storeCiphertext(stateDB, result, ctType)
 }
 
 // encryptValue encrypts a plaintext value using real TFHE library
-func encryptValue(value uint64, ctType uint8, caller common.Address) common.Hash {
+func encryptValue(stateDB contract.StateDB, value uint64, ctType uint8, caller common.Address) common.Hash {
 	ct := tfheTrivialEncrypt(new(big.Int).SetUint64(value), ctType)
 	if ct == nil {
 		return common.Hash{}
 	}
-	return storeCiphertext(ct, ctType)
+	return storeCiphertext(stateDB, ct, ctType)
 }
 
 // encryptAddress encrypts an address using real TFHE library
-func encryptAddress(addr common.Address, caller common.Address) common.Hash {
+func encryptAddress(stateDB contract.StateDB, addr common.Address, caller common.Address) common.Hash {
 	// Address is 160 bits
 	value := new(big.Int).SetBytes(addr.Bytes())
 	ct := tfheTrivialEncrypt(value, TypeEaddress)
 	if ct == nil {
 		return common.Hash{}
 	}
-	return storeCiphertext(ct, TypeEaddress)
+	return storeCiphertext(stateDB, ct, TypeEaddress)
 }
 
 // generateEncryptedRandom generates random encrypted value using real TFHE library
-func generateEncryptedRandom(ctType uint8, caller common.Address) common.Hash {
+func generateEncryptedRandom(stateDB contract.StateDB, ctType uint8, caller common.Address) common.Hash {
 	// Use caller address as part of seed for determinism
 	seed := new(big.Int).SetBytes(caller.Bytes()).Uint64()
 	ct := tfheRandom(ctType, seed)
 	if ct == nil {
 		return common.Hash{}
 	}
-	return storeCiphertext(ct, ctType)
+	return storeCiphertext(stateDB, ct, ctType)
 }
 
 // performFHEScalarOperation executes FHE scalar operations using real TFHE library
-func performFHEScalarOperation(op string, handle common.Hash, scalar *big.Int, caller common.Address) common.Hash {
-	ct, ctType, ok := getCiphertext(handle)
+func performFHEScalarOperation(stateDB contract.StateDB, op string, handle common.Hash, scalar *big.Int, caller common.Address) common.Hash {
+	ct, ctType, ok := getCiphertext(stateDB, handle)
 	if !ok {
 		return common.Hash{}
 	}
@@ -1195,12 +1236,12 @@ func performFHEScalarOperation(op string, handle common.Hash, scalar *big.Int, c
 		return common.Hash{}
 	}
 
-	return storeCiphertext(result, ctType)
+	return storeCiphertext(stateDB, result, ctType)
 }
 
 // performFHEShiftOperation executes FHE shift operations using real TFHE library
-func performFHEShiftOperation(op string, handle common.Hash, shift int, caller common.Address) common.Hash {
-	ct, ctType, ok := getCiphertext(handle)
+func performFHEShiftOperation(stateDB contract.StateDB, op string, handle common.Hash, shift int, caller common.Address) common.Hash {
+	ct, ctType, ok := getCiphertext(stateDB, handle)
 	if !ok {
 		return common.Hash{}
 	}
@@ -1223,12 +1264,12 @@ func performFHEShiftOperation(op string, handle common.Hash, shift int, caller c
 		return common.Hash{}
 	}
 
-	return storeCiphertext(result, ctType)
+	return storeCiphertext(stateDB, result, ctType)
 }
 
 // performFHECast executes type casting using real TFHE library
-func performFHECast(handle common.Hash, toType uint8, caller common.Address) common.Hash {
-	ct, fromType, ok := getCiphertext(handle)
+func performFHECast(stateDB contract.StateDB, handle common.Hash, toType uint8, caller common.Address) common.Hash {
+	ct, fromType, ok := getCiphertext(stateDB, handle)
 	if !ok {
 		return common.Hash{}
 	}
@@ -1238,21 +1279,21 @@ func performFHECast(handle common.Hash, toType uint8, caller common.Address) com
 		return common.Hash{}
 	}
 
-	return storeCiphertext(result, toType)
+	return storeCiphertext(stateDB, result, toType)
 }
 
 // encryptBigIntValue encrypts a big.Int value for types > 64 bits
-func encryptBigIntValue(value *big.Int, ctType uint8, caller common.Address) common.Hash {
+func encryptBigIntValue(stateDB contract.StateDB, value *big.Int, ctType uint8, caller common.Address) common.Hash {
 	ct := tfheTrivialEncrypt(value, ctType)
 	if ct == nil {
 		return common.Hash{}
 	}
-	return storeCiphertext(ct, ctType)
+	return storeCiphertext(stateDB, ct, ctType)
 }
 
 // performFHEDecrypt decrypts a ciphertext (returns as big.Int bytes)
-func performFHEDecrypt(handle common.Hash, caller common.Address) *big.Int {
-	ct, ctType, ok := getCiphertext(handle)
+func performFHEDecrypt(stateDB contract.StateDB, handle common.Hash, caller common.Address) *big.Int {
+	ct, ctType, ok := getCiphertext(stateDB, handle)
 	if !ok {
 		return big.NewInt(0)
 	}
@@ -1261,16 +1302,16 @@ func performFHEDecrypt(handle common.Hash, caller common.Address) *big.Int {
 }
 
 // performFHEVerify verifies and stores an input ciphertext
-func performFHEVerify(inputHandle []byte, ctType uint8, caller common.Address) common.Hash {
+func performFHEVerify(stateDB contract.StateDB, inputHandle []byte, ctType uint8, caller common.Address) common.Hash {
 	if !tfheVerify(inputHandle, ctType) {
 		return common.Hash{}
 	}
-	return storeCiphertext(inputHandle, ctType)
+	return storeCiphertext(stateDB, inputHandle, ctType)
 }
 
 // performFHESealOutput seals output for a specific public key
-func performFHESealOutput(handle common.Hash, publicKey []byte, caller common.Address) []byte {
-	ct, ctType, ok := getCiphertext(handle)
+func performFHESealOutput(stateDB contract.StateDB, handle common.Hash, publicKey []byte, caller common.Address) []byte {
+	ct, ctType, ok := getCiphertext(stateDB, handle)
 	if !ok {
 		return nil
 	}
