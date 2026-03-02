@@ -39,7 +39,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &blake3Precompile{}
 
-	ErrInvalidInput      = errors.New("invalid blake3 input")
+	ErrInvalidInput      = contract.ErrInvalidInput
 	ErrInvalidOperation  = errors.New("invalid operation selector")
 	ErrOutputTooLarge    = errors.New("requested output exceeds maximum")
 	ErrInvalidDataLength = errors.New("invalid data length")
@@ -138,10 +138,10 @@ func (p *blake3Precompile) Run(
 ) (ret []byte, remainingGas uint64, err error) {
 	// Calculate required gas
 	requiredGas := p.RequiredGas(input)
-	if suppliedGas < requiredGas {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err = contract.DeductGas(suppliedGas, requiredGas)
+	if err != nil {
+		return nil, 0, err
 	}
-	remainingGas = suppliedGas - requiredGas
 
 	if len(input) < 1 {
 		return nil, remainingGas, ErrInvalidInput

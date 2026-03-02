@@ -36,7 +36,7 @@ var (
 	// Trusted setup context (initialized once)
 	kzgContext *gokzg4844.Context
 
-	ErrInvalidInput       = errors.New("invalid KZG4844 input")
+	ErrInvalidInput       = contract.ErrInvalidInput
 	ErrInvalidBlob        = errors.New("invalid blob data")
 	ErrInvalidCommitment  = errors.New("invalid commitment")
 	ErrInvalidProof       = errors.New("invalid proof")
@@ -147,22 +147,22 @@ func (p *kzg4844Precompile) Run(
 	readOnly bool,
 ) ([]byte, uint64, error) {
 	gasCost := p.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	if len(input) < 1 {
-		return nil, suppliedGas - gasCost, ErrInvalidInput
+		return nil, remainingGas, ErrInvalidInput
 	}
 
 	if kzgContext == nil {
-		return nil, suppliedGas - gasCost, ErrContextNotInit
+		return nil, remainingGas, ErrContextNotInit
 	}
 
 	op := input[0]
 
 	var result []byte
-	var err error
 
 	switch op {
 	case OpBlobToCommitment:
@@ -182,10 +182,10 @@ func (p *kzg4844Precompile) Run(
 	}
 
 	if err != nil {
-		return nil, suppliedGas - gasCost, err
+		return nil, remainingGas, err
 	}
 
-	return result, suppliedGas - gasCost, nil
+	return result, remainingGas, nil
 }
 
 // blobToCommitment computes the KZG commitment for a blob

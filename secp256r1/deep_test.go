@@ -238,9 +238,9 @@ func TestRun_REqualsN(t *testing.T) {
 
 func TestRequiredGas(t *testing.T) {
 	c := &Contract{}
-	require.Equal(t, uint64(P256VerifyGas), c.RequiredGas(nil))
-	require.Equal(t, uint64(P256VerifyGas), c.RequiredGas(make([]byte, 0)))
-	require.Equal(t, uint64(P256VerifyGas), c.RequiredGas(make([]byte, 1000)))
+	require.Equal(t, uint64(GasP256Verify), c.RequiredGas(nil))
+	require.Equal(t, uint64(GasP256Verify), c.RequiredGas(make([]byte, 0)))
+	require.Equal(t, uint64(GasP256Verify), c.RequiredGas(make([]byte, 1000)))
 }
 
 func TestAddress(t *testing.T) {
