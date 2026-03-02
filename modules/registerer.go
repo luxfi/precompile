@@ -219,10 +219,16 @@ func RegisterModule(stm Module) error {
 
 	for _, registeredModule := range registeredModules {
 		if registeredModule.ConfigKey == key {
-			return fmt.Errorf("name %s already used by a stateful precompile", key)
+			return fmt.Errorf(
+				"precompile config key collision: %q already registered by %s — "+
+					"each precompile must have a globally unique ConfigKey",
+				key, registeredModule.Address)
 		}
 		if registeredModule.Address == address {
-			return fmt.Errorf("address %s already used by a stateful precompile", address)
+			return fmt.Errorf(
+				"precompile address collision: %s already used by %q — "+
+					"trying to register %q at the same address (import-order-independent fail-fast)",
+				address, registeredModule.ConfigKey, key)
 		}
 	}
 	// sort by address to ensure deterministic iteration
