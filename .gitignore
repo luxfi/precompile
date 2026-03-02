@@ -6,3 +6,4 @@ QWEN.md
 **/target/
 **/dist/
 *.test
+cabi
