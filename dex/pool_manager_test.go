@@ -9,6 +9,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/luxfi/geth/common"
+	ethtypes "github.com/luxfi/geth/core/types"
 )
 
 // MockStateDB implements StateDB interface for testing
@@ -17,6 +18,7 @@ type MockStateDB struct {
 	balances    map[common.Address]*uint256.Int
 	exists      map[common.Address]bool
 	blockNumber uint64
+	logs        []*ethtypes.Log
 }
 
 func NewMockStateDB() *MockStateDB {
@@ -79,6 +81,14 @@ func (m *MockStateDB) GetBlockNumber() uint64 {
 
 func (m *MockStateDB) SetBlockNumber(block uint64) {
 	m.blockNumber = block
+}
+
+func (m *MockStateDB) AddLog(log *ethtypes.Log) {
+	m.logs = append(m.logs, log)
+}
+
+func (m *MockStateDB) Logs() []*ethtypes.Log {
+	return m.logs
 }
 
 // Test helper functions
@@ -610,6 +620,195 @@ func TestCurrencyIsNative(t *testing.T) {
 	erc20 := Currency{Address: common.HexToAddress("0x1234567890123456789012345678901234567890")}
 	if erc20.IsNative() {
 		t.Error("ERC20 currency should not be native")
+	}
+}
+
+// =========================================================================
+// Event Emission Tests
+// =========================================================================
+
+func TestInitializeEmitsEvent(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+
+	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+
+	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	logs := stateDB.Logs()
+	if len(logs) != 1 {
+		t.Fatalf("Expected 1 log, got %d", len(logs))
+	}
+
+	log := logs[0]
+	if log.Address != lxPoolAddr {
+		t.Errorf("Expected log address %s, got %s", lxPoolAddr.Hex(), log.Address.Hex())
+	}
+	if len(log.Topics) != 4 {
+		t.Fatalf("Expected 4 topics, got %d", len(log.Topics))
+	}
+	if log.Topics[0] != initializeEventSig {
+		t.Errorf("Expected Initialize event sig %s, got %s", initializeEventSig.Hex(), log.Topics[0].Hex())
+	}
+	// topic1 = poolId
+	poolId := key.ID()
+	if log.Topics[1] != common.BytesToHash(poolId[:]) {
+		t.Errorf("Expected poolId topic, got %s", log.Topics[1].Hex())
+	}
+	// topic2 = currency0
+	if log.Topics[2] != common.BytesToHash(key.Currency0.Address.Bytes()) {
+		t.Errorf("Expected currency0 topic, got %s", log.Topics[2].Hex())
+	}
+	// topic3 = currency1
+	if log.Topics[3] != common.BytesToHash(key.Currency1.Address.Bytes()) {
+		t.Errorf("Expected currency1 topic, got %s", log.Topics[3].Hex())
+	}
+	// Data should be 5 words (fee, tickSpacing, hooks, sqrtPriceX96, tick) = 160 bytes
+	if len(log.Data) != 160 {
+		t.Errorf("Expected 160 bytes of data, got %d", len(log.Data))
+	}
+}
+
+func TestSwapEmitsEvent(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Add liquidity
+	pool := pm.pools[key.ID()]
+	pool.Liquidity = big.NewInt(1000000000)
+
+	// Clear logs from Initialize
+	stateDB.logs = nil
+
+	// Setup lock context and swap
+	pm.lockers = append(pm.lockers, caller)
+	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
+
+	params := SwapParams{
+		ZeroForOne:        true,
+		AmountSpecified:   big.NewInt(1000),
+		SqrtPriceLimitX96: MinSqrtRatio,
+	}
+
+	_, err = pm.Swap(stateDB, key, params, nil)
+	if err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	logs := stateDB.Logs()
+	if len(logs) != 1 {
+		t.Fatalf("Expected 1 log, got %d", len(logs))
+	}
+
+	log := logs[0]
+	if log.Topics[0] != swapEventSig {
+		t.Errorf("Expected Swap event sig %s, got %s", swapEventSig.Hex(), log.Topics[0].Hex())
+	}
+	if len(log.Topics) != 3 {
+		t.Fatalf("Expected 3 topics, got %d", len(log.Topics))
+	}
+	// topic1 = poolId
+	poolId := key.ID()
+	if log.Topics[1] != common.BytesToHash(poolId[:]) {
+		t.Errorf("Expected poolId topic")
+	}
+	// topic2 = sender
+	if log.Topics[2] != common.BytesToHash(caller.Bytes()) {
+		t.Errorf("Expected sender topic")
+	}
+	// Data should be 6 words = 192 bytes
+	if len(log.Data) != 192 {
+		t.Errorf("Expected 192 bytes of data, got %d", len(log.Data))
+	}
+}
+
+func TestModifyLiquidityEmitsEvent(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Clear logs from Initialize
+	stateDB.logs = nil
+
+	// Setup lock context
+	pm.lockers = append(pm.lockers, caller)
+	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
+
+	params := ModifyLiquidityParams{
+		TickLower:      -1000,
+		TickUpper:      1000,
+		LiquidityDelta: big.NewInt(1000000),
+		Salt:           [32]byte{},
+	}
+
+	_, _, err = pm.ModifyLiquidity(stateDB, key, params, nil)
+	if err != nil {
+		t.Fatalf("ModifyLiquidity failed: %v", err)
+	}
+
+	logs := stateDB.Logs()
+	if len(logs) != 1 {
+		t.Fatalf("Expected 1 log, got %d", len(logs))
+	}
+
+	log := logs[0]
+	if log.Topics[0] != modifyLiquidityEventSig {
+		t.Errorf("Expected ModifyLiquidity event sig %s, got %s", modifyLiquidityEventSig.Hex(), log.Topics[0].Hex())
+	}
+	if len(log.Topics) != 3 {
+		t.Fatalf("Expected 3 topics, got %d", len(log.Topics))
+	}
+	// topic2 = sender
+	if log.Topics[2] != common.BytesToHash(caller.Bytes()) {
+		t.Errorf("Expected sender topic")
+	}
+	// Data should be 4 words = 128 bytes
+	if len(log.Data) != 128 {
+		t.Errorf("Expected 128 bytes of data, got %d", len(log.Data))
+	}
+}
+
+func TestNoEventOnFailedInitialize(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+
+	// Use unsorted currencies - should fail before emitting event
+	key := PoolKey{
+		Currency0:   Currency{Address: common.HexToAddress("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")},
+		Currency1:   NativeCurrency,
+		Fee:         Fee030,
+		TickSpacing: TickSpacing030,
+		Hooks:       common.Address{},
+	}
+
+	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
+	if err == nil {
+		t.Fatal("Expected error for unsorted currencies")
+	}
+
+	logs := stateDB.Logs()
+	if len(logs) != 0 {
+		t.Errorf("Expected 0 logs on failed initialize, got %d", len(logs))
 	}
 }
 
