@@ -6,6 +6,7 @@ package quasar
 import (
 	"errors"
 
+	"github.com/luxfi/accel"
 	"github.com/luxfi/crypto/bls"
 	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/geth/common"
@@ -110,7 +111,15 @@ func (b *blsPrecompile) Run(accessibleState contract.AccessibleState, caller com
 	message := input[48:80]
 	sigBytes := input[80:176]
 
-	// Verify BLS signature
+	// Try GPU-accelerated BLS verification
+	if gpuValid, gpuUsed := blsVerifyGPU(message, sigBytes, pubKeyBytes); gpuUsed {
+		if gpuValid {
+			return []byte{1}, remainingGas, nil
+		}
+		return []byte{0}, remainingGas, nil
+	}
+
+	// CPU fallback: verify BLS signature
 	pubKey, err := bls.PublicKeyFromCompressedBytes(pubKeyBytes)
 	if err != nil {
 		return []byte{0}, remainingGas, nil
@@ -154,6 +163,13 @@ func (b *blsAggregatePrecompile) Run(accessibleState contract.AccessibleState, c
 	}
 
 	numSigs := len(input) / 96
+
+	// Try GPU-accelerated BLS aggregation
+	if result, gpuUsed := blsAggregateGPU(input, numSigs); gpuUsed {
+		return result, remainingGas, nil
+	}
+
+	// CPU fallback
 	signatures := make([]*bls.Signature, 0, numSigs)
 
 	for i := 0; i < numSigs; i++ {
@@ -213,7 +229,15 @@ func (r *coronaPrecompile) Run(accessibleState contract.AccessibleState, caller 
 	message := input[3+pubKeyLen+2 : 3+pubKeyLen+2+msgLen]
 	signature := input[3+pubKeyLen+2+msgLen:]
 
-	// Verify ML-DSA signature
+	// Try GPU-accelerated ML-DSA verification
+	if gpuValid, gpuUsed := coronaVerifyGPU(message, signature, pubKeyBytes); gpuUsed {
+		if gpuValid {
+			return []byte{1}, remainingGas, nil
+		}
+		return []byte{0}, remainingGas, nil
+	}
+
+	// CPU fallback: verify ML-DSA signature
 	pubKey, err := mldsa.PublicKeyFromBytes(pubKeyBytes, mode)
 	if err != nil {
 		return []byte{0}, remainingGas, nil
@@ -260,22 +284,38 @@ func (h *hybridPrecompile) Run(accessibleState contract.AccessibleState, caller 
 	blsPubKey := input[98+coronaSigLen+32 : 98+coronaSigLen+32+48]
 	coronaPubKey := input[98+coronaSigLen+32+48:]
 
-	// Verify BLS signature
-	blsPK, err := bls.PublicKeyFromCompressedBytes(blsPubKey)
-	if err != nil {
+	// Try GPU-accelerated BLS verification
+	blsValid := false
+	if gpuValid, gpuUsed := blsVerifyGPU(message, blsSig, blsPubKey); gpuUsed {
+		blsValid = gpuValid
+	} else {
+		// CPU fallback for BLS
+		blsPK, err := bls.PublicKeyFromCompressedBytes(blsPubKey)
+		if err != nil {
+			return []byte{0}, remainingGas, nil
+		}
+
+		blsS, err := bls.SignatureFromBytes(blsSig)
+		if err != nil {
+			return []byte{0}, remainingGas, nil
+		}
+
+		blsValid = bls.Verify(blsPK, blsS, message)
+	}
+
+	if !blsValid {
 		return []byte{0}, remainingGas, nil
 	}
 
-	blsS, err := bls.SignatureFromBytes(blsSig)
-	if err != nil {
+	// Try GPU-accelerated ML-DSA verification
+	if gpuValid, gpuUsed := coronaVerifyGPU(message, coronaSig, coronaPubKey); gpuUsed {
+		if gpuValid {
+			return []byte{1}, remainingGas, nil
+		}
 		return []byte{0}, remainingGas, nil
 	}
 
-	if !bls.Verify(blsPK, blsS, message) {
-		return []byte{0}, remainingGas, nil
-	}
-
-	// Verify Corona signature (using ML-DSA)
+	// CPU fallback for Corona
 	coronaPK, err := mldsa.PublicKeyFromBytes(coronaPubKey, mldsa.MLDSA65)
 	if err != nil {
 		return []byte{0}, remainingGas, nil
@@ -341,6 +381,145 @@ func verifyVerkleLight(commitment, proof []byte) bool {
 		}
 	}
 	return true
+}
+
+// blsVerifyGPU attempts GPU-accelerated BLS signature verification.
+// Returns (valid, true) if GPU was used, (false, false) if GPU unavailable.
+func blsVerifyGPU(message, signature, pubkey []byte) (valid bool, gpuUsed bool) {
+	if !accel.Available() {
+		return false, false
+	}
+
+	sess, err := accel.NewSession()
+	if err != nil {
+		return false, false
+	}
+	defer sess.Close()
+
+	crypto := sess.Crypto()
+
+	// BLSVerifyBatch expects:
+	//   messages: [N, msg_len] bytes
+	//   signatures: [N, 96] bytes (G2 points)
+	//   pubkeys: [N, 48] bytes (G1 points)
+	//   results: [N] uint8
+	msgTensor, err := accel.NewTensorWithData[byte](sess, []int{1, len(message)}, message)
+	if err != nil {
+		return false, false
+	}
+	defer msgTensor.Close()
+
+	sigTensor, err := accel.NewTensorWithData[byte](sess, []int{1, 96}, signature)
+	if err != nil {
+		return false, false
+	}
+	defer sigTensor.Close()
+
+	pkTensor, err := accel.NewTensorWithData[byte](sess, []int{1, 48}, pubkey)
+	if err != nil {
+		return false, false
+	}
+	defer pkTensor.Close()
+
+	resultTensor, err := accel.NewTensor[byte](sess, []int{1})
+	if err != nil {
+		return false, false
+	}
+	defer resultTensor.Close()
+
+	if err := crypto.BLSVerifyBatch(msgTensor.Untyped(), sigTensor.Untyped(), pkTensor.Untyped(), resultTensor.Untyped()); err != nil {
+		return false, false
+	}
+
+	results, err := resultTensor.ToSlice()
+	if err != nil {
+		return false, false
+	}
+
+	return results[0] == 1, true
+}
+
+// blsAggregateGPU attempts GPU-accelerated BLS signature aggregation.
+// Returns (aggregated, true) if GPU was used, (nil, false) if unavailable.
+func blsAggregateGPU(input []byte, numSigs int) ([]byte, bool) {
+	if !accel.Available() || numSigs == 0 {
+		return nil, false
+	}
+
+	sess, err := accel.NewSession()
+	if err != nil {
+		return nil, false
+	}
+	defer sess.Close()
+
+	crypto := sess.Crypto()
+
+	// BLSAggregate expects:
+	//   signatures: [N, 96] bytes
+	//   aggregated: [96] bytes
+	sigTensor, err := accel.NewTensorWithData[byte](sess, []int{numSigs, 96}, input[:numSigs*96])
+	if err != nil {
+		return nil, false
+	}
+	defer sigTensor.Close()
+
+	aggTensor, err := accel.NewTensor[byte](sess, []int{96})
+	if err != nil {
+		return nil, false
+	}
+	defer aggTensor.Close()
+
+	if err := crypto.BLSAggregate(sigTensor.Untyped(), aggTensor.Untyped()); err != nil {
+		return nil, false
+	}
+
+	result, err := aggTensor.ToSlice()
+	if err != nil {
+		return nil, false
+	}
+
+	return result, true
+}
+
+// coronaVerifyGPU attempts GPU-accelerated ML-DSA (Corona) signature verification.
+// Returns (valid, true) if GPU was used, (false, false) if GPU unavailable.
+func coronaVerifyGPU(message, signature, publicKey []byte) (valid bool, gpuUsed bool) {
+	if !accel.Available() {
+		return false, false
+	}
+
+	sess, err := accel.NewSession()
+	if err != nil {
+		return false, false
+	}
+	defer sess.Close()
+
+	lattice := sess.Lattice()
+
+	msgTensor, err := accel.NewTensorWithData[byte](sess, []int{len(message)}, message)
+	if err != nil {
+		return false, false
+	}
+	defer msgTensor.Close()
+
+	sigTensor, err := accel.NewTensorWithData[byte](sess, []int{len(signature)}, signature)
+	if err != nil {
+		return false, false
+	}
+	defer sigTensor.Close()
+
+	pkTensor, err := accel.NewTensorWithData[byte](sess, []int{len(publicKey)}, publicKey)
+	if err != nil {
+		return false, false
+	}
+	defer pkTensor.Close()
+
+	result, err := lattice.DilithiumVerify(msgTensor.Untyped(), sigTensor.Untyped(), pkTensor.Untyped())
+	if err != nil {
+		return false, false
+	}
+
+	return result, true
 }
 
 // GetAllPrecompiles returns all Quasar precompiles
