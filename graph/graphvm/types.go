@@ -1,9 +1,8 @@
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-// Package graphvm provides stub types for GraphVM integration.
-// This package will be replaced by github.com/luxfi/vm/manager/graphvm
-// once that package is implemented.
+// Package graphvm provides types for GraphVM integration.
+// This package implements the GraphQL query interface for graph databases.
 package graphvm
 
 import (
