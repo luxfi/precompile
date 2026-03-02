@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/luxfi/accel"
+
 	gokzg4844 "github.com/crate-crypto/go-kzg-4844"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -192,6 +194,12 @@ func (p *kzg4844Precompile) blobToCommitment(input []byte) ([]byte, error) {
 		return nil, ErrInvalidBlob
 	}
 
+	// Try GPU-accelerated polynomial commitment
+	if result, gpuUsed := blobToCommitmentGPU(input[:BlobSize]); gpuUsed {
+		return result, nil
+	}
+
+	// CPU fallback
 	var blob gokzg4844.Blob
 	copy(blob[:], input[:BlobSize])
 
@@ -347,4 +355,54 @@ func (p *kzg4844Precompile) computeChallenge(input []byte) ([]byte, error) {
 	copy(challenge[:], commitment[:32])
 
 	return challenge[:], nil
+}
+
+// blobToCommitmentGPU attempts GPU-accelerated KZG polynomial commitment.
+// Returns (commitment, true) if GPU was used, (nil, false) if unavailable.
+func blobToCommitmentGPU(blobData []byte) ([]byte, bool) {
+	if !accel.Available() {
+		return nil, false
+	}
+
+	sess, err := accel.NewSession()
+	if err != nil {
+		return nil, false
+	}
+	defer sess.Close()
+
+	zk := sess.ZK()
+
+	// CommitPoly expects:
+	//   coeffs: [degree+1, field_size] bytes -- blob field elements
+	//   srs: structured reference string (trusted setup)
+	//   commitment: [point_size] bytes
+	coeffsTensor, err := accel.NewTensorWithData[byte](sess, []int{BlobElements, FieldElementSize}, blobData)
+	if err != nil {
+		return nil, false
+	}
+	defer coeffsTensor.Close()
+
+	// SRS is empty tensor -- GPU backend uses its own embedded trusted setup
+	srsTensor, err := accel.NewTensor[byte](sess, []int{1})
+	if err != nil {
+		return nil, false
+	}
+	defer srsTensor.Close()
+
+	commitTensor, err := accel.NewTensor[byte](sess, []int{CommitmentSize})
+	if err != nil {
+		return nil, false
+	}
+	defer commitTensor.Close()
+
+	if err := zk.CommitPoly(coeffsTensor.Untyped(), srsTensor.Untyped(), commitTensor.Untyped()); err != nil {
+		return nil, false
+	}
+
+	result, err := commitTensor.ToSlice()
+	if err != nil {
+		return nil, false
+	}
+
+	return result, true
 }
