@@ -4,7 +4,7 @@
 package pqcrypto
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
@@ -14,6 +14,37 @@ import (
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
+
+// deterministicReader derives pseudorandom bytes from a seed via iterated
+// SHA-256. This is CRITICAL for consensus safety: every validator must produce
+// identical output for identical calldata. Using crypto/rand would cause state
+// divergence and chain splits.
+//
+// Canonical pattern from hpke/contract.go — do not modify without also
+// updating the HPKE precompile.
+type deterministicReader struct {
+	state [32]byte
+	pos   int
+}
+
+func newDeterministicReader(seed [32]byte) *deterministicReader {
+	return &deterministicReader{state: seed}
+}
+
+func (r *deterministicReader) Read(p []byte) (int, error) {
+	for i := range p {
+		if r.pos >= len(r.state) {
+			r.state = sha256.Sum256(r.state[:])
+			r.pos = 0
+		}
+		p[i] = r.state[r.pos]
+		r.pos++
+	}
+	return len(p), nil
+}
+
+// seedSize is the required deterministic seed length for ML-KEM encapsulate.
+const seedSize = 32
 
 // Function selectors (first 4 bytes of input)
 const (
@@ -297,12 +328,21 @@ func (p *pqCryptoPrecompile) mldsaVerify(input []byte) ([]byte, error) {
 	return []byte{0}, nil
 }
 
-// mlkemEncapsulate performs ML-KEM encapsulation
-// Input format: [mode(1)] [pubkey]
+// mlkemEncapsulate performs ML-KEM encapsulation with deterministic randomness.
+//
+// Input format: [mode(1)] [seed(32)] [pubkey]
 // Output: [ciphertext] [shared_secret]
+//
+// The 32-byte seed MUST be provided by the caller to ensure consensus safety.
+// All validators derive identical pseudorandom bytes from this seed via iterated
+// SHA-256, guaranteeing identical ciphertext output across all nodes.
+//
+// SECURITY: Using crypto/rand here would produce different ciphertext per
+// validator, causing state divergence and a chain split. This was identified
+// as a critical consensus-safety bug (same class as C-03/M-11 in ECIES).
 func (p *pqCryptoPrecompile) mlkemEncapsulate(input []byte) ([]byte, error) {
-	if len(input) < 2 {
-		return nil, errInvalidInput
+	if len(input) < 1+seedSize {
+		return nil, fmt.Errorf("%w: encapsulate requires mode(1) + seed(%d) + pubkey", errInvalidInput, seedSize)
 	}
 
 	// Parse mode
@@ -324,7 +364,11 @@ func (p *pqCryptoPrecompile) mlkemEncapsulate(input []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%w: ML-KEM mode 0x%02x", errInvalidMode, modeByte)
 	}
 
-	pubKeyBytes := input[1:]
+	// Extract 32-byte deterministic seed
+	var seed [32]byte
+	copy(seed[:], input[1:1+seedSize])
+
+	pubKeyBytes := input[1+seedSize:]
 	if len(pubKeyBytes) != expectedPubKeySize {
 		return nil, fmt.Errorf("%w: expected pubkey size %d, got %d", errInvalidInput, expectedPubKeySize, len(pubKeyBytes))
 	}
@@ -335,8 +379,9 @@ func (p *pqCryptoPrecompile) mlkemEncapsulate(input []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// Encapsulate - returns (ciphertext, sharedSecret, error)
-	ciphertext, sharedSecret, err := pubKey.Encapsulate(rand.Reader)
+	// Encapsulate with deterministic randomness — consensus-safe
+	reader := newDeterministicReader(seed)
+	ciphertext, sharedSecret, err := pubKey.Encapsulate(reader)
 	if err != nil {
 		return nil, err
 	}
