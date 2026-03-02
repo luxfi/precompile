@@ -46,18 +46,20 @@ func TestEncodeDecodeHookPermissions(t *testing.T) {
 		{
 			name: "all hooks",
 			permissions: HookPermissions{
-				BeforeInitialize:      true,
-				AfterInitialize:       true,
-				BeforeAddLiquidity:    true,
-				AfterAddLiquidity:     true,
-				BeforeRemoveLiquidity: true,
-				AfterRemoveLiquidity:  true,
-				BeforeSwap:            true,
-				AfterSwap:             true,
-				BeforeDonate:          true,
-				AfterDonate:           true,
-				BeforeFlash:           true,
-				AfterFlash:            true,
+				BeforeInitialize:                 true,
+				AfterInitialize:                  true,
+				BeforeAddLiquidity:               true,
+				AfterAddLiquidity:                true,
+				BeforeRemoveLiquidity:            true,
+				AfterRemoveLiquidity:             true,
+				BeforeSwap:                       true,
+				AfterSwap:                        true,
+				BeforeDonate:                     true,
+				AfterDonate:                      true,
+				BeforeSwapReturnsDelta:           true,
+				AfterSwapReturnsDelta:            true,
+				AfterAddLiquidityReturnsDelta:    true,
+				AfterRemoveLiquidityReturnsDelta: true,
 			},
 		},
 	}
@@ -103,7 +105,7 @@ func TestGetHookPermissionsFromAddress(t *testing.T) {
 
 	// Create address with flags in first 2 bytes
 	var addr common.Address
-	binary.BigEndian.PutUint16(addr[0:2], uint16(flags))
+	binary.BigEndian.PutUint16(addr[18:20], uint16(flags))
 
 	// Get permissions from address
 	decoded := GetHookPermissionsFromAddress(addr)
@@ -128,7 +130,7 @@ func TestHasPermission(t *testing.T) {
 	flags := EncodeHookPermissions(permissions)
 
 	var addr common.Address
-	binary.BigEndian.PutUint16(addr[0:2], uint16(flags))
+	binary.BigEndian.PutUint16(addr[18:20], uint16(flags))
 
 	// Test has permission
 	if !HasPermission(addr, HookBeforeSwap) {
@@ -151,7 +153,7 @@ func TestValidateHookAddress(t *testing.T) {
 
 	// Create valid address
 	var validAddr common.Address
-	binary.BigEndian.PutUint16(validAddr[0:2], uint16(flags))
+	binary.BigEndian.PutUint16(validAddr[18:20], uint16(flags))
 
 	// Validation should pass
 	err := ValidateHookAddress(validAddr, permissions)
@@ -161,7 +163,7 @@ func TestValidateHookAddress(t *testing.T) {
 
 	// Create invalid address (wrong permissions encoded)
 	var invalidAddr common.Address
-	binary.BigEndian.PutUint16(invalidAddr[0:2], uint16(HookBeforeInitialize))
+	binary.BigEndian.PutUint16(invalidAddr[18:20], uint16(HookBeforeInitialize))
 
 	// Validation should fail
 	err = ValidateHookAddress(invalidAddr, permissions)
@@ -185,7 +187,7 @@ func TestHookRegistryRegister(t *testing.T) {
 
 	// Create valid address
 	var addr common.Address
-	binary.BigEndian.PutUint16(addr[0:2], uint16(flags))
+	binary.BigEndian.PutUint16(addr[18:20], uint16(flags))
 
 	// Register should succeed
 	err := registry.RegisterHook(addr, flags)
@@ -208,7 +210,7 @@ func TestHookRegistryRegisterInvalidAddress(t *testing.T) {
 
 	// Create address with different flags than claimed
 	var addr common.Address
-	binary.BigEndian.PutUint16(addr[0:2], uint16(HookBeforeSwap))
+	binary.BigEndian.PutUint16(addr[18:20], uint16(HookBeforeSwap))
 
 	// Try to register with different flags
 	err := registry.RegisterHook(addr, HookAfterSwap)
@@ -227,7 +229,7 @@ func TestHookRegistryIsEnabled(t *testing.T) {
 	flags := EncodeHookPermissions(permissions)
 
 	var addr common.Address
-	binary.BigEndian.PutUint16(addr[0:2], uint16(flags))
+	binary.BigEndian.PutUint16(addr[18:20], uint16(flags))
 
 	registry.RegisterHook(addr, flags)
 
@@ -473,7 +475,7 @@ func BenchmarkDecodeHookPermissions(b *testing.B) {
 
 func BenchmarkHasPermission(b *testing.B) {
 	var addr common.Address
-	binary.BigEndian.PutUint16(addr[0:2], uint16(HookBeforeSwap|HookAfterSwap))
+	binary.BigEndian.PutUint16(addr[18:20], uint16(HookBeforeSwap|HookAfterSwap))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
