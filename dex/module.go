@@ -37,7 +37,7 @@ var (
 	// Trading & DeFi Extensions
 	lxBookAddr   = common.HexToAddress(LXBookAddress)   // LP-9020 LXBook (CLOB matcher)
 	lxVaultAddr  = common.HexToAddress(LXVaultAddress)  // LP-9030 LXVault
-	lxFeedAddr   = common.HexToAddress(LXFeedAddress)   // LP-9040 LXFeed
+	lxPriceAddr   = common.HexToAddress(LXPriceAddress)   // LP-9040 LXPrice
 	lxLendAddr   = common.HexToAddress(LXLendAddress)   // LP-9050 LXLend (lending pool)
 	lxLiquidAddr = common.HexToAddress(LXAutoRepayAddress) // LP-9060 LXLiquid (self-repaying loans)
 )

@@ -33,7 +33,7 @@ const (
 	LXVaultAddress = "0x0000000000000000000000000000000000009030" // LP-9030 LXVault (custody + margin)
 
 	// Pricing (LP-904x)
-	LXFeedAddress = "0x0000000000000000000000000000000000009040" // LP-9040 LXFeed (derived/computed pricing)
+	LXPriceAddress = "0x0000000000000000000000000000000000009040" // LP-9040 LXPrice (derived/computed pricing)
 
 	// Lending (LP-905x–906x)
 	LXLendAddress      = "0x0000000000000000000000000000000000009050" // LP-9050 LXLend (lending pool)
