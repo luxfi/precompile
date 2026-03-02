@@ -39,7 +39,6 @@ import (
 	_ "github.com/luxfi/precompile/hpke"
 	_ "github.com/luxfi/precompile/mldsa"
 	_ "github.com/luxfi/precompile/mlkem"
-	_ "github.com/luxfi/precompile/pqcrypto"
 	_ "github.com/luxfi/precompile/ring"
 	_ "github.com/luxfi/precompile/corona"
 	_ "github.com/luxfi/precompile/slhdsa"
