@@ -168,6 +168,13 @@ var (
 			Start: common.HexToAddress("0x000000000000000000000000000000000000b000"),
 			End:   common.HexToAddress("0x000000000000000000000000000000000000bfff"),
 		},
+		// Standard EVM Precompiles (0x01-0x11)
+		// Includes: ECRECOVER, SHA256, RIPEMD160, IDENTITY, MODEXP, BN254,
+		//           BLAKE2F, KZG, BLS12-381 (EIP-2537)
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000000001"),
+			End:   common.HexToAddress("0x00000000000000000000000000000000000000ff"),
+		},
 		// Dead/Burn Addresses (LP-0150)
 		// 0x0000...0000 - Zero address
 		{
