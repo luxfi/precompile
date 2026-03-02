@@ -162,16 +162,40 @@ func (p *poseidonPrecompile) sponge(data []byte, gas uint64) ([]byte, uint64, er
 		return nil, gas, ErrTooManyInputs
 	}
 
-	hasher := poseidon2.NewMerkleDamgardHasher()
+	// Sponge construction over Poseidon2 permutation (width=3, rate=1).
+	//
+	// Absorb: for each input element, add it to state[0] and permute.
+	// Squeeze: extract state[0] (one rate element = 32 bytes), permute,
+	// repeat until we have enough output bytes.
+	//
+	// Width 3 is the standard sponge width for Poseidon2 over BN254:
+	// rate=1 element (32 bytes), capacity=2 elements (64 bytes, >= 128-bit
+	// security against generic sponge attacks).
+	const (
+		spongeWidth = 3
+		rateBytes   = fr.Bytes // 32
+	)
+
+	perm := poseidon2.NewPermutation(spongeWidth, 6, 50)
+	state := make([]fr.Element, spongeWidth) // zero-initialized (capacity domain sep)
+
+	// Absorb phase: XOR each input element into state[0], then permute.
 	for i := 0; i < n; i++ {
 		var elem fr.Element
 		elem.SetBytes(payload[i*32 : (i+1)*32])
-		b := elem.Bytes()
-		hasher.Write(b[:])
+		state[0].Add(&state[0], &elem)
+		perm.Permutation(state)
 	}
-	h := hasher.Sum(nil)
-	// Truncate or extend by re-hashing for longer outputs
-	result := make([]byte, outLen)
-	copy(result, h)
-	return result, gas, nil
+
+	// Squeeze phase: extract rate element, permute for more output.
+	result := make([]byte, 0, outLen)
+	for uint32(len(result)) < outLen {
+		b := state[0].Bytes()
+		result = append(result, b[:]...)
+		if uint32(len(result)) < outLen {
+			perm.Permutation(state)
+		}
+	}
+
+	return result[:outLen], gas, nil
 }

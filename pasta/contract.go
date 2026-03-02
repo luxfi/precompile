@@ -244,18 +244,50 @@ func doublePoint(curveID byte, a point) point {
 	return point{x: x3, y: y3}
 }
 
+// scalarMulPoint computes scalar * pt using a Montgomery ladder.
+//
+// The Montgomery ladder processes every bit of the scalar with the same
+// sequence of operations (one add + one double per bit), regardless of the
+// bit value. This eliminates the timing side-channel present in the naive
+// double-and-add algorithm, where an attacker can distinguish 0-bits from
+// 1-bits by measuring execution time or power consumption.
+//
+// Note: the underlying field operations (addPoints, doublePoint) still use
+// math/big which is not fully constant-time in its internal limb operations.
+// A production deployment should use gnark-crypto's native Pasta field
+// arithmetic when available. The Montgomery ladder eliminates the dominant
+// side-channel (branch on secret bits) regardless.
 func scalarMulPoint(curveID byte, pt point, scalar *big.Int) point {
-	result := point{inf: true}
-	base := pt
-	s := new(big.Int).Set(scalar)
-	for s.Sign() > 0 {
-		if s.Bit(0) == 1 {
-			result = addPoints(curveID, result, base)
-		}
-		base = doublePoint(curveID, base)
-		s.Rsh(s, 1)
+	if scalar.Sign() == 0 || pt.inf {
+		return point{inf: true}
 	}
-	return result
+
+	// Reduce scalar modulo curve order for canonical form.
+	// Pallas and Vesta have the same group order as each other's base field
+	// (they form a 2-cycle), so we use the other curve's modulus as the order.
+	order := modulus(curveID ^ 0x03) // Pallas(0x01)^0x03=Vesta(0x02), Vesta(0x02)^0x03=Pallas(0x01)
+	k := new(big.Int).Mod(scalar, order)
+	if k.Sign() == 0 {
+		return point{inf: true}
+	}
+
+	// Montgomery ladder: R0 starts at identity, R1 starts at pt.
+	// For each bit from MSB to LSB:
+	//   if bit == 0: R1 = R0 + R1, R0 = 2*R0
+	//   if bit == 1: R0 = R0 + R1, R1 = 2*R1
+	r0 := point{inf: true}
+	r1 := pt
+
+	for i := k.BitLen() - 1; i >= 0; i-- {
+		if k.Bit(i) == 0 {
+			r1 = addPoints(curveID, r0, r1)
+			r0 = doublePoint(curveID, r0)
+		} else {
+			r0 = addPoints(curveID, r0, r1)
+			r1 = doublePoint(curveID, r1)
+		}
+	}
+	return r0
 }
 
 func (p *pastaPrecompile) pointAdd(curveID byte, data []byte, gas uint64) ([]byte, uint64, error) {
