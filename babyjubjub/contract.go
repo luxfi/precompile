@@ -1,18 +1,49 @@
 // Copyright (C) 2025, Lux Industries Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-// Package babyjubjub implements Baby Jubjub twisted Edwards curve precompile.
-// Address: 0x0500000000000000000000000000000000000007 (Hashing range)
+// Package babyjubjub implements Baby Jubjub twisted Edwards curve precompile
+// on the Lux EVM.
 //
-// Baby Jubjub is a twisted Edwards curve defined over the BN254 scalar field,
-// making it efficient inside BN254-based SNARKs (Groth16, PLONK).
+// Address: 0x0500000000000000000000000000000000000007
+//
+// CURVE FORM — IMPORTANT:
+//
+// This precompile operates on Baby Jubjub in the REDUCED twisted Edwards
+// form used by circom, iden3, Polygon zkEVM, and gnark-crypto:
+//
+//     a' x^2 + y^2 = 1 + d' x^2 y^2       over F_r  (r = BN254 scalar order)
+//     a' = -1
+//     d' = 12181644023421730124874158521699555681764249180949974110617291017600649128846
+//     Base B' = (
+//         9671717474070082183213120605117400219616337014328744928644933853176787189663,
+//         16950150798460657717958625567821834550301663161624707787222815936182638968203
+//     )
+//
+// EIP-2494 defines Baby Jubjub primarily in the STANDARD twisted Edwards
+// form (a=168700, d=168696, base (5299..., 16950...)). The two forms are
+// birationally equivalent via the scaling factor
+//
+//     f  =  6360561867910373094066688120553762416144456282423235903351243436111059670888
+//     -f =  15527681003928902128179717624703512672403908117992798440346960750464748824729
+//
+// Standard (x, y) <-> Reduced (x', y'):
+//     x'  =  x * (-f) mod r
+//     y'  =  y
+//
+// Callers that produce points in EIP-2494 standard form MUST convert to
+// reduced form before submitting to this precompile. The conversion is
+// a single multiplication in F_r; see contract_test.go's EIP-2494
+// conformance tests for worked examples.
 //
 // Operations:
 //   - 0x01: PointAdd  — P1(64) + P2(64) -> P3(64)
 //   - 0x02: ScalarMul — P(64) + scalar(32) -> P*s(64)
 //   - 0x03: InCurve   — P(64) -> bool(32)
 //
-// Used by: Polygon zkEVM, Hermez, circom circuits, EdDSA over BN254.
+// Encoding: each point is (x, y) with each coordinate a 32-byte
+// big-endian integer in [0, r).
+//
+// Used by: circom / iden3 / Polygon zkEVM / Semaphore / RLN / EdDSA on BN254.
 package babyjubjub
 
 import (

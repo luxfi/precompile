@@ -18,9 +18,18 @@ func TestPrecompileAddress(t *testing.T) {
 	require.Equal(t, common.HexToAddress("0x0500000000000000000000000000000000000007"), ContractAddress)
 }
 
-// Baby Jubjub generator point from the iden3 reference:
-// Gx = 5299619240641551281634865583518297030282874472190772894086521144482721001553
-// Gy = 16950150798460657717958625567821834550301663161624707787222815936182638968203
+// Baby Jubjub base point in REDUCED twisted Edwards form, as returned by
+// gnark-crypto. This is the iden3/circom/Polygon-zkEVM convention.
+//
+// Reduced form (a = -1):
+//   Bx' = 9671717474070082183213120605117400219616337014328744928644933853176787189663
+//   By' = 16950150798460657717958625567821834550301663161624707787222815936182638968203
+//
+// The equivalent EIP-2494 STANDARD form base point (a = 168700) is:
+//   Bx  = 5299619240641551281634865583518297030282874472190772894086521144482721001553
+//   By  = 16950150798460657717958625567821834550301663161624707787222815936182638968203
+// and the conversion is Bx' = Bx * (-f) mod r  (y is unchanged).
+// See TestEIP2494_ConversionStandardToReduced and the package doc comment.
 func getGenerator() twistededwards.PointAffine {
 	var params = twistededwards.GetEdwardsCurve()
 	return params.Base
