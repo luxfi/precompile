@@ -5,6 +5,7 @@ package graph
 
 import (
 	"encoding/json"
+	"maps"
 	"math/big"
 )
 
@@ -305,12 +306,8 @@ func ParsePoolInfoResponse(data []byte) (*PoolInfoResponse, error) {
 // init registers oracle and AMM queries
 func init() {
 	// Add oracle queries to predefined queries
-	for id, q := range OracleQueries {
-		PredefinedQueries[id] = q
-	}
+	maps.Copy(PredefinedQueries, OracleQueries)
 
 	// Add AMM queries to predefined queries
-	for id, q := range AMMQueries {
-		PredefinedQueries[id] = q
-	}
+	maps.Copy(PredefinedQueries, AMMQueries)
 }

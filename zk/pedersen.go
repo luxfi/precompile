@@ -57,7 +57,7 @@ func NewPedersenCommitter() *PedersenCommitter {
 
 	// Pre-generate additional generators for vector commitments
 	pc.Generators = make([]bn254.G1Affine, 32)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		pc.Generators[i] = hashToG1("Lux_Pedersen_Gen_" + string(rune('0'+i)))
 	}
 
