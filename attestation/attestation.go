@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/luxfi/ai/pkg/attestation"
@@ -52,11 +53,18 @@ var (
 	ErrAttestationExpired  = errors.New("attestation has expired")
 )
 
-// Global verifier instance (singleton for efficiency)
-var globalVerifier = attestation.NewVerifier()
-
-// NvtrustVerifier for local GPU attestation
-var nvtrustVerifier = attestation.NewNvtrustVerifier(attestation.DefaultNvtrustConfig())
+// Global verifier instance (singleton for efficiency).
+// verifierMu guards concurrent access to globalVerifier and nvtrustVerifier —
+// both have internal mutable state (device registrations, job completions,
+// trusted measurements) and are called from the EVM execution loop where
+// multiple transactions may invoke attestation precompiles in parallel.
+// Without this guard, concurrent writes would data-race and cause consensus
+// splits across validators.
+var (
+	verifierMu       sync.RWMutex
+	globalVerifier   = attestation.NewVerifier()
+	nvtrustVerifier  = attestation.NewNvtrustVerifier(attestation.DefaultNvtrustConfig())
+)
 
 // VerifyNVTrustInput represents input for GPU attestation verification
 type VerifyNVTrustInput struct {
@@ -114,8 +122,11 @@ func VerifyNVTrust(input []byte) ([]byte, error) {
 		},
 	}
 
-	// Verify using real attestation implementation
+	// Verify using real attestation implementation.
+	// Lock (not RLock) because verifier updates internal device registry.
+	verifierMu.Lock()
 	status, err := globalVerifier.VerifyGPUAttestation(gpuAtt)
+	verifierMu.Unlock()
 	if err != nil {
 		// Return failure result instead of error for verification failures
 		return encodeOutput(&VerifyNVTrustOutput{
@@ -191,8 +202,11 @@ func VerifyTPM(input []byte) ([]byte, error) {
 		Nonce:       vi.Nonce[:],
 	}
 
-	// Verify using real attestation implementation
+	// Verify using real attestation implementation.
+	// Lock because verifier updates internal device registry.
+	verifierMu.Lock()
 	err := globalVerifier.VerifyCPUAttestation(quote, vi.ExpectedMeasure)
+	verifierMu.Unlock()
 	if err != nil {
 		return encodeOutput(&VerifyTPMOutput{
 			Verified:    false,
@@ -263,7 +277,9 @@ func VerifyCompute(input []byte) ([]byte, error) {
 
 	// Check provider is attested
 	providerID := string(vi.ProviderID[:])
+	verifierMu.RLock()
 	status, ok := globalVerifier.GetDeviceStatus(providerID)
+	verifierMu.RUnlock()
 	if !ok || !status.Attested {
 		return encodeOutput(&VerifyComputeOutput{
 			Verified:   false,
@@ -294,7 +310,9 @@ func VerifyCompute(input []byte) ([]byte, error) {
 
 	// Record job completion
 	taskID := string(vi.TaskID[:])
+	verifierMu.Lock()
 	globalVerifier.RecordJobCompletion(providerID, taskID)
+	verifierMu.Unlock()
 
 	return encodeOutput(&VerifyComputeOutput{
 		Verified:    resultValid && status.TrustScore >= 50,
@@ -354,7 +372,9 @@ func CreateAttestation(input []byte) ([]byte, error) {
 			},
 		}
 
+		verifierMu.Lock()
 		status, err := globalVerifier.VerifyGPUAttestation(gpuAtt)
+		verifierMu.Unlock()
 		if err == nil {
 			success = true
 			trustScore = status.TrustScore
@@ -378,7 +398,9 @@ func CreateAttestation(input []byte) ([]byte, error) {
 			Nonce:     ci.Nonce[:],
 		}
 
+		verifierMu.Lock()
 		err := globalVerifier.VerifyCPUAttestation(quote, nil)
+		verifierMu.Unlock()
 		if err == nil {
 			success = true
 			trustScore = calculateTPMTrustScore(teeType)
@@ -433,7 +455,9 @@ func GetDeviceStatus(input []byte) ([]byte, error) {
 	}
 
 	deviceID := string(di.DeviceID[:])
+	verifierMu.RLock()
 	status, ok := globalVerifier.GetDeviceStatus(deviceID)
+	verifierMu.RUnlock()
 
 	if !ok {
 		return encodeOutput(&GetDeviceStatusOutput{
@@ -455,7 +479,9 @@ func GetDeviceStatus(input []byte) ([]byte, error) {
 // RegisterTrustedMeasurement registers a trusted measurement with the verifier
 // This should only be called from governance/admin functions
 func RegisterTrustedMeasurement(name string, measurement []byte) {
+	verifierMu.Lock()
 	globalVerifier.RegisterTrustedMeasurement(name, measurement)
+	verifierMu.Unlock()
 }
 
 // Helper functions

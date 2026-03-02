@@ -126,7 +126,7 @@ func (p *ringSignaturePrecompile) Run(
 ) ([]byte, uint64, error) {
 	gasCost := p.RequiredGas(input)
 	if suppliedGas < gasCost {
-		return nil, 0, errors.New("out of gas")
+		return nil, 0, contract.ErrOutOfGas
 	}
 
 	if len(input) < 3 {

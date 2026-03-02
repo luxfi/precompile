@@ -5,7 +5,9 @@ package fhe
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
+	"sync"
 
 	"github.com/luxfi/accel"
 	accelfhe "github.com/luxfi/accel/ops/fhe"
@@ -60,11 +62,14 @@ const (
 )
 
 var (
-	ErrInvalidInput      = errors.New("invalid input")
-	ErrTypeMismatch      = errors.New("ciphertext type mismatch")
-	ErrOperationFailed   = errors.New("FHE operation failed")
-	ErrNotImplemented    = errors.New("operation not implemented")
-	ErrInsufficientGas   = errors.New("insufficient gas for FHE operation")
+	ErrInvalidInput    = errors.New("invalid input")
+	ErrTypeMismatch    = errors.New("ciphertext type mismatch")
+	ErrOperationFailed = errors.New("FHE operation failed")
+	ErrNotImplemented  = errors.New("operation not implemented")
+	// ErrInsufficientGas wraps contract.ErrOutOfGas so that callers using
+	// errors.Is(err, contract.ErrOutOfGas) on any FHE gas failure get the
+	// expected match — consistent with every other precompile in the tree.
+	ErrInsufficientGas   = fmt.Errorf("insufficient gas for FHE operation: %w", contract.ErrOutOfGas)
 	ErrInvalidCiphertext = errors.New("invalid ciphertext handle")
 )
 
@@ -912,25 +917,39 @@ func (c *FHEContract) handleSealOutput(state contract.AccessibleState, caller co
 	return result, gas - GasEncrypt, nil
 }
 
-// ciphertextStore holds encrypted values indexed by hash
-var ciphertextStore = make(map[common.Hash][]byte)
-var ciphertextTypes = make(map[common.Hash]uint8)
+// ctStore guards ciphertextStore and ciphertextTypes against concurrent access.
+// Access pattern is read-heavy (getCiphertext called 2x per binary op,
+// storeCiphertext 1x) so RWMutex with RLock on reads is the correct choice.
+var ctStore = struct {
+	sync.RWMutex
+	data  map[common.Hash][]byte
+	types map[common.Hash]uint8
+}{
+	data:  make(map[common.Hash][]byte),
+	types: make(map[common.Hash]uint8),
+}
 
 // storeCiphertext saves ciphertext and returns its hash
 func storeCiphertext(ct []byte, ctType uint8) common.Hash {
 	hash := common.BytesToHash(ct)
-	ciphertextStore[hash] = ct
-	ciphertextTypes[hash] = ctType
+	ctStore.Lock()
+	ctStore.data[hash] = ct
+	ctStore.types[hash] = ctType
+	ctStore.Unlock()
 	return hash
 }
 
 // getCiphertext retrieves ciphertext by hash
 func getCiphertext(hash common.Hash) ([]byte, uint8, bool) {
-	ct, ok := ciphertextStore[hash]
+	ctStore.RLock()
+	ct, ok := ctStore.data[hash]
 	if !ok {
+		ctStore.RUnlock()
 		return nil, 0, false
 	}
-	return ct, ciphertextTypes[hash], true
+	ctType := ctStore.types[hash]
+	ctStore.RUnlock()
+	return ct, ctType, true
 }
 
 // performFHEOperation executes FHE binary operations using GPU acceleration

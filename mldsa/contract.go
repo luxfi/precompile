@@ -167,7 +167,7 @@ func (p *mldsaVerifyPrecompile) Run(
 	// Calculate required gas
 	gasCost := p.RequiredGas(input)
 	if suppliedGas < gasCost {
-		return nil, 0, errors.New("out of gas")
+		return nil, 0, contract.ErrOutOfGas
 	}
 
 	// Minimum: mode byte
@@ -459,7 +459,7 @@ func (p *mldsaVerifyPrecompile) RunLegacy(
 	}
 
 	if suppliedGas < gasCost {
-		return nil, 0, errors.New("out of gas")
+		return nil, 0, contract.ErrOutOfGas
 	}
 
 	if len(input) < legacyMinInput {
