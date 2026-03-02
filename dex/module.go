@@ -58,7 +58,6 @@ const (
 	SelectorInitialize      uint32 = 0x01000000 // initialize(PoolKey,uint160)
 	SelectorSwap            uint32 = 0x02000000 // swap(PoolKey,SwapParams,bytes)
 	SelectorModifyLiquidity uint32 = 0x03000000 // modifyLiquidity(PoolKey,ModifyLiqParams,bytes)
-	SelectorDonate          uint32 = 0x04000000 // donate(PoolKey,uint256,uint256)
 	SelectorTake            uint32 = 0x05000000 // take(Currency,address,uint256)
 	SelectorSettle          uint32 = 0x06000000 // settle()
 	SelectorLock            uint32 = 0x07000000 // lock(bytes)
@@ -162,8 +161,6 @@ func (c *DEXContract) Run(
 		return c.runSwap(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorModifyLiquidity:
 		return c.runModifyLiquidity(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorDonate:
-		return c.runDonate(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorTake:
 		return c.runTake(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorSettle:
@@ -291,25 +288,6 @@ func (c *DEXContract) runModifyLiquidity(
 	return result, suppliedGas - GasAddLiquidity, nil
 }
 
-func (c *DEXContract) runDonate(
-	state contract.AccessibleState,
-	caller common.Address,
-	input []byte,
-	suppliedGas uint64,
-	readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
-	}
-
-	if suppliedGas < GasBalanceUpdate {
-		return nil, 0, fmt.Errorf("out of gas")
-	}
-
-	// Donate is not yet implemented
-	return nil, suppliedGas - GasBalanceUpdate, fmt.Errorf("donate not implemented")
-}
-
 func (c *DEXContract) runTake(
 	state contract.AccessibleState,
 	caller common.Address,
@@ -424,8 +402,6 @@ func (c *DEXContract) RequiredGas(input []byte) uint64 {
 		return GasSwap
 	case SelectorModifyLiquidity:
 		return GasAddLiquidity
-	case SelectorDonate:
-		return GasBalanceUpdate
 	case SelectorTake:
 		return GasBalanceUpdate
 	case SelectorSettle:
