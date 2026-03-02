@@ -889,3 +889,328 @@ func BenchmarkPoolKeyID(b *testing.B) {
 		_ = key.ID()
 	}
 }
+
+// =========================================================================
+// Red Team Regression Tests — F1 through F12
+// =========================================================================
+
+// F1: transferToken must reject insufficient balance before any state change.
+func TestTransferTokenInsufficientBalance(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+
+	token := Currency{Address: common.HexToAddress("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")}
+	from := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	to := common.HexToAddress("0x2222222222222222222222222222222222222222")
+
+	// from has 0 balance at the ERC20 storage slot, try to transfer 100
+	err := pm.transferToken(stateDB, token, from, to, big.NewInt(100))
+	if err == nil {
+		t.Fatal("expected insufficient balance error, got nil")
+	}
+	t.Logf("F1 correctly rejected: %v", err)
+}
+
+// F1: transferToken must reject insufficient native balance.
+func TestTransferTokenInsufficientNativeBalance(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+
+	from := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	to := common.HexToAddress("0x2222222222222222222222222222222222222222")
+
+	stateDB.AddBalance(from, uint256.NewInt(50))
+
+	err := pm.transferToken(stateDB, NativeCurrency, from, to, big.NewInt(100))
+	if err == nil {
+		t.Fatal("expected insufficient native balance error, got nil")
+	}
+	t.Logf("F1 native correctly rejected: %v", err)
+}
+
+// F2: autoSettle must propagate transfer failures.
+func TestAutoSettleReturnsError(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	// caller has 0 native balance, delta says caller owes pool 1000
+	delta := NewBalanceDelta(big.NewInt(1000), big.NewInt(0))
+	err := pm.autoSettle(stateDB, caller, key, delta)
+	if err == nil {
+		t.Fatal("expected autoSettle error for insufficient balance, got nil")
+	}
+	t.Logf("F2 correctly propagated: %v", err)
+}
+
+// F4: DecodeSwapInput must handle negative AmountSpecified (two's complement).
+func TestDecodeSwapInputNegativeAmount(t *testing.T) {
+	// Build input: 128 bytes PoolKey + 1 byte zeroForOne + 32 bytes amount + 32 bytes limit
+	input := make([]byte, 193)
+	// currency0 at [12:32]
+	copy(input[12:32], common.HexToAddress("0x1000000000000000000000000000000000000001").Bytes())
+	// currency1 at [44:64]
+	copy(input[44:64], common.HexToAddress("0x2000000000000000000000000000000000000002").Bytes())
+	// fee at [64:67]: 3000 = 0x000BB8
+	input[64] = 0x00
+	input[65] = 0x0B
+	input[66] = 0xB8
+	// tickSpacing at [67:70]: 60 = 0x00003C
+	input[67] = 0x00
+	input[68] = 0x00
+	input[69] = 0x3C
+	// hooks at [76:96]: zero
+	// zeroForOne at [128]: 1
+	input[128] = 1
+	// AmountSpecified at [129:161]: -1000 in two's complement
+	neg1000 := new(big.Int).SetInt64(-1000)
+	tc := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 256), neg1000)
+	tcBytes := tc.Bytes()
+	copy(input[129+(32-len(tcBytes)):161], tcBytes)
+	// SqrtPriceLimitX96 at [161:193]: just some value
+	big.NewInt(100).FillBytes(input[161:193])
+
+	_, params, _, err := DecodeSwapInput(input)
+	if err != nil {
+		t.Fatalf("DecodeSwapInput failed: %v", err)
+	}
+	if params.AmountSpecified.Sign() >= 0 {
+		t.Fatalf("expected negative AmountSpecified, got %s", params.AmountSpecified)
+	}
+	if params.AmountSpecified.Int64() != -1000 {
+		t.Fatalf("expected -1000, got %s", params.AmountSpecified)
+	}
+	t.Logf("F4: correctly decoded AmountSpecified = %s", params.AmountSpecified)
+}
+
+// F5: bigIntTo32Bytes must produce correct two's complement for negatives.
+func TestBigIntTo32BytesNegative(t *testing.T) {
+	neg := big.NewInt(-1)
+	result := bigIntTo32Bytes(neg)
+
+	// -1 in two's complement 256-bit should be all 0xFF
+	for i := 0; i < 32; i++ {
+		if result[i] != 0xFF {
+			t.Fatalf("byte %d: expected 0xFF, got 0x%02X", i, result[i])
+		}
+	}
+
+	// Test -1000
+	neg1000 := big.NewInt(-1000)
+	result = bigIntTo32Bytes(neg1000)
+	// Decode back
+	decoded := decodeSigned256(result)
+	if decoded.Int64() != -1000 {
+		t.Fatalf("round-trip failed: expected -1000, got %s", decoded)
+	}
+	t.Logf("F5: -1000 round-trips correctly through two's complement encoding")
+}
+
+// F5: bigIntTo32Bytes positive values work correctly.
+func TestBigIntTo32BytesPositive(t *testing.T) {
+	val := big.NewInt(42)
+	result := bigIntTo32Bytes(val)
+	decoded := new(big.Int).SetBytes(result)
+	if decoded.Int64() != 42 {
+		t.Fatalf("expected 42, got %s", decoded)
+	}
+}
+
+// F10: ModifyLiquidity must reject removal that would make pool liquidity negative.
+func TestModifyLiquidityRejectsNegativePoolLiquidity(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	// Initialize pool
+	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Add some liquidity first
+	pm.lockers = append(pm.lockers, caller)
+	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
+
+	addParams := ModifyLiquidityParams{
+		TickLower:      -1000,
+		TickUpper:      1000,
+		LiquidityDelta: big.NewInt(500),
+	}
+	_, _, err = pm.ModifyLiquidity(stateDB, key, addParams, nil)
+	if err != nil {
+		t.Fatalf("AddLiquidity failed: %v", err)
+	}
+
+	// Now try to remove more than exists
+	removeParams := ModifyLiquidityParams{
+		TickLower:      -1000,
+		TickUpper:      1000,
+		LiquidityDelta: big.NewInt(-1000), // more than the 500 we added
+	}
+	_, _, err = pm.ModifyLiquidity(stateDB, key, removeParams, nil)
+	if err == nil {
+		t.Fatal("expected error when removing more liquidity than exists")
+	}
+	t.Logf("F10 correctly rejected: %v", err)
+}
+
+// F10: safeFillBytes must not panic on negative big.Int.
+func TestSafeFillBytesNegative(t *testing.T) {
+	buf := make([]byte, 32)
+	// Should not panic
+	safeFillBytes(big.NewInt(-1), buf)
+	for i := range buf {
+		if buf[i] != 0 {
+			t.Fatalf("expected zero buf for negative value, byte %d = %d", i, buf[i])
+		}
+	}
+	t.Log("F10: safeFillBytes handles negative values without panic")
+}
+
+// F12: decodeInt24 must handle negative tick values.
+func TestDecodeInt24Negative(t *testing.T) {
+	// -1000 = 0xFFFC18 in 24-bit two's complement
+	// 24-bit: 2^24 - 1000 = 16777216 - 1000 = 16776216 = 0xFFFC18
+	b := []byte{0xFF, 0xFC, 0x18}
+	val := decodeInt24(b)
+	if val != -1000 {
+		t.Fatalf("expected -1000, got %d", val)
+	}
+
+	// Test positive
+	b = []byte{0x00, 0x03, 0xE8} // 1000
+	val = decodeInt24(b)
+	if val != 1000 {
+		t.Fatalf("expected 1000, got %d", val)
+	}
+
+	// Test zero
+	b = []byte{0x00, 0x00, 0x00}
+	val = decodeInt24(b)
+	if val != 0 {
+		t.Fatalf("expected 0, got %d", val)
+	}
+
+	// Test max positive (2^23 - 1 = 8388607)
+	b = []byte{0x7F, 0xFF, 0xFF}
+	val = decodeInt24(b)
+	if val != 8388607 {
+		t.Fatalf("expected 8388607, got %d", val)
+	}
+
+	// Test min negative (-2^23 = -8388608)
+	b = []byte{0x80, 0x00, 0x00}
+	val = decodeInt24(b)
+	if val != -8388608 {
+		t.Fatalf("expected -8388608, got %d", val)
+	}
+
+	t.Log("F12: decodeInt24 handles all int24 edge cases correctly")
+}
+
+// F12: DecodeModifyLiquidityInput must handle negative ticks.
+func TestDecodeModifyLiquidityInputNegativeTicks(t *testing.T) {
+	input := make([]byte, 192)
+	// currency0 at [12:32]
+	copy(input[12:32], common.HexToAddress("0x1000000000000000000000000000000000000001").Bytes())
+	// currency1 at [44:64]
+	copy(input[44:64], common.HexToAddress("0x2000000000000000000000000000000000000002").Bytes())
+	// fee at [64:67]: 3000
+	input[64] = 0x00
+	input[65] = 0x0B
+	input[66] = 0xB8
+	// tickSpacing at [67:70]: 60
+	input[67] = 0x00
+	input[68] = 0x00
+	input[69] = 0x3C
+
+	// TickLower at [128:131]: -887272 = 0xF27618 in 24-bit two's complement
+	// 2^24 - 887272 = 16777216 - 887272 = 15889944 = 0xF27618
+	input[128] = 0xF2
+	input[129] = 0x76
+	input[130] = 0x18
+	// TickUpper at [131:134]: 887272 = 0x0D89E8
+	input[131] = 0x0D
+	input[132] = 0x89
+	input[133] = 0xE8
+	// LiquidityDelta at [134:166]: 1000000
+	big.NewInt(1000000).FillBytes(input[134:166])
+
+	_, params, _, err := DecodeModifyLiquidityInput(input)
+	if err != nil {
+		t.Fatalf("DecodeModifyLiquidityInput failed: %v", err)
+	}
+	if params.TickLower != -887272 {
+		t.Fatalf("expected TickLower=-887272, got %d", params.TickLower)
+	}
+	if params.TickUpper != 887272 {
+		t.Fatalf("expected TickUpper=887272, got %d", params.TickUpper)
+	}
+	t.Logf("F12: TickLower=%d, TickUpper=%d decoded correctly", params.TickLower, params.TickUpper)
+}
+
+// F9: popLocker must verify caller identity.
+func TestPopLockerVerifiesCaller(t *testing.T) {
+	pm := newTestPoolManager()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	other := common.HexToAddress("0x2222222222222222222222222222222222222222")
+
+	pm.pushLocker(caller)
+
+	// Wrong caller should fail
+	err := pm.popLocker(other)
+	if err == nil {
+		t.Fatal("expected error when popping with wrong caller")
+	}
+	t.Logf("F9 correctly rejected: %v", err)
+
+	// Correct caller should succeed
+	err = pm.popLocker(caller)
+	if err != nil {
+		t.Fatalf("expected success for correct caller, got: %v", err)
+	}
+
+	// Empty stack should fail
+	err = pm.popLocker(caller)
+	if err == nil {
+		t.Fatal("expected error when popping empty stack")
+	}
+	t.Log("F9: popLocker identity verification works correctly")
+}
+
+// F8: Router executeV4Swap must use actual PoolKey (non-zero fee).
+func TestRouterExecuteV4SwapWithPoolKey(t *testing.T) {
+	pm := NewPoolManager()
+	stateDB := NewMockStateDB()
+	router := NewLXRouter(pm)
+
+	key := setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
+
+	// Verify the key has a non-zero fee
+	if key.Fee == 0 {
+		t.Fatal("expected non-zero fee in pool key")
+	}
+
+	// Quote to get poolID and key
+	_, poolID, returnedKey, err := router.quoteV4(stateDB, testTokenA, testTokenB, big.NewInt(10_000), 0)
+	if err != nil {
+		t.Fatalf("quoteV4 failed: %v", err)
+	}
+	if returnedKey.Fee == 0 {
+		t.Fatal("F8: quoteV4 returned zero-fee key, fee would be ignored in swap")
+	}
+
+	// Execute through V4 with the actual key
+	amountOut, err := router.executeV4Swap(stateDB, testCaller, poolID, returnedKey, testTokenA, testTokenB, big.NewInt(10_000), nil)
+	if err != nil {
+		t.Fatalf("executeV4Swap failed: %v", err)
+	}
+	if amountOut.Sign() <= 0 {
+		t.Fatal("expected positive output")
+	}
+	t.Logf("F8: executeV4Swap with real key (fee=%d) produced output=%s", returnedKey.Fee, amountOut)
+}
