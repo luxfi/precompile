@@ -41,13 +41,10 @@ var (
 	BatchProofContractAddress   = common.HexToAddress("0x0900000000000000000000000000000000000032")
 )
 
-// Hashing precompile addresses (Lux Hashing range 0x0500...01-03)
-var (
-	Poseidon2ContractAddress = common.HexToAddress("0x0500000000000000000000000000000000000001")
-	Poseidon2SpongeAddress   = common.HexToAddress("0x0500000000000000000000000000000000000002")
-	PedersenContractAddress  = common.HexToAddress("0x0500000000000000000000000000000000000003")
-	// Blake3 is at 0x0500...04, defined in blake3/contract.go
-)
+// Hashing precompiles are in their standalone packages:
+//   poseidon → 0x0500..05
+//   pedersen → 0x0500..06
+//   blake3   → 0x0500..04
 
 // ZKVerifyPrecompile is the singleton instance of the ZK verify precompile
 var ZKVerifyPrecompile = &zkVerifyPrecompile{}
