@@ -19,38 +19,32 @@ import (
 // LP-aligned format: 0x0000000000000000000000000000000000LPNUM
 // See LP-9015 for canonical specification
 const (
-	// Core AMM (LP-901x)
-	LXAMMAddress    = "0x0000000000000000000000000000000000009010" // LP-9010 LXAMM (singleton AMM core)
-	LXOracleAddress = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (external price aggregation)
-	LXRouterAddress = "0x0000000000000000000000000000000000009012" // LP-9012 LXRouter (swap routing)
-	LXHooksAddress  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (hook system)
+	// Core DEX (LP-901x) — maps to Uniswap v4 PoolManager architecture
+	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // LP-9010 LXPool (v4 PoolManager — singleton pool state)
+	LXOracleAddress = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (price aggregation)
+	LXRouterAddress = "0x0000000000000000000000000000000000009012" // LP-9012 LXRouter (v4 SwapRouter — external swap entry)
+	LXHooksAddress  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (v4 hook registry)
+	LXFlashAddress  = "0x0000000000000000000000000000000000009014" // LP-9014 LXFlash (flash accounting)
 
 	// Orderbook (LP-902x)
-	LXBookAddress = "0x0000000000000000000000000000000000009020" // LP-9020 LXBook (orderbook engine)
+	LXBookAddress = "0x0000000000000000000000000000000000009020" // LP-9020 LXBook (CLOB orderbook engine)
 
 	// Custody (LP-903x)
 	LXVaultAddress = "0x0000000000000000000000000000000000009030" // LP-9030 LXVault (custody + margin)
 
 	// Pricing (LP-904x)
-	LXPriceAddress = "0x0000000000000000000000000000000000009040" // LP-9040 LXPrice (derived/computed pricing)
+	LXFeedAddress = "0x0000000000000000000000000000000000009040" // LP-9040 LXFeed (derived/computed pricing)
 
 	// Lending (LP-905x–906x)
 	LXLendAddress      = "0x0000000000000000000000000000000000009050" // LP-9050 LXLend (lending pool)
 	LXAutoRepayAddress = "0x0000000000000000000000000000000000009060" // LP-9060 LXAutoRepay (self-repaying loans)
 
 	// Liquidation + Transmutation (LP-907x–908x)
-	LXLiquidatorAddress  = "0x0000000000000000000000000000000000009070" // LP-9070 LXLiquidator (liquidation engine)
-	LXTransmuterAddress  = "0x0000000000000000000000000000000000009080" // LP-9080 LXTransmuter (debt → collateral conversion)
+	LXLiquidatorAddress = "0x0000000000000000000000000000000000009070" // LP-9070 LXLiquidator (liquidation engine)
+	LXTransmuterAddress = "0x0000000000000000000000000000000000009080" // LP-9080 LXTransmuter (debt → collateral conversion)
 
 	// Settlement (LP-909x)
-	// LXFillAttestAddress is defined in fill_attestation.go               // LP-9090 LXFillAttest (broker fill attestation + fraud proofs)
-
-	// Aliases for backward compatibility
-	LXPoolAddress     = LXAMMAddress
-	LXFlashAddress    = "0x0000000000000000000000000000000000009014" // LP-9014 (flash loans — part of LXAMM)
-	LXFeedAddress     = LXPriceAddress
-	LXLiquidAddress   = LXAutoRepayAddress
-	LiquidatorAddress = LXLiquidatorAddress
+	// LXFillAttestAddress is defined in fill_attestation.go               // LP-9090 LXFillAttest (settlement attestation)
 	LiquidFXAddress   = LXTransmuterAddress
 
 	// Bridge Precompiles (LP-6xxx)
