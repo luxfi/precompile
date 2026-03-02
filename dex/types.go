@@ -37,7 +37,7 @@ const (
 
 	// Lending (LP-905x–906x)
 	LXLendAddress      = "0x0000000000000000000000000000000000009050" // LP-9050 LXLend (lending pool)
-	LXAutoRepayAddress = "0x0000000000000000000000000000000000009060" // LP-9060 LXAutoRepay (self-repaying loans)
+	LXPayAddress = "0x0000000000000000000000000000000000009060" // LP-9060 LXPay (self-repaying loans)
 
 	// Liquidation + Transmutation (LP-907x–908x)
 	LXLiquidatorAddress = "0x0000000000000000000000000000000000009070" // LP-9070 LXLiquidator (liquidation engine)
