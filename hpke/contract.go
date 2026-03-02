@@ -6,12 +6,17 @@
 //
 // See LP-3662 for full specification.
 //
+// Operations:
+//   - 0x20: SingleShotSeal -- encrypt with recipient public key
+//
+// SingleShotOpen (decryption) is intentionally excluded: it requires the
+// recipient's secret key in calldata, which is public on-chain. Decryption
+// MUST be performed off-chain.
+//
 // GPU: For post-quantum hybrid KEMs (X25519+Kyber768, X-Wing), the Kyber KEM
-// encap/decap is dispatched to GPU via LatticeOps::KyberEncaps/KyberDecaps
-// with automatic CPU fallback. Batch acceleration via KyberEncapsBatch/
-// KyberDecapsBatch is available in the parallel.BlockExecutor path.
-// Classical ECDH KEMs (P-256, X25519) stay on CPU — same scalar multiply
-// as ecrecover, batchable at the block level.
+// encap is dispatched to GPU via LatticeOps::KyberEncaps with automatic CPU
+// fallback. Batch acceleration via KyberEncapsBatch is available in the
+// parallel.BlockExecutor path.
 package hpke
 
 import (
@@ -35,25 +40,11 @@ var (
 
 	ErrInvalidInput       = errors.New("invalid HPKE input")
 	ErrInvalidCipherSuite = errors.New("invalid cipher suite")
-	ErrDecryptionFailed   = errors.New("decryption failed")
-	ErrInvalidContext     = errors.New("invalid context handle")
 )
 
-// Operation selectors
+// Operation selectors -- seal only, open is excluded for key safety
 const (
-	OpSetupBaseS     = 0x01
-	OpSetupBaseR     = 0x02
-	OpSetupPSKS      = 0x03
-	OpSetupPSKR      = 0x04
-	OpSetupAuthS     = 0x05
-	OpSetupAuthR     = 0x06
-	OpSetupAuthPSKS  = 0x07
-	OpSetupAuthPSKR  = 0x08
-	OpSeal           = 0x10
-	OpOpen           = 0x11
-	OpExport         = 0x12
 	OpSingleShotSeal = 0x20
-	OpSingleShotOpen = 0x21
 )
 
 // KEM IDs
@@ -82,7 +73,6 @@ const (
 	GasKDFExtract     = 200
 	GasAEADBase       = 400
 	GasAEADPer64Bytes = 8
-	GasSetupBase      = 500
 )
 
 type hpkePrecompile struct{}
@@ -125,35 +115,7 @@ func (p *hpkePrecompile) RequiredGas(input []byte) uint64 {
 	op := input[0]
 
 	switch op {
-	case OpSetupBaseS, OpSetupBaseR:
-		if len(input) < 7 {
-			return GasKEMEncapsX25519 + GasKDFExtract + GasSetupBase
-		}
-		kemID := uint16(input[1])<<8 | uint16(input[2])
-		return kemGas(kemID) + GasKDFExtract + GasSetupBase
-
-	case OpSetupAuthS, OpSetupAuthR:
-		if len(input) < 7 {
-			return 2*GasKEMEncapsX25519 + GasKDFExtract + 1000
-		}
-		kemID := uint16(input[1])<<8 | uint16(input[2])
-		return 2*kemGas(kemID) + GasKDFExtract + 1000
-
-	case OpSetupPSKS, OpSetupPSKR:
-		if len(input) < 7 {
-			return GasKEMEncapsX25519 + GasKDFExtract + 1000
-		}
-		kemID := uint16(input[1])<<8 | uint16(input[2])
-		return kemGas(kemID) + GasKDFExtract + 1000
-
-	case OpSeal, OpOpen:
-		if len(input) < 35 {
-			return GasAEADBase
-		}
-		dataLen := len(input) - 35
-		return GasAEADBase + uint64(dataLen/64)*GasAEADPer64Bytes
-
-	case OpSingleShotSeal, OpSingleShotOpen:
+	case OpSingleShotSeal:
 		if len(input) < 7 {
 			return GasKEMEncapsX25519 + GasKDFExtract + GasAEADBase
 		}
@@ -163,9 +125,6 @@ func (p *hpkePrecompile) RequiredGas(input []byte) uint64 {
 			dataLen = 0
 		}
 		return kemGas(kemID) + GasKDFExtract + GasAEADBase + uint64(dataLen/64)*GasAEADPer64Bytes
-
-	case OpExport:
-		return 500
 
 	default:
 		return 0
@@ -198,8 +157,6 @@ func (p *hpkePrecompile) Run(
 	switch op {
 	case OpSingleShotSeal:
 		result, err = p.singleShotSeal(input[1:])
-	case OpSingleShotOpen:
-		result, err = p.singleShotOpen(input[1:])
 	default:
 		err = fmt.Errorf("unsupported operation: 0x%02x", op)
 	}
@@ -441,185 +398,4 @@ func (p *hpkePrecompile) singleShotSealGPU(params *sealParams) ([]byte, error) {
 	// identical to pure-CPU, we run the full HPKE pipeline via circl which
 	// internally performs the same KEM + key schedule + AEAD.
 	return p.singleShotSealCPU(params)
-}
-
-// openParams holds parsed parameters for a single-shot open operation.
-type openParams struct {
-	kemID      uint16
-	suite      hpke.Suite
-	enc        []byte
-	recipient  []byte // secret key
-	info       []byte
-	aad        []byte
-	ciphertext []byte
-}
-
-func (p *hpkePrecompile) parseOpenParams(input []byte) (*openParams, error) {
-	if len(input) < 6 {
-		return nil, ErrInvalidInput
-	}
-
-	kemID := uint16(input[0])<<8 | uint16(input[1])
-
-	suite, err := p.parseSuite(input)
-	if err != nil {
-		return nil, err
-	}
-
-	offset := 6
-
-	// Parse encapsulated key length
-	if len(input) < offset+2 {
-		return nil, ErrInvalidInput
-	}
-	encLen := int(input[offset])<<8 | int(input[offset+1])
-	offset += 2
-
-	if len(input) < offset+encLen {
-		return nil, ErrInvalidInput
-	}
-	enc := input[offset : offset+encLen]
-	offset += encLen
-
-	// Parse recipient secret key length
-	if len(input) < offset+2 {
-		return nil, ErrInvalidInput
-	}
-	skLen := int(input[offset])<<8 | int(input[offset+1])
-	offset += 2
-
-	if len(input) < offset+skLen {
-		return nil, ErrInvalidInput
-	}
-	recipientSk := input[offset : offset+skLen]
-	offset += skLen
-
-	// Parse info length
-	if len(input) < offset+2 {
-		return nil, ErrInvalidInput
-	}
-	infoLen := int(input[offset])<<8 | int(input[offset+1])
-	offset += 2
-
-	var info []byte
-	if infoLen > 0 {
-		if len(input) < offset+infoLen {
-			return nil, ErrInvalidInput
-		}
-		info = input[offset : offset+infoLen]
-		offset += infoLen
-	}
-
-	// Parse AAD length
-	if len(input) < offset+2 {
-		return nil, ErrInvalidInput
-	}
-	aadLen := int(input[offset])<<8 | int(input[offset+1])
-	offset += 2
-
-	var aad []byte
-	if aadLen > 0 {
-		if len(input) < offset+aadLen {
-			return nil, ErrInvalidInput
-		}
-		aad = input[offset : offset+aadLen]
-		offset += aadLen
-	}
-
-	return &openParams{
-		kemID:      kemID,
-		suite:      suite,
-		enc:        enc,
-		recipient:  recipientSk,
-		info:       info,
-		aad:        aad,
-		ciphertext: input[offset:],
-	}, nil
-}
-
-func (p *hpkePrecompile) singleShotOpen(input []byte) ([]byte, error) {
-	params, err := p.parseOpenParams(input)
-	if err != nil {
-		return nil, err
-	}
-
-	// GPU fast path: accelerate KEM decapsulation for Kyber-based KEMs.
-	if isKyberKEM(params.kemID) {
-		if result, gpuErr := p.singleShotOpenGPU(params); gpuErr == nil {
-			return result, nil
-		}
-		// GPU unavailable or failed -- fall through to CPU path
-	}
-
-	return p.singleShotOpenCPU(params)
-}
-
-func (p *hpkePrecompile) singleShotOpenCPU(params *openParams) ([]byte, error) {
-	kem, _, _ := params.suite.Params()
-	sk, err := kem.Scheme().UnmarshalBinaryPrivateKey(params.recipient)
-	if err != nil {
-		return nil, fmt.Errorf("invalid private key: %w", err)
-	}
-
-	receiver, err := params.suite.NewReceiver(sk, params.info)
-	if err != nil {
-		return nil, err
-	}
-
-	opener, err := receiver.Setup(params.enc)
-	if err != nil {
-		return nil, err
-	}
-
-	plaintext, err := opener.Open(params.ciphertext, params.aad)
-	if err != nil {
-		return nil, ErrDecryptionFailed
-	}
-
-	return plaintext, nil
-}
-
-// singleShotOpenGPU attempts GPU-accelerated KEM decapsulation for the Kyber
-// component, then completes key schedule + AEAD open on CPU.
-func (p *hpkePrecompile) singleShotOpenGPU(params *openParams) ([]byte, error) {
-	if !accel.Available() {
-		return nil, accel.ErrNoBackends
-	}
-
-	sess, err := accel.NewSession()
-	if err != nil {
-		return nil, err
-	}
-	defer sess.Close()
-
-	lattice := sess.Lattice()
-
-	ctTensor, err := accel.NewTensorWithData[byte](sess, []int{len(params.enc)}, params.enc)
-	if err != nil {
-		return nil, err
-	}
-	defer ctTensor.Close()
-
-	skTensor, err := accel.NewTensorWithData[byte](sess, []int{len(params.recipient)}, params.recipient)
-	if err != nil {
-		return nil, err
-	}
-	defer skTensor.Close()
-
-	ssTensor, err := accel.NewTensor[byte](sess, []int{accel.KyberSharedKeySize})
-	if err != nil {
-		return nil, err
-	}
-	defer ssTensor.Close()
-
-	if err := lattice.KyberDecaps(ctTensor.Untyped(), skTensor.Untyped(), ssTensor.Untyped()); err != nil {
-		return nil, err
-	}
-
-	if err := sess.Sync(); err != nil {
-		return nil, err
-	}
-
-	// GPU KEM decaps succeeded -- complete the full HPKE open on CPU.
-	return p.singleShotOpenCPU(params)
 }

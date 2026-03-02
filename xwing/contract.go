@@ -8,11 +8,12 @@
 // key encapsulation, as specified in IETF draft-connolly-cfrg-xwing-kem.
 //
 // Operations:
-//   - 0x01: KeyGen      -> (pk, sk) public/secret keypair
 //   - 0x02: Encapsulate -> pk -> (ct, ss) ciphertext + shared secret
-//   - 0x03: Decapsulate -> sk + ct -> ss shared secret
 //
-// Used by: post-quantum TLS, next-gen key exchange, PQ upgrade path.
+// KeyGen and Decapsulate are intentionally excluded: KeyGen returns secret
+// key material in EVM return data (visible to all validators), and
+// Decapsulate requires the secret key in calldata (public on-chain).
+// Both operations MUST be performed off-chain.
 package xwing
 
 import (
@@ -38,17 +39,12 @@ var (
 
 	ErrInvalidInput = errors.New("invalid xwing input")
 	ErrInvalidOp    = errors.New("invalid xwing operation")
-	ErrDecapFailed  = errors.New("xwing decapsulation failed")
 )
 
 const (
-	OpKeyGen      = 0x01
 	OpEncapsulate = 0x02
-	OpDecapsulate = 0x03
 
-	GasKeyGen      = 50000
 	GasEncapsulate = 40000
-	GasDecapsulate = 40000
 )
 
 type xwingPrecompile struct{}
@@ -58,12 +54,8 @@ func (p *xwingPrecompile) RequiredGas(input []byte) uint64 {
 		return 0
 	}
 	switch input[0] {
-	case OpKeyGen:
-		return GasKeyGen
 	case OpEncapsulate:
 		return GasEncapsulate
-	case OpDecapsulate:
-		return GasDecapsulate
 	default:
 		return 0
 	}
@@ -89,21 +81,6 @@ func (p *xwingPrecompile) Run(
 	scheme := xwing.Scheme()
 
 	switch input[0] {
-	case OpKeyGen:
-		pk, sk, err := scheme.GenerateKeyPair()
-		if err != nil {
-			return nil, gas, err
-		}
-		pkBytes, _ := pk.MarshalBinary()
-		skBytes, _ := sk.MarshalBinary()
-		// Output: [2 bytes pk_len][pk][sk]
-		result := make([]byte, 2+len(pkBytes)+len(skBytes))
-		result[0] = byte(len(pkBytes) >> 8)
-		result[1] = byte(len(pkBytes))
-		copy(result[2:], pkBytes)
-		copy(result[2+len(pkBytes):], skBytes)
-		return result, gas, nil
-
 	case OpEncapsulate:
 		pkSize := scheme.PublicKeySize()
 		if len(input) < 1+pkSize {
@@ -124,23 +101,6 @@ func (p *xwingPrecompile) Run(
 		copy(result[2:], ct)
 		copy(result[2+len(ct):], ss)
 		return result, gas, nil
-
-	case OpDecapsulate:
-		skSize := scheme.PrivateKeySize()
-		ctSize := scheme.CiphertextSize()
-		if len(input) < 1+skSize+ctSize {
-			return nil, gas, ErrInvalidInput
-		}
-		sk, err := scheme.UnmarshalBinaryPrivateKey(input[1 : 1+skSize])
-		if err != nil {
-			return nil, gas, err
-		}
-		ct := input[1+skSize : 1+skSize+ctSize]
-		ss, err := scheme.Decapsulate(sk, ct)
-		if err != nil {
-			return nil, gas, ErrDecapFailed
-		}
-		return ss, gas, nil
 
 	default:
 		return nil, gas, ErrInvalidOp
