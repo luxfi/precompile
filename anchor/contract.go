@@ -26,9 +26,10 @@ import (
 )
 
 var (
-	// ContractAddress: high-byte format in Privacy/Encryption range (0x0700-0x07FF)
-	// 0x0700 = Data Anchoring (first slot in Privacy page)
-	ContractAddress = common.HexToAddress("0x0700000000000000000000000000000000000000")
+	// ContractAddress: Privacy/Encryption range (0x0700-0x07FF), offset 0x10
+	// to leave the low 4 slots for FHE (0x0700..00-03). Data-anchoring
+	// has its own canonical slot here.
+	ContractAddress = common.HexToAddress("0x0700000000000000000000000000000000000010")
 
 	// Singleton
 	AnchorPrecompile = &anchorPrecompile{}

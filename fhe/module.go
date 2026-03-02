@@ -18,7 +18,7 @@ var _ contract.Configurator = (*configurator)(nil)
 // Must be unique across all precompiles.
 const ConfigKey = "fheConfig"
 
-// FHE Precompile Addresses (Lux Privacy range 0x0700)
+// FHE Precompile Addresses (0x0700 Privacy/Encryption reserved range).
 var (
 	// Main FHE operations precompile
 	ContractAddress = common.HexToAddress("0x0700000000000000000000000000000000000000")
