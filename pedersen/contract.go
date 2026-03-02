@@ -270,5 +270,4 @@ func hashToG1(seed string) bn254.G1Affine {
 			panic("pedersen: failed to derive independent generator after 256 tries")
 		}
 	}
-	panic("pedersen: unreachable")
 }
