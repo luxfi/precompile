@@ -8,11 +8,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/rpc"
 )
 
 // ZAP AMM message methods (registered on DEX engine's ZAP server)
@@ -24,6 +24,12 @@ const (
 	ZAPMethodQuote           = "amm.quote"
 )
 
+// zapClient is the interface for a ZAP binary protocol connection.
+type zapClient interface {
+	CallRaw(ctx context.Context, method string, payload []byte) ([]byte, error)
+	Close() error
+}
+
 // ZAPEngine implements Engine via ZAP binary protocol to the DEX engine.
 // Zero-copy binary wire format for HFT-grade latency.
 type ZAPEngine struct {
@@ -31,7 +37,7 @@ type ZAPEngine struct {
 	timeout time.Duration
 
 	mu     sync.Mutex
-	client rpc.Client
+	client zapClient
 }
 
 // NewZAPEngine creates a ZAP engine client.
@@ -43,18 +49,75 @@ func NewZAPEngine(addr string, timeout time.Duration) *ZAPEngine {
 	}
 }
 
-func (z *ZAPEngine) dial(ctx context.Context) (rpc.Client, error) {
+func (z *ZAPEngine) dial(ctx context.Context) (zapClient, error) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	if z.client != nil {
 		return z.client, nil
 	}
-	c, err := rpc.Dial(ctx, z.addr)
+	c, err := dialZAP(ctx, z.addr)
 	if err != nil {
 		return nil, fmt.Errorf("ZAP dial %s: %w", z.addr, err)
 	}
 	z.client = c
 	return c, nil
+}
+
+// dialZAP establishes a raw TCP connection for ZAP binary protocol.
+func dialZAP(ctx context.Context, addr string) (zapClient, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return &zapConn{conn: conn}, nil
+}
+
+// zapConn wraps a net.Conn to implement zapClient.
+type zapConn struct {
+	conn net.Conn
+}
+
+func (c *zapConn) CallRaw(ctx context.Context, method string, payload []byte) ([]byte, error) {
+	// ZAP wire: method_len(2) + method + payload_len(4) + payload
+	methodBytes := []byte(method)
+	header := make([]byte, 2+len(methodBytes)+4+len(payload))
+	binary.BigEndian.PutUint16(header[0:2], uint16(len(methodBytes)))
+	copy(header[2:2+len(methodBytes)], methodBytes)
+	binary.BigEndian.PutUint32(header[2+len(methodBytes):6+len(methodBytes)], uint32(len(payload)))
+	copy(header[6+len(methodBytes):], payload)
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = c.conn.SetWriteDeadline(deadline)
+	}
+	if _, err := c.conn.Write(header); err != nil {
+		return nil, fmt.Errorf("ZAP write: %w", err)
+	}
+
+	// Read response: status(1) + len(4) + data
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = c.conn.SetReadDeadline(deadline)
+	}
+	respHeader := make([]byte, 5)
+	if _, err := c.conn.Read(respHeader); err != nil {
+		return nil, fmt.Errorf("ZAP read header: %w", err)
+	}
+	if respHeader[0] != 0 {
+		return nil, fmt.Errorf("ZAP error status: %d", respHeader[0])
+	}
+	respLen := binary.BigEndian.Uint32(respHeader[1:5])
+	if respLen == 0 {
+		return nil, nil
+	}
+	resp := make([]byte, respLen)
+	if _, err := c.conn.Read(resp); err != nil {
+		return nil, fmt.Errorf("ZAP read body: %w", err)
+	}
+	return resp, nil
+}
+
+func (c *zapConn) Close() error {
+	return c.conn.Close()
 }
 
 func (z *ZAPEngine) call(ctx context.Context, method string, payload []byte) ([]byte, error) {
