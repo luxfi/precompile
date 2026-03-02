@@ -49,12 +49,12 @@ var (
 
 // EIP-2537 gas costs
 const (
-	GasG1Add  = 500
-	GasG1Mul  = 12000
-	GasG1MSM  = 12000 // per pair, discount applied for multiple
-	GasG2Add  = 800
-	GasG2Mul  = 45000
-	GasG2MSM  = 45000 // per pair, discount applied for multiple
+	GasG1Add = 500
+	GasG1Mul = 12000
+	GasG1MSM = 12000 // per pair, discount applied for multiple
+	GasG2Add = 800
+	GasG2Mul = 45000
+	GasG2MSM = 45000 // per pair, discount applied for multiple
 
 	// EIP-2537 pairing: 65000 base + 43000 per pair
 	GasPairingBase    = 65000
@@ -78,7 +78,7 @@ func decodeG1(input []byte) (bls12381.G1Affine, error) {
 	}
 
 	// EIP-2537: first 16 bytes of each 64-byte field element must be zero
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		if input[i] != 0 || input[64+i] != 0 {
 			return bls12381.G1Affine{}, ErrInvalidFieldElem
 		}
@@ -121,7 +121,7 @@ func decodeG2(input []byte) (bls12381.G2Affine, error) {
 	}
 
 	// EIP-2537: first 16 bytes of each 64-byte sub-element must be zero
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		if input[i] != 0 || input[64+i] != 0 || input[128+i] != 0 || input[192+i] != 0 {
 			return bls12381.G2Affine{}, ErrInvalidFieldElem
 		}
@@ -129,10 +129,10 @@ func decodeG2(input []byte) (bls12381.G2Affine, error) {
 
 	// Fp2 = (a0, a1) where each ai is 64 bytes (padded from 48)
 	var xa0, xa1, ya0, ya1 fp.Element
-	xa1.SetBytes(input[16:64])    // x.A1 (imaginary part first per EIP-2537)
-	xa0.SetBytes(input[80:128])   // x.A0
-	ya1.SetBytes(input[144:192])  // y.A1
-	ya0.SetBytes(input[208:256])  // y.A0
+	xa1.SetBytes(input[16:64])   // x.A1 (imaginary part first per EIP-2537)
+	xa0.SetBytes(input[80:128])  // x.A0
+	ya1.SetBytes(input[144:192]) // y.A1
+	ya0.SetBytes(input[208:256]) // y.A0
 
 	var pt bls12381.G2Affine
 	pt.X.A0 = xa0
@@ -232,7 +232,7 @@ func (o *blsOperations) g1MSM(input []byte, suppliedGas uint64) ([]byte, uint64,
 
 	points := make([]bls12381.G1Affine, numPairs)
 	scalars := make([]fr.Element, numPairs)
-	for i := 0; i < numPairs; i++ {
+	for i := range numPairs {
 		offset := i * pairSize
 		pt, err := decodeG1(input[offset : offset+G1PointLen])
 		if err != nil {
@@ -311,7 +311,7 @@ func (o *blsOperations) g2MSM(input []byte, suppliedGas uint64) ([]byte, uint64,
 
 	points := make([]bls12381.G2Affine, numPairs)
 	scalars := make([]fr.Element, numPairs)
-	for i := 0; i < numPairs; i++ {
+	for i := range numPairs {
 		offset := i * pairSize
 		pt, err := decodeG2(input[offset : offset+G2PointLen])
 		if err != nil {
@@ -348,7 +348,7 @@ func (o *blsOperations) pairing(input []byte, suppliedGas uint64) ([]byte, uint6
 
 	g1Points := make([]bls12381.G1Affine, numPairs)
 	g2Points := make([]bls12381.G2Affine, numPairs)
-	for i := 0; i < numPairs; i++ {
+	for i := range numPairs {
 		offset := i * PairingPair
 		pt1, err := decodeG1(input[offset : offset+G1PointLen])
 		if err != nil {

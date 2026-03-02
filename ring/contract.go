@@ -179,7 +179,7 @@ func (p *ringSignaturePrecompile) verify(scheme byte, input []byte) ([]byte, err
 
 	// Parse ring
 	ring := make([][]byte, ringSize)
-	for i := 0; i < ringSize; i++ {
+	for i := range ringSize {
 		if len(input) < offset+CompressedPubKeySize {
 			return nil, ErrInvalidInput
 		}
@@ -235,7 +235,7 @@ func lsagVerify(ring [][]byte, sig *LSAGSignature, message []byte) bool {
 
 	// Verify ring -- sequential: c[i+1] = H(m, L_i, R_i)
 	cPrev := sig.C[0]
-	for i := 0; i < n; i++ {
+	for i := range n {
 		// Parse P[i]
 		pkX, pkY := secp256k1.DecompressPubkey(ring[i])
 		if pkX == nil {
@@ -274,7 +274,7 @@ func lsagVerify(ring [][]byte, sig *LSAGSignature, message []byte) bool {
 func batchHashToPoint(ring [][]byte) []*Point {
 	n := len(ring)
 	points := make([]*Point, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		points[i] = hashToPoint(ring[i])
 	}
 	return points
@@ -332,11 +332,11 @@ func (sig *LSAGSignature) Serialize() []byte {
 	copy(result, sig.KeyImage)
 
 	offset := CompressedPubKeySize
-	for i := 0; i < n; i++ {
+	for i := range n {
 		copy(result[offset:], padTo32(sig.C[i].Bytes()))
 		offset += ScalarSize
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		copy(result[offset:], padTo32(sig.S[i].Bytes()))
 		offset += ScalarSize
 	}
@@ -359,11 +359,11 @@ func parseLSAGSignature(data []byte, ringSize int) (*LSAGSignature, error) {
 	copy(sig.KeyImage, data[:CompressedPubKeySize])
 
 	offset := CompressedPubKeySize
-	for i := 0; i < ringSize; i++ {
+	for i := range ringSize {
 		sig.C[i] = new(big.Int).SetBytes(data[offset : offset+ScalarSize])
 		offset += ScalarSize
 	}
-	for i := 0; i < ringSize; i++ {
+	for i := range ringSize {
 		sig.S[i] = new(big.Int).SetBytes(data[offset : offset+ScalarSize])
 		offset += ScalarSize
 	}

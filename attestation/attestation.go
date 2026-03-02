@@ -460,11 +460,11 @@ func RegisterTrustedMeasurement(name string, measurement []byte) {
 
 // Helper functions
 
-func decodeInput(data []byte, v interface{}) error {
+func decodeInput(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
 
-func encodeOutput(v interface{}) ([]byte, error) {
+func encodeOutput(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
@@ -543,7 +543,7 @@ func Run(input []byte) ([]byte, error) {
 }
 
 // ABIEncode encodes values for EVM ABI format
-func ABIEncode(values ...interface{}) []byte {
+func ABIEncode(values ...any) []byte {
 	var result []byte
 	for _, v := range values {
 		switch val := v.(type) {

@@ -314,7 +314,7 @@ func (p *kzg4844Precompile) batchVerifyProofs(input []byte) ([]byte, error) {
 	ys := make([]gokzg4844.Scalar, numProofs)
 	proofs := make([]gokzg4844.KZGProof, numProofs)
 
-	for i := 0; i < numProofs; i++ {
+	for i := range numProofs {
 		copy(commitments[i][:], input[offset:offset+CommitmentSize])
 		offset += CommitmentSize
 
@@ -329,7 +329,7 @@ func (p *kzg4844Precompile) batchVerifyProofs(input []byte) ([]byte, error) {
 	}
 
 	// Verify all proofs individually (batch verification could be optimized)
-	for i := 0; i < numProofs; i++ {
+	for i := range numProofs {
 		err := kzgContext.VerifyKZGProof(commitments[i], zs[i], ys[i], proofs[i])
 		if err != nil {
 			return []byte{0x00}, nil

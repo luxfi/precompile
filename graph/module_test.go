@@ -155,11 +155,11 @@ func TestGraphQLContractRun(t *testing.T) {
 	require.Less(t, remainingGas, uint64(1_000_000))
 
 	// Parse response
-	var response map[string]interface{}
+	var response map[string]any
 	err = json.Unmarshal(result, &response)
 	require.NoError(t, err)
 
-	chainInfo, ok := response["chainInfo"].(map[string]interface{})
+	chainInfo, ok := response["chainInfo"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "graphvm", chainInfo["vmName"])
 }

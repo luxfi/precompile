@@ -350,7 +350,7 @@ func TestInitializeReturnNegativeTick(t *testing.T) {
 	// Must be 0xFF...FF9C (two's complement of -100)
 	// -100 in two's complement 256-bit = 2^256 - 100
 	// High 31 bytes should all be 0xFF, last byte should be 0x9C
-	for i := 0; i < 31; i++ {
+	for i := range 31 {
 		if encoded[i] != 0xFF {
 			t.Errorf("REGRESSION: byte %d = 0x%02X, want 0xFF for tick -100", i, encoded[i])
 		}
@@ -711,5 +711,5 @@ func (w *contractStateDBWrapper) TxHash() common.Hash {
 	return common.Hash{}
 }
 
-func (w *contractStateDBWrapper) Snapshot() int   { return 0 }
+func (w *contractStateDBWrapper) Snapshot() int        { return 0 }
 func (w *contractStateDBWrapper) RevertToSnapshot(int) {}

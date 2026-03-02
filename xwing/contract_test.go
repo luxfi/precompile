@@ -84,7 +84,7 @@ func TestEncapsulate_MultipleKeyPairs(t *testing.T) {
 	p := &xwingPrecompile{}
 	scheme := xwing.Scheme()
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		pk, sk, err := scheme.GenerateKeyPair()
 		require.NoError(t, err)
 

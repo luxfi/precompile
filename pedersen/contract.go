@@ -65,7 +65,7 @@ func init() {
 	_, _, g1Gen, _ := bn254.Generators()
 	genG = g1Gen
 	genH = hashToG1("Lux_Pedersen_H_Generator")
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		genVi[i] = hashToG1("Lux_Pedersen_Gen_" + string(rune('A'+i)))
 	}
 
@@ -207,7 +207,7 @@ func (p *pedersenPrecompile) vectorCommit(data []byte, gas uint64) ([]byte, uint
 	}
 
 	var sum bn254.G1Jac
-	for i := 0; i < n; i++ {
+	for i := range n {
 		var vi fr.Element
 		vi.SetBytes(data[1+i*32 : 1+(i+1)*32])
 		var viG bn254.G1Affine

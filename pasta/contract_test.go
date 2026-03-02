@@ -19,7 +19,7 @@ func TestPrecompileAddress(t *testing.T) {
 // findPoint finds a valid point on the given curve (Pallas or Vesta)
 func findPoint(curveID byte) point {
 	mod := modulus(curveID)
-	for xi := int64(0); xi < 1000; xi++ {
+	for xi := range int64(1000) {
 		x := big.NewInt(xi)
 		xCubed := new(big.Int).Exp(x, big.NewInt(3), mod)
 		rhs := new(big.Int).Add(xCubed, curveB)

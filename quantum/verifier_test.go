@@ -397,7 +397,7 @@ func TestAggregateBLSSignatures(t *testing.T) {
 	numSigners := 5
 	signatures := make([][]byte, numSigners)
 
-	for i := 0; i < numSigners; i++ {
+	for i := range numSigners {
 		// Create unique seed for each key
 		seed := make([]byte, 32)
 		for j := range seed {
@@ -458,7 +458,7 @@ func TestVerifyAggregateBLS(t *testing.T) {
 
 	publicKeys := make([][]byte, 3)
 	messages := make([][32]byte, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		publicKeys[i] = make([]byte, BLSPublicKeySize)
 		messages[i] = [32]byte{byte(i)}
 	}

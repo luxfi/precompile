@@ -15,8 +15,8 @@ import (
 // mockAccessibleState implements the minimal interface for testing
 type mockAccessibleState struct{}
 
-func (m *mockAccessibleState) GetStateDB() interface{}      { return nil }
-func (m *mockAccessibleState) GetBlockContext() interface{} { return nil }
+func (m *mockAccessibleState) GetStateDB() any      { return nil }
+func (m *mockAccessibleState) GetBlockContext() any { return nil }
 
 func TestBlake3Address(t *testing.T) {
 	// Address in Lux reserved hashing range: 0x0500...0004 (Blake3)

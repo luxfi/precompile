@@ -300,7 +300,7 @@ func serializeSignature(params *threshold.Params, sig *threshold.Signature, grou
 	}
 
 	// Serialize z vector (convert from NTT first)
-	for i := 0; i < sign.N; i++ {
+	for i := range sign.N {
 		zCopy := *sig.Z[i].CopyNew()
 		r.IMForm(zCopy, zCopy)
 		r.INTT(zCopy, zCopy)
@@ -310,15 +310,15 @@ func serializeSignature(params *threshold.Params, sig *threshold.Signature, grou
 	}
 
 	// Serialize Delta vector (already in coefficient form)
-	for i := 0; i < sign.M; i++ {
+	for i := range sign.M {
 		if err := serializePoly(&buf, r_nu, sig.Delta[i]); err != nil {
 			return nil, err
 		}
 	}
 
 	// Serialize A matrix (convert from NTT first)
-	for i := 0; i < sign.M; i++ {
-		for j := 0; j < sign.N; j++ {
+	for i := range sign.M {
+		for j := range sign.N {
 			aCopy := *groupKey.A[i][j].CopyNew()
 			r.IMForm(aCopy, aCopy)
 			r.INTT(aCopy, aCopy)
@@ -329,7 +329,7 @@ func serializeSignature(params *threshold.Params, sig *threshold.Signature, grou
 	}
 
 	// Serialize bTilde vector (already in coefficient form)
-	for i := 0; i < sign.M; i++ {
+	for i := range sign.M {
 		if err := serializePoly(&buf, r_xi, groupKey.BTilde[i]); err != nil {
 			return nil, err
 		}

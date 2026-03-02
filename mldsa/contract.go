@@ -283,7 +283,7 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 	publicKeys := make([][]byte, count)
 
 	offset := 4 // past header
-	for i := 0; i < count; i++ {
+	for i := range count {
 		// pubkey
 		if offset+pubKeySize > len(input) {
 			return nil, remainingGas, fmt.Errorf("%w: entry %d truncated at pubkey", ErrInvalidInputLength, i)
@@ -323,7 +323,7 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 	if !gpuUsed {
 		// CPU fallback: sequential single verify
 		results = make([]bool, count)
-		for i := 0; i < count; i++ {
+		for i := range count {
 			pub, parseErr := mldsa.PublicKeyFromBytes(publicKeys[i], mldsaMode)
 			if parseErr != nil {
 				results[i] = false
@@ -340,7 +340,7 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 		padded = ((count + 31) / 32) * 32
 	}
 	out := make([]byte, padded)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		if results[i] {
 			out[padded-count+i] = 1
 		}
