@@ -42,10 +42,10 @@ var (
 )
 
 const (
-	OpGetDy          = 0x01
-	OpAddLiquidity   = 0x02
+	OpGetDy           = 0x01
+	OpAddLiquidity    = 0x02
 	OpRemoveLiquidity = 0x03
-	OpGetD           = 0x04
+	OpGetD            = 0x04
 
 	GasBase = 5000
 
@@ -90,12 +90,13 @@ func (p *stableSwapPrecompile) Run(
 }
 
 // Input layout for GetDy:
-//   [0:4]   i (uint32)
-//   [4:8]   j (uint32)
-//   [8:40]  dx (uint256)
-//   [40:44] n (uint32, number of tokens)
-//   [44:76] amp (uint256)
-//   [76:]   balances (n * 32 bytes)
+//
+//	[0:4]   i (uint32)
+//	[4:8]   j (uint32)
+//	[8:40]  dx (uint256)
+//	[40:44] n (uint32, number of tokens)
+//	[44:76] amp (uint256)
+//	[76:]   balances (n * 32 bytes)
 func getDy(data []byte, gas uint64) ([]byte, uint64, error) {
 	if len(data) < 76 {
 		return nil, gas, ErrInvalidInput
@@ -114,7 +115,7 @@ func getDy(data []byte, gas uint64) ([]byte, uint64, error) {
 	}
 
 	balances := make([]*big.Int, n)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		off := 76 + k*32
 		balances[k] = new(big.Int).SetBytes(data[off : off+32])
 	}
@@ -126,7 +127,7 @@ func getDy(data []byte, gas uint64) ([]byte, uint64, error) {
 
 	// Compute new balance for token j after adding dx to token i
 	newBalances := make([]*big.Int, n)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		newBalances[k] = new(big.Int).Set(balances[k])
 	}
 	newBalances[int(i)].Add(newBalances[int(i)], dx)
@@ -146,10 +147,11 @@ func getDy(data []byte, gas uint64) ([]byte, uint64, error) {
 }
 
 // Input layout for AddLiquidity:
-//   [0:4]   n (uint32)
-//   [4:36]  amp (uint256)
-//   [36:68] totalSupply (uint256)
-//   [68:]   amounts (n * 32) + balances (n * 32)
+//
+//	[0:4]   n (uint32)
+//	[4:36]  amp (uint256)
+//	[36:68] totalSupply (uint256)
+//	[68:]   amounts (n * 32) + balances (n * 32)
 func addLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 	if len(data) < 68 {
 		return nil, gas, ErrInvalidInput
@@ -164,11 +166,11 @@ func addLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 
 	amounts := make([]*big.Int, n)
 	balances := make([]*big.Int, n)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		off := 68 + k*32
 		amounts[k] = new(big.Int).SetBytes(data[off : off+32])
 	}
-	for k := 0; k < n; k++ {
+	for k := range n {
 		off := 68 + n*32 + k*32
 		balances[k] = new(big.Int).SetBytes(data[off : off+32])
 	}
@@ -179,7 +181,7 @@ func addLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 	}
 
 	newBalances := make([]*big.Int, n)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		newBalances[k] = new(big.Int).Add(balances[k], amounts[k])
 	}
 	d1, err := computeD(newBalances, amp, n)
@@ -200,10 +202,11 @@ func addLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 }
 
 // Input layout for RemoveLiquidity:
-//   [0:4]   n (uint32)
-//   [4:36]  lpAmount (uint256)
-//   [36:68] totalSupply (uint256)
-//   [68:]   balances (n * 32)
+//
+//	[0:4]   n (uint32)
+//	[4:36]  lpAmount (uint256)
+//	[36:68] totalSupply (uint256)
+//	[68:]   balances (n * 32)
 func removeLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 	if len(data) < 68 {
 		return nil, gas, ErrInvalidInput
@@ -220,14 +223,14 @@ func removeLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 	}
 
 	balances := make([]*big.Int, n)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		off := 68 + k*32
 		balances[k] = new(big.Int).SetBytes(data[off : off+32])
 	}
 
 	// Return proportional share: amounts[i] = balances[i] * lpAmount / totalSupply
 	result := make([]byte, n*32)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		amt := new(big.Int).Mul(balances[k], lpAmount)
 		amt.Div(amt, totalSupply)
 		b := padTo32(amt.Bytes())
@@ -237,9 +240,10 @@ func removeLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 }
 
 // Input layout for GetD:
-//   [0:4]  n (uint32)
-//   [4:36] amp (uint256)
-//   [36:]  balances (n * 32)
+//
+//	[0:4]  n (uint32)
+//	[4:36] amp (uint256)
+//	[36:]  balances (n * 32)
 func getD(data []byte, gas uint64) ([]byte, uint64, error) {
 	if len(data) < 36 {
 		return nil, gas, ErrInvalidInput
@@ -251,7 +255,7 @@ func getD(data []byte, gas uint64) ([]byte, uint64, error) {
 	}
 
 	balances := make([]*big.Int, n)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		off := 36 + k*32
 		balances[k] = new(big.Int).SetBytes(data[off : off+32])
 	}
@@ -281,7 +285,7 @@ func computeD(balances []*big.Int, amp *big.Int, n int) (*big.Int, error) {
 	ann := new(big.Int).Mul(amp, nn) // A * n
 
 	d := new(big.Int).Set(s)
-	for i := 0; i < maxIterations; i++ {
+	for range maxIterations {
 		// dP = D^(n+1) / (n^n * prod(x_i))
 		// Computed iteratively: dP = D, then dP = dP * D / (n * x_i) for each i
 		dP := new(big.Int).Set(d)
@@ -330,7 +334,7 @@ func computeY(balances []*big.Int, amp *big.Int, n int, j int, d *big.Int) (*big
 	// c = D^(n+1) / (n^n * A * n * prod(x_i, i != j))
 	c := new(big.Int).Set(d)
 	s := new(big.Int)
-	for k := 0; k < n; k++ {
+	for k := range n {
 		if k == j {
 			continue
 		}
@@ -348,7 +352,7 @@ func computeY(balances []*big.Int, amp *big.Int, n int, j int, d *big.Int) (*big
 	b := new(big.Int).Add(s, new(big.Int).Div(d, ann))
 
 	y := new(big.Int).Set(d)
-	for i := 0; i < maxIterations; i++ {
+	for range maxIterations {
 		prevY := new(big.Int).Set(y)
 
 		// y_next = (y^2 + c) / (2*y + b - D)

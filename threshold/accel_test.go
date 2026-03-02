@@ -56,7 +56,7 @@ func TestVerifyBatchSignaturesLarge(t *testing.T) {
 	pks := make([][]byte, n)
 	msgs := make([][]byte, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		sigs[i] = make([]byte, 65)
 		pks[i] = make([]byte, 33)
 		msgs[i] = make([]byte, 32)
@@ -121,7 +121,7 @@ func BenchmarkVerifyBatchSignatures(b *testing.B) {
 		pks := make([][]byte, n)
 		msgs := make([][]byte, n)
 
-		for i := 0; i < n; i++ {
+		for i := range n {
 			sigs[i] = make([]byte, 65)
 			pks[i] = make([]byte, 33)
 			msgs[i] = make([]byte, 32)

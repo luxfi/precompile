@@ -68,12 +68,9 @@ func FROSTVerifyGasCost(input []byte) uint64 {
 	}
 
 	// Extract total signers from input
-	totalSigners := binary.BigEndian.Uint32(input[ThresholdSize : ThresholdSize+TotalSignersSize])
-
-	// Cap totalSigners to prevent gas abuse
-	if totalSigners > 1000 {
-		totalSigners = 1000
-	}
+	totalSigners := min(
+		// Cap totalSigners to prevent gas abuse
+		binary.BigEndian.Uint32(input[ThresholdSize:ThresholdSize+TotalSignersSize]), 1000)
 
 	// Base cost + per-signer cost
 	return FROSTVerifyBaseGas + (uint64(totalSigners) * FROSTVerifyPerSignerGas)

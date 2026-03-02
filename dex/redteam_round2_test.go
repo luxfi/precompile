@@ -118,7 +118,7 @@ func TestRedTeam_DecodeABIBytes_BackwardOffset(t *testing.T) {
 	args := make([]byte, 320)
 
 	// Fill PoolKey area with recognizable pattern
-	for i := 0; i < 160; i++ {
+	for i := range 160 {
 		args[i] = 0xAA
 	}
 
@@ -808,7 +808,7 @@ func TestRedTeam_PathTooLong(t *testing.T) {
 	}
 
 	// Set up all 6 pairs
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		a, b := tokens[i], tokens[i+1]
 		if bytes.Compare(a[:], b[:]) > 0 {
 			a, b = b, a

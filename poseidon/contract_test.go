@@ -37,8 +37,8 @@ func TestHash_TwoElements(t *testing.T) {
 	// Hash [1, 2] as field elements
 	input := make([]byte, 1+64)
 	input[0] = OpHash
-	input[32] = 1   // first element = 1 (big-endian, last byte of first 32-byte word)
-	input[64] = 2   // second element = 2
+	input[32] = 1 // first element = 1 (big-endian, last byte of first 32-byte word)
+	input[64] = 2 // second element = 2
 
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
@@ -89,8 +89,8 @@ func TestHashPair(t *testing.T) {
 
 	input := make([]byte, 1+64)
 	input[0] = OpHashPair
-	input[32] = 1   // left = 1
-	input[64] = 2   // right = 2
+	input[32] = 1 // left = 1
+	input[64] = 2 // right = 2
 
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
@@ -173,7 +173,7 @@ func TestSponge(t *testing.T) {
 	input := make([]byte, 1+4+32)
 	input[0] = OpSponge
 	binary.BigEndian.PutUint32(input[1:5], 32) // request 32 bytes output
-	input[36] = 1 // one field element = 1
+	input[36] = 1                              // one field element = 1
 
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
@@ -311,7 +311,7 @@ func TestSponge_LargeOutput_NotZeroPadded(t *testing.T) {
 		"sponge output beyond first 32 bytes must not be zero (was zero-padded before fix)")
 
 	// Each 32-byte block should be different (sponge re-permutes between squeezes)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		block := ret[(i+1)*32 : (i+2)*32]
 		require.False(t, bytes.Equal(firstBlock, block),
 			"each squeezed block should differ from the first")
@@ -357,7 +357,7 @@ func BenchmarkHash8(b *testing.B) {
 
 	input := make([]byte, 1+8*32)
 	input[0] = OpHash
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		input[1+i*32+31] = byte(i)
 	}
 	gas := p.RequiredGas(input)

@@ -162,10 +162,7 @@ func (p *hpkePrecompile) RequiredGas(input []byte) uint64 {
 		kemID := uint16(input[1])<<8 | uint16(input[2])
 		// Overhead: op(1) + suite(6) + seed(32) + pkLen(2) + infoLen(2) + aadLen(2) = 45
 		// plus variable pk/info/aad lengths; estimate conservatively
-		dataLen := len(input) - (1 + 6 + SeedSize + 2 + 2 + 2)
-		if dataLen < 0 {
-			dataLen = 0
-		}
+		dataLen := max(len(input)-(1+6+SeedSize+2+2+2), 0)
 		return kemGas(kemID) + GasKDFExtract + GasAEADBase + uint64(dataLen/64)*GasAEADPer64Bytes
 
 	default:

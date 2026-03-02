@@ -187,7 +187,7 @@ func (p *curve25519Precompile) msm(data []byte, gas uint64) ([]byte, uint64, err
 	// Accumulate via VarTimeMultiScalarMult (uses Straus/Pippenger)
 	points := make([]*edwards25519.Point, n)
 	scalars := make([]*edwards25519.Scalar, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		offset := i * pairSize
 		pt, err := decodePoint(data[offset : offset+CompressedLen])
 		if err != nil {

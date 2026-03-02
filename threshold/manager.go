@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"math/big"
+	"slices"
 	"sync"
 	"time"
 
@@ -379,10 +380,8 @@ func (tm *ThresholdManager) AddSigner(
 	}
 
 	// Check not already added
-	for _, s := range key.Permissions.AllowedSigners {
-		if s == signer {
-			return nil // Already added
-		}
+	if slices.Contains(key.Permissions.AllowedSigners, signer) {
+		return nil // Already added
 	}
 
 	key.Permissions.AllowedSigners = append(key.Permissions.AllowedSigners, signer)
@@ -485,10 +484,8 @@ func (tm *ThresholdManager) validateKeyForSigning(key *ThresholdKey, requester c
 		return nil
 	}
 
-	for _, signer := range key.Permissions.AllowedSigners {
-		if signer == requester {
-			return nil
-		}
+	if slices.Contains(key.Permissions.AllowedSigners, requester) {
+		return nil
 	}
 
 	return ErrUnauthorized

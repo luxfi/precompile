@@ -32,7 +32,7 @@ func TestH06_PedersenHDistinctFromG(t *testing.T) {
 func TestH06_PedersenVectorGeneratorsDistinctFromG(t *testing.T) {
 	_, _, G, _ := bn254.Generators()
 
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		require.False(t, genVi[i].Equal(&G),
 			"Vector generator V[%d] must NOT equal standard generator G", i)
 	}
@@ -41,14 +41,14 @@ func TestH06_PedersenVectorGeneratorsDistinctFromG(t *testing.T) {
 // H-06: All generators must be pairwise distinct.
 //
 // If any two generators are equal, the commitment scheme loses properties:
-// - Two equal generators in the vector means different values produce the
-//   same commitment (binding broken for those indices).
+//   - Two equal generators in the vector means different values produce the
+//     same commitment (binding broken for those indices).
 func TestH06_PedersenAllGeneratorsPairwiseDistinct(t *testing.T) {
 	allGens := make([]bn254.G1Affine, 0, 34)
 	_, _, G, _ := bn254.Generators()
 	allGens = append(allGens, G)
 	allGens = append(allGens, genH)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		allGens = append(allGens, genVi[i])
 	}
 
@@ -70,7 +70,7 @@ func TestH06_PedersenHashToG1NeverFallsBack(t *testing.T) {
 
 	// Test the exact seeds used in init()
 	seeds := []string{"Lux_Pedersen_H_Generator"}
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		seeds = append(seeds, "Lux_Pedersen_Gen_"+string(rune('A'+i)))
 	}
 

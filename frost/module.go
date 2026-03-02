@@ -41,7 +41,7 @@ func (*configurator) Configure(
 
 // Config implements the precompileconfig.Config interface for FROST
 type Config struct {
-	Upgrade precompileconfig.Upgrade `json:"upgrade,omitempty"`
+	Upgrade precompileconfig.Upgrade `json:"upgrade"`
 }
 
 func (c *Config) Key() string {

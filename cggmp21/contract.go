@@ -67,10 +67,7 @@ func CGGMP21VerifyGasCost(input []byte) uint64 {
 	}
 
 	// Extract total signers from input
-	totalSigners := binary.BigEndian.Uint32(input[ThresholdSize : ThresholdSize+TotalSignersSize])
-	if totalSigners > 1000 {
-		totalSigners = 1000
-	}
+	totalSigners := min(binary.BigEndian.Uint32(input[ThresholdSize:ThresholdSize+TotalSignersSize]), 1000)
 
 	// Base cost + per-signer cost
 	return CGGMP21VerifyBaseGas + (uint64(totalSigners) * CGGMP21VerifyPerSignerGas)

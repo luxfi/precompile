@@ -192,7 +192,7 @@ func deserializeSignature(params *threshold.Params, data []byte) (
 
 	// Deserialize z vector (N polynomials)
 	z := initializeVector(r, sign.N)
-	for i := 0; i < sign.N; i++ {
+	for i := range sign.N {
 		if err := deserializePoly(buf, r, z[i]); err != nil {
 			return nil, nil, fmt.Errorf("deserialize z[%d]: %w", i, err)
 		}
@@ -204,7 +204,7 @@ func deserializeSignature(params *threshold.Params, data []byte) (
 	// Deserialize Delta vector (M polynomials in r_nu ring)
 	// Delta stays in coefficient form (used after rounding)
 	Delta := initializeVector(r_nu, sign.M)
-	for i := 0; i < sign.M; i++ {
+	for i := range sign.M {
 		if err := deserializePoly(buf, r_nu, Delta[i]); err != nil {
 			return nil, nil, fmt.Errorf("deserialize Delta[%d]: %w", i, err)
 		}
@@ -212,8 +212,8 @@ func deserializeSignature(params *threshold.Params, data []byte) (
 
 	// Deserialize A matrix (M x N)
 	A := initializeMatrix(r, sign.M, sign.N)
-	for i := 0; i < sign.M; i++ {
-		for j := 0; j < sign.N; j++ {
+	for i := range sign.M {
+		for j := range sign.N {
 			if err := deserializePoly(buf, r, A[i][j]); err != nil {
 				return nil, nil, fmt.Errorf("deserialize A[%d][%d]: %w", i, j, err)
 			}
@@ -226,7 +226,7 @@ func deserializeSignature(params *threshold.Params, data []byte) (
 	// Deserialize bTilde vector (M polynomials in r_xi ring)
 	// bTilde stays in coefficient form (used after rounding)
 	bTilde := initializeVector(r_xi, sign.M)
-	for i := 0; i < sign.M; i++ {
+	for i := range sign.M {
 		if err := deserializePoly(buf, r_xi, bTilde[i]); err != nil {
 			return nil, nil, fmt.Errorf("deserialize bTilde[%d]: %w", i, err)
 		}

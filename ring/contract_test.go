@@ -92,7 +92,7 @@ func TestRing_Verify_Size2(t *testing.T) {
 	ring := make([][]byte, 2)
 	privKeys := make([]*ecdsa.PrivateKey, 2)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		priv, err := ecdsa.GenerateKey(curve, rand.Reader)
 		require.NoError(t, err)
 		privKeys[i] = priv
@@ -137,7 +137,7 @@ func TestRing_Verify_Size5(t *testing.T) {
 	ring := make([][]byte, ringSize)
 	privKeys := make([]*ecdsa.PrivateKey, ringSize)
 
-	for i := 0; i < ringSize; i++ {
+	for i := range ringSize {
 		priv, err := ecdsa.GenerateKey(curve, rand.Reader)
 		require.NoError(t, err)
 		privKeys[i] = priv
@@ -178,7 +178,7 @@ func TestRing_Verify_InvalidSignature(t *testing.T) {
 	ring := make([][]byte, 2)
 	privKeys := make([]*ecdsa.PrivateKey, 2)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		priv, err := ecdsa.GenerateKey(curve, rand.Reader)
 		require.NoError(t, err)
 		privKeys[i] = priv
@@ -219,7 +219,7 @@ func TestRing_Verify_WrongMessage(t *testing.T) {
 	ring := make([][]byte, 2)
 	privKeys := make([]*ecdsa.PrivateKey, 2)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		priv, err := ecdsa.GenerateKey(curve, rand.Reader)
 		require.NoError(t, err)
 		privKeys[i] = priv
@@ -386,7 +386,7 @@ func BenchmarkRing_Verify_Size3(b *testing.B) {
 	ring := make([][]byte, ringSize)
 	privKeys := make([]*ecdsa.PrivateKey, ringSize)
 
-	for i := 0; i < ringSize; i++ {
+	for i := range ringSize {
 		priv, _ := ecdsa.GenerateKey(curve, rand.Reader)
 		privKeys[i] = priv
 		ring[i] = secp256k1.CompressPubkey(priv.PublicKey.X, priv.PublicKey.Y)

@@ -121,7 +121,7 @@ const (
 	ECDSACChain   = "0x3210000000000000000000000000000000000000" // Extended ECDSA
 	Ed25519CChain = "0x3211000000000000000000000000000000000000" // Ed25519
 	BLS381CChain  = "0x3212000000000000000000000000000000000000" // BLS12-381
-	SchnorrCChain = "0x3213000000000000000000000000000000000000" // Schnorr (BIP-340)
+	VRFCChain = "0x0000000000000000000000000000000000003213" // ECVRF (RFC 9381)
 
 	// Encryption (II = 0x20-0x2F)
 	AESGCMCChain   = "0x3220000000000000000000000000000000000000" // AES-GCM
@@ -386,7 +386,7 @@ var ChainPrecompiles = map[string][]string{
 		// PQ (P=2)
 		MLDSACChain, MLKEMCChain, SLHDSACChain, HybridSignCChain,
 		// Crypto (P=3)
-		ECDSACChain, Ed25519CChain, BLS381CChain, SchnorrCChain,
+		ECDSACChain, Ed25519CChain, BLS381CChain, VRFCChain,
 		Poseidon2CChain, Blake3CChain, PedersenCChain, ECIESCChain,
 		// Privacy/ZK (P=4)
 		Groth16CChain, PLONKCChain, STARKCChain, KZGCChain, FHECChain, RangeProofCChain,
@@ -502,7 +502,7 @@ var AllPrecompiles = []PrecompileInfo{
 	{ECDSACChain, "ECDSA_EXT", "Extended ECDSA verification (multi-curve)", 5000, []string{"C"}, "LP-3xxx"},
 	{Ed25519CChain, "ED25519_VERIFY", "Ed25519 signature verification (Solana/TON/XRP)", 3000, []string{"C"}, "LP-3xxx"},
 	{BLS381CChain, "BLS381", "BLS12-381 aggregate signatures", 15000, []string{"C"}, "LP-3xxx"},
-	{SchnorrCChain, "SCHNORR", "BIP-340 Schnorr signatures", 10000, []string{"C"}, "LP-3xxx"},
+	{VRFCChain, "VRF", "ECVRF-EDWARDS25519-SHA512-ELL2 (RFC 9381)", 20000, []string{"C"}, "LP-3xxx"},
 	{ECIESCChain, "ECIES", "Elliptic Curve Integrated Encryption", 25000, []string{"C"}, "LP-3xxx"},
 
 	// Privacy/ZK (P=4) → LP-4xxx

@@ -171,7 +171,7 @@ func (b *blsAggregatePrecompile) Run(accessibleState contract.AccessibleState, c
 	// CPU fallback
 	signatures := make([]*bls.Signature, 0, numSigs)
 
-	for i := 0; i < numSigs; i++ {
+	for i := range numSigs {
 		sigBytes := input[i*96 : (i+1)*96]
 		sig, err := bls.SignatureFromBytes(sigBytes)
 		if err != nil {
@@ -355,7 +355,7 @@ func (c *compressedPrecompile) Run(accessibleState contract.AccessibleState, cal
 
 	// Count validators (assuming 2/3 threshold)
 	validatorCount := 0
-	for i := uint32(0); i < 32; i++ {
+	for i := range uint32(32) {
 		if validatorBits&(1<<i) != 0 {
 			validatorCount++
 		}

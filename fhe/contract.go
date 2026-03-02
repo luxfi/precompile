@@ -1052,7 +1052,7 @@ func bytesToUint64(b []byte) []uint64 {
 		return nil
 	}
 	out := make([]uint64, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		for j := 0; j < 8 && i*8+j < len(b); j++ {
 			out[i] |= uint64(b[i*8+j]) << (56 - uint(j)*8)
 		}
@@ -1064,7 +1064,7 @@ func bytesToUint64(b []byte) []uint64 {
 func uint64ToBytes(u []uint64) []byte {
 	out := make([]byte, len(u)*8)
 	for i, v := range u {
-		for j := 0; j < 8; j++ {
+		for j := range 8 {
 			out[i*8+j] = byte(v >> (56 - uint(j)*8))
 		}
 	}

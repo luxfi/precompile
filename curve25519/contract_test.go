@@ -401,7 +401,7 @@ func BenchmarkMSM_8Pairs(b *testing.B) {
 	pairSize := CompressedLen + ScalarLen
 	input := make([]byte, 1+8*pairSize)
 	input[0] = OpMSM
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		copy(input[1+i*pairSize:], bp)
 		copy(input[1+i*pairSize+CompressedLen:], scalarBytes(int64(i+1)))
 	}

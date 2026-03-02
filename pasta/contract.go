@@ -32,10 +32,10 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &pastaPrecompile{}
 
-	ErrInvalidInput  = errors.New("invalid pasta input")
-	ErrInvalidOp     = errors.New("invalid pasta operation")
-	ErrInvalidCurve  = errors.New("invalid curve selector (0x01=Pallas, 0x02=Vesta)")
-	ErrNotOnCurve    = errors.New("point not on curve")
+	ErrInvalidInput = errors.New("invalid pasta input")
+	ErrInvalidOp    = errors.New("invalid pasta operation")
+	ErrInvalidCurve = errors.New("invalid curve selector (0x01=Pallas, 0x02=Vesta)")
+	ErrNotOnCurve   = errors.New("point not on curve")
 )
 
 const (
@@ -326,7 +326,7 @@ func (p *pastaPrecompile) msm(curveID byte, data []byte, gas uint64) ([]byte, ui
 	}
 	n := len(data) / pairSize
 	result := point{inf: true}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		offset := i * pairSize
 		pt, err := decodePoint(curveID, data[offset:offset+PointLen])
 		if err != nil {

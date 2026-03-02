@@ -25,7 +25,7 @@ func TestC04_RingSignRejected(t *testing.T) {
 
 	ring := make([][]byte, 2)
 	var signerSk []byte
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		priv, err := ecdsa.GenerateKey(curve, rand.Reader)
 		require.NoError(t, err)
 		ring[i] = secp256k1.CompressPubkey(priv.PublicKey.X, priv.PublicKey.Y)
@@ -75,7 +75,7 @@ func TestC04_RingVerifyStillWorks(t *testing.T) {
 
 	ring := make([][]byte, 3)
 	privKeys := make([]*ecdsa.PrivateKey, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		priv, err := ecdsa.GenerateKey(curve, rand.Reader)
 		require.NoError(t, err)
 		privKeys[i] = priv
@@ -116,7 +116,7 @@ func TestC04_RingVerifyStillWorks(t *testing.T) {
 func TestM06_RingHashToPointDLOGUnknown(t *testing.T) {
 	curve := secp256k1.S256()
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		// Generate a random public key
 		priv, err := ecdsa.GenerateKey(curve, rand.Reader)
 		require.NoError(t, err)
@@ -147,7 +147,7 @@ func TestM06_RingHashToPointDLOGUnknown(t *testing.T) {
 func TestM06_RingHashToPointIsValidCurvePoint(t *testing.T) {
 	curve := secp256k1.S256()
 
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		seed := make([]byte, 32)
 		_, _ = rand.Read(seed)
 

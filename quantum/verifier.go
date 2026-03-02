@@ -814,7 +814,7 @@ func (qv *QuantumVerifier) verifyAggregateBLS(
 
 	// Remaining pairings: e(pk_i, H(m_i))
 	dstSignature := []byte("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_")
-	for i := 0; i < len(publicKeys); i++ {
+	for i := range publicKeys {
 		var pkPoint bls12381.G1
 		if err := pkPoint.SetBytes(publicKeys[i]); err != nil {
 			return false

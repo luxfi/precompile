@@ -114,7 +114,7 @@ func (p *poseidonPrecompile) hash(data []byte, gas uint64) ([]byte, uint64, erro
 	}
 
 	hasher := poseidon2.NewMerkleDamgardHasher()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		var elem fr.Element
 		elem.SetBytes(data[i*32 : (i+1)*32])
 		b := elem.Bytes()
@@ -180,7 +180,7 @@ func (p *poseidonPrecompile) sponge(data []byte, gas uint64) ([]byte, uint64, er
 	state := make([]fr.Element, spongeWidth) // zero-initialized (capacity domain sep)
 
 	// Absorb phase: XOR each input element into state[0], then permute.
-	for i := 0; i < n; i++ {
+	for i := range n {
 		var elem fr.Element
 		elem.SetBytes(payload[i*32 : (i+1)*32])
 		state[0].Add(&state[0], &elem)

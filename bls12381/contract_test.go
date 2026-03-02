@@ -21,9 +21,9 @@ import (
 
 func TestAllModulesRegistered(t *testing.T) {
 	tests := []struct {
-		name    string
-		addr    common.Address
-		key     string
+		name string
+		addr common.Address
+		key  string
 	}{
 		{"G1Add", G1AddAddress, G1AddConfigKey},
 		{"G1Mul", G1MulAddress, G1MulConfigKey},
@@ -242,7 +242,7 @@ func TestG1MSM_GasDiscount(t *testing.T) {
 
 	// 4 pairs should get discount (949/1000)
 	input := make([]byte, 0, 4*(G1PointLen+ScalarLen))
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		input = append(input, encodePointScalar(encodeG1(&g), &s)...)
 	}
 
@@ -449,10 +449,10 @@ func TestPairing_WithInfinity(t *testing.T) {
 func TestPairingGasFormula(t *testing.T) {
 	// EIP-2537: 65000 + 43000*n
 	require.Equal(t, uint64(0), PairingGas(0))
-	require.Equal(t, uint64(108000), PairingGas(PairingPair))     // 65000 + 43000*1
-	require.Equal(t, uint64(151000), PairingGas(2*PairingPair))   // 65000 + 43000*2
-	require.Equal(t, uint64(194000), PairingGas(3*PairingPair))   // 65000 + 43000*3
-	require.Equal(t, uint64(495000), PairingGas(10*PairingPair))  // 65000 + 43000*10
+	require.Equal(t, uint64(108000), PairingGas(PairingPair))    // 65000 + 43000*1
+	require.Equal(t, uint64(151000), PairingGas(2*PairingPair))  // 65000 + 43000*2
+	require.Equal(t, uint64(194000), PairingGas(3*PairingPair))  // 65000 + 43000*3
+	require.Equal(t, uint64(495000), PairingGas(10*PairingPair)) // 65000 + 43000*10
 }
 
 func TestMSMGasDiscount(t *testing.T) {
@@ -483,8 +483,8 @@ func TestG1Add_NotOnCurve(t *testing.T) {
 	// Point with valid padding but not on curve
 	input := make([]byte, 2*G1PointLen)
 	// Set x=1, y=1 (not on BLS12-381 curve)
-	input[63] = 1   // x = 1
-	input[127] = 1  // y = 1
+	input[63] = 1  // x = 1
+	input[127] = 1 // y = 1
 
 	_, _, err := runPrecompile(G1AddAddress, input, 10000)
 	require.Error(t, err)

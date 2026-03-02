@@ -41,7 +41,7 @@ func TestRequestKeygen(t *testing.T) {
 
 	// Create participants
 	participants := make([][20]byte, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		participants[i] = [20]byte{byte(i + 1)}
 	}
 
@@ -183,7 +183,7 @@ func TestCompleteKeygen(t *testing.T) {
 	requester := common.HexToAddress("0x1234567890123456789012345678901234567890")
 
 	participants := make([][20]byte, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		participants[i] = [20]byte{byte(i + 1)}
 	}
 
@@ -340,7 +340,7 @@ func TestRequestReshare(t *testing.T) {
 	keyID := setupTestKey(t, tm, owner)
 
 	newParties := make([][20]byte, 7)
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		newParties[i] = [20]byte{byte(i + 100)}
 	}
 
@@ -396,7 +396,7 @@ func TestSigningLimit(t *testing.T) {
 	key.Permissions.MaxSignsPerDay = 3
 
 	// Sign up to limit
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err := tm.RequestSignature(owner, keyID, [32]byte{byte(i)})
 		if err != nil {
 			t.Fatalf("Sign %d failed: %v", i, err)
@@ -511,7 +511,7 @@ func TestProtocolKeyTypeValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			participants := make([][20]byte, 5)
-			for i := 0; i < 5; i++ {
+			for i := range 5 {
 				participants[i] = [20]byte{byte(i + 1)}
 			}
 
@@ -539,7 +539,7 @@ func setupTestKey(t *testing.T, tm *ThresholdManager, owner common.Address) [32]
 	t.Helper()
 
 	participants := make([][20]byte, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		participants[i] = [20]byte{byte(i + 1)}
 	}
 
@@ -566,7 +566,7 @@ func BenchmarkRequestKeygen(b *testing.B) {
 	tm := NewThresholdManager()
 	requester := common.HexToAddress("0x1234567890123456789012345678901234567890")
 	participants := make([][20]byte, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		participants[i] = [20]byte{byte(i + 1)}
 	}
 
@@ -582,7 +582,7 @@ func BenchmarkRequestSignature(b *testing.B) {
 
 	// Setup key
 	participants := make([][20]byte, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		participants[i] = [20]byte{byte(i + 1)}
 	}
 	requestID, _ := tm.RequestKeygen(owner, ProtocolFROST, KeyTypeSecp256k1, 2, 5, participants)
@@ -607,7 +607,7 @@ func BenchmarkVerifySignature(b *testing.B) {
 
 	// Setup key
 	participants := make([][20]byte, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		participants[i] = [20]byte{byte(i + 1)}
 	}
 	requestID, _ := tm.RequestKeygen(owner, ProtocolFROST, KeyTypeSecp256k1, 2, 5, participants)

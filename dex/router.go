@@ -108,15 +108,15 @@ type SwapExactInputParams struct {
 
 // SwapExactOutputSingleParams for a single-hop exact-output swap.
 type SwapExactOutputSingleParams struct {
-	TokenIn          common.Address
-	TokenOut         common.Address
-	AmountOut        *big.Int
-	AmountInMaximum  *big.Int
-	Fee              uint24
-	TickSpacing      int24
-	Hooks            common.Address
+	TokenIn           common.Address
+	TokenOut          common.Address
+	AmountOut         *big.Int
+	AmountInMaximum   *big.Int
+	Fee               uint24
+	TickSpacing       int24
+	Hooks             common.Address
 	SqrtPriceLimitX96 *big.Int
-	Deadline         uint64
+	Deadline          uint64
 }
 
 // SwapExactOutputParams for multi-hop exact-output swap.
@@ -161,9 +161,9 @@ type ExternalVenue interface {
 // The on-chain component queries V4 pools, V3/V2 contracts, and registered external
 // venue quote contracts. The off-chain ATS/Broker can split orders across venues.
 type SmartOrderRouter struct {
-	PoolManager *PoolManager             // On-chain V4 pools
-	V2Pairs     map[common.Address]bool  // Known V2 pair addresses
-	Venues      []ExternalVenue          // Registered external venue quoters
+	PoolManager *PoolManager            // On-chain V4 pools
+	V2Pairs     map[common.Address]bool // Known V2 pair addresses
+	Venues      []ExternalVenue         // Registered external venue quoters
 }
 
 // LXRouter implements unified V2/V3/V4 swap routing.
@@ -964,7 +964,7 @@ func DecodePath(data []byte) (common.Address, []PathKey, error) {
 		return common.Address{}, nil, fmt.Errorf("path must have at least 1 hop")
 	}
 	keys := make([]PathKey, numHops)
-	for i := 0; i < numHops; i++ {
+	for i := range numHops {
 		pk, err := DecodePathKey(remaining[i*PathKeySize : (i+1)*PathKeySize])
 		if err != nil {
 			return common.Address{}, nil, fmt.Errorf("decode path key %d: %w", i, err)
@@ -1086,7 +1086,7 @@ func DecodeExactInputParams(input []byte) (SwapExactInputParams, error) {
 	}
 
 	offset := 1
-	for i := 0; i < numTokens; i++ {
+	for i := range numTokens {
 		params.Path[i] = common.BytesToAddress(input[offset : offset+20])
 		offset += 20
 	}
@@ -1194,7 +1194,7 @@ func DecodeExactOutputParams(input []byte) (SwapExactOutputParams, error) {
 	}
 
 	offset := 1
-	for i := 0; i < numTokens; i++ {
+	for i := range numTokens {
 		params.Path[i] = common.BytesToAddress(input[offset : offset+20])
 		offset += 20
 	}
