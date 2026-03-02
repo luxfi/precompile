@@ -12,7 +12,7 @@ import (
 )
 
 // Precompile address
-var liquidatorAddr = common.HexToAddress(LiquidatorAddress)
+var liquidatorAddr = common.HexToAddress(LXLiquidatorAddress)
 
 // Storage key prefixes for Liquidator state
 var (
