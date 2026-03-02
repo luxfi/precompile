@@ -20,7 +20,7 @@ func TestDeep_Verkle_ExactGasConsumption(t *testing.T) {
 	input[64] = 1
 
 	for _, extra := range []uint64{0, 1, 100, 10000} {
-		_, remaining, err := v.Run(nil, common.Address{}, v.Address(), input, VerkleVerifyGas+extra, true)
+		_, remaining, err := v.Run(nil, common.Address{}, v.Address(), input, GasVerkleVerify+extra, true)
 		require.NoError(t, err, "extra=%d", extra)
 		require.Equal(t, extra, remaining, "extra=%d", extra)
 	}
@@ -45,7 +45,7 @@ func TestDeep_Verkle_Concurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 50 {
 		wg.Go(func() {
-			ret, _, err := v.Run(nil, common.Address{}, v.Address(), input, VerkleVerifyGas+100, true)
+			ret, _, err := v.Run(nil, common.Address{}, v.Address(), input, GasVerkleVerify+100, true)
 			require.NoError(t, err)
 			require.Equal(t, []byte{1}, ret)
 		})
@@ -65,14 +65,14 @@ func TestDeep_BLS_GasZero(t *testing.T) {
 func TestDeep_BLS_ExactGas(t *testing.T) {
 	b := &blsPrecompile{}
 	input := make([]byte, 176)
-	_, remaining, err := b.Run(nil, common.Address{}, b.Address(), input, BLSVerifyGas, true)
+	_, remaining, err := b.Run(nil, common.Address{}, b.Address(), input, GasBLSVerify, true)
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), remaining)
 }
 
 func TestDeep_BLS_EmptyInput(t *testing.T) {
 	b := &blsPrecompile{}
-	_, _, err := b.Run(nil, common.Address{}, b.Address(), nil, BLSVerifyGas, true)
+	_, _, err := b.Run(nil, common.Address{}, b.Address(), nil, GasBLSVerify, true)
 	require.Error(t, err)
 }
 
@@ -83,7 +83,7 @@ func TestDeep_BLS_Concurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 50 {
 		wg.Go(func() {
-			_, _, err := b.Run(nil, common.Address{}, b.Address(), input, BLSVerifyGas+100, true)
+			_, _, err := b.Run(nil, common.Address{}, b.Address(), input, GasBLSVerify+100, true)
 			require.NoError(t, err)
 		})
 	}
@@ -116,7 +116,7 @@ func TestDeep_Ringtail_GasZero(t *testing.T) {
 
 func TestDeep_Ringtail_EmptyInput(t *testing.T) {
 	r := &ringtailPrecompile{}
-	_, _, err := r.Run(nil, common.Address{}, r.Address(), nil, RingtailVerifyGas, true)
+	_, _, err := r.Run(nil, common.Address{}, r.Address(), nil, GasRingtailVerify, true)
 	require.Error(t, err)
 }
 
@@ -131,7 +131,7 @@ func TestDeep_Hybrid_GasZero(t *testing.T) {
 
 func TestDeep_Hybrid_EmptyInput(t *testing.T) {
 	h := &hybridPrecompile{}
-	_, _, err := h.Run(nil, common.Address{}, h.Address(), nil, HybridVerifyGas, true)
+	_, _, err := h.Run(nil, common.Address{}, h.Address(), nil, GasHybridVerify, true)
 	require.Error(t, err)
 }
 
@@ -146,7 +146,7 @@ func TestDeep_Compressed_GasZero(t *testing.T) {
 
 func TestDeep_Compressed_EmptyInput(t *testing.T) {
 	c := &compressedPrecompile{}
-	_, _, err := c.Run(nil, common.Address{}, c.Address(), nil, CompressedVerifyGas, true)
+	_, _, err := c.Run(nil, common.Address{}, c.Address(), nil, GasCompressedVerify, true)
 	require.Error(t, err)
 }
 
@@ -164,7 +164,7 @@ func FuzzVerkle(f *testing.F) {
 				t.Errorf("panic: %v", r)
 			}
 		}()
-		v.Run(nil, common.Address{}, v.Address(), input, VerkleVerifyGas+100000, true)
+		v.Run(nil, common.Address{}, v.Address(), input, GasVerkleVerify+100000, true)
 	})
 }
 
@@ -179,6 +179,6 @@ func FuzzCompressed(f *testing.F) {
 				t.Errorf("panic: %v", r)
 			}
 		}()
-		c.Run(nil, common.Address{}, c.Address(), input, CompressedVerifyGas+100000, true)
+		c.Run(nil, common.Address{}, c.Address(), input, GasCompressedVerify+100000, true)
 	})
 }

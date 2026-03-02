@@ -13,6 +13,7 @@ import (
 
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v7/ring"
+	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/ringtail/sign"
 	"github.com/luxfi/ringtail/threshold"
 	"github.com/stretchr/testify/require"
@@ -158,7 +159,7 @@ func TestRingtailThresholdVerify_InputTooShort(t *testing.T) {
 	precompile := &ringtailThresholdPrecompile{}
 	_, _, err := precompile.Run(nil, common.Address{}, precompile.Address(), input, 1_000_000, true)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid input length")
+	require.ErrorIs(t, err, contract.ErrInvalidInput)
 }
 
 // TestRingtailThresholdVerify_GasCost tests gas cost calculation

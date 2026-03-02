@@ -10,6 +10,7 @@ import (
 
 	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -183,7 +184,7 @@ func TestMLDSAVerify_InputTooShort(t *testing.T) {
 
 	require.Error(t, err)
 	require.Nil(t, ret)
-	require.Contains(t, err.Error(), "invalid input length")
+	require.ErrorIs(t, err, contract.ErrInvalidInput)
 }
 
 func TestMLDSAVerify_InvalidMode(t *testing.T) {
