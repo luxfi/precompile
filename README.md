@@ -127,3 +127,27 @@ Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 | `x25519` | `0x9203` | X25519 Diffie-Hellman key exchange | 10,000 |
 | `xwing` | `0x0200..0C` | X-Wing hybrid KEM (X25519 + ML-KEM-768) | 50,000 |
 | `curve25519` | `0x9204` | Raw Curve25519 point operations | 5,000 |
+
+### Math (0x0450)
+
+| Package | Address | Description | Gas |
+|---------|---------|-------------|-----|
+| `math` | `0x0450` | MulDiv, Sqrt, Log2, Exp, Pow (fixed-point) | 50 + 5/word |
+
+Saves ~2000 gas per MulDiv vs Solidity. Used by every DeFi calculation.
+
+### StableSwap (0x0460)
+
+| Package | Address | Description | Gas |
+|---------|---------|-------------|-----|
+| `stableswap` | `0x0460` | Curve-style constant-sum AMM | 5,000 |
+
+10x gas savings vs Solidity StableSwap. For pegged-asset pools (LUSD/USDC, LETH/stETH).
+
+### Compute Market (0x0310)
+
+| Package | Address | Description | Gas |
+|---------|---------|-------------|-----|
+| `compute` | `0x0310` | AI compute marketplace | 10,000-50,000 |
+
+Integrates with A-Chain TEE attestation. Register GPU providers, submit jobs, verify compute, claim $AI rewards.
