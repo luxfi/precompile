@@ -9,6 +9,7 @@ import (
 	"errors"
 	"math/big"
 
+	"github.com/luxfi/accel"
 	"github.com/luxfi/geth/common"
 )
 
@@ -99,12 +100,88 @@ func (c *Contract) Run(input []byte) ([]byte, error) {
 		Y:     y,
 	}
 
-	// Verify signature
+	// Try GPU-accelerated verification first
+	if gpuValid, gpuUsed := verifyGPU(hash, r, s, x, y); gpuUsed {
+		if gpuValid {
+			return successResult, nil
+		}
+		return nil, nil
+	}
+
+	// CPU fallback: verify signature
 	if ecdsa.Verify(pubKey, hash, r, s) {
 		return successResult, nil
 	}
 
 	return nil, nil
+}
+
+// verifyGPU attempts GPU-accelerated ECDSA P-256 signature verification.
+// Returns (valid, true) if GPU was used, (false, false) if GPU unavailable.
+func verifyGPU(hash []byte, r, s, x, y *big.Int) (valid bool, gpuUsed bool) {
+	if !accel.Available() {
+		return false, false
+	}
+
+	sess, err := accel.NewSession()
+	if err != nil {
+		return false, false
+	}
+	defer sess.Close()
+
+	crypto := sess.Crypto()
+
+	// ECDSAVerifyBatch expects:
+	//   messages: [N, 32] bytes (message hashes)
+	//   signatures: [N, 64] bytes (r || s)
+	//   pubkeys: [N, 65] bytes (uncompressed 0x04 || x || y)
+	//   results: [N] uint8
+
+	// Build signature: r || s (64 bytes)
+	sig := make([]byte, 64)
+	copy(sig[0:32], common.LeftPadBytes(r.Bytes(), 32))
+	copy(sig[32:64], common.LeftPadBytes(s.Bytes(), 32))
+
+	// Build uncompressed public key: 0x04 || x || y (65 bytes)
+	pk := make([]byte, 65)
+	pk[0] = 0x04
+	copy(pk[1:33], common.LeftPadBytes(x.Bytes(), 32))
+	copy(pk[33:65], common.LeftPadBytes(y.Bytes(), 32))
+
+	msgTensor, err := accel.NewTensorWithData[byte](sess, []int{1, 32}, hash)
+	if err != nil {
+		return false, false
+	}
+	defer msgTensor.Close()
+
+	sigTensor, err := accel.NewTensorWithData[byte](sess, []int{1, 64}, sig)
+	if err != nil {
+		return false, false
+	}
+	defer sigTensor.Close()
+
+	pkTensor, err := accel.NewTensorWithData[byte](sess, []int{1, 65}, pk)
+	if err != nil {
+		return false, false
+	}
+	defer pkTensor.Close()
+
+	resultTensor, err := accel.NewTensor[byte](sess, []int{1})
+	if err != nil {
+		return false, false
+	}
+	defer resultTensor.Close()
+
+	if err := crypto.ECDSAVerifyBatch(msgTensor.Untyped(), sigTensor.Untyped(), pkTensor.Untyped(), resultTensor.Untyped()); err != nil {
+		return false, false
+	}
+
+	results, err := resultTensor.ToSlice()
+	if err != nil {
+		return false, false
+	}
+
+	return results[0] == 1, true
 }
 
 // Name returns the precompile name
