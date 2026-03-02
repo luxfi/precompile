@@ -12,6 +12,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/luxfi/geth/common"
+	ethtypes "github.com/luxfi/geth/core/types"
 	"github.com/zeebo/blake3"
 )
 
@@ -25,6 +26,7 @@ type StateDB interface {
 	Exist(addr common.Address) bool
 	CreateAccount(addr common.Address)
 	GetBlockNumber() uint64
+	AddLog(log *ethtypes.Log)
 }
 
 // Precompile address as bytes (LP-9010 LXPool)
@@ -156,6 +158,9 @@ func (pm *PoolManager) Initialize(
 			return 0, err
 		}
 	}
+
+	// Emit Initialize event for subgraph indexing
+	emitInitializeEvent(stateDB, poolId, key, sqrtPriceX96, tick)
 
 	return tick, nil
 }
@@ -389,6 +394,9 @@ func (pm *PoolManager) Swap(
 		}
 	}
 
+	// Emit Swap event for subgraph indexing
+	emitSwapEvent(stateDB, poolId, locker, delta, pool.SqrtPriceX96, pool.Liquidity, pool.Tick, key.Fee)
+
 	return delta, nil
 }
 
@@ -469,6 +477,9 @@ func (pm *PoolManager) ModifyLiquidity(
 			return ZeroBalanceDelta(), ZeroBalanceDelta(), err
 		}
 	}
+
+	// Emit ModifyLiquidity event for subgraph indexing
+	emitModifyLiquidityEvent(stateDB, poolId, locker, params)
 
 	return callerDelta, feesAccrued, nil
 }

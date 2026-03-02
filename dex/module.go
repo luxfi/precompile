@@ -10,6 +10,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/luxfi/geth/common"
+	ethtypes "github.com/luxfi/geth/core/types"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
 	"github.com/luxfi/precompile/precompileconfig"
@@ -473,6 +474,10 @@ func (a *poolStateAdapter) CreateAccount(addr common.Address) {
 
 func (a *poolStateAdapter) GetBlockNumber() uint64 {
 	return 0 // Would need block context
+}
+
+func (a *poolStateAdapter) AddLog(log *ethtypes.Log) {
+	a.stateDB.AddLog(log)
 }
 
 // Helper functions for encoding/decoding
