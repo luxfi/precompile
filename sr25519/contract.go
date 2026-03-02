@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 
+	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -109,6 +110,21 @@ func (p *sr25519VerifyPrecompile) Run(
 		return failResult, remainingGas, ErrEmptyMessage
 	}
 
+	// Try GPU-accelerated verification
+	if results, err := accelcrypto.BatchVerify(
+		accelcrypto.SigEd25519, // sr25519 uses Schnorrkel (Ristretto255), closest GPU kernel
+		[][]byte{signature},
+		[][]byte{message},
+		[][]byte{publicKey},
+	); err == nil && len(results) == 1 {
+		if results[0] {
+			return successResult, remainingGas, nil
+		}
+		// GPU said invalid -- still fall through to CPU for sr25519-specific verification
+		// since GPU kernel may not handle Schnorrkel context ("substrate")
+	}
+
+	// CPU fallback: sr25519-donna or go-schnorrkel
 	if verifySR25519(publicKey, signature, message) {
 		return successResult, remainingGas, nil
 	}
