@@ -13,13 +13,13 @@ import (
 )
 
 // Precompile address LP-9090 LXSettle
-const LXSettleAddress = "0x0000000000000000000000000000000000009090"
+const LXSettlementAddress = "0x0000000000000000000000000000000000009090"
 
-var settleAddr = common.HexToAddress(LXSettleAddress)
+var settlementAddr = common.HexToAddress(LXSettlementAddress)
 
 // Gas costs for Settlement operations
 const (
-	GasSettle    uint64 = 30_000 // Record a broker fill attestation
+	GasFillAttestation uint64 = 30_000 // Record a broker fill attestation
 	GasFillChallenge uint64 = 50_000 // Challenge an attestation (reversal)
 	GasFillFinalize  uint64 = 20_000 // Finalize after fraud window
 	GasFillQuery     uint64 = 5_000  // Query attestation state
@@ -353,7 +353,7 @@ func (m *SettlementManager) SetAttester(
 	storageKey := makeStorageKey(fillConfigPrefix, fillAttesterKey)
 	var data common.Hash
 	copy(data[12:], newAttester.Bytes())
-	stateDB.SetState(settleAddr, storageKey, data)
+	stateDB.SetState(settlementAddr, storageKey, data)
 
 	return nil
 }
@@ -376,7 +376,7 @@ func (m *SettlementManager) SetCeiling(
 	var data common.Hash
 	ceilingBytes := ceiling.Bytes()
 	copy(data[32-len(ceilingBytes):], ceilingBytes)
-	stateDB.SetState(settleAddr, storageKey, data)
+	stateDB.SetState(settlementAddr, storageKey, data)
 
 	return nil
 }
@@ -400,13 +400,13 @@ func (m *SettlementManager) SetFraudWindow(
 	blocksBig := new(big.Int).SetUint64(blocks)
 	blockBytes := blocksBig.Bytes()
 	copy(data[32-len(blockBytes):], blockBytes)
-	stateDB.SetState(settleAddr, storageKey, data)
+	stateDB.SetState(settlementAddr, storageKey, data)
 
 	// Write sentinel to indicate fraud window has been explicitly set
 	sentinelKey := makeStorageKey(fillConfigPrefix, []byte("fraud_window_set"))
 	var sentinel common.Hash
 	sentinel[31] = 1
-	stateDB.SetState(settleAddr, sentinelKey, sentinel)
+	stateDB.SetState(settlementAddr, sentinelKey, sentinel)
 
 	return nil
 }
@@ -417,7 +417,7 @@ func (m *SettlementManager) SetFraudWindow(
 
 func (m *SettlementManager) getAttester(stateDB StateDB) common.Address {
 	storageKey := makeStorageKey(fillConfigPrefix, fillAttesterKey)
-	data := stateDB.GetState(settleAddr, storageKey)
+	data := stateDB.GetState(settlementAddr, storageKey)
 	if data == (common.Hash{}) {
 		return common.Address{}
 	}
@@ -426,13 +426,13 @@ func (m *SettlementManager) getAttester(stateDB StateDB) common.Address {
 
 func (m *SettlementManager) getCeiling(stateDB StateDB) *big.Int {
 	storageKey := makeStorageKey(fillConfigPrefix, fillCeilingKey)
-	data := stateDB.GetState(settleAddr, storageKey)
+	data := stateDB.GetState(settlementAddr, storageKey)
 	return new(big.Int).SetBytes(data[:])
 }
 
 func (m *SettlementManager) getOutstanding(stateDB StateDB) *big.Int {
 	storageKey := makeStorageKey(fillConfigPrefix, fillOutstandingKey)
-	data := stateDB.GetState(settleAddr, storageKey)
+	data := stateDB.GetState(settlementAddr, storageKey)
 	return new(big.Int).SetBytes(data[:])
 }
 
@@ -441,25 +441,25 @@ func (m *SettlementManager) setOutstanding(stateDB StateDB, value *big.Int) {
 	var data common.Hash
 	valueBytes := value.Bytes()
 	copy(data[32-len(valueBytes):], valueBytes)
-	stateDB.SetState(settleAddr, storageKey, data)
+	stateDB.SetState(settlementAddr, storageKey, data)
 }
 
 func (m *SettlementManager) getFraudWindow(stateDB StateDB) uint64 {
 	// Check if fraud window has been explicitly set by looking at a sentinel key.
 	// If not set, return the default. If set (even to 0), return the stored value.
 	sentinelKey := makeStorageKey(fillConfigPrefix, []byte("fraud_window_set"))
-	sentinel := stateDB.GetState(settleAddr, sentinelKey)
+	sentinel := stateDB.GetState(settlementAddr, sentinelKey)
 	if sentinel == (common.Hash{}) {
 		return DefaultFraudWindowBlocks
 	}
 	storageKey := makeStorageKey(fillConfigPrefix, fillFraudWindowKey)
-	data := stateDB.GetState(settleAddr, storageKey)
+	data := stateDB.GetState(settlementAddr, storageKey)
 	return new(big.Int).SetBytes(data[:]).Uint64()
 }
 
 func (m *SettlementManager) getCurrentBlock(stateDB StateDB) uint64 {
 	blockKey := makeStorageKey(fillConfigPrefix, []byte("block"))
-	blockHash := stateDB.GetState(settleAddr, blockKey)
+	blockHash := stateDB.GetState(settlementAddr, blockKey)
 	if blockHash == (common.Hash{}) {
 		return 1
 	}
@@ -472,7 +472,7 @@ func (m *SettlementManager) getAttestation(stateDB StateDB, orderID [32]byte) *S
 	}
 
 	storageKey := makeStorageKey(fillAttestPrefix, orderID[:])
-	data := stateDB.GetState(settleAddr, storageKey)
+	data := stateDB.GetState(settlementAddr, storageKey)
 	if data == (common.Hash{}) {
 		return nil
 	}
@@ -491,27 +491,27 @@ func (m *SettlementManager) getAttestation(stateDB StateDB, orderID [32]byte) *S
 
 	// Slot 1: amount (32 bytes)
 	amountKey := makeStorageKey(fillAttestPrefix, append(orderID[:], byte(1)))
-	amountData := stateDB.GetState(settleAddr, amountKey)
+	amountData := stateDB.GetState(settlementAddr, amountKey)
 	att.Amount = new(big.Int).SetBytes(amountData[:])
 
 	// Slot 2: price (32 bytes)
 	priceKey := makeStorageKey(fillAttestPrefix, append(orderID[:], byte(2)))
-	priceData := stateDB.GetState(settleAddr, priceKey)
+	priceData := stateDB.GetState(settlementAddr, priceKey)
 	att.Price = new(big.Int).SetBytes(priceData[:])
 
 	// Slot 3: user address (20 bytes) + attester address (first 12 bytes)
 	addrKey := makeStorageKey(fillAttestPrefix, append(orderID[:], byte(3)))
-	addrData := stateDB.GetState(settleAddr, addrKey)
+	addrData := stateDB.GetState(settlementAddr, addrKey)
 	att.User = common.BytesToAddress(addrData[12:])
 
 	// Slot 4: attester address (20 bytes) + symbol (first 12 bytes)
 	attesterKey := makeStorageKey(fillAttestPrefix, append(orderID[:], byte(4)))
-	attesterData := stateDB.GetState(settleAddr, attesterKey)
+	attesterData := stateDB.GetState(settlementAddr, attesterKey)
 	att.Attester = common.BytesToAddress(attesterData[12:])
 
 	// Slot 5: symbol (32 bytes)
 	symbolKey := makeStorageKey(fillAttestPrefix, append(orderID[:], byte(5)))
-	symbolData := stateDB.GetState(settleAddr, symbolKey)
+	symbolData := stateDB.GetState(settlementAddr, symbolKey)
 	copy(att.Symbol[:], symbolData[:])
 
 	m.attestations[orderID] = att
@@ -531,37 +531,37 @@ func (m *SettlementManager) saveAttestation(stateDB StateDB, att *Settlement) {
 	blkBytes := blkBig.Bytes()
 	copy(slot0[17-len(blkBytes):17], blkBytes)
 	storageKey := makeStorageKey(fillAttestPrefix, att.OrderID[:])
-	stateDB.SetState(settleAddr, storageKey, slot0)
+	stateDB.SetState(settlementAddr, storageKey, slot0)
 
 	// Slot 1: amount
 	var slot1 common.Hash
 	amountBytes := att.Amount.Bytes()
 	copy(slot1[32-len(amountBytes):], amountBytes)
 	amountKey := makeStorageKey(fillAttestPrefix, append(att.OrderID[:], byte(1)))
-	stateDB.SetState(settleAddr, amountKey, slot1)
+	stateDB.SetState(settlementAddr, amountKey, slot1)
 
 	// Slot 2: price
 	var slot2 common.Hash
 	priceBytes := att.Price.Bytes()
 	copy(slot2[32-len(priceBytes):], priceBytes)
 	priceKey := makeStorageKey(fillAttestPrefix, append(att.OrderID[:], byte(2)))
-	stateDB.SetState(settleAddr, priceKey, slot2)
+	stateDB.SetState(settlementAddr, priceKey, slot2)
 
 	// Slot 3: user address
 	var slot3 common.Hash
 	copy(slot3[12:], att.User.Bytes())
 	addrKey := makeStorageKey(fillAttestPrefix, append(att.OrderID[:], byte(3)))
-	stateDB.SetState(settleAddr, addrKey, slot3)
+	stateDB.SetState(settlementAddr, addrKey, slot3)
 
 	// Slot 4: attester address
 	var slot4 common.Hash
 	copy(slot4[12:], att.Attester.Bytes())
 	attesterKey := makeStorageKey(fillAttestPrefix, append(att.OrderID[:], byte(4)))
-	stateDB.SetState(settleAddr, attesterKey, slot4)
+	stateDB.SetState(settlementAddr, attesterKey, slot4)
 
 	// Slot 5: symbol
 	var slot5 common.Hash
 	copy(slot5[:], att.Symbol[:])
 	symbolKey := makeStorageKey(fillAttestPrefix, append(att.OrderID[:], byte(5)))
-	stateDB.SetState(settleAddr, symbolKey, slot5)
+	stateDB.SetState(settlementAddr, symbolKey, slot5)
 }

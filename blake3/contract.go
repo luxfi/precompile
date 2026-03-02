@@ -24,6 +24,7 @@ import (
 	"encoding/binary"
 	"errors"
 
+	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/crypto/hash/blake3"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -178,6 +179,13 @@ func (p *blake3Precompile) hash256(data []byte) []byte {
 	if len(data) > MaxInputLength {
 		data = data[:MaxInputLength]
 	}
+
+	// Try GPU-accelerated hashing
+	if hashes, err := accelcrypto.Hash(accelcrypto.HashBlake3, [][]byte{data}); err == nil && len(hashes) == 1 {
+		return hashes[0][:]
+	}
+
+	// CPU fallback
 	h := blake3.New()
 	h.Write(data)
 	result := make([]byte, DigestLength32)
@@ -272,7 +280,7 @@ func (p *blake3Precompile) merkleRoot(data []byte) ([]byte, uint64, error) {
 	return p.computeMerkleRoot(leaves), 0, nil
 }
 
-// computeMerkleRoot computes the Merkle root recursively
+// computeMerkleRoot computes the Merkle root with GPU-accelerated hashing.
 func (p *blake3Precompile) computeMerkleRoot(leaves [][]byte) []byte {
 	if len(leaves) == 0 {
 		return make([]byte, DigestLength32)
@@ -290,14 +298,34 @@ func (p *blake3Precompile) computeMerkleRoot(leaves [][]byte) []byte {
 
 	// Build tree bottom-up
 	for len(leaves) > 1 {
-		var nextLevel [][]byte
+		// Batch all pairs for GPU hashing
+		pairs := make([][]byte, len(leaves)/2)
+		for i := 0; i < len(leaves); i += 2 {
+			pair := make([]byte, DigestLength32*2)
+			copy(pair[:DigestLength32], leaves[i])
+			copy(pair[DigestLength32:], leaves[i+1])
+			pairs[i/2] = pair
+		}
+
+		// Try GPU batch hash
+		if hashes, err := accelcrypto.Hash(accelcrypto.HashBlake3, pairs); err == nil && len(hashes) == len(pairs) {
+			nextLevel := make([][]byte, len(pairs))
+			for i, h := range hashes {
+				nextLevel[i] = h[:]
+			}
+			leaves = nextLevel
+			continue
+		}
+
+		// CPU fallback
+		nextLevel := make([][]byte, len(pairs))
 		for i := 0; i < len(leaves); i += 2 {
 			h := blake3.New()
 			h.Write(leaves[i])
 			h.Write(leaves[i+1])
 			hash := make([]byte, DigestLength32)
 			h.Reader().Read(hash)
-			nextLevel = append(nextLevel, hash)
+			nextLevel[i/2] = hash
 		}
 		leaves = nextLevel
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/threshold/pkg/math/curve"
@@ -113,9 +114,20 @@ func (p *frostVerifyPrecompile) Run(
 	messageHash := input[40:72]
 	signature := input[72:136]
 
-	// Verify Schnorr signature
-	// FROST produces standard Schnorr signatures that can be verified normally
-	valid := verifySchnorrSignature(publicKey, messageHash, signature)
+	// Try GPU-accelerated signature verification first
+	// FROST produces standard Schnorr signatures on secp256k1
+	valid := false
+	if results, err := accelcrypto.BatchVerify(
+		accelcrypto.SigECDSA,
+		[][]byte{signature},
+		[][]byte{messageHash},
+		[][]byte{publicKey},
+	); err == nil && len(results) == 1 && results[0] {
+		valid = true
+	} else {
+		// CPU fallback: verify using threshold library
+		valid = verifySchnorrSignature(publicKey, messageHash, signature)
+	}
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)
 	result := make([]byte, 32)
