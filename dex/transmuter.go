@@ -13,7 +13,7 @@ import (
 )
 
 // Precompile address as bytes
-var transmuterAddr = common.HexToAddress(LiquidFXAddress)
+var transmuterAddr = common.HexToAddress(LXTransmuterAddress)
 
 // Storage key prefixes for Transmuter state
 var (

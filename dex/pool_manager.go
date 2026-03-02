@@ -40,33 +40,113 @@ var (
 	tickPrefix          = []byte("tick")
 	protocolFeePrefix   = []byte("pfee")
 	hookRegistryPrefix  = []byte("hook")
+	pauseStatePrefix    = []byte("paus")
+	freezeStatePrefix   = []byte("frzn")
 )
 
-// PoolManager implements the singleton DEX pool manager precompile
-// All pools live in this single contract, enabling:
-// - Unified liquidity across all markets
-// - Gas-efficient multi-hop swaps
-// - Native LUX support without wrapping
-// - Atomic settlement (blockchain consensus provides ordering)
-type PoolManager struct {
-	// pools stores all pool states by pool ID
-	// Key: BLAKE3(poolKey) -> Pool state
-	pools map[[32]byte]*Pool
-
-	// positions stores all liquidity positions
-	// Key: BLAKE3(owner || tickLower || tickUpper || salt) -> Position
-	positions map[[32]byte]*Position
-
-	// protocolFeeController can set protocol fees
-	protocolFeeController common.Address
+// PoolState extends the basic Pool with V4 tick-level state for concentrated
+// liquidity. Each pool tracks per-tick info, a bitmap of initialized ticks,
+// per-position fee growth, and fee/spacing parameters from the pool key.
+type PoolState struct {
+	*Pool                              // Base pool (sqrtPriceX96, tick, liquidity, feeGrowth)
+	Ticks       map[int32]*TickInfo    // Per-tick state
+	TickBitmap  *TickBitmap            // Initialized tick tracking
+	Positions   map[[32]byte]*Position // Position states keyed by BLAKE3(owner||tickLower||tickUpper||salt)
+	TickSpacing int32                  // From pool key
+	LPFee       uint32                // LP fee in pips (hundredths of a bip)
+	ProtocolFee uint32                // Protocol fee in pips
 }
 
-// NewPoolManager creates a new pool manager instance
-func NewPoolManager() *PoolManager {
-	return &PoolManager{
-		pools:     make(map[[32]byte]*Pool),
-		positions: make(map[[32]byte]*Position),
+// NewPoolState wraps a Pool with V4 tick-level state.
+func NewPoolState(pool *Pool, tickSpacing int32, lpFee uint32) *PoolState {
+	return &PoolState{
+		Pool:        pool,
+		Ticks:       make(map[int32]*TickInfo),
+		TickBitmap:  NewTickBitmap(),
+		Positions:   make(map[[32]byte]*Position),
+		TickSpacing: tickSpacing,
+		LPFee:       lpFee,
 	}
+}
+
+// getOrCreateTick returns the TickInfo for a tick, creating it if absent.
+func (ps *PoolState) getOrCreateTick(tick int32) *TickInfo {
+	ti, ok := ps.Ticks[tick]
+	if !ok {
+		ti = NewTickInfo()
+		ps.Ticks[tick] = ti
+	}
+	return ti
+}
+
+// PoolManager implements the singleton DEX pool manager precompile.
+// It is a thin shim: validation, hooks, state persistence, and events.
+// ALL AMM math is delegated to the Engine.
+//
+// Pause/Freeze hierarchy (ATS regulatory compliance):
+//   - DEX-level pause: stops ALL swap/modifyLiquidity/donate across every pool
+//   - Pool-level pause: stops operations on a single pool (reversible by admin)
+//   - Pool-level freeze: permanently stops a pool (irreversible without governance)
+//
+// Checks are ordered: DEX pause > pool freeze > pool pause.
+// Freeze takes precedence over pause — a frozen pool cannot be un-paused.
+type PoolManager struct {
+	engine    Engine
+	pools      map[[32]byte]*Pool
+	poolStates map[[32]byte]*PoolState
+	positions  map[[32]byte]*Position
+
+	protocolFeeController common.Address
+
+	// DEX-level pause: when true, ALL operations revert with ErrDEXPaused.
+	paused bool
+	// pauseLoaded tracks whether the DEX-level pause state has been reloaded
+	// from StateDB since this PoolManager instance was created. This ensures
+	// regulatory halts survive node restarts.
+	pauseLoaded bool
+
+	// Per-pool pause: operations on this pool revert with ErrPoolPaused.
+	poolPaused map[[32]byte]bool
+
+	// Per-pool freeze: operations on this pool revert with ErrPoolFrozen.
+	// Freeze is IRREVERSIBLE without governance action — ResumePool will not clear it.
+	poolFrozen map[[32]byte]bool
+}
+
+// NewPoolManager creates a new pool manager with the given engine.
+// An engine must be provided (ZAPEngine for production, or any Engine
+// implementation for testing). The precompile contains no math.
+func NewPoolManager(engine ...Engine) *PoolManager {
+	var e Engine
+	if len(engine) > 0 && engine[0] != nil {
+		e = engine[0]
+	}
+	return &PoolManager{
+		engine:     e,
+		pools:      make(map[[32]byte]*Pool),
+		poolStates: make(map[[32]byte]*PoolState),
+		positions:  make(map[[32]byte]*Position),
+		poolPaused: make(map[[32]byte]bool),
+		poolFrozen: make(map[[32]byte]bool),
+	}
+}
+
+// getPoolState returns the extended V4 pool state, creating one from the
+// base pool if it doesn't exist yet.
+func (pm *PoolManager) getPoolState(stateDB StateDB, poolId [32]byte, tickSpacing int32, lpFee uint32) *PoolState {
+	if ps, ok := pm.poolStates[poolId]; ok {
+		return ps
+	}
+	pool := pm.getPool(stateDB, poolId)
+	ps := NewPoolState(pool, tickSpacing, lpFee)
+	pm.poolStates[poolId] = ps
+	return ps
+}
+
+// setPoolState saves extended pool state and syncs back to base pool storage.
+func (pm *PoolManager) setPoolState(stateDB StateDB, poolId [32]byte, ps *PoolState) {
+	pm.poolStates[poolId] = ps
+	pm.setPool(stateDB, poolId, ps.Pool)
 }
 
 // makeStorageKey creates a storage key from prefix and identifier
@@ -83,77 +163,239 @@ func makeStorageKey(prefix []byte, id []byte) common.Hash {
 // Pool Initialization
 // =========================================================================
 
-// Initialize creates and initializes a new pool
-// Returns the tick corresponding to the starting price
+// Initialize creates and initializes a new pool.
 func (pm *PoolManager) Initialize(
 	stateDB StateDB,
 	key PoolKey,
 	sqrtPriceX96 *big.Int,
 	hookData []byte,
 ) (int24, error) {
-	// Validate currencies are sorted
 	if !pm.areCurrenciesSorted(key.Currency0, key.Currency1) {
 		return 0, ErrCurrencyNotSorted
 	}
-
-	// Validate fee
 	if key.Fee > FeeMax {
 		return 0, ErrInvalidFee
 	}
-
-	// Validate sqrt price
 	if sqrtPriceX96.Cmp(MinSqrtRatio) < 0 || sqrtPriceX96.Cmp(MaxSqrtRatio) > 0 {
 		return 0, ErrInvalidSqrtPrice
 	}
 
 	poolId := key.ID()
 
-	// Check if pool already exists
 	pool := pm.getPool(stateDB, poolId)
 	if pool.IsInitialized() {
 		return 0, ErrPoolAlreadyInitialized
 	}
 
-	// Calculate initial tick from sqrt price
-	tick := pm.sqrtPriceX96ToTick(sqrtPriceX96)
+	tick, err := pm.engine.Initialize(sqrtPriceX96)
+	if err != nil {
+		return 0, err
+	}
 
-	// Call beforeInitialize hook if present
 	if key.Hooks != (common.Address{}) {
 		if err := pm.callHook(stateDB, key.Hooks, HookBeforeInitialize, key, sqrtPriceX96, hookData); err != nil {
 			return 0, err
 		}
 	}
 
-	// Initialize pool state
 	pool.SqrtPriceX96 = new(big.Int).Set(sqrtPriceX96)
 	pool.Tick = tick
 	pool.Liquidity = big.NewInt(0)
 	pool.FeeGrowth0X128 = big.NewInt(0)
 	pool.FeeGrowth1X128 = big.NewInt(0)
 
-	// Save pool state
+	ps := NewPoolState(pool, key.TickSpacing, key.Fee)
+	pm.poolStates[poolId] = ps
+
 	pm.setPool(stateDB, poolId, pool)
 
-	// Call afterInitialize hook if present
 	if key.Hooks != (common.Address{}) {
 		if err := pm.callHook(stateDB, key.Hooks, HookAfterInitialize, key, sqrtPriceX96, hookData); err != nil {
 			return 0, err
 		}
 	}
 
-	// Emit Initialize event for subgraph indexing
 	emitInitializeEvent(stateDB, poolId, key, sqrtPriceX96, tick)
 
 	return tick, nil
 }
 
 // =========================================================================
+// Pause/Freeze Controls (ATS Regulatory Compliance)
+// =========================================================================
+
+// checkPauseState verifies that the DEX and pool are not paused or frozen.
+// Check order: DEX-level > pool freeze > pool pause.
+// Returns nil if all operations are permitted.
+//
+// On first access (cold cache, e.g. after node restart), reads the durable
+// StateDB values so that regulatory halts survive restarts.
+func (pm *PoolManager) checkPauseState(stateDB StateDB, poolId [32]byte) error {
+	// Reload DEX-level pause from StateDB if not yet loaded this instance
+	if !pm.pauseLoaded {
+		dexPauseKey := makeStorageKey(pauseStatePrefix, []byte("dex"))
+		dexPauseVal := stateDB.GetState(poolManagerAddr, dexPauseKey)
+		pm.paused = dexPauseVal[31] == 1
+		pm.pauseLoaded = true
+	}
+	if pm.paused {
+		return ErrDEXPaused
+	}
+
+	// Reload per-pool freeze/pause from StateDB on first access per pool
+	if _, ok := pm.poolFrozen[poolId]; !ok {
+		freezeKey := makeStorageKey(freezeStatePrefix, poolId[:])
+		freezeVal := stateDB.GetState(poolManagerAddr, freezeKey)
+		pm.poolFrozen[poolId] = freezeVal[31] == 1
+	}
+	if pm.poolFrozen[poolId] {
+		return ErrPoolFrozen
+	}
+
+	if _, ok := pm.poolPaused[poolId]; !ok {
+		pauseKey := makeStorageKey(pauseStatePrefix, poolId[:])
+		pauseVal := stateDB.GetState(poolManagerAddr, pauseKey)
+		pm.poolPaused[poolId] = pauseVal[31] == 1
+	}
+	if pm.poolPaused[poolId] {
+		return ErrPoolPaused
+	}
+	return nil
+}
+
+// IsPaused returns true if the entire DEX is paused.
+func (pm *PoolManager) IsPaused() bool {
+	return pm.paused
+}
+
+// IsPoolPaused returns true if the given pool is paused (not frozen).
+func (pm *PoolManager) IsPoolPaused(poolId [32]byte) bool {
+	return pm.poolPaused[poolId]
+}
+
+// IsPoolFrozen returns true if the given pool is permanently frozen.
+func (pm *PoolManager) IsPoolFrozen(poolId [32]byte) bool {
+	return pm.poolFrozen[poolId]
+}
+
+// PauseDEX pauses ALL DEX operations. Only callable by admin (protocolFeeController).
+// When paused, Swap/ModifyLiquidity/Donate all revert with ErrDEXPaused.
+func (pm *PoolManager) PauseDEX(stateDB StateDB, caller common.Address) error {
+	if caller != pm.protocolFeeController {
+		return ErrUnauthorized
+	}
+	if pm.paused {
+		return ErrAlreadyPaused
+	}
+	pm.paused = true
+
+	// Persist to storage
+	key := makeStorageKey(pauseStatePrefix, []byte("dex"))
+	var val common.Hash
+	val[31] = 1
+	stateDB.SetState(poolManagerAddr, key, val)
+
+	emitDEXPausedEvent(stateDB, caller)
+	return nil
+}
+
+// ResumeDEX resumes all DEX operations. Only callable by admin (protocolFeeController).
+func (pm *PoolManager) ResumeDEX(stateDB StateDB, caller common.Address) error {
+	if caller != pm.protocolFeeController {
+		return ErrUnauthorized
+	}
+	if !pm.paused {
+		return ErrDEXNotPaused
+	}
+	pm.paused = false
+
+	// Clear from storage
+	key := makeStorageKey(pauseStatePrefix, []byte("dex"))
+	stateDB.SetState(poolManagerAddr, key, common.Hash{})
+
+	emitDEXResumedEvent(stateDB, caller)
+	return nil
+}
+
+// PausePool pauses a single pool. Only callable by admin (protocolFeeController).
+// A frozen pool cannot be paused (it is already permanently halted).
+func (pm *PoolManager) PausePool(stateDB StateDB, caller common.Address, poolId [32]byte) error {
+	if caller != pm.protocolFeeController {
+		return ErrUnauthorized
+	}
+	if pm.poolFrozen[poolId] {
+		return ErrPoolFrozen
+	}
+	if pm.poolPaused[poolId] {
+		return ErrAlreadyPaused
+	}
+	pm.poolPaused[poolId] = true
+
+	// Persist to storage
+	key := makeStorageKey(pauseStatePrefix, poolId[:])
+	var val common.Hash
+	val[31] = 1
+	stateDB.SetState(poolManagerAddr, key, val)
+
+	emitPoolPausedEvent(stateDB, caller, poolId)
+	return nil
+}
+
+// ResumePool resumes a single pool. Only callable by admin (protocolFeeController).
+// A frozen pool CANNOT be resumed — freeze is irreversible without governance.
+func (pm *PoolManager) ResumePool(stateDB StateDB, caller common.Address, poolId [32]byte) error {
+	if caller != pm.protocolFeeController {
+		return ErrUnauthorized
+	}
+	if pm.poolFrozen[poolId] {
+		return ErrFreezeIrreversible
+	}
+	if !pm.poolPaused[poolId] {
+		return ErrPoolNotPaused
+	}
+	pm.poolPaused[poolId] = false
+
+	// Clear from storage
+	key := makeStorageKey(pauseStatePrefix, poolId[:])
+	stateDB.SetState(poolManagerAddr, key, common.Hash{})
+
+	emitPoolResumedEvent(stateDB, caller, poolId)
+	return nil
+}
+
+// FreezePool permanently freezes a pool. IRREVERSIBLE without governance action.
+// Only callable by admin (protocolFeeController).
+// A frozen pool rejects all swap/modifyLiquidity/donate operations forever.
+// Existing positions can still be read but not modified.
+func (pm *PoolManager) FreezePool(stateDB StateDB, caller common.Address, poolId [32]byte) error {
+	if caller != pm.protocolFeeController {
+		return ErrUnauthorized
+	}
+	if pm.poolFrozen[poolId] {
+		return ErrAlreadyFrozen
+	}
+	pm.poolFrozen[poolId] = true
+
+	// Also clear any pause state — freeze supersedes pause
+	pm.poolPaused[poolId] = false
+	pauseKey := makeStorageKey(pauseStatePrefix, poolId[:])
+	stateDB.SetState(poolManagerAddr, pauseKey, common.Hash{})
+
+	// Persist freeze to storage
+	freezeKey := makeStorageKey(freezeStatePrefix, poolId[:])
+	var val common.Hash
+	val[31] = 1
+	stateDB.SetState(poolManagerAddr, freezeKey, val)
+
+	emitPoolFrozenEvent(stateDB, caller, poolId)
+	return nil
+}
+
+// =========================================================================
 // Core DEX Operations
 // =========================================================================
 
-// Swap executes a swap in a pool.
-// The caller is the address performing the swap. Blockchain consensus provides
-// transaction ordering — no lock/locker pattern needed.
+// Swap executes a swap in a pool using the V4 tick-crossing loop.
 func (pm *PoolManager) Swap(
 	stateDB StateDB,
 	caller common.Address,
@@ -162,45 +404,44 @@ func (pm *PoolManager) Swap(
 	hookData []byte,
 ) (BalanceDelta, error) {
 	poolId := key.ID()
-	pool := pm.getPool(stateDB, poolId)
 
-	if !pool.IsInitialized() {
+	// Pause/freeze gate: check BEFORE any state reads or mutations.
+	// Reads from StateDB on cold cache (survives node restarts).
+	if err := pm.checkPauseState(stateDB, poolId); err != nil {
+		return ZeroBalanceDelta(), err
+	}
+
+	ps := pm.getPoolState(stateDB, poolId, key.TickSpacing, key.Fee)
+
+	if !ps.Pool.IsInitialized() {
 		return ZeroBalanceDelta(), ErrPoolNotInitialized
 	}
 
-	// Call beforeSwap hook if present
 	if key.Hooks != (common.Address{}) {
 		if err := pm.callHook(stateDB, key.Hooks, HookBeforeSwap, key, params, hookData); err != nil {
 			return ZeroBalanceDelta(), err
 		}
 	}
 
-	// Execute swap math
-	delta, newTick, err := pm.executeSwap(pool, key, params)
+	delta, err := pm.engine.Swap(ps, params)
 	if err != nil {
 		return ZeroBalanceDelta(), err
 	}
 
-	// Update pool state
-	pool.Tick = newTick
-	pm.setPool(stateDB, poolId, pool)
+	pm.setPoolState(stateDB, poolId, ps)
 
-	// Call afterSwap hook if present
 	if key.Hooks != (common.Address{}) {
 		if err := pm.callHook(stateDB, key.Hooks, HookAfterSwap, key, params, delta, hookData); err != nil {
 			return ZeroBalanceDelta(), err
 		}
 	}
 
-	// Emit Swap event for subgraph indexing
-	emitSwapEvent(stateDB, poolId, caller, delta, pool.SqrtPriceX96, pool.Liquidity, pool.Tick, key.Fee)
+	emitSwapEvent(stateDB, poolId, caller, delta, ps.SqrtPriceX96, ps.Liquidity, ps.Tick, key.Fee)
 
 	return delta, nil
 }
 
-// ModifyLiquidity adds or removes liquidity from a pool.
-// The caller is the address modifying the position. Blockchain consensus provides
-// transaction ordering — no lock/locker pattern needed.
+// ModifyLiquidity adds or removes liquidity from a pool using V4 concentrated liquidity math.
 func (pm *PoolManager) ModifyLiquidity(
 	stateDB StateDB,
 	caller common.Address,
@@ -208,7 +449,6 @@ func (pm *PoolManager) ModifyLiquidity(
 	params ModifyLiquidityParams,
 	hookData []byte,
 ) (BalanceDelta, BalanceDelta, error) {
-	// Validate tick range
 	if params.TickLower >= params.TickUpper {
 		return ZeroBalanceDelta(), ZeroBalanceDelta(), ErrInvalidTickRange
 	}
@@ -217,13 +457,18 @@ func (pm *PoolManager) ModifyLiquidity(
 	}
 
 	poolId := key.ID()
-	pool := pm.getPool(stateDB, poolId)
 
-	if !pool.IsInitialized() {
+	// Pause/freeze gate: check BEFORE any state reads or mutations.
+	if err := pm.checkPauseState(stateDB, poolId); err != nil {
+		return ZeroBalanceDelta(), ZeroBalanceDelta(), err
+	}
+
+	ps := pm.getPoolState(stateDB, poolId, key.TickSpacing, key.Fee)
+
+	if !ps.Pool.IsInitialized() {
 		return ZeroBalanceDelta(), ZeroBalanceDelta(), ErrPoolNotInitialized
 	}
 
-	// Call beforeAddLiquidity or beforeRemoveLiquidity hook
 	isAdd := params.LiquidityDelta.Sign() > 0
 	if key.Hooks != (common.Address{}) {
 		var hookFlag HookFlags
@@ -237,36 +482,19 @@ func (pm *PoolManager) ModifyLiquidity(
 		}
 	}
 
-	// Calculate token amounts for liquidity change
-	callerDelta, feesAccrued := pm.calculateLiquidityAmounts(pool, key, params, caller)
-
-	// Update pool liquidity
-	if params.TickLower <= pool.Tick && pool.Tick < params.TickUpper {
-		pool.Liquidity = new(big.Int).Add(pool.Liquidity, params.LiquidityDelta)
-		// F10: Guard against negative pool liquidity (e.g., removing more than exists)
-		if pool.Liquidity.Sign() < 0 {
-			return ZeroBalanceDelta(), ZeroBalanceDelta(), fmt.Errorf("%w: pool liquidity would go negative", ErrInsufficientLiquidity)
-		}
+	callerDelta, feesAccrued, err := pm.engine.ModifyLiquidity(ps, caller, params)
+	if err != nil {
+		return ZeroBalanceDelta(), ZeroBalanceDelta(), err
 	}
 
-	// Update position
-	positionKey := PositionKey(caller, params.TickLower, params.TickUpper, params.Salt)
-	position := pm.getPosition(stateDB, positionKey)
-	newPositionLiquidity := new(big.Int).Add(position.Liquidity, params.LiquidityDelta)
-	// F10: Guard against negative position liquidity
-	if newPositionLiquidity.Sign() < 0 {
-		return ZeroBalanceDelta(), ZeroBalanceDelta(), fmt.Errorf("%w: position liquidity would go negative", ErrInsufficientLiquidity)
+	posKey := PositionKey(caller, params.TickLower, params.TickUpper, params.Salt)
+	if pos, ok := ps.Positions[posKey]; ok {
+		pm.positions[posKey] = pos
+		pm.setPosition(stateDB, posKey, pos)
 	}
-	position.Liquidity = newPositionLiquidity
-	position.Owner = caller
-	position.TickLower = params.TickLower
-	position.TickUpper = params.TickUpper
-	pm.setPosition(stateDB, positionKey, position)
 
-	// Save pool state
-	pm.setPool(stateDB, poolId, pool)
+	pm.setPoolState(stateDB, poolId, ps)
 
-	// Call afterAddLiquidity or afterRemoveLiquidity hook
 	if key.Hooks != (common.Address{}) {
 		var hookFlag HookFlags
 		if isAdd {
@@ -279,7 +507,6 @@ func (pm *PoolManager) ModifyLiquidity(
 		}
 	}
 
-	// Emit ModifyLiquidity event for subgraph indexing
 	emitModifyLiquidityEvent(stateDB, poolId, caller, params)
 
 	return callerDelta, feesAccrued, nil
@@ -292,47 +519,41 @@ func (pm *PoolManager) Donate(
 	key PoolKey,
 	amount0 *big.Int,
 	amount1 *big.Int,
-	hookData []byte,
+	hookData ...[]byte,
 ) (BalanceDelta, error) {
 	poolId := key.ID()
-	pool := pm.getPool(stateDB, poolId)
 
-	if !pool.IsInitialized() {
+	// Pause/freeze gate: check BEFORE any state reads or mutations.
+	if err := pm.checkPauseState(stateDB, poolId); err != nil {
+		return ZeroBalanceDelta(), err
+	}
+
+	ps := pm.getPoolState(stateDB, poolId, key.TickSpacing, key.Fee)
+
+	if !ps.Pool.IsInitialized() {
 		return ZeroBalanceDelta(), ErrPoolNotInitialized
 	}
 
-	// Call beforeDonate hook
+	var hd []byte
+	if len(hookData) > 0 {
+		hd = hookData[0]
+	}
+
 	if key.Hooks != (common.Address{}) {
-		if err := pm.callHook(stateDB, key.Hooks, HookBeforeDonate, key, amount0, amount1, hookData); err != nil {
+		if err := pm.callHook(stateDB, key.Hooks, HookBeforeDonate, key, amount0, amount1, hd); err != nil {
 			return ZeroBalanceDelta(), err
 		}
 	}
 
-	// Update fee growth (donated tokens go to LPs)
-	// Require liquidity to exist for donations
-	if pool.Liquidity == nil || pool.Liquidity.Sign() <= 0 {
-		return ZeroBalanceDelta(), ErrNoLiquidity
+	delta, err := pm.engine.Donate(ps, amount0, amount1)
+	if err != nil {
+		return ZeroBalanceDelta(), err
 	}
 
-	// feeGrowth += amount * 2^128 / liquidity
-	if amount0 != nil && amount0.Sign() > 0 {
-		growth0 := new(big.Int).Mul(amount0, Q128)
-		growth0.Div(growth0, pool.Liquidity)
-		pool.FeeGrowth0X128 = new(big.Int).Add(pool.FeeGrowth0X128, growth0)
-	}
-	if amount1 != nil && amount1.Sign() > 0 {
-		growth1 := new(big.Int).Mul(amount1, Q128)
-		growth1.Div(growth1, pool.Liquidity)
-		pool.FeeGrowth1X128 = new(big.Int).Add(pool.FeeGrowth1X128, growth1)
-	}
+	pm.setPoolState(stateDB, poolId, ps)
 
-	pm.setPool(stateDB, poolId, pool)
-
-	delta := NewBalanceDelta(amount0, amount1)
-
-	// Call afterDonate hook
 	if key.Hooks != (common.Address{}) {
-		if err := pm.callHook(stateDB, key.Hooks, HookAfterDonate, key, amount0, amount1, delta, hookData); err != nil {
+		if err := pm.callHook(stateDB, key.Hooks, HookAfterDonate, key, amount0, amount1, delta, hd); err != nil {
 			return ZeroBalanceDelta(), err
 		}
 	}
@@ -352,37 +573,28 @@ func (pm *PoolManager) Flash(
 	params FlashParams,
 	hookData []byte,
 ) (BalanceDelta, error) {
-
 	poolId := key.ID()
+
+	// Pause/freeze gate: flash loans must also be blocked during halts.
+	if err := pm.checkPauseState(stateDB, poolId); err != nil {
+		return ZeroBalanceDelta(), err
+	}
+
 	pool := pm.getPool(stateDB, poolId)
 
 	if !pool.IsInitialized() {
 		return ZeroBalanceDelta(), ErrPoolNotInitialized
 	}
 
-	// Call beforeFlash hook
-	if key.Hooks != (common.Address{}) {
-		if err := pm.callHook(stateDB, key.Hooks, HookBeforeFlash, key, params, hookData); err != nil {
-			return ZeroBalanceDelta(), err
-		}
-	}
+	// V4 flash has no hook callbacks — flash is hookless by design.
 
-	// Calculate fees (based on pool fee)
 	fee0 := pm.calculateFlashFee(params.Amount0, key.Fee)
 	fee1 := pm.calculateFlashFee(params.Amount1, key.Fee)
 
-	// Expected repayment (loan + fee)
 	totalOwed0 := new(big.Int).Add(params.Amount0, fee0)
 	totalOwed1 := new(big.Int).Add(params.Amount1, fee1)
 
 	delta := NewBalanceDelta(totalOwed0, totalOwed1)
-
-	// Call afterFlash hook
-	if key.Hooks != (common.Address{}) {
-		if err := pm.callHook(stateDB, key.Hooks, HookAfterFlash, key, params, delta, hookData); err != nil {
-			return ZeroBalanceDelta(), err
-		}
-	}
 
 	return delta, nil
 }
@@ -391,351 +603,180 @@ func (pm *PoolManager) Flash(
 // State Management
 // =========================================================================
 
-// getPool retrieves pool state from storage
 func (pm *PoolManager) getPool(stateDB StateDB, poolId [32]byte) *Pool {
-	// Check memory cache first
 	if pool, ok := pm.pools[poolId]; ok {
 		return pool
 	}
-
-	// Load from state
 	pool := NewPool()
 
-	// Read sqrtPriceX96
 	sqrtPriceKey := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("sqrtPrice")...))
 	sqrtPriceHash := stateDB.GetState(poolManagerAddr, sqrtPriceKey)
 	if sqrtPriceHash != (common.Hash{}) {
 		pool.SqrtPriceX96 = new(big.Int).SetBytes(sqrtPriceHash[:])
 	}
 
-	// Read tick
 	tickKey := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("tick")...))
 	tickHash := stateDB.GetState(poolManagerAddr, tickKey)
 	if tickHash != (common.Hash{}) {
 		pool.Tick = int24(binary.BigEndian.Uint32(tickHash[28:32]))
 	}
 
-	// Read liquidity
 	liqKey := makeStorageKey(poolLiquidityPrefix, poolId[:])
 	liqHash := stateDB.GetState(poolManagerAddr, liqKey)
 	if liqHash != (common.Hash{}) {
 		pool.Liquidity = new(big.Int).SetBytes(liqHash[:])
 	}
 
+	// Fee growth and protocol fees — critical for LP accounting across restarts
+	fg0Key := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("feeGrowth0")...))
+	fg0Hash := stateDB.GetState(poolManagerAddr, fg0Key)
+	if fg0Hash != (common.Hash{}) {
+		pool.FeeGrowth0X128 = new(big.Int).SetBytes(fg0Hash[:])
+	}
+
+	fg1Key := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("feeGrowth1")...))
+	fg1Hash := stateDB.GetState(poolManagerAddr, fg1Key)
+	if fg1Hash != (common.Hash{}) {
+		pool.FeeGrowth1X128 = new(big.Int).SetBytes(fg1Hash[:])
+	}
+
+	pf0Key := makeStorageKey(protocolFeePrefix, append(poolId[:], []byte("0")...))
+	pf0Hash := stateDB.GetState(poolManagerAddr, pf0Key)
+	if pf0Hash != (common.Hash{}) {
+		pool.ProtocolFees0 = new(big.Int).SetBytes(pf0Hash[:])
+	}
+
+	pf1Key := makeStorageKey(protocolFeePrefix, append(poolId[:], []byte("1")...))
+	pf1Hash := stateDB.GetState(poolManagerAddr, pf1Key)
+	if pf1Hash != (common.Hash{}) {
+		pool.ProtocolFees1 = new(big.Int).SetBytes(pf1Hash[:])
+	}
+
 	pm.pools[poolId] = pool
 	return pool
 }
 
-// setPool saves pool state to storage
 func (pm *PoolManager) setPool(stateDB StateDB, poolId [32]byte, pool *Pool) {
 	pm.pools[poolId] = pool
 
-	// Write sqrtPriceX96 (always non-negative, but guard with safeFillBytes)
 	sqrtPriceKey := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("sqrtPrice")...))
 	var sqrtPriceHash common.Hash
 	safeFillBytes(pool.SqrtPriceX96, sqrtPriceHash[:])
 	stateDB.SetState(poolManagerAddr, sqrtPriceKey, sqrtPriceHash)
 
-	// Write tick
 	tickKey := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("tick")...))
 	var tickHash common.Hash
 	binary.BigEndian.PutUint32(tickHash[28:32], uint32(pool.Tick))
 	stateDB.SetState(poolManagerAddr, tickKey, tickHash)
 
-	// Write liquidity (always non-negative after guards, but safeFillBytes for defense in depth)
 	liqKey := makeStorageKey(poolLiquidityPrefix, poolId[:])
 	var liqHash common.Hash
 	safeFillBytes(pool.Liquidity, liqHash[:])
 	stateDB.SetState(poolManagerAddr, liqKey, liqHash)
+
+	// Fee growth — LP accounting depends on these surviving restarts
+	fg0Key := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("feeGrowth0")...))
+	var fg0Hash common.Hash
+	safeFillBytes(pool.FeeGrowth0X128, fg0Hash[:])
+	stateDB.SetState(poolManagerAddr, fg0Key, fg0Hash)
+
+	fg1Key := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("feeGrowth1")...))
+	var fg1Hash common.Hash
+	safeFillBytes(pool.FeeGrowth1X128, fg1Hash[:])
+	stateDB.SetState(poolManagerAddr, fg1Key, fg1Hash)
+
+	// Protocol fees
+	pf0Key := makeStorageKey(protocolFeePrefix, append(poolId[:], []byte("0")...))
+	var pf0Hash common.Hash
+	safeFillBytes(pool.ProtocolFees0, pf0Hash[:])
+	stateDB.SetState(poolManagerAddr, pf0Key, pf0Hash)
+
+	pf1Key := makeStorageKey(protocolFeePrefix, append(poolId[:], []byte("1")...))
+	var pf1Hash common.Hash
+	safeFillBytes(pool.ProtocolFees1, pf1Hash[:])
+	stateDB.SetState(poolManagerAddr, pf1Key, pf1Hash)
 }
 
-// getPosition retrieves position state from storage
 func (pm *PoolManager) getPosition(stateDB StateDB, positionKey [32]byte) *Position {
 	if pos, ok := pm.positions[positionKey]; ok {
 		return pos
 	}
-
 	pos := &Position{
-		Liquidity:                big.NewInt(0),
-		TokensOwed0:              big.NewInt(0),
-		TokensOwed1:              big.NewInt(0),
-		FeeGrowthInside0LastX128: big.NewInt(0),
-		FeeGrowthInside1LastX128: big.NewInt(0),
+		Liquidity: big.NewInt(0), TokensOwed0: big.NewInt(0), TokensOwed1: big.NewInt(0),
+		FeeGrowthInside0LastX128: big.NewInt(0), FeeGrowthInside1LastX128: big.NewInt(0),
 	}
-
-	// Load from state
 	liqKey := makeStorageKey(positionPrefix, append(positionKey[:], []byte("liq")...))
 	liqHash := stateDB.GetState(poolManagerAddr, liqKey)
 	if liqHash != (common.Hash{}) {
 		pos.Liquidity = new(big.Int).SetBytes(liqHash[:])
 	}
 
+	fgi0Key := makeStorageKey(positionPrefix, append(positionKey[:], []byte("fgi0")...))
+	fgi0Hash := stateDB.GetState(poolManagerAddr, fgi0Key)
+	if fgi0Hash != (common.Hash{}) {
+		pos.FeeGrowthInside0LastX128 = new(big.Int).SetBytes(fgi0Hash[:])
+	}
+
+	fgi1Key := makeStorageKey(positionPrefix, append(positionKey[:], []byte("fgi1")...))
+	fgi1Hash := stateDB.GetState(poolManagerAddr, fgi1Key)
+	if fgi1Hash != (common.Hash{}) {
+		pos.FeeGrowthInside1LastX128 = new(big.Int).SetBytes(fgi1Hash[:])
+	}
+
+	to0Key := makeStorageKey(positionPrefix, append(positionKey[:], []byte("to0")...))
+	to0Hash := stateDB.GetState(poolManagerAddr, to0Key)
+	if to0Hash != (common.Hash{}) {
+		pos.TokensOwed0 = new(big.Int).SetBytes(to0Hash[:])
+	}
+
+	to1Key := makeStorageKey(positionPrefix, append(positionKey[:], []byte("to1")...))
+	to1Hash := stateDB.GetState(poolManagerAddr, to1Key)
+	if to1Hash != (common.Hash{}) {
+		pos.TokensOwed1 = new(big.Int).SetBytes(to1Hash[:])
+	}
+
 	pm.positions[positionKey] = pos
 	return pos
 }
 
-// setPosition saves position state to storage
 func (pm *PoolManager) setPosition(stateDB StateDB, positionKey [32]byte, pos *Position) {
 	pm.positions[positionKey] = pos
 
-	// Write liquidity (always non-negative after guards, but safeFillBytes for defense in depth)
 	liqKey := makeStorageKey(positionPrefix, append(positionKey[:], []byte("liq")...))
 	var liqHash common.Hash
 	safeFillBytes(pos.Liquidity, liqHash[:])
 	stateDB.SetState(poolManagerAddr, liqKey, liqHash)
+
+	fgi0Key := makeStorageKey(positionPrefix, append(positionKey[:], []byte("fgi0")...))
+	var fgi0Hash common.Hash
+	safeFillBytes(pos.FeeGrowthInside0LastX128, fgi0Hash[:])
+	stateDB.SetState(poolManagerAddr, fgi0Key, fgi0Hash)
+
+	fgi1Key := makeStorageKey(positionPrefix, append(positionKey[:], []byte("fgi1")...))
+	var fgi1Hash common.Hash
+	safeFillBytes(pos.FeeGrowthInside1LastX128, fgi1Hash[:])
+	stateDB.SetState(poolManagerAddr, fgi1Key, fgi1Hash)
+
+	to0Key := makeStorageKey(positionPrefix, append(positionKey[:], []byte("to0")...))
+	var to0Hash common.Hash
+	safeFillBytes(pos.TokensOwed0, to0Hash[:])
+	stateDB.SetState(poolManagerAddr, to0Key, to0Hash)
+
+	to1Key := makeStorageKey(positionPrefix, append(positionKey[:], []byte("to1")...))
+	var to1Hash common.Hash
+	safeFillBytes(pos.TokensOwed1, to1Hash[:])
+	stateDB.SetState(poolManagerAddr, to1Key, to1Hash)
 }
 
 // =========================================================================
 // Helper Functions
 // =========================================================================
 
-// areCurrenciesSorted returns true if currencies are properly sorted
-// Uses bytes comparison for correct address ordering
 func (pm *PoolManager) areCurrenciesSorted(c0, c1 Currency) bool {
 	return bytes.Compare(c0.Address.Bytes(), c1.Address.Bytes()) < 0
 }
 
-// sqrtPriceX96ToTick converts sqrt price to tick using binary search
-// tick = floor(log_1.0001(price))
-// price = sqrtPriceX96^2 / 2^192
-func (pm *PoolManager) sqrtPriceX96ToTick(sqrtPriceX96 *big.Int) int24 {
-	if sqrtPriceX96 == nil || sqrtPriceX96.Sign() <= 0 {
-		return 0
-	}
-
-	// Clamp to valid range
-	if sqrtPriceX96.Cmp(MinSqrtRatio) <= 0 {
-		return MinTick
-	}
-	if sqrtPriceX96.Cmp(MaxSqrtRatio) >= 0 {
-		return MaxTick
-	}
-
-	// Binary search for tick
-	// tickToSqrtPrice(tick) <= sqrtPriceX96 < tickToSqrtPrice(tick+1)
-	low := int24(MinTick)
-	high := int24(MaxTick)
-
-	for low < high {
-		mid := low + (high-low+1)/2
-		sqrtPriceMid := pm.tickToSqrtPriceX96(mid)
-
-		if sqrtPriceMid.Cmp(sqrtPriceX96) <= 0 {
-			low = mid
-		} else {
-			high = mid - 1
-		}
-	}
-
-	return low
-}
-
-// tickToSqrtPriceX96 converts tick to sqrt price (Q64.96 format).
-// Exact port of Uniswap V3 TickMath.getSqrtRatioAtTick with all 20 magic
-// constants (bits 0-19), supporting the full tick range +/-887272.
-//
-// Each magic constant is 2^128 / sqrt(1.0001^(2^i)) in Q128 format.
-// Multiplying them together for set bits computes 1/sqrt(price) in Q128.
-// For positive ticks (price > 1) we invert at the end.
-func (pm *PoolManager) tickToSqrtPriceX96(tick int24) *big.Int {
-	if tick == 0 {
-		return new(big.Int).Set(Q96)
-	}
-
-	absTick := uint32(tick)
-	if tick < 0 {
-		absTick = uint32(-tick)
-	}
-
-	// Start with 2^128
-	ratio := new(big.Int).Lsh(big.NewInt(1), 128)
-
-	// Exact Uniswap V3 magic numbers: 2^128 / sqrt(1.0001^(2^i))
-	// Full 128-bit hex values, bits 0-19
-	magics := [20]*big.Int{}
-	magics[0], _ = new(big.Int).SetString("fffcb933bd6fad37aa2d162d1a594001", 16)
-	magics[1], _ = new(big.Int).SetString("fff97272373d413259a46990580e213a", 16)
-	magics[2], _ = new(big.Int).SetString("fff2e50f5f656932ef12357cf3c7fdcc", 16)
-	magics[3], _ = new(big.Int).SetString("ffe5caca7e10e4e61c3624eaa0941cd0", 16)
-	magics[4], _ = new(big.Int).SetString("ffcb9843d60f6159c9db58835c926644", 16)
-	magics[5], _ = new(big.Int).SetString("ff973b41fa98c081472e6896dfb254c0", 16)
-	magics[6], _ = new(big.Int).SetString("ff2ea16466c96a3843ec78b326b52861", 16)
-	magics[7], _ = new(big.Int).SetString("fe5dee046a99a2a811c461f1969c3053", 16)
-	magics[8], _ = new(big.Int).SetString("fcbe86c7900a88aedcffc83b479aa3a4", 16)
-	magics[9], _ = new(big.Int).SetString("f987a7253ac413176f2b074cf7815e54", 16)
-	magics[10], _ = new(big.Int).SetString("f3392b0822b70005940c7a398e4b70f3", 16)
-	magics[11], _ = new(big.Int).SetString("e7159475a2c29b7443b29c7fa6e889d9", 16)
-	magics[12], _ = new(big.Int).SetString("d097f3bdfd2022b8845ad8f792aa5825", 16)
-	magics[13], _ = new(big.Int).SetString("a9f746462d870fdf8a65dc1f90e061e5", 16)
-	magics[14], _ = new(big.Int).SetString("70d869a156d2a1b890bb3df62baf32f7", 16)
-	magics[15], _ = new(big.Int).SetString("31be135f97d08fd981231505542fcfa6", 16)
-	magics[16], _ = new(big.Int).SetString("9aa508b5b7a84e1c677de54f3e99bc9", 16)
-	magics[17], _ = new(big.Int).SetString("5d6af8dedb81196699c329225ee604", 16)
-	magics[18], _ = new(big.Int).SetString("2216e584f5fa1ea926041bedfa", 16)
-	magics[19], _ = new(big.Int).SetString("48a170391f7dc42444e8fa2", 16)
-
-	for i := 0; i < 20; i++ {
-		if absTick&(1<<i) != 0 {
-			ratio.Mul(ratio, magics[i])
-			ratio.Rsh(ratio, 128)
-		}
-	}
-
-	// If tick > 0, invert: ratio = 2^256 / ratio
-	// The magics represent 1/sqrt(1.0001^(2^i)), so multiplying gives
-	// 1/sqrt(price). For positive ticks (price > 1), invert to get sqrt(price).
-	if tick > 0 {
-		maxU256 := new(big.Int).Lsh(big.NewInt(1), 256)
-		ratio.Div(maxU256, ratio)
-	}
-
-	// Convert from Q128 to Q96: shift right 32 bits
-	result := new(big.Int).Rsh(ratio, 32)
-
-	if result.Cmp(MinSqrtRatio) < 0 {
-		return new(big.Int).Set(MinSqrtRatio)
-	}
-	if result.Cmp(MaxSqrtRatio) > 0 {
-		return new(big.Int).Set(MaxSqrtRatio)
-	}
-
-	return result
-}
-
-// executeSwap performs the swap math
-func (pm *PoolManager) executeSwap(pool *Pool, key PoolKey, params SwapParams) (BalanceDelta, int24, error) {
-	// Simplified swap implementation
-	// Real implementation would:
-	// 1. Iterate through ticks
-	// 2. Calculate amounts at each tick
-	// 3. Update fee growth
-	// 4. Handle price limit
-
-	exactInput := params.AmountSpecified.Sign() > 0
-
-	var amount0, amount1 *big.Int
-
-	if params.ZeroForOne {
-		// Swapping token0 for token1
-		if exactInput {
-			amount0 = params.AmountSpecified
-			// Calculate output based on price and liquidity
-			amount1 = pm.calculateSwapOutput(pool, amount0, true)
-		} else {
-			amount1 = new(big.Int).Neg(params.AmountSpecified)
-			amount0 = pm.calculateSwapInput(pool, amount1, true)
-		}
-	} else {
-		// Swapping token1 for token0
-		if exactInput {
-			amount1 = params.AmountSpecified
-			amount0 = pm.calculateSwapOutput(pool, amount1, false)
-		} else {
-			amount0 = new(big.Int).Neg(params.AmountSpecified)
-			amount1 = pm.calculateSwapInput(pool, amount0, false)
-		}
-	}
-
-	// Apply fee
-	fee := pm.calculateSwapFee(amount0, amount1, key.Fee)
-	_ = fee // Fee would be distributed to LPs
-
-	return NewBalanceDelta(amount0, new(big.Int).Neg(amount1)), pool.Tick, nil
-}
-
-// calculateSwapOutput calculates output for given input
-func (pm *PoolManager) calculateSwapOutput(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.Int {
-	// Simplified: output = input * liquidity / (liquidity + input)
-	// Real implementation uses exact tick math
-	if pool.Liquidity.Sign() == 0 {
-		return big.NewInt(0)
-	}
-
-	numerator := new(big.Int).Mul(amountIn, pool.Liquidity)
-	denominator := new(big.Int).Add(pool.Liquidity, amountIn)
-	return new(big.Int).Div(numerator, denominator)
-}
-
-// calculateSwapInput calculates input required for given output
-func (pm *PoolManager) calculateSwapInput(pool *Pool, amountOut *big.Int, zeroForOne bool) *big.Int {
-	// Simplified calculation
-	if pool.Liquidity.Sign() == 0 {
-		return big.NewInt(0)
-	}
-
-	numerator := new(big.Int).Mul(amountOut, pool.Liquidity)
-	denominator := new(big.Int).Sub(pool.Liquidity, amountOut)
-	if denominator.Sign() <= 0 {
-		return new(big.Int).Set(pool.Liquidity)
-	}
-	return new(big.Int).Div(numerator, denominator)
-}
-
-// calculateSwapFee calculates the fee for a swap
-func (pm *PoolManager) calculateSwapFee(amount0, amount1 *big.Int, fee uint24) *big.Int {
-	// Fee = max(|amount0|, |amount1|) * fee / 1_000_000
-	amount := amount0
-	if amount1.CmpAbs(amount0) > 0 {
-		amount = amount1
-	}
-	absAmount := new(big.Int).Abs(amount)
-	feeAmount := new(big.Int).Mul(absAmount, big.NewInt(int64(fee)))
-	return feeAmount.Div(feeAmount, big.NewInt(1_000_000))
-}
-
-// calculateLiquidityAmounts calculates token amounts for liquidity change
-func (pm *PoolManager) calculateLiquidityAmounts(
-	pool *Pool,
-	key PoolKey,
-	params ModifyLiquidityParams,
-	owner common.Address,
-) (BalanceDelta, BalanceDelta) {
-	// Simplified liquidity calculation
-	// Real implementation uses sqrtPrice and tick math
-
-	currentTick := pool.Tick
-	isActive := params.TickLower <= currentTick && currentTick < params.TickUpper
-
-	var amount0, amount1 *big.Int
-
-	if params.LiquidityDelta.Sign() > 0 {
-		// Adding liquidity
-		if isActive {
-			// Both tokens needed
-			amount0 = new(big.Int).Div(params.LiquidityDelta, big.NewInt(2))
-			amount1 = new(big.Int).Div(params.LiquidityDelta, big.NewInt(2))
-		} else if currentTick < params.TickLower {
-			// Only token0 needed
-			amount0 = params.LiquidityDelta
-			amount1 = big.NewInt(0)
-		} else {
-			// Only token1 needed
-			amount0 = big.NewInt(0)
-			amount1 = params.LiquidityDelta
-		}
-	} else {
-		// Removing liquidity
-		if isActive {
-			amount0 = new(big.Int).Neg(new(big.Int).Div(new(big.Int).Neg(params.LiquidityDelta), big.NewInt(2)))
-			amount1 = new(big.Int).Neg(new(big.Int).Div(new(big.Int).Neg(params.LiquidityDelta), big.NewInt(2)))
-		} else if currentTick < params.TickLower {
-			amount0 = params.LiquidityDelta
-			amount1 = big.NewInt(0)
-		} else {
-			amount0 = big.NewInt(0)
-			amount1 = params.LiquidityDelta
-		}
-	}
-
-	callerDelta := NewBalanceDelta(amount0, amount1)
-	feesAccrued := ZeroBalanceDelta() // Simplified - no fee calculation
-
-	return callerDelta, feesAccrued
-}
-
-// calculateFlashFee calculates flash loan fee
 func (pm *PoolManager) calculateFlashFee(amount *big.Int, fee uint24) *big.Int {
-	// Fee = amount * fee / 1_000_000
 	if amount.Sign() <= 0 {
 		return big.NewInt(0)
 	}
@@ -743,20 +784,15 @@ func (pm *PoolManager) calculateFlashFee(amount *big.Int, fee uint24) *big.Int {
 	return feeAmount.Div(feeAmount, big.NewInt(1_000_000))
 }
 
-// transferERC20 handles ERC20 transfers via direct state storage manipulation.
-// Uses OZ 5.x namespaced storage slots.
 func (pm *PoolManager) transferERC20(stateDB StateDB, currency Currency, from, to common.Address, amount *big.Int) error {
 	return pm.transferToken(stateDB, currency, from, to, amount)
 }
 
-// transferToken handles both native and ERC20 token transfers via state manipulation.
-// Returns an error if the sender has insufficient balance. No state is modified on error.
 func (pm *PoolManager) transferToken(stateDB StateDB, currency Currency, from, to common.Address, amount *big.Int) error {
 	if amount.Sign() <= 0 {
 		return nil
 	}
 	if currency.IsNative() {
-		// Check native balance before any state modification
 		fromBal := stateDB.GetBalance(from)
 		amountU256, overflow := uint256.FromBig(amount)
 		if overflow {
@@ -769,40 +805,20 @@ func (pm *PoolManager) transferToken(stateDB StateDB, currency Currency, from, t
 		stateDB.AddBalance(to, amountU256)
 		return nil
 	}
-	// ERC20: manipulate balance storage slots directly.
-	// OZ ERC20Upgradeable (5.x) stores _balances at a namespaced base:
-	//   keccak256("openzeppelin.storage.ERC20") = 0x52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00
-	//   _balances mapping is at offset 0 from that base.
-	//
-	// We use the namespaced slot (OZ 5.x default). Only OZ 5.x ERC20Upgradeable
-	// tokens are supported by this precompile. The previous fallback-on-zero logic
-	// was removed because a zero balance at the namespaced slot is a valid state
-	// (newly created account), and falling back to slot 0 would read/write the
-	// wrong storage location for OZ 5.x tokens, corrupting state.
+
 	token := currency.Address
-
 	erc20Base, _ := new(big.Int).SetString("52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00", 16)
-
 	fromSlot := erc20BalanceSlot(erc20Base, from)
 	toSlot := erc20BalanceSlot(erc20Base, to)
-
 	fromBal := new(big.Int).SetBytes(stateDB.GetState(token, fromSlot).Bytes())
-
-	// F1: Check balance BEFORE any state modification
 	if fromBal.Cmp(amount) < 0 {
-		return fmt.Errorf("%w: ERC20 %s balance %s < transfer %s",
-			ErrInsufficientBalance, token.Hex(), fromBal, amount)
+		return fmt.Errorf("%w: ERC20 %s balance %s < transfer %s", ErrInsufficientBalance, token.Hex(), fromBal, amount)
 	}
-
 	toBal := new(big.Int).SetBytes(stateDB.GetState(token, toSlot).Bytes())
-
-	// Debit from
 	fromBal.Sub(fromBal, amount)
 	var fromHash common.Hash
 	fromBal.FillBytes(fromHash[:])
 	stateDB.SetState(token, fromSlot, fromHash)
-
-	// Credit to
 	toBal.Add(toBal, amount)
 	var toHash common.Hash
 	toBal.FillBytes(toHash[:])
@@ -810,38 +826,28 @@ func (pm *PoolManager) transferToken(stateDB StateDB, currency Currency, from, t
 	return nil
 }
 
-// erc20BalanceSlot computes keccak256(abi.encode(address, mappingSlot)) for a
-// Solidity mapping(address => uint256) stored at slot `base`.
 func erc20BalanceSlot(base *big.Int, addr common.Address) common.Hash {
 	key := make([]byte, 64)
-	copy(key[12:32], addr.Bytes()) // left-pad address to 32 bytes
+	copy(key[12:32], addr.Bytes())
 	safeFillBytes(base, key[32:64])
 	return common.BytesToHash(crypto.Keccak256(key))
 }
 
-// autoSettle handles token transfers for the delta after a swap or liquidity
-// operation. Called by auto-lock wrappers in module.go to settle directly
-// without requiring a separate Lock()/Settle() cycle.
-// Returns an error if any transfer fails (e.g., insufficient balance).
 func (pm *PoolManager) autoSettle(stateDB StateDB, caller common.Address, key PoolKey, delta BalanceDelta) error {
 	if delta.Amount0.Sign() > 0 {
-		// Caller owes token0 to pool
 		if err := pm.transferToken(stateDB, key.Currency0, caller, poolManagerAddr, delta.Amount0); err != nil {
 			return fmt.Errorf("%w: currency0 settlement: %v", ErrSettlementFailed, err)
 		}
 	} else if delta.Amount0.Sign() < 0 {
-		// Pool owes token0 to caller
 		if err := pm.transferToken(stateDB, key.Currency0, poolManagerAddr, caller, new(big.Int).Neg(delta.Amount0)); err != nil {
 			return fmt.Errorf("%w: currency0 settlement: %v", ErrSettlementFailed, err)
 		}
 	}
 	if delta.Amount1.Sign() > 0 {
-		// Caller owes token1 to pool
 		if err := pm.transferToken(stateDB, key.Currency1, caller, poolManagerAddr, delta.Amount1); err != nil {
 			return fmt.Errorf("%w: currency1 settlement: %v", ErrSettlementFailed, err)
 		}
 	} else if delta.Amount1.Sign() < 0 {
-		// Pool owes token1 to caller
 		if err := pm.transferToken(stateDB, key.Currency1, poolManagerAddr, caller, new(big.Int).Neg(delta.Amount1)); err != nil {
 			return fmt.Errorf("%w: currency1 settlement: %v", ErrSettlementFailed, err)
 		}
@@ -849,21 +855,12 @@ func (pm *PoolManager) autoSettle(stateDB StateDB, caller common.Address, key Po
 	return nil
 }
 
-// callHook calls a hook function (simplified)
 func (pm *PoolManager) callHook(stateDB StateDB, hookAddr common.Address, flag HookFlags, args ...interface{}) error {
-	// In real implementation, this would be an EVM call to hook contract
-	// For now, just return success
 	return nil
 }
 
-// safeFillBytes writes a big.Int into a byte slice without panicking.
-// FillBytes panics on negative values, so this guards against that.
-// For non-negative values, behaves identically to FillBytes.
-// For negative values (which should never reach storage), writes zero.
 func safeFillBytes(v *big.Int, buf []byte) {
 	if v == nil || v.Sign() < 0 {
-		// Zero the buffer -- negative values should never be stored.
-		// The caller should have already rejected negative values upstream.
 		for i := range buf {
 			buf[i] = 0
 		}
@@ -876,28 +873,25 @@ func safeFillBytes(v *big.Int, buf []byte) {
 // View Functions
 // =========================================================================
 
-// GetPool returns the current state of a pool
 func (pm *PoolManager) GetPool(stateDB StateDB, key PoolKey) (*Pool, error) {
 	poolId := key.ID()
 	pool := pm.getPool(stateDB, poolId)
-
 	if !pool.IsInitialized() {
 		return nil, ErrPoolNotInitialized
 	}
-
 	return pool, nil
 }
 
-// GetPosition returns a liquidity position
 func (pm *PoolManager) GetPosition(
-	stateDB StateDB,
-	key PoolKey,
-	owner common.Address,
-	tickLower, tickUpper int24,
-	salt [32]byte,
+	stateDB StateDB, key PoolKey, owner common.Address, tickLower, tickUpper int24, salt [32]byte,
 ) (*Position, error) {
 	posKey := PositionKey(owner, tickLower, tickUpper, salt)
 	pos := pm.getPosition(stateDB, posKey)
 	return pos, nil
 }
 
+// calculateSwapOutput estimates the output for a given input without mutating state.
+// Used by the router for best-path estimation. Delegates to engine.Quote.
+func (pm *PoolManager) calculateSwapOutput(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.Int {
+	return pm.engine.Quote(pool, amountIn, zeroForOne)
+}
