@@ -394,8 +394,9 @@ func (c *DEXContract) runGetPool(
 	}
 
 	poolId := key.ID()
-	pool, exists := c.poolManager.pools[poolId]
-	if !exists {
+	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+	pool := c.poolManager.getPool(stateAdapter, poolId)
+	if !pool.IsInitialized() {
 		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("pool not found")
 	}
 
