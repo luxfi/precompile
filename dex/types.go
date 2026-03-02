@@ -44,7 +44,7 @@ const (
 	LXTransmuterAddress = "0x0000000000000000000000000000000000009080" // LP-9080 LXTransmuter (debt → collateral conversion)
 
 	// Settlement (LP-909x)
-	// LXFillAttestAddress is defined in fill_attestation.go               // LP-9090 LXFillAttest (settlement attestation)
+	// LXSettleAddress is defined in fill_attestation.go               // LP-9090 LXSettle (settlement attestation)
 	LiquidFXAddress   = LXTransmuterAddress
 
 	// Bridge Precompiles (LP-6xxx)
