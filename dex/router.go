@@ -103,10 +103,10 @@ func (r *LXRouter) ExactInputSingle(
 	params SwapExactInputSingleParams,
 ) (*big.Int, SwapVenue, error) {
 	// 1. Try V4 native pools first (cheapest)
-	amountOut, poolID, err := r.quoteV4(stateDB, params.TokenIn, params.TokenOut, params.AmountIn, params.Fee)
+	amountOut, poolID, poolKey, err := r.quoteV4(stateDB, params.TokenIn, params.TokenOut, params.AmountIn, params.Fee)
 	if err == nil && amountOut.Sign() > 0 && (params.AmountOutMinimum == nil || amountOut.Cmp(params.AmountOutMinimum) >= 0) {
-		// Execute through V4
-		delta, execErr := r.executeV4Swap(stateDB, caller, poolID, params.TokenIn, params.TokenOut, params.AmountIn, params.SqrtPriceLimitX96)
+		// F8: Execute through V4 with the actual PoolKey (not empty)
+		delta, execErr := r.executeV4Swap(stateDB, caller, poolID, poolKey, params.TokenIn, params.TokenOut, params.AmountIn, params.SqrtPriceLimitX96)
 		if execErr == nil {
 			return delta, VenueV4Native, nil
 		}
@@ -196,7 +196,7 @@ func (r *LXRouter) QuoteExactInputSingle(
 	results := make([]QuoteResult, 0, 3)
 
 	// Quote V4
-	v4Amount, poolID, err := r.quoteV4(stateDB, tokenIn, tokenOut, amountIn, fee)
+	v4Amount, poolID, _, err := r.quoteV4(stateDB, tokenIn, tokenOut, amountIn, fee)
 	if err == nil && v4Amount.Sign() > 0 {
 		results = append(results, QuoteResult{
 			AmountOut:   v4Amount,
@@ -260,12 +260,13 @@ func (r *LXRouter) GetBestRoute(
 // =========================================================================
 
 // quoteV4 checks all V4 pools for the given pair and returns the best quote.
+// Returns the best output amount, pool ID, pool key, and any error.
 func (r *LXRouter) quoteV4(
 	stateDB StateDB,
 	tokenIn, tokenOut common.Address,
 	amountIn *big.Int,
 	preferredFee uint24,
-) (*big.Int, [32]byte, error) {
+) (*big.Int, [32]byte, PoolKey, error) {
 	// Sort currencies
 	var c0, c1 Currency
 	var zeroForOne bool
@@ -295,6 +296,7 @@ func (r *LXRouter) quoteV4(
 
 	var bestAmount *big.Int
 	var bestPoolID [32]byte
+	var bestKey PoolKey
 
 	for _, fee := range feeTiers {
 		ts, ok := tickSpacings[fee]
@@ -328,21 +330,24 @@ func (r *LXRouter) quoteV4(
 		if output.Sign() > 0 && (bestAmount == nil || output.Cmp(bestAmount) > 0) {
 			bestAmount = output
 			bestPoolID = poolID
+			bestKey = key
 		}
 	}
 
 	if bestAmount == nil || bestAmount.Sign() <= 0 {
-		return big.NewInt(0), [32]byte{}, ErrPoolNotFound
+		return big.NewInt(0), [32]byte{}, PoolKey{}, ErrPoolNotFound
 	}
 
-	return bestAmount, bestPoolID, nil
+	return bestAmount, bestPoolID, bestKey, nil
 }
 
-// executeV4Swap executes a swap through a specific V4 pool.
+// executeV4Swap executes a swap through a specific V4 pool, mutating pool state.
+// F8: Accepts the actual PoolKey so fees and tick spacing are applied correctly.
 func (r *LXRouter) executeV4Swap(
 	stateDB StateDB,
 	caller common.Address,
 	poolID [32]byte,
+	key PoolKey,
 	tokenIn, tokenOut common.Address,
 	amountIn *big.Int,
 	sqrtPriceLimitX96 *big.Int,
@@ -364,19 +369,42 @@ func (r *LXRouter) executeV4Swap(
 		}
 	}
 
-	// Calculate output
-	var output *big.Int
+	// Build swap params
+	params := SwapParams{
+		ZeroForOne:        zeroForOne,
+		AmountSpecified:   amountIn,
+		SqrtPriceLimitX96: sqrtPriceLimitX96,
+	}
+
+	// Auto-lock and execute via pool manager's swap math
+	r.poolManager.pushLocker(caller)
+
+	delta, newTick, err := r.poolManager.executeSwap(pool, key, params)
+	if err != nil {
+		_ = r.poolManager.popLocker(caller) // best-effort cleanup on error
+		return nil, err
+	}
+
+	// Update pool state
+	pool.Tick = newTick
+	r.poolManager.setPool(stateDB, poolID, pool)
+
+	// Clean up locker
+	if err := r.poolManager.popLocker(caller); err != nil {
+		return nil, err
+	}
+
+	// Return output amount (the side the caller receives is negative in delta)
 	if zeroForOne {
-		output = r.poolManager.calculateSwapOutput(pool, amountIn, true)
-	} else {
-		output = r.poolManager.calculateSwapOutput(pool, amountIn, false)
+		if delta.Amount1.Sign() < 0 {
+			return new(big.Int).Neg(delta.Amount1), nil
+		}
+		return delta.Amount1, nil
 	}
-
-	if output.Sign() <= 0 {
-		return nil, ErrInsufficientLiquidity
+	if delta.Amount0.Sign() < 0 {
+		return new(big.Int).Neg(delta.Amount0), nil
 	}
-
-	return output, nil
+	return delta.Amount0, nil
 }
 
 // =========================================================================
