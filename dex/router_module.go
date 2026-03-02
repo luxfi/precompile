@@ -129,6 +129,10 @@ func (c *RouterContract) Run(
 		return nil, suppliedGas, fmt.Errorf("input too short")
 	}
 
+	if accessibleState.GetBlockContext() == nil {
+		return nil, suppliedGas, fmt.Errorf("block context unavailable")
+	}
+
 	selector := binary.BigEndian.Uint32(input[:4])
 	data := input[4:]
 
@@ -171,7 +175,7 @@ func (c *RouterContract) runExactInputSingle(
 		return nil, suppliedGas - GasSingleSwap, err
 	}
 
-	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
 	amountOut, venue, err := c.router.ExactInputSingle(stateAdapter, caller, params)
 	if err != nil {
 		return nil, suppliedGas - GasSingleSwap, err
@@ -197,12 +201,15 @@ func (c *RouterContract) runExactInput(
 	}
 
 	numHops := len(params.Path) - 1
+	if len(params.PathKeys) > 0 {
+		numHops = len(params.PathKeys)
+	}
 	gasCost := GasMultiHopBase + uint64(numHops)*GasMultiHopPerHop
 	if suppliedGas < gasCost {
 		return nil, 0, fmt.Errorf("out of gas")
 	}
 
-	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
 	amountOut, err := c.router.ExactInput(stateAdapter, caller, params)
 	if err != nil {
 		return nil, suppliedGas - gasCost, err
@@ -220,9 +227,25 @@ func (c *RouterContract) runExactOutputSingle(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
-	// Exact output routing: find minimum input for desired output.
-	// For now, return not-implemented until V4 exact-output math is complete.
-	return nil, suppliedGas, fmt.Errorf("exactOutputSingle not yet implemented")
+	if readOnly {
+		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
+	}
+	if suppliedGas < GasSingleSwap {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+
+	params, err := DecodeExactOutputSingleParams(input)
+	if err != nil {
+		return nil, suppliedGas - GasSingleSwap, err
+	}
+
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	amountIn, venue, err := c.router.ExactOutputSingle(stateAdapter, caller, params)
+	if err != nil {
+		return nil, suppliedGas - GasSingleSwap, err
+	}
+
+	return EncodeSwapResult(amountIn, venue), suppliedGas - GasSingleSwap, nil
 }
 
 func (c *RouterContract) runExactOutput(
@@ -232,7 +255,33 @@ func (c *RouterContract) runExactOutput(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
-	return nil, suppliedGas, fmt.Errorf("exactOutput not yet implemented")
+	if readOnly {
+		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
+	}
+
+	params, err := DecodeExactOutputParams(input)
+	if err != nil {
+		return nil, suppliedGas, err
+	}
+
+	numHops := len(params.Path) - 1
+	if len(params.PathKeys) > 0 {
+		numHops = len(params.PathKeys)
+	}
+	gasCost := GasMultiHopBase + uint64(numHops)*GasMultiHopPerHop
+	if suppliedGas < gasCost {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	amountIn, err := c.router.ExactOutput(stateAdapter, caller, params)
+	if err != nil {
+		return nil, suppliedGas - gasCost, err
+	}
+
+	result := make([]byte, 32)
+	copy(result, common.LeftPadBytes(amountIn.Bytes(), 32))
+	return result, suppliedGas - gasCost, nil
 }
 
 func (c *RouterContract) runQuoteExactInputSingle(
@@ -249,7 +298,7 @@ func (c *RouterContract) runQuoteExactInputSingle(
 		return nil, suppliedGas - GasQuote, err
 	}
 
-	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
 	results, err := c.router.QuoteExactInputSingle(stateAdapter, tokenIn, tokenOut, amountIn, fee)
 	if err != nil {
 		return nil, suppliedGas - GasQuote, err
@@ -263,35 +312,67 @@ func (c *RouterContract) runQuoteExactInput(
 	input []byte,
 	suppliedGas uint64,
 ) ([]byte, uint64, error) {
-	// Multi-hop quote: simulate ExactInput without state changes
-	if suppliedGas < GasQuote {
+	// Multi-hop quote: simulate ExactInput without state changes.
+	// Gas scales with the number of hops to prevent abuse via long paths.
+	params, err := DecodeExactInputParams(input)
+	if err != nil {
+		if suppliedGas < GasQuoteBase {
+			return nil, 0, fmt.Errorf("out of gas")
+		}
+		return nil, suppliedGas - GasQuoteBase, err
+	}
+
+	numHops := len(params.Path) - 1
+	if len(params.PathKeys) > 0 {
+		numHops = len(params.PathKeys)
+	}
+	if numHops < 1 {
+		numHops = 1
+	}
+	if numHops > MaxPathLength {
+		return nil, suppliedGas, fmt.Errorf("path too long: %d hops exceeds maximum of %d", numHops, MaxPathLength)
+	}
+
+	gasCost := GasQuoteBase + uint64(numHops)*GasQuotePerHop
+	if suppliedGas < gasCost {
 		return nil, 0, fmt.Errorf("out of gas")
 	}
 
-	params, err := DecodeExactInputParams(input)
-	if err != nil {
-		return nil, suppliedGas - GasQuote, err
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+
+	// V4 path format: quote each hop using the explicit pool key
+	if len(params.PathKeys) > 0 {
+		currentAmount := new(big.Int).Set(params.AmountIn)
+		currencyIn := params.CurrencyIn
+		for i, pk := range params.PathKeys {
+			v4Amount, _, _, err := c.router.quoteV4(stateAdapter, currencyIn, pk.IntermediateCurrency, currentAmount, pk.Fee)
+			if err != nil {
+				return nil, suppliedGas - gasCost, fmt.Errorf("quote hop %d failed: %w", i, err)
+			}
+			currentAmount = v4Amount
+			currencyIn = pk.IntermediateCurrency
+		}
+		result := make([]byte, 32)
+		copy(result, common.LeftPadBytes(currentAmount.Bytes(), 32))
+		return result, suppliedGas - gasCost, nil
 	}
 
-	stateAdapter := &poolStateAdapter{state.GetStateDB()}
-
-	// Simulate multi-hop
+	// Simple path format: best-venue per hop
 	currentAmount := new(big.Int).Set(params.AmountIn)
 	for i := 0; i < len(params.Path)-1; i++ {
 		tokenIn := params.Path[i]
 		tokenOut := params.Path[i+1]
 
-		// Get best quote for this hop
 		best, err := c.router.GetBestRoute(stateAdapter, tokenIn, tokenOut, currentAmount)
 		if err != nil {
-			return nil, suppliedGas - GasQuote, fmt.Errorf("quote hop %d failed: %w", i, err)
+			return nil, suppliedGas - gasCost, fmt.Errorf("quote hop %d failed: %w", i, err)
 		}
 		currentAmount = best.AmountOut
 	}
 
 	result := make([]byte, 32)
 	copy(result, common.LeftPadBytes(currentAmount.Bytes(), 32))
-	return result, suppliedGas - GasQuote, nil
+	return result, suppliedGas - gasCost, nil
 }
 
 func (c *RouterContract) runGetBestRoute(
@@ -308,7 +389,7 @@ func (c *RouterContract) runGetBestRoute(
 		return nil, suppliedGas - GasRouteLookup, err
 	}
 
-	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
 	best, err := c.router.GetBestRoute(stateAdapter, tokenIn, tokenOut, amountIn)
 	if err != nil {
 		return nil, suppliedGas - GasRouteLookup, err
