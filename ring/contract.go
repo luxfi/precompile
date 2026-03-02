@@ -6,6 +6,12 @@
 //
 // Ring signatures enable Q-Chain privacy transactions where the sender's identity
 // is hidden among a set of possible signers.
+//
+// GPU: LSAG verify loop is sequential (each step feeds the next c[i+1]).
+// Individual EC scalar mults within each step could be parallelized on GPU
+// via secp256k1_recover.metal's ec_mul_affine, but the sequential dependency
+// limits speedup. Batch ring verify across a block (multiple ring sig txs)
+// is the effective GPU path via parallel.BlockExecutor.
 // See LP-3664 for full specification.
 package ring
 
