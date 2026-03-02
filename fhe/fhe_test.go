@@ -173,7 +173,13 @@ func TestFHESub(t *testing.T) {
 }
 
 // TestFHEMul tests homomorphic multiplication
+// Note: Schoolbook multiplication is O(n^2) in bootstrapping operations,
+// so this test is very slow (~2 min for uint8). Skip in short mode.
 func TestFHEMul(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow FHE multiplication test in short mode")
+	}
+
 	err := initTFHE()
 	require.NoError(t, err)
 
