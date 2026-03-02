@@ -236,6 +236,58 @@ func BenchmarkBasepoint(b *testing.B) {
 	}
 }
 
+// TestScalarVisibility_SecurityConstraint documents that both ScalarMult and
+// Basepoint accept a private scalar in calldata. On-chain, calldata is public
+// and immutable — any scalar passed to this precompile is permanently visible
+// to all chain observers. This test exists to ensure developers understand the
+// constraint: ONLY use ephemeral/disposable scalars, NEVER long-term identity
+// keys.
+func TestScalarVisibility_SecurityConstraint(t *testing.T) {
+	p := &x25519Precompile{}
+
+	// Simulate a "long-term" identity key — this WOULD be leaked on-chain.
+	// The test proves the precompile happily accepts it (no enforcement).
+	// Enforcement is the caller's responsibility.
+	identityScalar := hexBytes(t, "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
+
+	// ScalarMult: scalar is in calldata bytes [1:33] — visible to all.
+	peerPub := hexBytes(t, "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f")
+	input := make([]byte, 1+64)
+	input[0] = OpScalarMult
+	copy(input[1:], identityScalar)
+	copy(input[33:], peerPub)
+
+	gas := p.RequiredGas(input)
+	shared, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
+	require.NoError(t, err)
+	require.Len(t, shared, 32)
+
+	// The scalar bytes are identical to what was passed in calldata.
+	// On a real chain, input[1:33] is permanently stored in the transaction.
+	// An observer can extract the scalar and compute the same shared secret.
+	recoveredScalar := input[1:33]
+	recoveredShared, err := curve25519.X25519(recoveredScalar, peerPub)
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(shared, recoveredShared),
+		"observer can recover shared secret from public calldata — this is the security constraint")
+
+	// Basepoint: scalar is in calldata bytes [1:33] — visible to all.
+	input2 := make([]byte, 1+32)
+	input2[0] = OpBasepoint
+	copy(input2[1:], identityScalar)
+
+	gas = p.RequiredGas(input2)
+	pubKey, _, err := p.Run(nil, common.Address{}, ContractAddress, input2, gas, true)
+	require.NoError(t, err)
+	require.Len(t, pubKey, 32)
+
+	// Observer extracts scalar from calldata and derives the same public key.
+	recoveredPub, err := curve25519.X25519(input2[1:33], curve25519.Basepoint)
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(pubKey, recoveredPub),
+		"observer can derive public key from leaked scalar — ephemeral keys only")
+}
+
 func hexBytes(tb testing.TB, s string) []byte {
 	tb.Helper()
 	b := common.Hex2Bytes(s)
