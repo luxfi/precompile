@@ -1,0 +1,71 @@
+---
+title: DEX Precompiles
+description: Uniswap v4-style native DEX operations
+---
+
+# DEX Precompiles
+
+Native EVM precompiles implementing Uniswap v4-style decentralized exchange with singleton architecture.
+
+## Address Range
+
+DEX precompiles occupy addresses `0x0400` through `0x0403`.
+
+## Core Precompiles
+
+| Address | Precompile | Gas | Description |
+|---------|------------|-----|-------------|
+| `0x0400` | PoolManager | 2.26μs | Singleton pool management |
+| `0x0401` | SwapRouter | Variable | Optimized swap routing |
+| `0x0402` | HooksRegistry | Variable | Hook contract registry |
+| `0x0403` | FlashLoan | Variable | Flash loan facility |
+
+## Extended Precompiles
+
+| Address | Precompile | Gas | Description |
+|---------|------------|-----|-------------|
+| `0x0410` | LendingPool | 15,000 | Supply/borrow with collateral |
+| `0x0411` | InterestRate | 5,000 | Dynamic interest rate curves |
+| `0x0412` | Liquidator | 50,000 | Liquidation engine |
+| `0x0420` | PerpEngine | 25,000 | Perpetuals (up to 1111x leverage) |
+| `0x0421` | FundingRate | 10,000 | Funding rate calculation |
+| `0x0430` | LiquidVault | 20,000 | Self-repaying loans (90% LTV) |
+
+## Performance Benchmarks (Apple M1 Max)
+
+| Operation | Latency | Throughput |
+|-----------|---------|------------|
+| Swap | 2.26μs | 443K ops/sec |
+| ModifyLiquidity | 2.87μs | 348K ops/sec |
+| PoolKeyID | 439ns | 2.7M ops/sec |
+
+## Usage
+
+```solidity
+import {IPoolManager} from "@luxfi/precompile/dex/IPoolManager.sol";
+
+contract SwapExample {
+    IPoolManager constant POOL = IPoolManager(0x0400);
+
+    function swap(
+        PoolKey calldata key,
+        IPoolManager.SwapParams calldata params
+    ) external returns (BalanceDelta) {
+        return POOL.swap(key, params, "");
+    }
+}
+```
+
+## Architecture
+
+The DEX precompile implements:
+
+- **Singleton Architecture** - All pools in single contract
+- **Flash Accounting** - Token transfers netted at transaction end
+- **Hooks System** - Modular contracts for custom pool logic
+- **Native LUX Support** - No wrapping required
+
+## Related
+
+- **[Lux Standard Contracts](https://standard.lux.network/docs/defi)** - Pure Solidity AMM implementations
+- **[PoolManager LP](https://lps.lux.network)** - Detailed pool manager specification
