@@ -517,7 +517,7 @@ func TestABIEncodePoolKeySlotLayout(t *testing.T) {
 		t.Errorf("Slot 0 (currency0) mismatch: got %s, want %s", c0.Hex(), key.Currency0.Address.Hex())
 	}
 	// First 12 bytes should be zero (left-padding)
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		if encoded[i] != 0 {
 			t.Errorf("Slot 0 padding byte %d should be 0, got %x", i, encoded[i])
 		}

@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math/big"
+	"slices"
 
 	"github.com/holiman/uint256"
 	"github.com/luxfi/geth/common"
@@ -512,10 +513,5 @@ func CalculateSplitBig(value *big.Int, burnBPS uint64) (burn *big.Int, treasury 
 
 // IsDeadAddress returns true if the given address is a registered dead address
 func IsDeadAddress(addr common.Address) bool {
-	for _, deadAddr := range AllDeadAddresses {
-		if addr == deadAddr {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(AllDeadAddresses, addr)
 }
