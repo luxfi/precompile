@@ -423,6 +423,193 @@ func buildOpenInput(kemID, kdfID, aeadID uint16, enc, sk, info, aad, ciphertext 
 	return input
 }
 
+// Post-quantum KEM tests (GPU fast path falls back to CPU when no GPU available)
+
+func TestHPKE_SingleShotSealOpen_X25519Kyber768(t *testing.T) {
+	suite := hpke.NewSuite(hpke.KEM_X25519_KYBER768_DRAFT00, hpke.KDF_HKDF_SHA256, hpke.AEAD_AES128GCM)
+
+	kem, _, _ := suite.Params()
+	pk, sk, err := kem.Scheme().GenerateKeyPair()
+	require.NoError(t, err)
+
+	pkBytes, err := pk.MarshalBinary()
+	require.NoError(t, err)
+
+	skBytes, err := sk.MarshalBinary()
+	require.NoError(t, err)
+
+	plaintext := []byte("Hello, post-quantum HPKE!")
+	info := []byte("kyber info")
+	aad := []byte("kyber aad")
+
+	// Seal
+	sealInput := buildSealInput(KEMX25519Kyber768, 0x0001, 0x0001, pkBytes, info, aad, plaintext)
+	gas := HPKEPrecompile.RequiredGas(append([]byte{OpSingleShotSeal}, sealInput...))
+	require.GreaterOrEqual(t, gas, uint64(GasKEMEncapsX25519Kyber768))
+
+	result, remainingGas, err := HPKEPrecompile.Run(
+		nil, common.Address{}, ContractAddress,
+		append([]byte{OpSingleShotSeal}, sealInput...),
+		gas, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, uint64(0), remainingGas)
+
+	// Extract enc and ciphertext
+	encLen := kem.Scheme().CiphertextSize()
+	require.True(t, len(result) > encLen)
+
+	enc := result[:encLen]
+	ciphertext := result[encLen:]
+
+	// Open
+	openInput := buildOpenInput(KEMX25519Kyber768, 0x0001, 0x0001, enc, skBytes, info, aad, ciphertext)
+	gas = HPKEPrecompile.RequiredGas(append([]byte{OpSingleShotOpen}, openInput...))
+
+	decrypted, _, err := HPKEPrecompile.Run(
+		nil, common.Address{}, ContractAddress,
+		append([]byte{OpSingleShotOpen}, openInput...),
+		gas, false,
+	)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, decrypted)
+}
+
+func TestHPKE_SingleShotSealOpen_XWing(t *testing.T) {
+	suite := hpke.NewSuite(hpke.KEM_XWING, hpke.KDF_HKDF_SHA256, hpke.AEAD_AES128GCM)
+
+	kem, _, _ := suite.Params()
+	pk, sk, err := kem.Scheme().GenerateKeyPair()
+	require.NoError(t, err)
+
+	pkBytes, err := pk.MarshalBinary()
+	require.NoError(t, err)
+
+	skBytes, err := sk.MarshalBinary()
+	require.NoError(t, err)
+
+	plaintext := []byte("Hello, X-Wing HPKE!")
+	info := []byte("xwing info")
+	aad := []byte("xwing aad")
+
+	// Seal
+	sealInput := buildSealInput(KEMXWing, 0x0001, 0x0001, pkBytes, info, aad, plaintext)
+	gas := HPKEPrecompile.RequiredGas(append([]byte{OpSingleShotSeal}, sealInput...))
+	require.GreaterOrEqual(t, gas, uint64(GasKEMEncapsXWing))
+
+	result, _, err := HPKEPrecompile.Run(
+		nil, common.Address{}, ContractAddress,
+		append([]byte{OpSingleShotSeal}, sealInput...),
+		gas, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	encLen := kem.Scheme().CiphertextSize()
+	require.True(t, len(result) > encLen)
+
+	enc := result[:encLen]
+	ciphertext := result[encLen:]
+
+	// Open
+	openInput := buildOpenInput(KEMXWing, 0x0001, 0x0001, enc, skBytes, info, aad, ciphertext)
+	gas = HPKEPrecompile.RequiredGas(append([]byte{OpSingleShotOpen}, openInput...))
+
+	decrypted, _, err := HPKEPrecompile.Run(
+		nil, common.Address{}, ContractAddress,
+		append([]byte{OpSingleShotOpen}, openInput...),
+		gas, false,
+	)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, decrypted)
+}
+
+func TestHPKE_SingleShotOpen_InvalidCiphertext_Kyber(t *testing.T) {
+	suite := hpke.NewSuite(hpke.KEM_X25519_KYBER768_DRAFT00, hpke.KDF_HKDF_SHA256, hpke.AEAD_AES128GCM)
+
+	kem, _, _ := suite.Params()
+	pk, sk, err := kem.Scheme().GenerateKeyPair()
+	require.NoError(t, err)
+
+	pkBytes, err := pk.MarshalBinary()
+	require.NoError(t, err)
+
+	skBytes, err := sk.MarshalBinary()
+	require.NoError(t, err)
+
+	plaintext := []byte("Test message for PQ corruption")
+
+	// Seal
+	sealInput := buildSealInput(KEMX25519Kyber768, 0x0001, 0x0001, pkBytes, nil, nil, plaintext)
+	gas := HPKEPrecompile.RequiredGas(append([]byte{OpSingleShotSeal}, sealInput...))
+
+	result, _, err := HPKEPrecompile.Run(
+		nil, common.Address{}, ContractAddress,
+		append([]byte{OpSingleShotSeal}, sealInput...),
+		gas, false,
+	)
+	require.NoError(t, err)
+
+	encLen := kem.Scheme().CiphertextSize()
+	enc := result[:encLen]
+	ciphertext := result[encLen:]
+
+	// Corrupt ciphertext
+	ciphertext[0] ^= 0xFF
+
+	// Try to open -- should fail
+	openInput := buildOpenInput(KEMX25519Kyber768, 0x0001, 0x0001, enc, skBytes, nil, nil, ciphertext)
+	gas = HPKEPrecompile.RequiredGas(append([]byte{OpSingleShotOpen}, openInput...))
+
+	_, _, err = HPKEPrecompile.Run(
+		nil, common.Address{}, ContractAddress,
+		append([]byte{OpSingleShotOpen}, openInput...),
+		gas, false,
+	)
+	require.Error(t, err)
+}
+
+func TestHPKE_RequiredGas_PostQuantum(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []byte
+		expected uint64
+	}{
+		{
+			name:     "SingleShotSeal X25519Kyber768",
+			input:    append([]byte{OpSingleShotSeal, 0x00, 0x30, 0x00, 0x01, 0x00, 0x01}, make([]byte, 100)...),
+			expected: GasKEMEncapsX25519Kyber768,
+		},
+		{
+			name:     "SingleShotSeal XWing",
+			input:    append([]byte{OpSingleShotSeal, 0x64, 0x7a, 0x00, 0x01, 0x00, 0x01}, make([]byte, 100)...),
+			expected: GasKEMEncapsXWing,
+		},
+		{
+			name:     "SingleShotOpen X25519Kyber768",
+			input:    append([]byte{OpSingleShotOpen, 0x00, 0x30, 0x00, 0x01, 0x00, 0x01}, make([]byte, 100)...),
+			expected: GasKEMEncapsX25519Kyber768,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gas := HPKEPrecompile.RequiredGas(tt.input)
+			require.GreaterOrEqual(t, gas, tt.expected)
+		})
+	}
+}
+
+func TestHPKE_IsKyberKEM(t *testing.T) {
+	require.True(t, isKyberKEM(KEMX25519Kyber768))
+	require.True(t, isKyberKEM(KEMXWing))
+	require.False(t, isKyberKEM(KEMX25519))
+	require.False(t, isKyberKEM(KEMP256))
+	require.False(t, isKyberKEM(KEMP384))
+	require.False(t, isKyberKEM(KEMP521))
+}
+
 // Benchmarks
 
 func BenchmarkHPKE_Seal_X25519(b *testing.B) {
