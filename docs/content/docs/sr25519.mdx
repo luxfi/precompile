@@ -1,0 +1,75 @@
+---
+title: SR25519 — Substrate Migration
+description: Verify sr25519 (Schnorrkel) signatures on-chain for Substrate→EVM migration
+---
+
+# SR25519 Precompile
+
+Verify Substrate sr25519 (Schnorrkel/Ristretto255) signatures natively in the EVM. Enables old Substrate wallet holders to prove key ownership on-chain during migration.
+
+## Address
+
+`0x0A00000000000000000000000000000000000001` (Curves range)
+
+## Gas
+
+`9,000` base + `3` per byte of message
+
+## Input Format
+
+```
+[0:32]   = public key (32 bytes, Ristretto255 compressed)
+[32:96]  = signature  (64 bytes, Schnorrkel R || s)
+[96:]    = message    (variable length, raw bytes)
+```
+
+Signing context is fixed to `"substrate"` (the Polkadot/Substrate runtime default).
+
+## Output
+
+32-byte word: `1` if valid, `0` if invalid.
+
+## Implementation
+
+Two paths, selected at build time:
+
+| Path | Build | Library | Performance |
+|------|-------|---------|-------------|
+| CGO (default) | `CGO_ENABLED=1` | [sr25519-donna](https://github.com/TerenceGe/sr25519-donna) (C) | ~37µs, 0 allocs |
+| Pure Go | `CGO_ENABLED=0` | [ChainSafe/go-schnorrkel](https://github.com/ChainSafe/go-schnorrkel) | ~120µs |
+
+## Solidity Usage
+
+```solidity
+import {SR25519Lib} from "@luxfi/precompile/sr25519/ISR25519.sol";
+
+contract SubstrateMigration {
+    using SR25519Lib for bytes32;
+
+    mapping(bytes32 => address) public migrations;
+
+    function migrate(bytes32 substratePubKey, bytes calldata signature) external {
+        require(migrations[substratePubKey] == address(0), "already migrated");
+
+        bytes memory message = abi.encodePacked("migrate:", msg.sender);
+        substratePubKey.verifyOrRevert(signature, message);
+
+        migrations[substratePubKey] = msg.sender;
+    }
+}
+```
+
+## Test Vectors
+
+Alice's well-known Substrate dev account (`5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY`):
+
+```
+Public key: d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d
+Message:    "I hereby verify that I control 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
+Signature:  1037eb7e51613d0dcf5930ae518819c87d655056605764840d9280984e1b7063
+            c4566b55bf292fcab07b369d01095879b50517beca4d26e6a65866e25fec0d83
+```
+
+## Background
+
+sr25519 uses Curve25519 (Ristretto encoding) + Schnorr signatures with Merlin transcripts. It is **not compatible** with Ed25519 or secp256k1 — keys cannot be converted between schemes. Migration requires the old key to sign an attestation that the new EVM address is authorized.
