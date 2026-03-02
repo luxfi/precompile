@@ -97,6 +97,14 @@ func NewSettlementManager() *SettlementManager {
 	}
 }
 
+// NewFillAttestationManager is an alias for NewSettlementManager.
+func NewFillAttestationManager() *SettlementManager {
+	return NewSettlementManager()
+}
+
+// fillAttestAddr is an alias for settlementAddr used by the fill attestation subsystem.
+var fillAttestAddr = settlementAddr
+
 // OrderIDFromString computes a deterministic 32-byte order ID from a provider
 // order ID string (e.g., Alpaca order UUID).
 func OrderIDFromString(providerOrderID string) [32]byte {

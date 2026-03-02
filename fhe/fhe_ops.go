@@ -175,14 +175,11 @@ func tfheMul(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	// TFHE multiplication using schoolbook algorithm
+	// TFHE multiplication using schoolbook algorithm.
+	// This is O(n^2) in bootstrapping operations for n-bit integers.
 	result, err := evaluator.Mul(ctLhs, ctRhs)
 	if err != nil {
-		// Fall back to scalar multiply by 1 if full mul not available
-		result, err = evaluator.ScalarMul(ctLhs, 1)
-		if err != nil {
-			return nil
-		}
+		return nil
 	}
 
 	return serializeBitCiphertext(result)
