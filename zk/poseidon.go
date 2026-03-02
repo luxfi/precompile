@@ -98,7 +98,7 @@ func (p *Poseidon2Hasher) Hash(input []byte) ([32]byte, error) {
 		// Note: We don't strictly validate that input < field modulus
 		// as gnark-crypto handles reduction automatically
 		elements := make([]fr.Element, numElements)
-		for i := 0; i < numElements; i++ {
+		for i := range numElements {
 			var elem fr.Element
 			elem.SetBytes(input[i*32 : (i+1)*32])
 			elements[i] = elem
@@ -226,7 +226,7 @@ func (p *Poseidon2Hasher) MerkleRoot(leaves [][32]byte) ([32]byte, error) {
 	current := paddedLeaves
 	for len(current) > 1 {
 		next := make([][32]byte, len(current)/2)
-		for i := 0; i < len(next); i++ {
+		for i := range next {
 			hash, err := p.HashPair(current[i*2], current[i*2+1])
 			if err != nil {
 				return [32]byte{}, err
@@ -267,7 +267,7 @@ func (p *Poseidon2Hasher) MerkleProof(leaves [][32]byte, index int) ([][32]byte,
 
 		// Build next level
 		next := make([][32]byte, len(current)/2)
-		for i := 0; i < len(next); i++ {
+		for i := range next {
 			hash, err := p.HashPair(current[i*2], current[i*2+1])
 			if err != nil {
 				return nil, nil, err
@@ -293,7 +293,7 @@ func (p *Poseidon2Hasher) VerifyMerkleProof(
 	}
 
 	current := leaf
-	for i := 0; i < len(proof); i++ {
+	for i := range proof {
 		var left, right [32]byte
 		if isLeft[i] {
 			left = current

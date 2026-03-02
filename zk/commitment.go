@@ -10,8 +10,8 @@ import (
 	"github.com/luxfi/geth/common"
 )
 
-// CommitmentScheme defines the interface for commitment operations
-// Both Poseidon2 (PQ-safe) and Pedersen (legacy) implement this
+// CommitmentScheme defines the interface for commitment operations.
+// Both Poseidon2 (PQ-safe) and Pedersen (pre-PQ) implement this.
 type CommitmentScheme interface {
 	// Commit creates a commitment to a value with blinding
 	Commit(value, blindingFactor [32]byte) ([32]byte, error)
@@ -91,7 +91,7 @@ type SchemeType uint8
 
 const (
 	SchemePoseidon2 SchemeType = 0 // Default, PQ-safe
-	SchemePedersen  SchemeType = 1 // Legacy, NOT PQ-safe
+	SchemePedersen  SchemeType = 1 // Pre-PQ, NOT PQ-safe
 )
 
 // GetScheme returns a commitment scheme by type
@@ -238,12 +238,12 @@ func (r *ValidityReceipt) ComputeReceiptID() ([32]byte, error) {
 
 	// Use uint64 encoding
 	chainBytes := make([]byte, 8)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		chainBytes[7-i] = byte(r.SourceChainID >> (i * 8))
 	}
 	data = append(data, chainBytes...)
 
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		chainBytes[7-i] = byte(r.TargetChainID >> (i * 8))
 	}
 	data = append(data, chainBytes...)

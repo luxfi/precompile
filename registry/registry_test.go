@@ -4,6 +4,7 @@
 package registry
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/luxfi/geth/common"
@@ -299,13 +300,7 @@ func TestGetChainPrecompiles_CChainHasDEX(t *testing.T) {
 	dexAddrs := []string{LXPool, LXOracle, LXRouter, LXHooks, LXFlash, LXBook, LXVault, LXFeed, LXLend, LXLiquid, Liquidator, LiquidFX}
 
 	for _, dex := range dexAddrs {
-		found := false
-		for _, addr := range addrs {
-			if addr == common.HexToAddress(dex) {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(addrs, common.HexToAddress(dex))
 		require.True(t, found, "C-Chain should have DEX precompile %s", dex)
 	}
 }
@@ -318,13 +313,7 @@ func TestGetChainPrecompiles_QChainHasPQ(t *testing.T) {
 	pqAddrs := []string{MLDSAQChain, MLKEMQChain, SLHDSAQChain, FalconQChain, KyberQChain}
 
 	for _, pq := range pqAddrs {
-		found := false
-		for _, addr := range addrs {
-			if addr == common.HexToAddress(pq) {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(addrs, common.HexToAddress(pq))
 		require.True(t, found, "Q-Chain should have PQ precompile %s", pq)
 	}
 }
@@ -608,7 +597,7 @@ func TestStandardEVMPrecompilesInLowRange(t *testing.T) {
 	for _, addrStr := range blsAddrs {
 		addr := common.HexToAddress(addrStr)
 		// Check that it's in the low range (first 19 bytes should be zero)
-		for i := 0; i < 18; i++ {
+		for i := range 18 {
 			require.Equal(t, byte(0), addr[i],
 				"BLS address %s should have zeros in bytes 0-17", addrStr)
 		}
@@ -680,13 +669,7 @@ func TestPrecompileChainsMatchChainPrecompiles(t *testing.T) {
 	for _, p := range AllPrecompiles {
 		t.Run(p.Name, func(t *testing.T) {
 			// Only check DEX precompiles which have consistent addresses
-			isDEX := false
-			for _, dex := range dexPrecompiles {
-				if p.Name == dex {
-					isDEX = true
-					break
-				}
-			}
+			isDEX := slices.Contains(dexPrecompiles, p.Name)
 
 			if isDEX {
 				addr := common.HexToAddress(p.Address)
@@ -709,12 +692,7 @@ func TestPrecompileChainsMatchChainPrecompiles(t *testing.T) {
 
 // containsChain checks if a chain is in the list
 func containsChain(chains []string, target string) bool {
-	for _, c := range chains {
-		if c == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(chains, target)
 }
 
 // ============================================================================

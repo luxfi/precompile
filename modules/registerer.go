@@ -6,7 +6,7 @@ package modules
 import (
 	"bytes"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/luxfi/geth/common"
 )
@@ -168,6 +168,13 @@ var (
 			Start: common.HexToAddress("0x000000000000000000000000000000000000b000"),
 			End:   common.HexToAddress("0x000000000000000000000000000000000000bfff"),
 		},
+		// Standard EVM Precompiles (0x01-0x11)
+		// Includes: ECRECOVER, SHA256, RIPEMD160, IDENTITY, MODEXP, BN254,
+		//           BLAKE2F, KZG, BLS12-381 (EIP-2537)
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000000001"),
+			End:   common.HexToAddress("0x00000000000000000000000000000000000000ff"),
+		},
 		// Dead/Burn Addresses (LP-0150)
 		// 0x0000...0000 - Zero address
 		{
@@ -212,10 +219,16 @@ func RegisterModule(stm Module) error {
 
 	for _, registeredModule := range registeredModules {
 		if registeredModule.ConfigKey == key {
-			return fmt.Errorf("name %s already used by a stateful precompile", key)
+			return fmt.Errorf(
+				"precompile config key collision: %q already registered by %s — "+
+					"each precompile must have a globally unique ConfigKey",
+				key, registeredModule.Address)
 		}
 		if registeredModule.Address == address {
-			return fmt.Errorf("address %s already used by a stateful precompile", address)
+			return fmt.Errorf(
+				"precompile address collision: %s already used by %q — "+
+					"trying to register %q at the same address (import-order-independent fail-fast)",
+				address, registeredModule.ConfigKey, key)
 		}
 	}
 	// sort by address to ensure deterministic iteration
@@ -247,6 +260,8 @@ func RegisteredModules() []Module {
 
 func insertSortedByAddress(data []Module, stm Module) []Module {
 	data = append(data, stm)
-	sort.Sort(moduleArray(data))
+	slices.SortFunc(data, func(a, b Module) int {
+		return bytes.Compare(a.Address.Bytes(), b.Address.Bytes())
+	})
 	return data
 }

@@ -32,7 +32,7 @@ func createInputWithMode(mode uint8, pk, signature, message []byte) []byte {
 
 	// Message length as big-endian uint256
 	msgLen := make([]byte, 32)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		msgLen[31-i] = byte(len(message) >> (i * 8))
 	}
 	input = append(input, msgLen...)
@@ -264,7 +264,7 @@ func createBatchInput(mode uint8, entries []struct{ pk, sig, msg []byte }) []byt
 	for _, e := range entries {
 		out = append(out, e.pk...)
 		msgLen := make([]byte, 32)
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			msgLen[31-i] = byte(len(e.msg) >> (i * 8))
 		}
 		out = append(out, msgLen...)
@@ -302,8 +302,8 @@ func TestBatchVerify_MultipleSigs(t *testing.T) {
 	type entry struct{ pk, sig, msg []byte }
 	var entries []entry
 
-	for i := 0; i < 3; i++ {
-		msg := []byte(fmt.Sprintf("valid message %d", i))
+	for i := range 3 {
+		msg := fmt.Appendf(nil, "valid message %d", i)
 		pk, sig, m := createTestSignature(t, mldsa.MLDSA65, msg)
 		entries = append(entries, entry{pk, sig, m})
 	}
