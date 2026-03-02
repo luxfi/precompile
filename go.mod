@@ -11,13 +11,13 @@ require (
 	github.com/luxfi/ai v0.0.0-20251225021023-3f15131f2bd1
 	github.com/luxfi/crypto v1.17.40
 	github.com/luxfi/database v1.17.40
-	github.com/luxfi/fhe v1.7.6-0.20260106060801-28e308e4c2f8
+	github.com/luxfi/fhe v1.7.6
 	github.com/luxfi/geth v1.16.73
 	github.com/luxfi/lattice/v7 v7.0.0
 	github.com/luxfi/log v1.4.1
 	github.com/luxfi/corona v0.2.0
 	github.com/luxfi/runtime v1.0.1
-	github.com/luxfi/threshold v1.5.0
+	github.com/luxfi/threshold v1.5.5
 	github.com/luxfi/warp v1.18.5
 	github.com/stretchr/testify v1.11.1
 	github.com/zeebo/blake3 v0.2.4
