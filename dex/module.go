@@ -12,6 +12,7 @@ import (
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/geth/core/tracing"
 	ethtypes "github.com/luxfi/geth/core/types"
+	"github.com/luxfi/crypto"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
 	"github.com/luxfi/precompile/precompileconfig"
@@ -41,7 +42,9 @@ var (
 	lxLiquidAddr = common.HexToAddress(LXLiquidAddress) // LP-9060 LXLiquid (self-repaying loans)
 )
 
-// DEXPrecompile is the singleton instance
+// DEXPrecompile is the singleton instance.
+// Engine is nil at init time; Configure() must set it before use.
+// Production: ZAPEngine pointing to the DEX process.
 var DEXPrecompile = &DEXContract{
 	poolManager: NewPoolManager(),
 }
@@ -54,21 +57,64 @@ var Module = modules.Module{
 	Configurator: &configurator{},
 }
 
-// Method selectors for PoolManager
-const (
-	SelectorInitialize      uint32 = 0x01000000 // initialize(PoolKey,uint160)
-	SelectorSwap            uint32 = 0x02000000 // swap(PoolKey,SwapParams,bytes)
-	SelectorModifyLiquidity uint32 = 0x03000000 // modifyLiquidity(PoolKey,ModifyLiqParams,bytes)
-	SelectorTake            uint32 = 0x05000000 // take(Currency,address,uint256)
-	SelectorSettle          uint32 = 0x06000000 // settle()
-	SelectorLock            uint32 = 0x07000000 // lock(bytes)
-	SelectorGetPool         uint32 = 0x08000000 // getPool(PoolKey)
-	SelectorGetPosition     uint32 = 0x09000000 // getPosition(PoolKey,address,int24,int24,bytes32)
+// Method selectors: keccak256 of V4 function signatures (first 4 bytes).
+// Verified against IPoolManager.sol at init time.
+var (
+	SelectorInitialize      uint32 = 0x6276CBBE // initialize((address,address,uint24,int24,address),uint160)
+	SelectorSwap            uint32 = 0xF3CD914C // swap((address,address,uint24,int24,address),(bool,int256,uint160),bytes)
+	SelectorModifyLiquidity uint32 = 0x5A6BCFDA // modifyLiquidity((address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)
+	SelectorDonate          uint32 = 0x234266D7 // donate((address,address,uint24,int24,address),uint256,uint256,bytes)
+	SelectorUnlock          uint32 = 0x48C89491 // unlock(bytes)
+	SelectorSettle          uint32 = 0x11DA60B4 // settle()
+	SelectorSettleFor       uint32 = 0x3DD45ADB // settleFor(address)
+	SelectorSync            uint32 = 0xA5841194 // sync(address)
+	SelectorTake            uint32 = 0x0B0D9C09 // take(address,address,uint256)
+	SelectorClear           uint32 = 0x80F0B44C // clear(address,uint256)
+	SelectorMint            uint32 = 0x156E29F6 // mint(address,uint256,uint256)
+	SelectorBurn            uint32 = 0xF5298ACA // burn(address,uint256,uint256)
+	SelectorUpdateDynFee    uint32 = 0x52759651 // updateDynamicLPFee((address,address,uint24,int24,address),uint24)
+	SelectorExtsload        uint32 = 0x1E2EAEAF // extsload(bytes32)
+	SelectorExtsloadArray   uint32 = 0xDBD035FF // extsload(bytes32[])
+
+	// Admin pause/freeze selectors — computed in init() via keccak4.
+	SelectorPauseDEX   uint32
+	SelectorResumeDEX  uint32
+	SelectorPausePool  uint32
+	SelectorResumePool uint32
+	SelectorFreezePool uint32
 )
+
+// keccak4 computes the first 4 bytes of keccak256(sig) as a uint32 selector.
+func keccak4(sig string) uint32 {
+	hash := crypto.Keccak256([]byte(sig))
+	return binary.BigEndian.Uint32(hash[:4])
+}
 
 type configurator struct{}
 
 func init() {
+	// Verify hardcoded selectors match keccak256 computation at startup.
+	verifySelector := func(name string, got uint32, sig string) {
+		want := keccak4(sig)
+		if got != want {
+			panic(fmt.Sprintf("dex: selector mismatch for %s: got 0x%08X, want 0x%08X", name, got, want))
+		}
+	}
+	verifySelector("initialize", SelectorInitialize, "initialize((address,address,uint24,int24,address),uint160)")
+	verifySelector("swap", SelectorSwap, "swap((address,address,uint24,int24,address),(bool,int256,uint160),bytes)")
+	verifySelector("modifyLiquidity", SelectorModifyLiquidity, "modifyLiquidity((address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)")
+	verifySelector("donate", SelectorDonate, "donate((address,address,uint24,int24,address),uint256,uint256,bytes)")
+	verifySelector("unlock", SelectorUnlock, "unlock(bytes)")
+	verifySelector("settle", SelectorSettle, "settle()")
+	verifySelector("take", SelectorTake, "take(address,address,uint256)")
+
+	// Compute admin selectors at init time (not compile-time constants).
+	SelectorPauseDEX = keccak4("pauseDEX()")
+	SelectorResumeDEX = keccak4("resumeDEX()")
+	SelectorPausePool = keccak4("pausePool(bytes32)")
+	SelectorResumePool = keccak4("resumePool(bytes32)")
+	SelectorFreezePool = keccak4("freezePool(bytes32)")
+
 	if err := modules.RegisterModule(Module); err != nil {
 		panic(err)
 	}
@@ -89,10 +135,13 @@ func (*configurator) Configure(
 		return fmt.Errorf("expected config type %T, got %T: %v", &Config{}, cfg, cfg)
 	}
 
-	// Set protocol fee controller if specified
-	if config.ProtocolFeeController != (common.Address{}) {
-		DEXPrecompile.poolManager.protocolFeeController = config.ProtocolFeeController
+	// Set protocol fee controller — required for pause/freeze admin.
+	// If no protocolFeeController specified, use a sensible default.
+	if config.ProtocolFeeController == (common.Address{}) {
+		// Default to the standard Anvil/dev account #0
+		config.ProtocolFeeController = common.HexToAddress("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
 	}
+	DEXPrecompile.poolManager.protocolFeeController = config.ProtocolFeeController
 
 	return nil
 }
@@ -152,6 +201,10 @@ func (c *DEXContract) Run(
 		return nil, suppliedGas, fmt.Errorf("input too short")
 	}
 
+	if accessibleState.GetBlockContext() == nil {
+		return nil, suppliedGas, fmt.Errorf("block context unavailable")
+	}
+
 	selector := binary.BigEndian.Uint32(input[:4])
 	data := input[4:]
 
@@ -162,18 +215,32 @@ func (c *DEXContract) Run(
 		return c.runSwap(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorModifyLiquidity:
 		return c.runModifyLiquidity(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorDonate:
+		return c.runDonate(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorUnlock:
+		return c.runUnlock(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorTake:
 		return c.runTake(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorSettle:
+	case SelectorSettle, SelectorSettleFor:
 		return c.runSettle(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorLock:
-		return c.runLock(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorGetPool:
-		return c.runGetPool(accessibleState, data, suppliedGas)
-	case SelectorGetPosition:
-		return c.runGetPosition(accessibleState, data, suppliedGas)
+	case SelectorSync:
+		return c.runSync(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorExtsload:
+		return c.runExtsload(accessibleState, data, suppliedGas)
+	case SelectorExtsloadArray:
+		return c.runExtsloadArray(accessibleState, data, suppliedGas)
+	case SelectorPauseDEX:
+		return c.runPauseDEX(accessibleState, caller, suppliedGas, readOnly)
+	case SelectorResumeDEX:
+		return c.runResumeDEX(accessibleState, caller, suppliedGas, readOnly)
+	case SelectorPausePool:
+		return c.runPausePool(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorResumePool:
+		return c.runResumePool(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorFreezePool:
+		return c.runFreezePool(accessibleState, caller, data, suppliedGas, readOnly)
 	default:
-		return nil, suppliedGas, fmt.Errorf("unknown method selector: %x", selector)
+		return nil, suppliedGas, fmt.Errorf("unknown method selector: 0x%08x", selector)
 	}
 }
 
@@ -192,31 +259,32 @@ func (c *DEXContract) runInitialize(
 		return nil, 0, fmt.Errorf("out of gas")
 	}
 
-	// Parse PoolKey and sqrtPriceX96 from input
-	// Expected format: PoolKey (128 bytes) + sqrtPriceX96 (32 bytes) + hookData
-	if len(input) < 160 {
-		return nil, suppliedGas - GasPoolCreate, fmt.Errorf("input too short")
+	// V4 ABI: PoolKey (5 slots = 160 bytes) + sqrtPriceX96 (32 bytes)
+	if len(input) < 192 {
+		return nil, suppliedGas - GasPoolCreate, fmt.Errorf("input too short for initialize")
 	}
 
-	key, err := DecodePoolKey(input[:128])
+	key, err := DecodePoolKey(input[:160])
 	if err != nil {
 		return nil, suppliedGas - GasPoolCreate, err
 	}
 
-	sqrtPriceX96 := new(big.Int).SetBytes(input[128:160])
-	hookData := input[160:]
+	sqrtPriceX96 := new(big.Int).SetBytes(input[160:192])
+	var hookData []byte
+	if len(input) > 192 {
+		hookData = decodeABIBytes(input, 192)
+	}
 
 	// Initialize pool
-	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
 	tick, err := c.poolManager.Initialize(stateAdapter, key, sqrtPriceX96, hookData)
 	if err != nil {
 		return nil, suppliedGas - GasPoolCreate, err
 	}
 
-	// Return tick as int24 (3 bytes, padded to 32)
-	result := make([]byte, 32)
-	tickBytes := int24ToBytes(tick)
-	copy(result[29:], tickBytes)
+	// Return tick as int24, sign-extended to int256 (32 bytes, two's complement).
+	// V4 ABI returns int24 as a full int256: negative values have 0xFF in high bytes.
+	result := bigIntTo32Bytes(big.NewInt(int64(tick)))
 	return result, suppliedGas - GasPoolCreate, nil
 }
 
@@ -241,7 +309,7 @@ func (c *DEXContract) runSwap(
 		return nil, suppliedGas - GasSwap, err
 	}
 
-	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
 
 	delta, err := c.poolManager.Swap(stateAdapter, caller, key, params, hookData)
 	if err != nil {
@@ -253,10 +321,8 @@ func (c *DEXContract) runSwap(
 		return nil, suppliedGas - GasSwap, err
 	}
 
-	// Return BalanceDelta as two int256 values (two's complement for negatives)
-	result := make([]byte, 64)
-	copy(result[0:32], bigIntTo32Bytes(delta.Amount0))
-	copy(result[32:64], bigIntTo32Bytes(delta.Amount1))
+	// V4: Return BalanceDelta as single int256 (amount0 in upper 128 bits, amount1 in lower 128 bits)
+	result := PackBalanceDelta(delta.Amount0, delta.Amount1)
 	return result, suppliedGas - GasSwap, nil
 }
 
@@ -280,7 +346,7 @@ func (c *DEXContract) runModifyLiquidity(
 		return nil, suppliedGas - GasAddLiquidity, err
 	}
 
-	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
 
 	delta, feeDelta, err := c.poolManager.ModifyLiquidity(stateAdapter, caller, key, params, hookData)
 	if err != nil {
@@ -292,12 +358,10 @@ func (c *DEXContract) runModifyLiquidity(
 		return nil, suppliedGas - GasAddLiquidity, err
 	}
 
-	// Return BalanceDelta and FeeDelta (two's complement for negatives)
-	result := make([]byte, 128)
-	copy(result[0:32], bigIntTo32Bytes(delta.Amount0))
-	copy(result[32:64], bigIntTo32Bytes(delta.Amount1))
-	copy(result[64:96], bigIntTo32Bytes(feeDelta.Amount0))
-	copy(result[96:128], bigIntTo32Bytes(feeDelta.Amount1))
+	// V4: Return two packed BalanceDeltas (callerDelta + feesAccrued), each 32 bytes
+	result := make([]byte, 64)
+	copy(result[0:32], PackBalanceDelta(delta.Amount0, delta.Amount1))
+	copy(result[32:64], PackBalanceDelta(feeDelta.Amount0, feeDelta.Amount1))
 	return result, suppliedGas - GasAddLiquidity, nil
 }
 
@@ -321,14 +385,74 @@ func (c *DEXContract) runSettle(
 	return nil, suppliedGas, fmt.Errorf("settle not supported: blockchain provides atomic settlement")
 }
 
-func (c *DEXContract) runLock(
+func (c *DEXContract) runUnlock(
 	_ contract.AccessibleState,
 	_ common.Address,
 	_ []byte,
 	suppliedGas uint64,
 	_ bool,
 ) ([]byte, uint64, error) {
-	return nil, suppliedGas, fmt.Errorf("lock not supported: blockchain provides atomic settlement")
+	// V4 unlock is used for flash accounting. In a precompile context the blockchain
+	// provides atomic settlement, so unlock is a no-op that returns empty bytes.
+	return []byte{}, suppliedGas, nil
+}
+
+func (c *DEXContract) runDonate(
+	state contract.AccessibleState,
+	caller common.Address,
+	input []byte,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
+	}
+
+	gasCost := GasSwap // donate uses similar gas to swap
+	if suppliedGas < gasCost {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+
+	// V4 ABI: PoolKey (160) + amount0 (32) + amount1 (32) + hookData
+	if len(input) < 224 {
+		return nil, suppliedGas - gasCost, fmt.Errorf("input too short for V4 donate")
+	}
+
+	key, err := DecodePoolKey(input[:160])
+	if err != nil {
+		return nil, suppliedGas - gasCost, err
+	}
+
+	amount0 := new(big.Int).SetBytes(input[160:192])
+	amount1 := new(big.Int).SetBytes(input[192:224])
+
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+
+	var hookData []byte
+	if len(input) > 224 {
+		// Offset word for hookData (bytes arg) is at position 224 in the args buffer.
+		// The value at that position is the absolute offset from byte 0 of args.
+		hookData = decodeABIBytes(input, 224)
+	}
+	delta, err := c.poolManager.Donate(stateAdapter, caller, key, amount0, amount1, hookData)
+	if err != nil {
+		return nil, suppliedGas - gasCost, err
+	}
+
+	result := PackBalanceDelta(delta.Amount0, delta.Amount1)
+	return result, suppliedGas - gasCost, nil
+}
+
+func (c *DEXContract) runSync(
+	_ contract.AccessibleState,
+	_ common.Address,
+	_ []byte,
+	suppliedGas uint64,
+	_ bool,
+) ([]byte, uint64, error) {
+	// V4 sync checkpoints ERC20 balances for flash accounting.
+	// Precompile uses direct state access, so sync is a no-op.
+	return []byte{}, suppliedGas, nil
 }
 
 func (c *DEXContract) runGetPool(
@@ -346,7 +470,7 @@ func (c *DEXContract) runGetPool(
 	}
 
 	poolId := key.ID()
-	stateAdapter := &poolStateAdapter{state.GetStateDB()}
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
 	pool := c.poolManager.getPool(stateAdapter, poolId)
 	if !pool.IsInitialized() {
 		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("pool not found")
@@ -372,6 +496,211 @@ func (c *DEXContract) runGetPosition(
 	return result, suppliedGas - GasPoolLookup, nil
 }
 
+// runExtsload reads a single bytes32 storage slot from the pool manager address.
+// V4 ABI: extsload(bytes32) returns (bytes32)
+// Input: 32 bytes (the storage slot key)
+// Output: 32 bytes (the storage value)
+func (c *DEXContract) runExtsload(
+	state contract.AccessibleState,
+	input []byte,
+	suppliedGas uint64,
+) ([]byte, uint64, error) {
+	if suppliedGas < GasPoolLookup {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+
+	if len(input) < 32 {
+		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("input too short for extsload: need 32 bytes, got %d", len(input))
+	}
+
+	slot := common.BytesToHash(input[0:32])
+	value := state.GetStateDB().GetState(lxPoolAddr, slot)
+
+	return value.Bytes(), suppliedGas - GasPoolLookup, nil
+}
+
+// runExtsloadArray reads multiple bytes32 storage slots from the pool manager address.
+// V4 ABI: extsload(bytes32[]) returns (bytes32[])
+// Input: ABI-encoded bytes32 array (offset word + length + slot0 + slot1 + ...)
+// Output: ABI-encoded bytes32 array with the same number of values
+func (c *DEXContract) runExtsloadArray(
+	state contract.AccessibleState,
+	input []byte,
+	suppliedGas uint64,
+) ([]byte, uint64, error) {
+	if suppliedGas < GasPoolLookup {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+
+	// ABI-encoded dynamic array: first 32 bytes = offset to array data
+	if len(input) < 64 {
+		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("input too short for extsload array")
+	}
+
+	inputLen := uint64(len(input))
+	offsetBig := new(big.Int).SetBytes(input[0:32])
+	if offsetBig.BitLen() > 63 {
+		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("extsload array: offset overflow")
+	}
+	offset := offsetBig.Uint64()
+	if offset > inputLen || inputLen-offset < 32 {
+		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("extsload array: offset out of bounds")
+	}
+
+	countBig := new(big.Int).SetBytes(input[offset : offset+32])
+	if countBig.BitLen() > 63 {
+		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("extsload array: count overflow")
+	}
+	count := countBig.Uint64()
+	const maxExtsloadSlots = 256
+	if count > maxExtsloadSlots {
+		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("extsload array: count %d exceeds max %d", count, maxExtsloadSlots)
+	}
+	dataStart := offset + 32
+
+	if count > 0 && (dataStart > inputLen || inputLen-dataStart < count*32) {
+		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("extsload array: data out of bounds")
+	}
+
+	// Gas: charge per slot read
+	totalGas := GasPoolLookup + GasPoolLookup*count
+	if suppliedGas < totalGas {
+		return nil, 0, fmt.Errorf("out of gas for %d slot reads", count)
+	}
+
+	// Build ABI-encoded return: offset (32) + count (32) + values (count * 32)
+	result := make([]byte, 64+count*32)
+	// Offset to array data = 32
+	result[31] = 0x20
+	// Array length
+	copy(result[32:64], input[offset:offset+32])
+
+	stateDB := state.GetStateDB()
+	for i := uint64(0); i < count; i++ {
+		slotStart := dataStart + i*32
+		slot := common.BytesToHash(input[slotStart : slotStart+32])
+		value := stateDB.GetState(lxPoolAddr, slot)
+		copy(result[64+i*32:64+(i+1)*32], value.Bytes())
+	}
+
+	return result, suppliedGas - totalGas, nil
+}
+
+// --- Admin: Pause / Resume / Freeze handlers ---
+
+func (c *DEXContract) runPauseDEX(
+	state contract.AccessibleState,
+	caller common.Address,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
+	}
+	if suppliedGas < GasAdmin {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	if err := c.poolManager.PauseDEX(stateAdapter, caller); err != nil {
+		return nil, suppliedGas - GasAdmin, err
+	}
+	return nil, suppliedGas - GasAdmin, nil
+}
+
+func (c *DEXContract) runResumeDEX(
+	state contract.AccessibleState,
+	caller common.Address,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
+	}
+	if suppliedGas < GasAdmin {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	if err := c.poolManager.ResumeDEX(stateAdapter, caller); err != nil {
+		return nil, suppliedGas - GasAdmin, err
+	}
+	return nil, suppliedGas - GasAdmin, nil
+}
+
+func (c *DEXContract) runPausePool(
+	state contract.AccessibleState,
+	caller common.Address,
+	input []byte,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
+	}
+	if suppliedGas < GasAdmin {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+	if len(input) < 32 {
+		return nil, suppliedGas - GasAdmin, fmt.Errorf("input too short for pool ID")
+	}
+	var poolId [32]byte
+	copy(poolId[:], input[:32])
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	if err := c.poolManager.PausePool(stateAdapter, caller, poolId); err != nil {
+		return nil, suppliedGas - GasAdmin, err
+	}
+	return nil, suppliedGas - GasAdmin, nil
+}
+
+func (c *DEXContract) runResumePool(
+	state contract.AccessibleState,
+	caller common.Address,
+	input []byte,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
+	}
+	if suppliedGas < GasAdmin {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+	if len(input) < 32 {
+		return nil, suppliedGas - GasAdmin, fmt.Errorf("input too short for pool ID")
+	}
+	var poolId [32]byte
+	copy(poolId[:], input[:32])
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	if err := c.poolManager.ResumePool(stateAdapter, caller, poolId); err != nil {
+		return nil, suppliedGas - GasAdmin, err
+	}
+	return nil, suppliedGas - GasAdmin, nil
+}
+
+func (c *DEXContract) runFreezePool(
+	state contract.AccessibleState,
+	caller common.Address,
+	input []byte,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
+	}
+	if suppliedGas < GasAdmin {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+	if len(input) < 32 {
+		return nil, suppliedGas - GasAdmin, fmt.Errorf("input too short for pool ID")
+	}
+	var poolId [32]byte
+	copy(poolId[:], input[:32])
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	if err := c.poolManager.FreezePool(stateAdapter, caller, poolId); err != nil {
+		return nil, suppliedGas - GasAdmin, err
+	}
+	return nil, suppliedGas - GasAdmin, nil
+}
+
 // RequiredGas returns the gas required for the precompile input
 func (c *DEXContract) RequiredGas(input []byte) uint64 {
 	if len(input) < 4 {
@@ -382,26 +711,33 @@ func (c *DEXContract) RequiredGas(input []byte) uint64 {
 	switch selector {
 	case SelectorInitialize:
 		return GasPoolCreate
-	case SelectorSwap:
+	case SelectorSwap, SelectorDonate:
 		return GasSwap
 	case SelectorModifyLiquidity:
 		return GasAddLiquidity
 	case SelectorTake:
 		return GasBalanceUpdate
-	case SelectorSettle:
+	case SelectorSettle, SelectorSettleFor:
 		return GasSettlement
-	case SelectorLock:
+	case SelectorUnlock:
 		return GasFlashLoan
-	case SelectorGetPool, SelectorGetPosition:
+	case SelectorSync:
 		return GasPoolLookup
+	case SelectorExtsload, SelectorExtsloadArray:
+		return GasPoolLookup
+	case SelectorPauseDEX, SelectorResumeDEX, SelectorPausePool, SelectorResumePool, SelectorFreezePool:
+		return GasAdmin
 	default:
 		return GasSwap
 	}
 }
 
-// poolStateAdapter adapts contract.StateDB to dex.StateDB
+// poolStateAdapter adapts contract.StateDB to dex.StateDB.
+// blockNumber must be set from the execution context (AccessibleState.GetBlockContext().Number())
+// since contract.StateDB does not expose block number.
 type poolStateAdapter struct {
-	stateDB contract.StateDB
+	stateDB     contract.StateDB
+	blockNumber uint64
 }
 
 func (a *poolStateAdapter) GetState(addr common.Address, key common.Hash) common.Hash {
@@ -433,7 +769,7 @@ func (a *poolStateAdapter) CreateAccount(addr common.Address) {
 }
 
 func (a *poolStateAdapter) GetBlockNumber() uint64 {
-	return 0 // Would need block context
+	return a.blockNumber
 }
 
 func (a *poolStateAdapter) AddLog(log *ethtypes.Log) {
@@ -450,68 +786,110 @@ func int24ToBytes(v int24) []byte {
 	return b
 }
 
-// DecodePoolKey decodes a PoolKey from input bytes
+// DecodePoolKey decodes a V4 ABI-encoded PoolKey from input bytes.
+// V4 PoolKey is 5 slots x 32 bytes = 160 bytes:
+//
+//	[0:32]    currency0 (address, left-padded)
+//	[32:64]   currency1 (address, left-padded)
+//	[64:96]   fee (uint24, left-padded)
+//	[96:128]  tickSpacing (int24, sign-extended to 32 bytes)
+//	[128:160] hooks (address, left-padded)
 func DecodePoolKey(input []byte) (PoolKey, error) {
-	if len(input) < 128 {
-		return PoolKey{}, fmt.Errorf("input too short for PoolKey")
+	if len(input) < 160 {
+		return PoolKey{}, fmt.Errorf("input too short for V4 PoolKey: need 160 bytes, got %d", len(input))
 	}
 
 	key := PoolKey{}
 	key.Currency0 = Currency{Address: common.BytesToAddress(input[12:32])}
 	key.Currency1 = Currency{Address: common.BytesToAddress(input[44:64])}
-	key.Fee = uint24(binary.BigEndian.Uint32(append([]byte{0}, input[64:67]...)))
-	// F12: TickSpacing is int24 -- sign-extend from 3 bytes
-	key.TickSpacing = decodeInt24(input[67:70])
-	key.Hooks = common.BytesToAddress(input[76:96])
+	key.Fee = uint24(new(big.Int).SetBytes(input[64:96]).Uint64())
+	// int24 sign extension from 32-byte ABI slot
+	tickVal := new(big.Int).SetBytes(input[96:128])
+	if input[96]&0x80 != 0 {
+		tickVal.Sub(tickVal, new(big.Int).Lsh(big.NewInt(1), 256))
+	}
+	key.TickSpacing = int32(tickVal.Int64())
+	key.Hooks = common.BytesToAddress(input[140:160])
 
 	return key, nil
 }
 
-// DecodeSwapInput decodes swap input
+// DecodeSwapInput decodes V4 ABI-encoded swap input.
+// Layout after 4-byte selector:
+//
+//	[0:160]   PoolKey (5 slots)
+//	[160:192] zeroForOne (bool, 32 bytes)
+//	[192:224] amountSpecified (int256)
+//	[224:256] sqrtPriceLimitX96 (uint160, 32 bytes)
+//	[256:]    hookData (ABI-encoded bytes: offset + length + data)
 func DecodeSwapInput(input []byte) (PoolKey, SwapParams, []byte, error) {
-	if len(input) < 160 {
-		return PoolKey{}, SwapParams{}, nil, fmt.Errorf("input too short for swap")
+	if len(input) < 256 {
+		return PoolKey{}, SwapParams{}, nil, fmt.Errorf("input too short for V4 swap: need 256 bytes, got %d", len(input))
 	}
 
-	key, err := DecodePoolKey(input[:128])
+	key, err := DecodePoolKey(input[:160])
 	if err != nil {
 		return PoolKey{}, SwapParams{}, nil, err
 	}
 
-	// F4: AmountSpecified is a signed int256 (two's complement).
-	// If the high bit is set, the value is negative.
-	amountSpecified := decodeSigned256(input[129:161])
+	// V4: zeroForOne is a full 32-byte bool slot
+	zeroForOne := input[191] == 1
+
+	// V4: amountSpecified is signed int256.
+	// Negative = exact input, Positive = exact output.
+	amountSpecified := decodeSigned256(input[192:224])
 
 	params := SwapParams{
-		ZeroForOne:        input[128] == 1,
+		ZeroForOne:        zeroForOne,
 		AmountSpecified:   amountSpecified,
-		SqrtPriceLimitX96: new(big.Int).SetBytes(input[161:193]),
+		SqrtPriceLimitX96: new(big.Int).SetBytes(input[224:256]),
 	}
 
-	hookData := input[193:]
+	var hookData []byte
+	if len(input) > 256 {
+		// Offset word for hookData (bytes arg) is at position 256 in the args buffer.
+		// The value at that position is the absolute offset from byte 0 of args.
+		hookData = decodeABIBytes(input, 256)
+	}
 	return key, params, hookData, nil
 }
 
-// DecodeModifyLiquidityInput decodes modifyLiquidity input
+// DecodeModifyLiquidityInput decodes V4 ABI-encoded modifyLiquidity input.
+// Layout after 4-byte selector:
+//
+//	[0:160]   PoolKey (5 slots)
+//	[160:192] tickLower (int24, sign-extended to 32 bytes)
+//	[192:224] tickUpper (int24, sign-extended to 32 bytes)
+//	[224:256] liquidityDelta (int256)
+//	[256:288] salt (bytes32)
+//	[288:]    hookData (ABI-encoded bytes)
 func DecodeModifyLiquidityInput(input []byte) (PoolKey, ModifyLiquidityParams, []byte, error) {
-	if len(input) < 192 {
-		return PoolKey{}, ModifyLiquidityParams{}, nil, fmt.Errorf("input too short for modifyLiquidity")
+	if len(input) < 288 {
+		return PoolKey{}, ModifyLiquidityParams{}, nil, fmt.Errorf("input too short for V4 modifyLiquidity: need 288 bytes, got %d", len(input))
 	}
 
-	key, err := DecodePoolKey(input[:128])
+	key, err := DecodePoolKey(input[:160])
 	if err != nil {
 		return PoolKey{}, ModifyLiquidityParams{}, nil, err
 	}
 
-	// F12: TickLower and TickUpper are signed int24 values. Sign-extend from 3 bytes.
-	// F4: LiquidityDelta is a signed int256 (two's complement).
-	params := ModifyLiquidityParams{
-		TickLower:      decodeInt24(input[128:131]),
-		TickUpper:      decodeInt24(input[131:134]),
-		LiquidityDelta: decodeSigned256(input[134:166]),
-	}
+	// tickLower: int24 sign-extended to 32 bytes
+	tickLowerVal := decodeSigned256(input[160:192])
+	// tickUpper: int24 sign-extended to 32 bytes
+	tickUpperVal := decodeSigned256(input[192:224])
 
-	hookData := input[192:]
+	params := ModifyLiquidityParams{
+		TickLower:      int32(tickLowerVal.Int64()),
+		TickUpper:      int32(tickUpperVal.Int64()),
+		LiquidityDelta: decodeSigned256(input[224:256]),
+	}
+	copy(params.Salt[:], input[256:288])
+
+	var hookData []byte
+	if len(input) > 288 {
+		// Offset word for hookData (bytes arg) is at position 288 in the args buffer.
+		hookData = decodeABIBytes(input, 288)
+	}
 	return key, params, hookData, nil
 }
 
@@ -566,4 +944,131 @@ func decodeInt24(b []byte) int24 {
 		val -= 1 << 24
 	}
 	return int24(val)
+}
+
+// PackBalanceDelta packs amount0 and amount1 into V4 BalanceDelta format.
+// V4 BalanceDelta is a single int256: amount0 in upper 128 bits, amount1 in lower 128 bits.
+// This matches: toBalanceDelta(int128 _amount0, int128 _amount1) in BalanceDelta.sol
+func PackBalanceDelta(amount0, amount1 *big.Int) []byte {
+	result := make([]byte, 32)
+	a0 := bigIntTo16Bytes(amount0) // signed int128
+	a1 := bigIntTo16Bytes(amount1) // signed int128
+	copy(result[0:16], a0)
+	copy(result[16:32], a1)
+	return result
+}
+
+// UnpackBalanceDelta unpacks a V4 BalanceDelta (single int256) into amount0 and amount1.
+// amount0 = arithmetic right shift 128 bits, amount1 = sign-extend lower 128 bits.
+func UnpackBalanceDelta(data []byte) (amount0, amount1 *big.Int) {
+	if len(data) < 32 {
+		return big.NewInt(0), big.NewInt(0)
+	}
+	// amount0: upper 128 bits (bytes 0-15), signed
+	a0 := new(big.Int).SetBytes(data[0:16])
+	if data[0]&0x80 != 0 {
+		a0.Sub(a0, new(big.Int).Lsh(big.NewInt(1), 128))
+	}
+	// amount1: lower 128 bits (bytes 16-31), signed
+	a1 := new(big.Int).SetBytes(data[16:32])
+	if data[16]&0x80 != 0 {
+		a1.Sub(a1, new(big.Int).Lsh(big.NewInt(1), 128))
+	}
+	return a0, a1
+}
+
+// bigIntTo16Bytes encodes a big.Int as a 16-byte signed int128 (two's complement).
+func bigIntTo16Bytes(v *big.Int) []byte {
+	result := make([]byte, 16)
+	if v == nil || v.Sign() == 0 {
+		return result
+	}
+	if v.Sign() > 0 {
+		b := v.Bytes()
+		if len(b) > 16 {
+			b = b[len(b)-16:]
+		}
+		copy(result[16-len(b):], b)
+	} else {
+		// Two's complement: 2^128 + v
+		tc := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 128), v)
+		b := tc.Bytes()
+		if len(b) > 16 {
+			b = b[len(b)-16:]
+		}
+		copy(result[16-len(b):], b)
+	}
+	return result
+}
+
+// decodeABIBytes decodes ABI-encoded dynamic bytes from a V4 calldata buffer.
+//
+// V4 ABI encoding uses ABSOLUTE offsets from byte 0 of the args buffer (after
+// the 4-byte selector). The offset word at position offsetPos contains the
+// absolute byte position where the length-prefixed data begins.
+//
+// Layout at absolute offset: [length (32 bytes)] [data (length bytes)]
+//
+// Parameters:
+//   - args: the full args buffer (input after 4-byte selector)
+//   - offsetPos: byte position within args where the 32-byte offset word lives
+//
+// Returns nil if the input is too short or malformed.
+func decodeABIBytes(args []byte, offsetPos uint64) []byte {
+	argsLen := uint64(len(args))
+	if offsetPos+32 > argsLen {
+		return nil
+	}
+	// Read the absolute offset value from the offset word.
+	// Reject if the big.Int exceeds uint64 (truncation attack).
+	absOffsetBig := new(big.Int).SetBytes(args[offsetPos : offsetPos+32])
+	if absOffsetBig.BitLen() > 63 {
+		return nil // value exceeds int64 max — impossible valid offset
+	}
+	absOffset := absOffsetBig.Uint64()
+	// Offset must point forward (past the offset word) to prevent data confusion.
+	if absOffset < offsetPos+32 {
+		return nil
+	}
+	// Check absOffset+32 without overflow.
+	if absOffset > argsLen || argsLen-absOffset < 32 {
+		return nil
+	}
+	// At absOffset: 32 bytes length, then data.
+	lengthBig := new(big.Int).SetBytes(args[absOffset : absOffset+32])
+	if lengthBig.BitLen() > 63 {
+		return nil
+	}
+	length := lengthBig.Uint64()
+	dataStart := absOffset + 32
+	// Check dataStart+length without overflow.
+	if length == 0 {
+		return nil
+	}
+	if dataStart > argsLen || argsLen-dataStart < length {
+		return nil
+	}
+	return args[dataStart : dataStart+length]
+}
+
+// EncodePoolKeyABI encodes a PoolKey into V4 ABI format (5 slots x 32 bytes = 160 bytes).
+func EncodePoolKeyABI(key PoolKey) []byte {
+	data := make([]byte, 160)
+	copy(data[12:32], key.Currency0.Address.Bytes())
+	copy(data[44:64], key.Currency1.Address.Bytes())
+	// fee as uint24 in last 3 bytes of slot
+	data[93] = byte(key.Fee >> 16)
+	data[94] = byte(key.Fee >> 8)
+	data[95] = byte(key.Fee)
+	// tickSpacing as int24 sign-extended to 32 bytes
+	if key.TickSpacing < 0 {
+		for i := 96; i < 125; i++ {
+			data[i] = 0xff
+		}
+	}
+	data[125] = byte(key.TickSpacing >> 16)
+	data[126] = byte(key.TickSpacing >> 8)
+	data[127] = byte(key.TickSpacing)
+	copy(data[140:160], key.Hooks.Bytes())
+	return data
 }
