@@ -87,6 +87,23 @@ func NewPoolManager() *PoolManager {
 	}
 }
 
+// pushLocker adds a caller to the locker stack for direct precompile calls.
+// This enables Swap/ModifyLiquidity without a full lock() callback cycle.
+func (pm *PoolManager) pushLocker(caller common.Address) {
+	pm.lockers = append(pm.lockers, caller)
+	if pm.currentDeltas[caller] == nil {
+		pm.currentDeltas[caller] = make(map[Currency]*big.Int)
+	}
+}
+
+// popLocker removes a caller from the locker stack.
+func (pm *PoolManager) popLocker(caller common.Address) {
+	delete(pm.currentDeltas, caller)
+	if len(pm.lockers) > 0 {
+		pm.lockers = pm.lockers[:len(pm.lockers)-1]
+	}
+}
+
 // makeStorageKey creates a storage key from prefix and identifier
 func makeStorageKey(prefix []byte, id []byte) common.Hash {
 	h := blake3.New()
