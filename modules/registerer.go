@@ -6,7 +6,7 @@ package modules
 import (
 	"bytes"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/luxfi/geth/common"
 )
@@ -254,6 +254,8 @@ func RegisteredModules() []Module {
 
 func insertSortedByAddress(data []Module, stm Module) []Module {
 	data = append(data, stm)
-	sort.Sort(moduleArray(data))
+	slices.SortFunc(data, func(a, b Module) int {
+		return bytes.Compare(a.Address.Bytes(), b.Address.Bytes())
+	})
 	return data
 }
