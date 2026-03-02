@@ -11,32 +11,47 @@ import (
 	"errors"
 	"math/big"
 
+	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
-	"github.com/zeebo/blake3"
 )
 
 // Precompile addresses for LX components
 // LP-aligned format: 0x0000000000000000000000000000000000LPNUM
 // See LP-9015 for canonical specification
 const (
-	// Core LX (LP-9010 series - Uniswap v4 style)
-	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // LP-9010 LXPool (singleton AMM)
-	LXOracleAddress = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (price aggregation)
+	// Core AMM (LP-901x)
+	LXAMMAddress    = "0x0000000000000000000000000000000000009010" // LP-9010 LXAMM (singleton AMM core)
+	LXOracleAddress = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (external price aggregation)
 	LXRouterAddress = "0x0000000000000000000000000000000000009012" // LP-9012 LXRouter (swap routing)
-	LXHooksAddress  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (hook registry)
-	LXFlashAddress  = "0x0000000000000000000000000000000000009014" // LP-9014 LXFlash (flash loans)
+	LXHooksAddress  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (hook system)
 
-	// Trading & DeFi Extensions (LP-90xx)
-	LXBookAddress     = "0x0000000000000000000000000000000000009020" // LP-9020 LXBook (orderbook + matching)
-	LXVaultAddress    = "0x0000000000000000000000000000000000009030" // LP-9030 LXVault (custody + margin)
-	LXFeedAddress     = "0x0000000000000000000000000000000000009040" // LP-9040 LXFeed (computed prices)
-	LXLendAddress     = "0x0000000000000000000000000000000000009050" // LP-9050 LXLend (lending pool)
-	LXLiquidAddress   = "0x0000000000000000000000000000000000009060" // LP-9060 LXLiquid (self-repaying loans)
-	LiquidatorAddress = "0x0000000000000000000000000000000000009070" // LP-9070 Liquidator (position liquidation)
-	LiquidFXAddress   = "0x0000000000000000000000000000000000009080" // LP-9080 LiquidFX (transmuter)
+	// Orderbook (LP-902x)
+	LXBookAddress = "0x0000000000000000000000000000000000009020" // LP-9020 LXBook (orderbook engine)
+
+	// Custody (LP-903x)
+	LXVaultAddress = "0x0000000000000000000000000000000000009030" // LP-9030 LXVault (custody + margin)
+
+	// Pricing (LP-904x)
+	LXPriceAddress = "0x0000000000000000000000000000000000009040" // LP-9040 LXPrice (derived/computed pricing)
+
+	// Lending (LP-905x–906x)
+	LXLendAddress      = "0x0000000000000000000000000000000000009050" // LP-9050 LXLend (lending pool)
+	LXAutoRepayAddress = "0x0000000000000000000000000000000000009060" // LP-9060 LXAutoRepay (self-repaying loans)
+
+	// Liquidation + Transmutation (LP-907x–908x)
+	LXLiquidatorAddress  = "0x0000000000000000000000000000000000009070" // LP-9070 LXLiquidator (liquidation engine)
+	LXTransmuterAddress  = "0x0000000000000000000000000000000000009080" // LP-9080 LXTransmuter (debt → collateral conversion)
 
 	// Settlement (LP-909x)
-	// LXFillAttestAddress is defined in fill_attestation.go             // LP-9090 LXFillAttest (broker fill attestation + fraud proofs)
+	// LXFillAttestAddress is defined in fill_attestation.go               // LP-9090 LXFillAttest (broker fill attestation + fraud proofs)
+
+	// Aliases for backward compatibility
+	LXPoolAddress     = LXAMMAddress
+	LXFlashAddress    = "0x0000000000000000000000000000000000009014" // LP-9014 (flash loans — part of LXAMM)
+	LXFeedAddress     = LXPriceAddress
+	LXLiquidAddress   = LXAutoRepayAddress
+	LiquidatorAddress = LXLiquidatorAddress
+	LiquidFXAddress   = LXTransmuterAddress
 
 	// Bridge Precompiles (LP-6xxx)
 	TeleportAddress = "0x0000000000000000000000000000000000006010" // LP-6010 Teleport (cross-chain)
@@ -53,7 +68,7 @@ const (
 const (
 	// Core DEX operations
 	GasPoolCreate     uint64 = 50_000 // Create new pool
-	GasSwap           uint64 = 10_000 // Single swap
+	GasSwap           uint64 = 50_000 // Single swap
 	GasAddLiquidity   uint64 = 20_000 // Add liquidity
 	GasRemoveLiq      uint64 = 20_000 // Remove liquidity
 	GasFlashLoan      uint64 = 5_000  // Flash loan base
@@ -62,6 +77,7 @@ const (
 	GasSettlement     uint64 = 8_000  // Final settlement
 	GasPoolLookup     uint64 = 100    // Pool state lookup
 	GasNativeTransfer uint64 = 2_100  // Native LUX transfer
+	GasAdmin          uint64 = 2_100  // Admin operations (pause/freeze)
 
 	// Lending operations
 	GasSupply    uint64 = 15_000 // Supply collateral
@@ -106,22 +122,28 @@ const (
 	TickSpacing100 int24 = 200
 )
 
-// Hook flags (bitmap for hook capabilities)
+// Hook flags (bitmap for hook capabilities).
+// V4: flags are encoded in the TRAILING (least significant) bits of the hook address.
+// Bit positions match Uniswap V4 Hooks.sol exactly.
 type HookFlags uint16
 
 const (
-	HookBeforeInitialize HookFlags = 1 << iota
-	HookAfterInitialize
-	HookBeforeAddLiquidity
-	HookAfterAddLiquidity
-	HookBeforeRemoveLiquidity
-	HookAfterRemoveLiquidity
-	HookBeforeSwap
-	HookAfterSwap
-	HookBeforeDonate
-	HookAfterDonate
-	HookBeforeFlash
-	HookAfterFlash
+	HookAfterRemoveLiquidityReturnsDelta HookFlags = 1 << 0
+	HookAfterAddLiquidityReturnsDelta    HookFlags = 1 << 1
+	HookAfterSwapReturnsDelta            HookFlags = 1 << 2
+	HookBeforeSwapReturnsDelta           HookFlags = 1 << 3
+	HookAfterDonate                      HookFlags = 1 << 4
+	HookBeforeDonate                     HookFlags = 1 << 5
+	HookAfterSwap                        HookFlags = 1 << 6
+	HookBeforeSwap                       HookFlags = 1 << 7
+	HookAfterRemoveLiquidity             HookFlags = 1 << 8
+	HookBeforeRemoveLiquidity            HookFlags = 1 << 9
+	HookAfterAddLiquidity                HookFlags = 1 << 10
+	HookBeforeAddLiquidity               HookFlags = 1 << 11
+	HookAfterInitialize                  HookFlags = 1 << 12
+	HookBeforeInitialize                 HookFlags = 1 << 13
+
+	HookAllMask HookFlags = (1 << 14) - 1
 )
 
 // Currency represents a token (native or ERC20)
@@ -158,24 +180,12 @@ type PoolKey struct {
 	Hooks       common.Address // Hook contract address (zero = no hooks)
 }
 
-// ID computes the unique pool identifier
+// ID computes the unique pool identifier.
+// V4: keccak256(abi.encode(poolKey)) where poolKey is 5 ABI slots (160 bytes).
 func (pk PoolKey) ID() [32]byte {
-	h := blake3.New()
-	h.Write(pk.Currency0.ToBytes())
-	h.Write(pk.Currency1.ToBytes())
-
-	var feeBytes [4]byte
-	binary.BigEndian.PutUint32(feeBytes[:], uint32(pk.Fee))
-	h.Write(feeBytes[:3]) // uint24
-
-	var tickBytes [4]byte
-	binary.BigEndian.PutUint32(tickBytes[:], uint32(pk.TickSpacing))
-	h.Write(tickBytes[1:]) // int24
-
-	h.Write(pk.Hooks.Bytes())
-
+	data := EncodePoolKeyABI(pk)
 	var id [32]byte
-	h.Digest().Read(id[:])
+	copy(id[:], crypto.Keccak256(data))
 	return id
 }
 
@@ -308,26 +318,31 @@ type Position struct {
 	TokensOwed1              *big.Int
 }
 
-// PositionKey computes the unique position identifier
+// PositionKey computes the unique position identifier.
+// V4: keccak256(abi.encodePacked(owner, tickLower, tickUpper, salt))
+// encodePacked: 20 bytes (address) + 3 bytes (int24) + 3 bytes (int24) + 32 bytes (bytes32) = 58 bytes.
 func PositionKey(owner common.Address, tickLower, tickUpper int24, salt [32]byte) [32]byte {
-	h := blake3.New()
-	h.Write(owner.Bytes())
-
-	var tickBytes [8]byte
-	binary.BigEndian.PutUint32(tickBytes[:4], uint32(tickLower))
-	binary.BigEndian.PutUint32(tickBytes[4:], uint32(tickUpper))
-	h.Write(tickBytes[:])
-	h.Write(salt[:])
-
+	data := make([]byte, 58) // 20 + 3 + 3 + 32
+	copy(data[0:20], owner.Bytes())
+	// tickLower as int24 (3 bytes, big-endian)
+	data[20] = byte(tickLower >> 16)
+	data[21] = byte(tickLower >> 8)
+	data[22] = byte(tickLower)
+	// tickUpper as int24 (3 bytes, big-endian)
+	data[23] = byte(tickUpper >> 16)
+	data[24] = byte(tickUpper >> 8)
+	data[25] = byte(tickUpper)
+	copy(data[26:58], salt[:])
 	var key [32]byte
-	h.Digest().Read(key[:])
+	copy(key[:], crypto.Keccak256(data))
 	return key
 }
 
-// SwapParams contains parameters for a swap
+// SwapParams contains parameters for a swap.
+// V4 convention: amountSpecified < 0 means exact input, > 0 means exact output.
 type SwapParams struct {
 	ZeroForOne        bool     // true = swap currency0 for currency1
-	AmountSpecified   *big.Int // Positive = exact input, Negative = exact output
+	AmountSpecified   *big.Int // Negative = exact input, Positive = exact output (V4 convention)
 	SqrtPriceLimitX96 *big.Int // Price limit (sqrt(price) * 2^96)
 }
 
@@ -364,6 +379,18 @@ var (
 	ErrInvalidSqrtPrice       = errors.New("invalid sqrt price")
 	ErrTickOutOfRange         = errors.New("tick out of range")
 	ErrNoLiquidity            = errors.New("no liquidity in pool")
+)
+
+// Errors - Pause/Freeze Controls (ATS regulatory compliance)
+var (
+	ErrDEXPaused          = errors.New("DEX: paused")
+	ErrPoolPaused         = errors.New("pool: paused")
+	ErrPoolFrozen         = errors.New("pool: frozen")
+	ErrPoolNotPaused      = errors.New("pool: not paused")
+	ErrDEXNotPaused       = errors.New("DEX: not paused")
+	ErrFreezeIrreversible = errors.New("pool: freeze is irreversible without governance")
+	ErrAlreadyPaused      = errors.New("already paused")
+	ErrAlreadyFrozen      = errors.New("already frozen")
 )
 
 // Errors - Lending
