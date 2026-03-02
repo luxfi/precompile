@@ -85,7 +85,7 @@ func (p *cggmp21VerifyPrecompile) Run(
 	// Calculate required gas
 	gasCost := p.RequiredGas(input)
 	if suppliedGas < gasCost {
-		return nil, 0, errors.New("out of gas")
+		return nil, 0, contract.ErrOutOfGas
 	}
 
 	// Input format:

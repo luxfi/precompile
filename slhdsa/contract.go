@@ -189,7 +189,7 @@ func (p *slhdsaVerifyPrecompile) Run(
 	// Calculate required gas
 	gasCost := p.RequiredGas(input)
 	if suppliedGas < gasCost {
-		return nil, 0, errors.New("out of gas")
+		return nil, 0, contract.ErrOutOfGas
 	}
 
 	// Minimum: mode byte + pubkey length

@@ -261,6 +261,12 @@ Example hook implementations:
 | 0x0901 | GROTH16 | (planned) | Groth16 ZK verifier | 200,000 |
 | 0x0902 | PLONK | (planned) | PLONK ZK verifier | 250,000 |
 
+#### VRF (0x3213)
+| Address | Name | Package | Description | Gas |
+|---------|------|---------|-------------|-----|
+| 0x3213 | ECVRF_VERIFY | vrf/ | ECVRF-EDWARDS25519-SHA512-ELL2 verify (RFC 9381) | 20,000 |
+| 0x3213 | ECVRF_PROOF_TO_HASH | vrf/ | Extract beta from verified proof | 1,000 |
+
 #### Curves (0x0A00-0x0AFF)
 | Address | Name | Package | Description | Gas |
 |---------|------|---------|-------------|-----|
