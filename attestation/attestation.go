@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/luxfi/ai/pkg/attestation"
+	"github.com/luxfi/precompile/contract"
 )
 
 // Precompile addresses (0x0301-0x030F reserved for attestation)
@@ -44,7 +45,7 @@ const (
 
 // Errors
 var (
-	ErrInvalidInput        = errors.New("invalid input data")
+	ErrInvalidInput        = contract.ErrInvalidInput
 	ErrInvalidGPUEvidence  = errors.New("invalid GPU attestation evidence")
 	ErrInvalidTPMQuote     = errors.New("invalid TPM attestation quote")
 	ErrInvalidComputeProof = errors.New("invalid compute attestation proof")

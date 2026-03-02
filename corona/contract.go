@@ -28,7 +28,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &coronaThresholdPrecompile{}
 
-	ErrInvalidInputLength    = errors.New("invalid input length")
+	ErrInvalidInputLength  = contract.ErrInvalidInput
 	ErrInvalidThreshold      = errors.New("invalid threshold: t must be > 0 and <= n")
 	ErrInvalidSignature      = errors.New("signature verification failed")
 	ErrInsufficientParties   = errors.New("insufficient parties for threshold")
@@ -98,8 +98,9 @@ func (p *coronaThresholdPrecompile) Run(
 ) ([]byte, uint64, error) {
 	// Calculate required gas
 	gasCost := p.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// Input format:
@@ -109,7 +110,7 @@ func (p *coronaThresholdPrecompile) Run(
 	// [40:...]    = threshold signature (variable, ~4KB for default params)
 
 	if len(input) < MinInputSize {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: expected at least %d bytes, got %d",
+		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes, got %d",
 			ErrInvalidInputLength, MinInputSize, len(input))
 	}
 
@@ -120,21 +121,21 @@ func (p *coronaThresholdPrecompile) Run(
 
 	// Validate threshold
 	if thresholdVal == 0 || thresholdVal > totalParties {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: t=%d, n=%d",
+		return nil, remainingGas, fmt.Errorf("%w: t=%d, n=%d",
 			ErrInvalidThreshold, thresholdVal, totalParties)
 	}
 
 	// Extract signature bytes
 	signatureBytes := input[MinInputSize:]
 	if len(signatureBytes) < ExpectedSignatureSize {
-		return nil, suppliedGas - gasCost, fmt.Errorf("%w: expected at least %d bytes, got %d",
+		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes, got %d",
 			ErrInvalidInputLength, ExpectedSignatureSize, len(signatureBytes))
 	}
 
 	// Verify the threshold signature
 	valid, err := verifyThresholdSignature(thresholdVal, totalParties, messageHash, signatureBytes)
 	if err != nil {
-		return nil, suppliedGas - gasCost, fmt.Errorf("verification error: %w", err)
+		return nil, remainingGas, fmt.Errorf("verification error: %w", err)
 	}
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)
@@ -143,7 +144,7 @@ func (p *coronaThresholdPrecompile) Run(
 		result[31] = 1
 	}
 
-	return result, suppliedGas - gasCost, nil
+	return result, remainingGas, nil
 }
 
 // verifyThresholdSignature verifies a Corona threshold signature

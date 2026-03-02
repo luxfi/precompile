@@ -50,7 +50,7 @@ const (
 // ─── Errors ───────────────────────────────────────────────────────────────────
 
 var (
-	ErrInvalidInput     = errors.New("vrf: invalid input")
+	ErrInvalidInput     = contract.ErrInvalidInput
 	ErrInvalidOperation = errors.New("vrf: invalid operation selector")
 )
 
@@ -105,10 +105,10 @@ func (p *vrfPrecompile) Run(
 	readOnly bool,
 ) ([]byte, uint64, error) {
 	gasCost := p.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
 	}
-	remainingGas := suppliedGas - gasCost
 
 	if len(input) < 1 {
 		return nil, remainingGas, nil

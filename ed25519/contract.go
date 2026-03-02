@@ -10,7 +10,6 @@ package ed25519
 
 import (
 	"crypto/ed25519"
-	"errors"
 
 	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/geth/common"
@@ -18,9 +17,9 @@ import (
 )
 
 const (
-	// Ed25519VerifyGas is the gas cost for signature verification
+	// GasEd25519Verify is the gas cost for signature verification
 	// Ed25519 is ~2x faster than secp256k1 ECDSA in practice
-	Ed25519VerifyGas = 3_000
+	GasEd25519Verify = 3_000
 
 	// InputLength is the required input length (128 bytes)
 	// 32 (message hash) + 64 (signature) + 32 (public key)
@@ -49,7 +48,7 @@ var (
 	successResult = common.LeftPadBytes([]byte{1}, 32)
 
 	// Errors
-	ErrInvalidInputLength = errors.New("ed25519: invalid input length")
+	ErrInvalidInputLength = contract.ErrInvalidInput
 )
 
 // ed25519VerifyPrecompile implements StatefulPrecompiledContract for Ed25519 verification.
@@ -57,7 +56,7 @@ type ed25519VerifyPrecompile struct{}
 
 // RequiredGas returns the gas required to execute the precompile
 func (c *ed25519VerifyPrecompile) RequiredGas(input []byte) uint64 {
-	return Ed25519VerifyGas
+	return GasEd25519Verify
 }
 
 // Run executes the Ed25519 signature verification.
@@ -79,10 +78,10 @@ func (c *ed25519VerifyPrecompile) Run(
 	readOnly bool,
 ) ([]byte, uint64, error) {
 	gasCost := c.RequiredGas(input)
-	if suppliedGas < gasCost {
-		return nil, 0, contract.ErrOutOfGas
+	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
+	if err != nil {
+		return nil, 0, err
 	}
-	remainingGas := suppliedGas - gasCost
 
 	if len(input) != InputLength {
 		return nil, remainingGas, nil

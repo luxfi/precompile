@@ -32,7 +32,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &poseidonPrecompile{}
 
-	ErrInvalidInput  = errors.New("invalid poseidon input")
+	ErrInvalidInput  = contract.ErrInvalidInput
 	ErrTooManyInputs = errors.New("too many inputs: max 16 field elements")
 	ErrInvalidOp     = errors.New("invalid operation selector")
 )
