@@ -69,7 +69,7 @@ func TestCommit_Determinism(t *testing.T) {
 	ret2, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(ret1, ret2), "commitments must be deterministic")
+	require.Equal(t, ret1, ret2, "commitments must be deterministic")
 }
 
 func TestCommit_DifferentValues(t *testing.T) {
@@ -182,7 +182,7 @@ func TestAdd_HomomorphicProperty(t *testing.T) {
 	ptExpected := commitRawPoint(new(big.Int).Add(v1, v2), new(big.Int).Add(r1, r2))
 	expectedBytes := ptExpected.Marshal()
 
-	require.True(t, bytes.Equal(addResult, expectedBytes), "homomorphic addition failed")
+	require.Equal(t, addResult, expectedBytes, "homomorphic addition failed")
 }
 
 func TestAdd_InputTooShort(t *testing.T) {

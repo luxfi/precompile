@@ -4,7 +4,6 @@
 package curve25519
 
 import (
-	"bytes"
 	"testing"
 
 	"filippo.io/edwards25519"
@@ -42,7 +41,7 @@ func TestPointAdd_Identity(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(ret, bp), "B + identity should equal B")
+	require.Equal(t, ret, bp, "B + identity should equal B")
 }
 
 func TestPointAdd_Commutative(t *testing.T) {
@@ -77,7 +76,7 @@ func TestPointAdd_Commutative(t *testing.T) {
 	ret2, _, err := p.Run(nil, common.Address{}, ContractAddress, addInput2, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(ret1, ret2), "point addition must be commutative")
+	require.Equal(t, ret1, ret2, "point addition must be commutative")
 }
 
 func TestScalarMul_One(t *testing.T) {
@@ -94,7 +93,7 @@ func TestScalarMul_One(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(ret, bp), "1*B should equal B")
+	require.Equal(t, ret, bp, "1*B should equal B")
 }
 
 func TestBasepointMul(t *testing.T) {
@@ -109,7 +108,7 @@ func TestBasepointMul(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(ret, basepoint()), "BasepointMul(1) should equal generator")
+	require.Equal(t, basepoint(), ret, "BasepointMul(1) should equal generator")
 }
 
 func TestBasepointMul_MatchesScalarMul(t *testing.T) {
@@ -134,7 +133,7 @@ func TestBasepointMul_MatchesScalarMul(t *testing.T) {
 	smResult, _, err := p.Run(nil, common.Address{}, ContractAddress, smInput, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(bpResult, smResult), "BasepointMul(42) should equal ScalarMul(B, 42)")
+	require.Equal(t, bpResult, smResult, "BasepointMul(42) should equal ScalarMul(B, 42)")
 }
 
 func TestScalarMul_DoubleEqualsAdd(t *testing.T) {
@@ -160,7 +159,7 @@ func TestScalarMul_DoubleEqualsAdd(t *testing.T) {
 	addResult, _, err := p.Run(nil, common.Address{}, ContractAddress, addInput, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(mulResult, addResult), "2*B should equal B+B")
+	require.Equal(t, mulResult, addResult, "2*B should equal B+B")
 }
 
 func TestMSM(t *testing.T) {
@@ -191,7 +190,7 @@ func TestMSM(t *testing.T) {
 	expected, _, err := p.Run(nil, common.Address{}, ContractAddress, bpInput, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(msmResult, expected), "MSM(3*B + 5*B) should equal 8*B")
+	require.Equal(t, msmResult, expected, "MSM(3*B + 5*B) should equal 8*B")
 }
 
 func TestMSM_SinglePair(t *testing.T) {
@@ -218,7 +217,7 @@ func TestMSM_SinglePair(t *testing.T) {
 	smResult, _, err := p.Run(nil, common.Address{}, ContractAddress, smInput, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(msmResult, smResult), "MSM with 1 pair should match ScalarMul")
+	require.Equal(t, msmResult, smResult, "MSM with 1 pair should match ScalarMul")
 }
 
 func TestPointAdd_InputTooShort(t *testing.T) {

@@ -4,7 +4,6 @@
 package x25519
 
 import (
-	"bytes"
 	"testing"
 
 	"golang.org/x/crypto/curve25519"
@@ -36,7 +35,7 @@ func TestScalarMult_RFC7748_Vector1(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(expected, ret), "RFC 7748 vector 1 mismatch")
+	require.Equal(t, expected, ret, "RFC 7748 vector 1 mismatch")
 }
 
 func TestScalarMult_RFC7748_Vector2(t *testing.T) {
@@ -57,7 +56,7 @@ func TestScalarMult_RFC7748_Vector2(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(expected, ret), "RFC 7748 vector 2 mismatch")
+	require.Equal(t, expected, ret, "RFC 7748 vector 2 mismatch")
 }
 
 func TestBasepoint(t *testing.T) {
@@ -75,7 +74,7 @@ func TestBasepoint(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(expected, ret), "basepoint multiplication mismatch")
+	require.Equal(t, expected, ret, "basepoint multiplication mismatch")
 }
 
 func TestBasepoint_Bob(t *testing.T) {
@@ -91,7 +90,7 @@ func TestBasepoint_Bob(t *testing.T) {
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(expected, ret), "Bob's basepoint multiplication mismatch")
+	require.Equal(t, expected, ret, "Bob's basepoint multiplication mismatch")
 }
 
 func TestDHRoundTrip(t *testing.T) {
@@ -124,7 +123,7 @@ func TestDHRoundTrip(t *testing.T) {
 	shared2, _, err := p.Run(nil, common.Address{}, ContractAddress, input2, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(shared1, shared2), "DH shared secrets must match")
+	require.Equal(t, shared1, shared2, "DH shared secrets must match")
 }
 
 func TestScalarMult_InputTooShort(t *testing.T) {
@@ -268,7 +267,7 @@ func TestScalarVisibility_SecurityConstraint(t *testing.T) {
 	recoveredScalar := input[1:33]
 	recoveredShared, err := curve25519.X25519(recoveredScalar, peerPub)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(shared, recoveredShared),
+	require.Equal(t, shared, recoveredShared,
 		"observer can recover shared secret from public calldata — this is the security constraint")
 
 	// Basepoint: scalar is in calldata bytes [1:33] — visible to all.
@@ -284,7 +283,7 @@ func TestScalarVisibility_SecurityConstraint(t *testing.T) {
 	// Observer extracts scalar from calldata and derives the same public key.
 	recoveredPub, err := curve25519.X25519(input2[1:33], curve25519.Basepoint)
 	require.NoError(t, err)
-	require.True(t, bytes.Equal(pubKey, recoveredPub),
+	require.Equal(t, pubKey, recoveredPub,
 		"observer can derive public key from leaked scalar — ephemeral keys only")
 }
 

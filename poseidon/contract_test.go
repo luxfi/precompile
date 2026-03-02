@@ -60,7 +60,7 @@ func TestHash_Determinism(t *testing.T) {
 	ret2, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(ret1, ret2), "Poseidon must be deterministic")
+	require.Equal(t, ret1, ret2, "Poseidon must be deterministic")
 }
 
 func TestHash_DifferentInputs(t *testing.T) {
@@ -127,7 +127,7 @@ func TestHashPair_ConsistentWithHash(t *testing.T) {
 	hashResult, _, err := p.Run(nil, common.Address{}, ContractAddress, hashInput, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(pairResult, hashResult), "HashPair and Hash with 2 elements should match")
+	require.Equal(t, pairResult, hashResult, "HashPair and Hash with 2 elements should match")
 }
 
 func TestHashPair_InputTooShort(t *testing.T) {
@@ -335,7 +335,7 @@ func TestSponge_LargeOutput_Deterministic(t *testing.T) {
 	ret2, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
 	require.NoError(t, err)
 
-	require.True(t, bytes.Equal(ret1, ret2), "sponge must be deterministic")
+	require.Equal(t, ret1, ret2, "sponge must be deterministic")
 }
 
 func BenchmarkHash1(b *testing.B) {
