@@ -5,6 +5,7 @@ package mldsa
 
 import (
 	"crypto/rand"
+	"fmt"
 	"testing"
 
 	"github.com/luxfi/crypto/mldsa"
@@ -252,6 +253,120 @@ func TestMLDSAVerify_LargeMessage(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, ret)
 	require.Equal(t, byte(1), ret[31])
+}
+
+// --- Batch Verify Tests ---
+
+// createBatchInput builds calldata for OpBatchVerify
+func createBatchInput(mode uint8, entries []struct{ pk, sig, msg []byte }) []byte {
+	count := len(entries)
+	out := []byte{OpBatchVerify, mode, byte(count >> 8), byte(count)}
+	for _, e := range entries {
+		out = append(out, e.pk...)
+		msgLen := make([]byte, 32)
+		for i := 0; i < 8; i++ {
+			msgLen[31-i] = byte(len(e.msg) >> (i * 8))
+		}
+		out = append(out, msgLen...)
+		out = append(out, e.sig...)
+		out = append(out, e.msg...)
+	}
+	return out
+}
+
+func TestBatchVerify_SingleSig(t *testing.T) {
+	message := []byte("batch single sig test")
+	pk, sig, msg := createTestSignature(t, mldsa.MLDSA65, message)
+
+	// Single verify
+	singleInput := createInputWithMode(ModeMLDSA65, pk, sig, msg)
+	singleGas := MLDSAVerifyPrecompile.RequiredGas(singleInput)
+	singleRet, _, singleErr := MLDSAVerifyPrecompile.Run(nil, common.Address{}, ContractMLDSAVerifyAddress, singleInput, singleGas, false)
+	require.NoError(t, singleErr)
+
+	// Batch verify with 1 entry
+	entries := []struct{ pk, sig, msg []byte }{{pk, sig, msg}}
+	batchInput := createBatchInput(ModeMLDSA65, entries)
+	batchGas := MLDSAVerifyPrecompile.RequiredGas(batchInput)
+	batchRet, _, batchErr := MLDSAVerifyPrecompile.Run(nil, common.Address{}, ContractMLDSAVerifyAddress, batchInput, batchGas, false)
+	require.NoError(t, batchErr)
+
+	// Single returns 1 in last byte of 32-byte word
+	require.Equal(t, byte(1), singleRet[31])
+	// Batch returns 1 in last byte of 32-byte word (1 result, right-aligned)
+	require.Equal(t, byte(1), batchRet[31])
+}
+
+func TestBatchVerify_MultipleSigs(t *testing.T) {
+	// 3 valid signatures + 1 invalid
+	type entry struct{ pk, sig, msg []byte }
+	var entries []entry
+
+	for i := 0; i < 3; i++ {
+		msg := []byte(fmt.Sprintf("valid message %d", i))
+		pk, sig, m := createTestSignature(t, mldsa.MLDSA65, msg)
+		entries = append(entries, entry{pk, sig, m})
+	}
+
+	// 4th: valid keygen but corrupted signature
+	msg4 := []byte("invalid signature message")
+	pk4, sig4, m4 := createTestSignature(t, mldsa.MLDSA65, msg4)
+	sig4[0] ^= 0xFF
+	entries = append(entries, entry{pk4, sig4, m4})
+
+	batchEntries := make([]struct{ pk, sig, msg []byte }, len(entries))
+	for i, e := range entries {
+		batchEntries[i] = struct{ pk, sig, msg []byte }{e.pk, e.sig, e.msg}
+	}
+
+	input := createBatchInput(ModeMLDSA65, batchEntries)
+	gas := MLDSAVerifyPrecompile.RequiredGas(input)
+	ret, _, err := MLDSAVerifyPrecompile.Run(nil, common.Address{}, ContractMLDSAVerifyAddress, input, gas, false)
+
+	require.NoError(t, err)
+	require.Len(t, ret, 32)
+	// 4 results right-aligned in 32 bytes: positions [28]=valid, [29]=valid, [30]=valid, [31]=invalid
+	require.Equal(t, byte(1), ret[28], "entry 0 should be valid")
+	require.Equal(t, byte(1), ret[29], "entry 1 should be valid")
+	require.Equal(t, byte(1), ret[30], "entry 2 should be valid")
+	require.Equal(t, byte(0), ret[31], "entry 3 should be invalid")
+}
+
+func TestBatchVerify_Empty(t *testing.T) {
+	input := []byte{OpBatchVerify, ModeMLDSA65, 0x00, 0x00}
+	gas := MLDSAVerifyPrecompile.RequiredGas(input)
+	ret, remaining, err := MLDSAVerifyPrecompile.Run(nil, common.Address{}, ContractMLDSAVerifyAddress, input, gas, false)
+
+	require.NoError(t, err)
+	require.Len(t, ret, 32)
+	// All zeros
+	for i := range ret {
+		require.Equal(t, byte(0), ret[i])
+	}
+	require.Equal(t, gas-gas, remaining) // all gas consumed
+}
+
+func TestBatchVerify_GasCost(t *testing.T) {
+	// Batch of N should cost less than N * single verify
+	msg := []byte("gas test message")
+	pk, sig, m := createTestSignature(t, mldsa.MLDSA65, msg)
+
+	// Single verify gas
+	singleInput := createInputWithMode(ModeMLDSA65, pk, sig, m)
+	singleGas := MLDSAVerifyPrecompile.RequiredGas(singleInput)
+
+	for _, n := range []int{1, 3, 5, 10} {
+		entries := make([]struct{ pk, sig, msg []byte }, n)
+		for i := range entries {
+			entries[i] = struct{ pk, sig, msg []byte }{pk, sig, m}
+		}
+		batchInput := createBatchInput(ModeMLDSA65, entries)
+		batchGas := MLDSAVerifyPrecompile.RequiredGas(batchInput)
+
+		totalSingleGas := uint64(n) * singleGas
+		require.Less(t, batchGas, totalSingleGas,
+			"batch of %d: %d should be < %d (N * single)", n, batchGas, totalSingleGas)
+	}
 }
 
 func TestMLDSAVerify_GasCost(t *testing.T) {
