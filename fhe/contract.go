@@ -32,7 +32,7 @@ const (
 	GasDecryptRequest uint64 = 10000
 	GasAdd            uint64 = 65000
 	GasSub            uint64 = 65000
-	GasMul            uint64 = 150000
+	GasMul            uint64 = 750000
 	GasDiv            uint64 = 500000
 	GasRem            uint64 = 500000
 	GasAnd            uint64 = 50000
