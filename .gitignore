@@ -5,3 +5,4 @@ GEMINI.md
 QWEN.md
 **/target/
 **/dist/
+*.test
