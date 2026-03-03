@@ -6,6 +6,12 @@
 //
 // Compatible with go-ethereum's ECIES implementation used in devp2p.
 // See LP-3663 for full specification.
+//
+// GPU: Single ECDH scalar multiply per call — GPU dispatch overhead exceeds
+// CPU execution time for individual operations. GPU acceleration applies at
+// the block level via parallel.BlockExecutor batch processing.
+// The secp256k1_recover.metal kernel has ec_mul_affine which is the same
+// operation; batch ECDH would use the same GPU path as batch ecrecover.
 package ecies
 
 import (
