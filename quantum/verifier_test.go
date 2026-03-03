@@ -368,7 +368,7 @@ func TestVerifyBLS(t *testing.T) {
 		t.Errorf("Expected 1 verification, got %d", qv.TotalVerifications)
 	}
 
-	_ = valid // Placeholder logic returns true
+	_ = valid // Structural validation passes for well-formed inputs
 }
 
 // TestVerifyBLSInvalidSizes tests BLS with invalid sizes
@@ -470,7 +470,7 @@ func TestVerifyAggregateBLS(t *testing.T) {
 		t.Fatalf("VerifyAggregateBLS failed: %v", err)
 	}
 
-	_ = valid // Placeholder returns true
+	_ = valid // Structural validation passes for well-formed aggregate
 }
 
 // TestVerifyAggregateBLSMismatchedLengths tests mismatched inputs
