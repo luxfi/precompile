@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math/big"
 
+	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/crypto/secp256k1"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -395,7 +396,12 @@ func lsagSign(ring [][]byte, signerSk []byte, signerIdx int, message []byte) (*L
 	}, nil
 }
 
-// lsagVerify verifies an LSAG signature
+// lsagVerify verifies an LSAG signature.
+//
+// GPU fast path: when accel is available, batch SHA256 precomputes all
+// hashToPoint values in a single GPU dispatch. The verify loop itself is
+// sequential (c[i+1] depends on c[i]) so EC scalar mults remain on CPU.
+// For block-level parallelism (many ring sig txs), use parallel.BlockExecutor.
 func lsagVerify(ring [][]byte, sig *LSAGSignature, message []byte) bool {
 	n := len(ring)
 	curve := secp256k1.S256()
@@ -406,7 +412,16 @@ func lsagVerify(ring [][]byte, sig *LSAGSignature, message []byte) bool {
 		return false
 	}
 
-	// Verify ring
+	// Precompute all hash-to-point values. The ring is known upfront so
+	// we can batch the SHA256 hashes (one per member) on GPU when available,
+	// then derive curve points on CPU. For small rings this is negligible;
+	// for large rings the batch hash amortizes GPU dispatch overhead.
+	hps := batchHashToPoint(ring)
+	if hps == nil {
+		return false
+	}
+
+	// Verify ring -- sequential: c[i+1] = H(m, L_i, R_i)
 	cPrev := sig.C[0]
 	for i := 0; i < n; i++ {
 		// Parse P[i]
@@ -421,7 +436,7 @@ func lsagVerify(ring [][]byte, sig *LSAGSignature, message []byte) bool {
 		Lx, Ly := curve.Add(sGx, sGy, cPx, cPy)
 
 		// R = s[i] * H(P[i]) + c[i] * I
-		hp := hashToPoint(ring[i])
+		hp := hps[i]
 		sHx, sHy := curve.ScalarMult(hp.X, hp.Y, sig.S[i].Bytes())
 		cIx, cIy := curve.ScalarMult(imgX, imgY, cPrev.Bytes())
 		Rx, Ry := curve.Add(sHx, sHy, cIx, cIy)
@@ -437,6 +452,32 @@ func lsagVerify(ring [][]byte, sig *LSAGSignature, message []byte) bool {
 	}
 
 	return false
+}
+
+// batchHashToPoint precomputes hashToPoint for every ring member.
+// Uses GPU-accelerated batch SHA256 when accel is available, falls back
+// to sequential CPU computation.
+func batchHashToPoint(ring [][]byte) []*Point {
+	n := len(ring)
+	points := make([]*Point, n)
+
+	// Try GPU batch SHA256 for the hash step
+	hashes, err := accelcrypto.Hash(accelcrypto.HashSHA256, ring)
+	if err == nil {
+		// GPU path: hashes computed in batch, derive curve points
+		curve := secp256k1.S256()
+		for i := 0; i < n; i++ {
+			x, y := curve.ScalarBaseMult(hashes[i][:])
+			points[i] = &Point{X: x, Y: y}
+		}
+		return points
+	}
+
+	// CPU fallback
+	for i := 0; i < n; i++ {
+		points[i] = hashToPoint(ring[i])
+	}
+	return points
 }
 
 // Point represents a curve point
