@@ -4,37 +4,51 @@
 package ecies
 
 import (
-	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
+	"github.com/luxfi/precompile/modules"
+	"github.com/luxfi/precompile/precompileconfig"
 )
 
-var (
-	// Module is the precompile module singleton
-	Module = &module{
-		address:  ContractAddress,
-		contract: ECIESPrecompile,
+var _ contract.Configurator = &configurator{}
+
+const ConfigKey = "eciesConfig"
+
+type configurator struct{}
+
+func init() {
+	if err := modules.RegisterModule(modules.Module{
+		ConfigKey:    ConfigKey,
+		Address:      ContractAddress,
+		Contract:     ECIESPrecompile,
+		Configurator: &configurator{},
+	}); err != nil {
+		panic(err)
 	}
-)
-
-type module struct {
-	address  common.Address
-	contract contract.StatefulPrecompiledContract
 }
 
-// Address returns the address where the stateful precompile is accessible.
-func (m *module) Address() common.Address {
-	return m.address
-}
+func (*configurator) MakeConfig() precompileconfig.Config { return &Config{} }
 
-// Contract returns a thread-safe singleton that can be used as the StatefulPrecompiledContract
-func (m *module) Contract() contract.StatefulPrecompiledContract {
-	return m.contract
-}
-
-// Configure is a no-op for ECIES as it has no configuration
-func (m *module) Configure(
-	_ contract.StateDB,
-	_ common.Address,
+func (*configurator) Configure(
+	chainConfig precompileconfig.ChainConfig,
+	cfg precompileconfig.Config,
+	state contract.StateDB,
+	blockContext contract.ConfigurationBlockContext,
 ) error {
 	return nil
 }
+
+type Config struct {
+	Upgrade precompileconfig.Upgrade `json:"upgrade,omitempty"`
+}
+
+func (c *Config) Key() string        { return ConfigKey }
+func (c *Config) Timestamp() *uint64 { return c.Upgrade.Timestamp() }
+func (c *Config) IsDisabled() bool   { return c.Upgrade.Disable }
+func (c *Config) Equal(cfg precompileconfig.Config) bool {
+	other, ok := cfg.(*Config)
+	if !ok {
+		return false
+	}
+	return c.Upgrade.Equal(&other.Upgrade)
+}
+func (c *Config) Verify(precompileconfig.ChainConfig) error { return nil }
