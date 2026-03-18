@@ -1,0 +1,72 @@
+---
+title: Cryptography Precompiles
+description: Post-quantum and threshold signature precompiles
+---
+
+# Cryptography Precompiles
+
+Native implementations of post-quantum cryptography and threshold signature schemes.
+
+## Address Range
+
+Cryptography precompiles occupy addresses `0x0200...0005` through `0x0200...000D`.
+
+## Precompiles
+
+### Post-Quantum Signatures
+
+| Address | Precompile | Gas | Description |
+|---------|------------|-----|-------------|
+| `0x...0005` | PQCrypto | Variable | Multi-algorithm PQ operations |
+| `0x...0006` | ML-DSA | 100,000 | FIPS 204 post-quantum signatures |
+| `0x...0007` | SLH-DSA | 150,000 | Stateless hash-based signatures |
+| `0x...0009` | ML-KEM | 50,000 | FIPS 203 key encapsulation |
+| `0x...000A` | Quasar | Variable | Quantum consensus operations |
+
+### Threshold Signatures
+
+| Address | Precompile | Gas | Description |
+|---------|------------|-----|-------------|
+| `0x...000B` | Ringtail | 150,000 | Post-quantum threshold signatures |
+| `0x...000C` | FROST | 50,000 | Schnorr threshold signatures |
+| `0x...000D` | CGGMP21 | 75,000 | ECDSA threshold signatures |
+
+### Cross-Chain
+
+| Address | Precompile | Gas | Description |
+|---------|------------|-----|-------------|
+| `0x...0008` | Warp | 120,000 | Cross-chain BLS messaging |
+
+## Usage
+
+```solidity
+import {IMLDSA} from "@luxfi/precompile/mldsa/IMLDSA.sol";
+
+contract QuantumSafeContract {
+    IMLDSA constant MLDSA = IMLDSA(0x0200000000000000000000000000000000000006);
+
+    function verifySignature(
+        bytes calldata publicKey,
+        bytes calldata message,
+        bytes calldata signature
+    ) external view returns (bool) {
+        return MLDSA.verify(publicKey, message, signature);
+    }
+}
+```
+
+## Security Levels
+
+| Algorithm | Classical Security | Quantum Security |
+|-----------|-------------------|------------------|
+| ML-DSA-44 | 128-bit | NIST Level 2 |
+| ML-DSA-65 | 192-bit | NIST Level 3 |
+| ML-DSA-87 | 256-bit | NIST Level 5 |
+| SLH-DSA | Variable | NIST Level 1-5 |
+| Ringtail | 128-bit | Quantum-resistant |
+
+## Related
+
+- **[Lux Standard Contracts](https://standard.lux.network/docs/lamport)** - Lamport signatures in pure Solidity
+- **[FROST LP-321](https://lps.lux.network)** - FROST threshold signature specification
+- **[CGGMP21 LP-322](https://lps.lux.network)** - CGGMP21 threshold ECDSA specification

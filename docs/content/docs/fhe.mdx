@@ -1,0 +1,97 @@
+---
+title: FHE Precompiles
+description: Fully Homomorphic Encryption for private computation
+---
+
+# FHE Precompiles
+
+Native precompiles for Fully Homomorphic Encryption enabling private on-chain computation.
+
+## Address Range
+
+FHE precompiles occupy addresses `0x0200...0080` through `0x0200...0083`.
+
+## Precompiles
+
+| Address | Precompile | Description |
+|---------|------------|-------------|
+| `0x...0080` | FHE Ops | Encrypted arithmetic operations |
+| `0x...0081` | FHE Config | Configuration and parameters |
+| `0x...0082` | FHE Gateway | Decryption request gateway |
+| `0x...0083` | TaskManager | Async task management |
+
+## Encrypted Types
+
+```solidity
+type ebool is uint256;    // Encrypted boolean
+type euint8 is uint256;   // Encrypted 8-bit unsigned integer
+type euint16 is uint256;  // Encrypted 16-bit unsigned integer
+type euint32 is uint256;  // Encrypted 32-bit unsigned integer
+type euint64 is uint256;  // Encrypted 64-bit unsigned integer
+type euint128 is uint256; // Encrypted 128-bit unsigned integer
+type euint256 is uint256; // Encrypted 256-bit unsigned integer
+type eaddress is uint256; // Encrypted address
+```
+
+## Operations
+
+### Arithmetic
+
+```solidity
+FHE.add(euint64 lhs, euint64 rhs) → euint64
+FHE.sub(euint64 lhs, euint64 rhs) → euint64
+FHE.mul(euint64 lhs, euint64 rhs) → euint64
+FHE.div(euint64 lhs, euint64 rhs) → euint64
+```
+
+### Comparison
+
+```solidity
+FHE.lt(euint64 lhs, euint64 rhs) → ebool
+FHE.lte(euint64 lhs, euint64 rhs) → ebool
+FHE.gt(euint64 lhs, euint64 rhs) → ebool
+FHE.gte(euint64 lhs, euint64 rhs) → ebool
+FHE.eq(euint64 lhs, euint64 rhs) → ebool
+```
+
+### Conditional
+
+```solidity
+FHE.select(ebool condition, euint64 ifTrue, euint64 ifFalse) → euint64
+```
+
+## Usage
+
+```solidity
+import {FHE, euint64} from "@luxfi/precompile/fhe/FHE.sol";
+
+contract PrivateBalance {
+    mapping(address => euint64) private balances;
+
+    function transfer(address to, euint64 amount) external {
+        euint64 senderBalance = balances[msg.sender];
+        euint64 receiverBalance = balances[to];
+
+        // All operations happen on encrypted values
+        balances[msg.sender] = FHE.sub(senderBalance, amount);
+        balances[to] = FHE.add(receiverBalance, amount);
+
+        // Allow recipient to decrypt their balance
+        FHE.allow(balances[to], to);
+    }
+}
+```
+
+## EVM Version
+
+FHE contracts require **Cancun** EVM version for transient storage:
+
+```toml
+# foundry.toml
+evm_version = "cancun"
+```
+
+## Related
+
+- **[Lux Standard Contracts](https://standard.lux.network/docs/fhe)** - ConfidentialERC20 and other FHE contracts
+- **[fhEVM Documentation](https://docs.zama.ai/fhevm)** - Underlying FHE technology
