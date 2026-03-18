@@ -31,6 +31,14 @@ Cryptography precompiles occupy addresses `0x0200...0005` through `0x0200...000D
 | `0x...000C` | FROST | 50,000 | Schnorr threshold signatures |
 | `0x...000D` | CGGMP21 | 75,000 | ECDSA threshold signatures |
 
+### Curves & Migration
+
+| Address | Precompile | Gas | Description |
+|---------|------------|-----|-------------|
+| `0x0A00...0001` | [SR25519](/docs/sr25519) | 9,000 | Substrate Schnorrkel verify (migration) |
+| `0x3211...0000` | Ed25519 | 3,000 | EdDSA verify (Solana, TON) |
+| `0x0100` | secp256r1 | 3,500 | P-256 ECDSA (WebAuthn/passkeys) |
+
 ### Cross-Chain
 
 | Address | Precompile | Gas | Description |
