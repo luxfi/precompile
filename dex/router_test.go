@@ -67,7 +67,7 @@ func TestRouterQuoteV4(t *testing.T) {
 	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
 
 	amountIn := big.NewInt(10_000)
-	amount, poolID, err := router.quoteV4(stateDB, testTokenA, testTokenB, amountIn, 0)
+	amount, poolID, poolKey, err := router.quoteV4(stateDB, testTokenA, testTokenB, amountIn, 0)
 	if err != nil {
 		t.Fatalf("quoteV4 failed: %v", err)
 	}
@@ -76,6 +76,9 @@ func TestRouterQuoteV4(t *testing.T) {
 	}
 	if poolID == ([32]byte{}) {
 		t.Fatal("expected non-zero pool ID")
+	}
+	if poolKey.Fee == 0 {
+		t.Fatal("expected non-zero pool key fee from quoteV4")
 	}
 
 	t.Logf("V4 quote: %s in -> %s out (pool=%x)", amountIn, amount, poolID[:4])
@@ -86,7 +89,7 @@ func TestRouterQuoteNoPool(t *testing.T) {
 	stateDB := NewMockStateDB()
 	router := NewLXRouter(pm)
 
-	_, _, err := router.quoteV4(stateDB, testTokenA, testTokenB, big.NewInt(1000), 0)
+	_, _, _, err := router.quoteV4(stateDB, testTokenA, testTokenB, big.NewInt(1000), 0)
 	if err == nil {
 		t.Fatal("expected error for non-existent pool")
 	}
