@@ -10,6 +10,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/geth/core/tracing"
 	ethtypes "github.com/luxfi/geth/core/types"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
@@ -242,21 +243,29 @@ func (c *DEXContract) runSwap(
 
 	stateAdapter := &poolStateAdapter{state.GetStateDB()}
 
-	// Set up temporary locker context for direct precompile calls.
-	// In full V4, lock() initiates an EVM callback; here we emulate it
-	// so that Swap/ModifyLiquidity can proceed without a prior lock().
+	// Auto-lock: push caller onto locker stack so Swap can proceed
+	// without a separate Lock() call. Settlement is handled directly.
 	c.poolManager.pushLocker(caller)
-	defer c.poolManager.popLocker(caller)
 
 	delta, err := c.poolManager.Swap(stateAdapter, key, params, hookData)
 	if err != nil {
+		_ = c.poolManager.popLocker(caller) // best-effort cleanup on error
 		return nil, suppliedGas - GasSwap, err
 	}
 
-	// Return BalanceDelta as two int256 values
+	// Auto-settle: transfer tokens based on the delta
+	if err := c.poolManager.autoSettle(stateAdapter, caller, key, delta); err != nil {
+		_ = c.poolManager.popLocker(caller) // best-effort cleanup on error
+		return nil, suppliedGas - GasSwap, err
+	}
+	if err := c.poolManager.popLocker(caller); err != nil {
+		return nil, suppliedGas - GasSwap, err
+	}
+
+	// Return BalanceDelta as two int256 values (two's complement for negatives)
 	result := make([]byte, 64)
-	copy(result[0:32], delta.Amount0.Bytes())
-	copy(result[32:64], delta.Amount1.Bytes())
+	copy(result[0:32], bigIntTo32Bytes(delta.Amount0))
+	copy(result[32:64], bigIntTo32Bytes(delta.Amount1))
 	return result, suppliedGas - GasSwap, nil
 }
 
@@ -282,21 +291,31 @@ func (c *DEXContract) runModifyLiquidity(
 
 	stateAdapter := &poolStateAdapter{state.GetStateDB()}
 
-	// Set up temporary locker context for direct precompile calls.
+	// Auto-lock: push caller onto locker stack so ModifyLiquidity can proceed
+	// without a separate Lock() call. Settlement is handled directly.
 	c.poolManager.pushLocker(caller)
-	defer c.poolManager.popLocker(caller)
 
 	delta, feeDelta, err := c.poolManager.ModifyLiquidity(stateAdapter, key, params, hookData)
 	if err != nil {
+		_ = c.poolManager.popLocker(caller) // best-effort cleanup on error
 		return nil, suppliedGas - GasAddLiquidity, err
 	}
 
-	// Return BalanceDelta and FeeDelta
+	// Auto-settle: transfer tokens based on the delta
+	if err := c.poolManager.autoSettle(stateAdapter, caller, key, delta); err != nil {
+		_ = c.poolManager.popLocker(caller) // best-effort cleanup on error
+		return nil, suppliedGas - GasAddLiquidity, err
+	}
+	if err := c.poolManager.popLocker(caller); err != nil {
+		return nil, suppliedGas - GasAddLiquidity, err
+	}
+
+	// Return BalanceDelta and FeeDelta (two's complement for negatives)
 	result := make([]byte, 128)
-	copy(result[0:32], delta.Amount0.Bytes())
-	copy(result[32:64], delta.Amount1.Bytes())
-	copy(result[64:96], feeDelta.Amount0.Bytes())
-	copy(result[96:128], feeDelta.Amount1.Bytes())
+	copy(result[0:32], bigIntTo32Bytes(delta.Amount0))
+	copy(result[32:64], bigIntTo32Bytes(delta.Amount1))
+	copy(result[64:96], bigIntTo32Bytes(feeDelta.Amount0))
+	copy(result[96:128], bigIntTo32Bytes(feeDelta.Amount1))
 	return result, suppliedGas - GasAddLiquidity, nil
 }
 
@@ -445,11 +464,11 @@ func (a *poolStateAdapter) GetBalance(addr common.Address) *uint256.Int {
 }
 
 func (a *poolStateAdapter) AddBalance(addr common.Address, amount *uint256.Int) {
-	// Not directly available, would need tracing reason
+	a.stateDB.AddBalance(addr, amount, tracing.BalanceChangeUnspecified)
 }
 
 func (a *poolStateAdapter) SubBalance(addr common.Address, amount *uint256.Int) {
-	// Not directly available, would need tracing reason
+	a.stateDB.SubBalance(addr, amount, tracing.BalanceChangeUnspecified)
 }
 
 func (a *poolStateAdapter) Exist(addr common.Address) bool {
@@ -488,7 +507,8 @@ func DecodePoolKey(input []byte) (PoolKey, error) {
 	key.Currency0 = Currency{Address: common.BytesToAddress(input[12:32])}
 	key.Currency1 = Currency{Address: common.BytesToAddress(input[44:64])}
 	key.Fee = uint24(binary.BigEndian.Uint32(append([]byte{0}, input[64:67]...)))
-	key.TickSpacing = int24(binary.BigEndian.Uint32(append([]byte{0}, input[67:70]...)))
+	// F12: TickSpacing is int24 -- sign-extend from 3 bytes
+	key.TickSpacing = decodeInt24(input[67:70])
 	key.Hooks = common.BytesToAddress(input[76:96])
 
 	return key, nil
@@ -505,9 +525,13 @@ func DecodeSwapInput(input []byte) (PoolKey, SwapParams, []byte, error) {
 		return PoolKey{}, SwapParams{}, nil, err
 	}
 
+	// F4: AmountSpecified is a signed int256 (two's complement).
+	// If the high bit is set, the value is negative.
+	amountSpecified := decodeSigned256(input[129:161])
+
 	params := SwapParams{
 		ZeroForOne:        input[128] == 1,
-		AmountSpecified:   new(big.Int).SetBytes(input[129:161]),
+		AmountSpecified:   amountSpecified,
 		SqrtPriceLimitX96: new(big.Int).SetBytes(input[161:193]),
 	}
 
@@ -526,10 +550,12 @@ func DecodeModifyLiquidityInput(input []byte) (PoolKey, ModifyLiquidityParams, [
 		return PoolKey{}, ModifyLiquidityParams{}, nil, err
 	}
 
+	// F12: TickLower and TickUpper are signed int24 values. Sign-extend from 3 bytes.
+	// F4: LiquidityDelta is a signed int256 (two's complement).
 	params := ModifyLiquidityParams{
-		TickLower:      int24(binary.BigEndian.Uint32(append([]byte{0}, input[128:131]...))),
-		TickUpper:      int24(binary.BigEndian.Uint32(append([]byte{0}, input[131:134]...))),
-		LiquidityDelta: new(big.Int).SetBytes(input[134:166]),
+		TickLower:      decodeInt24(input[128:131]),
+		TickUpper:      decodeInt24(input[131:134]),
+		LiquidityDelta: decodeSigned256(input[134:166]),
 	}
 
 	hookData := input[192:]
@@ -539,10 +565,52 @@ func DecodeModifyLiquidityInput(input []byte) (PoolKey, ModifyLiquidityParams, [
 // EncodePoolState encodes pool state for return
 func EncodePoolState(pool *Pool) []byte {
 	result := make([]byte, 160)
-	copy(result[0:32], pool.SqrtPriceX96.Bytes())
+	copy(result[0:32], bigIntTo32Bytes(pool.SqrtPriceX96))
 	binary.BigEndian.PutUint32(result[32:36], uint32(pool.Tick))
-	copy(result[64:96], pool.Liquidity.Bytes())
-	copy(result[96:128], pool.FeeGrowth0X128.Bytes())
-	copy(result[128:160], pool.FeeGrowth1X128.Bytes())
+	copy(result[64:96], bigIntTo32Bytes(pool.Liquidity))
+	copy(result[96:128], bigIntTo32Bytes(pool.FeeGrowth0X128))
+	copy(result[128:160], bigIntTo32Bytes(pool.FeeGrowth1X128))
 	return result
+}
+
+// bigIntTo32Bytes encodes a big.Int as a 32-byte ABI word.
+// Positive values are zero-padded. Negative values use two's complement (2^256 + v).
+// This prevents FillBytes from panicking on negative values and ensures correct
+// ABI encoding for signed integer return values.
+func bigIntTo32Bytes(v *big.Int) []byte {
+	result := make([]byte, 32)
+	if v == nil || v.Sign() == 0 {
+		return result
+	}
+	if v.Sign() > 0 {
+		v.FillBytes(result)
+	} else {
+		// Two's complement: 2^256 + v
+		tc := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 256), v)
+		tc.FillBytes(result)
+	}
+	return result
+}
+
+// decodeSigned256 decodes a 32-byte big-endian two's complement int256.
+// If the high bit is set, the value is negative: value = raw - 2^256.
+func decodeSigned256(b []byte) *big.Int {
+	val := new(big.Int).SetBytes(b)
+	if len(b) > 0 && b[0]&0x80 != 0 {
+		val.Sub(val, new(big.Int).Lsh(big.NewInt(1), 256))
+	}
+	return val
+}
+
+// decodeInt24 decodes a 3-byte big-endian signed int24 value with sign extension.
+// Values >= 2^23 (sign bit set) are negative: value = raw - 2^24.
+func decodeInt24(b []byte) int24 {
+	if len(b) < 3 {
+		return 0
+	}
+	val := int32(b[0])<<16 | int32(b[1])<<8 | int32(b[2])
+	if val >= 1<<23 { // sign bit set
+		val -= 1 << 24
+	}
+	return int24(val)
 }
