@@ -190,54 +190,92 @@ func TestPoolManagerInitializeInvalidSqrtPrice(t *testing.T) {
 }
 
 // =========================================================================
-// Flash Accounting Tests
+// Direct Caller API Tests (no lock pattern — blockchain provides ordering)
 // =========================================================================
 
-func TestPoolManagerLock(t *testing.T) {
+func TestPoolManagerSwapDirectCaller(t *testing.T) {
 	pm := newTestPoolManager()
 	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Lock should succeed
-	_, err := pm.Lock(stateDB, caller, nil)
+	// Initialize pool
+	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != nil {
-		t.Fatalf("Lock failed: %v", err)
+		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// Verify no deltas remain
-	delta := pm.GetDelta(caller, NativeCurrency)
-	if delta.Sign() != 0 {
-		t.Errorf("Expected zero delta, got: %s", delta)
+	// Add liquidity
+	pool := pm.pools[key.ID()]
+	pool.Liquidity = big.NewInt(1000000000)
+
+	// Swap directly with caller — no lock needed
+	params := SwapParams{
+		ZeroForOne:        true,
+		AmountSpecified:   big.NewInt(1000),
+		SqrtPriceLimitX96: MinSqrtRatio,
 	}
+
+	delta, err := pm.Swap(stateDB, caller, key, params, nil)
+	if err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	if delta.Amount0.Sign() == 0 && delta.Amount1.Sign() == 0 {
+		t.Error("Expected non-zero delta from swap")
+	}
+
+	t.Logf("Direct caller swap delta: amount0=%s, amount1=%s", delta.Amount0, delta.Amount1)
 }
 
-func TestPoolManagerSettlement(t *testing.T) {
+func TestPoolManagerAutoSettleAfterSwap(t *testing.T) {
 	pm := newTestPoolManager()
 	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Initialize caller balance
+	// Initialize caller with native balance (token0 is native LUX)
 	stateDB.CreateAccount(caller)
 	stateDB.AddBalance(caller, uint256.NewInt(1000000))
 
-	// Simulate lock context
-	pm.lockers = append(pm.lockers, caller)
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
+	// Fund pool manager with ERC20 token1 so it can pay caller
+	token1Addr := key.Currency1.Address
+	erc20Base, _ := new(big.Int).SetString("52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00", 16)
+	pmSlot := erc20BalanceSlot(erc20Base, poolManagerAddr)
+	var pmBal common.Hash
+	big.NewInt(1000000).FillBytes(pmBal[:])
+	stateDB.SetState(token1Addr, pmSlot, pmBal)
 
-	// Create a positive delta (caller owes pool)
-	pm.updateDelta(caller, NativeCurrency, big.NewInt(1000))
-
-	// Settle the delta
-	err := pm.Settle(stateDB, NativeCurrency, big.NewInt(1000))
+	// Initialize pool
+	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != nil {
-		t.Fatalf("Settle failed: %v", err)
+		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// Verify delta is now zero
-	delta := pm.GetDelta(caller, NativeCurrency)
-	if delta.Sign() != 0 {
-		t.Errorf("Expected zero delta after settlement, got: %s", delta)
+	pool := pm.pools[key.ID()]
+	pool.Liquidity = big.NewInt(1000000000)
+
+	// Swap: caller sends native LUX (token0), receives ERC20 (token1)
+	params := SwapParams{
+		ZeroForOne:        true,
+		AmountSpecified:   big.NewInt(1000),
+		SqrtPriceLimitX96: MinSqrtRatio,
 	}
+
+	delta, err := pm.Swap(stateDB, caller, key, params, nil)
+	if err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	// autoSettle handles token transfers
+	err = pm.autoSettle(stateDB, caller, key, delta)
+	if err != nil {
+		t.Fatalf("autoSettle failed: %v", err)
+	}
+
+	t.Logf("autoSettle completed: delta amount0=%s, amount1=%s", delta.Amount0, delta.Amount1)
 }
 
 // =========================================================================
@@ -261,18 +299,14 @@ func TestPoolManagerSwap(t *testing.T) {
 	pool := pm.pools[key.ID()]
 	pool.Liquidity = big.NewInt(1000000000) // 1B liquidity
 
-	// Simulate lock context
-	pm.lockers = append(pm.lockers, caller)
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
-	// Execute swap
+	// Execute swap with caller directly
 	params := SwapParams{
 		ZeroForOne:        true,
 		AmountSpecified:   big.NewInt(1000), // Exact input
 		SqrtPriceLimitX96: MinSqrtRatio,
 	}
 
-	delta, err := pm.Swap(stateDB, key, params, nil)
+	delta, err := pm.Swap(stateDB, caller, key, params, nil)
 	if err != nil {
 		t.Fatalf("Swap failed: %v", err)
 	}
@@ -285,28 +319,34 @@ func TestPoolManagerSwap(t *testing.T) {
 	}
 }
 
-func TestPoolManagerSwapWithoutLock(t *testing.T) {
+func TestPoolManagerSwapNoLockNeeded(t *testing.T) {
 	pm := newTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Initialize pool
+	// Initialize pool with liquidity
 	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
 	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
+	pool := pm.pools[key.ID()]
+	pool.Liquidity = big.NewInt(1000000000)
 
-	// Try to swap without lock context
+	// Swap works directly — no lock needed
 	params := SwapParams{
 		ZeroForOne:        true,
 		AmountSpecified:   big.NewInt(1000),
 		SqrtPriceLimitX96: MinSqrtRatio,
 	}
 
-	_, err = pm.Swap(stateDB, key, params, nil)
-	if err != ErrUnauthorized {
-		t.Errorf("Expected ErrUnauthorized, got: %v", err)
+	delta, err := pm.Swap(stateDB, caller, key, params, nil)
+	if err != nil {
+		t.Fatalf("Swap should succeed without lock, got: %v", err)
+	}
+	if delta.Amount0.Sign() == 0 && delta.Amount1.Sign() == 0 {
+		t.Error("Expected non-zero delta")
 	}
 }
 
@@ -316,10 +356,6 @@ func TestPoolManagerSwapUninitializedPool(t *testing.T) {
 	key := newTestPoolKey()
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Simulate lock context
-	pm.lockers = append(pm.lockers, caller)
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
 	// Try to swap in uninitialized pool
 	params := SwapParams{
 		ZeroForOne:        true,
@@ -327,7 +363,7 @@ func TestPoolManagerSwapUninitializedPool(t *testing.T) {
 		SqrtPriceLimitX96: MinSqrtRatio,
 	}
 
-	_, err := pm.Swap(stateDB, key, params, nil)
+	_, err := pm.Swap(stateDB, caller, key, params, nil)
 	if err != ErrPoolNotInitialized {
 		t.Errorf("Expected ErrPoolNotInitialized, got: %v", err)
 	}
@@ -350,11 +386,7 @@ func TestPoolManagerModifyLiquidity(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// Simulate lock context
-	pm.lockers = append(pm.lockers, caller)
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
-	// Add liquidity
+	// Add liquidity with caller directly
 	params := ModifyLiquidityParams{
 		TickLower:      -1000,
 		TickUpper:      1000,
@@ -362,7 +394,7 @@ func TestPoolManagerModifyLiquidity(t *testing.T) {
 		Salt:           [32]byte{},
 	}
 
-	callerDelta, feesAccrued, err := pm.ModifyLiquidity(stateDB, key, params, nil)
+	callerDelta, feesAccrued, err := pm.ModifyLiquidity(stateDB, caller, key, params, nil)
 	if err != nil {
 		t.Fatalf("ModifyLiquidity failed: %v", err)
 	}
@@ -394,10 +426,6 @@ func TestPoolManagerModifyLiquidityInvalidTickRange(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// Simulate lock context
-	pm.lockers = append(pm.lockers, caller)
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
 	// Try to add liquidity with invalid tick range (lower >= upper)
 	params := ModifyLiquidityParams{
 		TickLower:      1000,
@@ -406,7 +434,7 @@ func TestPoolManagerModifyLiquidityInvalidTickRange(t *testing.T) {
 		Salt:           [32]byte{},
 	}
 
-	_, _, err = pm.ModifyLiquidity(stateDB, key, params, nil)
+	_, _, err = pm.ModifyLiquidity(stateDB, caller, key, params, nil)
 	if err != ErrInvalidTickRange {
 		t.Errorf("Expected ErrInvalidTickRange, got: %v", err)
 	}
@@ -433,15 +461,11 @@ func TestPoolManagerDonate(t *testing.T) {
 	pool := pm.pools[key.ID()]
 	pool.Liquidity = big.NewInt(1000000000)
 
-	// Simulate lock context
-	pm.lockers = append(pm.lockers, caller)
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
-	// Donate tokens
+	// Donate tokens with caller directly
 	amount0 := big.NewInt(10000)
 	amount1 := big.NewInt(20000)
 
-	delta, err := pm.Donate(stateDB, key, amount0, amount1, nil)
+	delta, err := pm.Donate(stateDB, caller, key, amount0, amount1, nil)
 	if err != nil {
 		t.Fatalf("Donate failed: %v", err)
 	}
@@ -475,11 +499,7 @@ func TestPoolManagerFlash(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// Simulate lock context
-	pm.lockers = append(pm.lockers, caller)
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
-	// Execute flash loan
+	// Execute flash loan with caller directly
 	params := FlashParams{
 		Amount0:   big.NewInt(100000),
 		Amount1:   big.NewInt(200000),
@@ -487,7 +507,7 @@ func TestPoolManagerFlash(t *testing.T) {
 		Data:      nil,
 	}
 
-	delta, err := pm.Flash(stateDB, key, params, nil)
+	delta, err := pm.Flash(stateDB, caller, key, params, nil)
 	if err != nil {
 		t.Fatalf("Flash failed: %v", err)
 	}
@@ -692,17 +712,14 @@ func TestSwapEmitsEvent(t *testing.T) {
 	// Clear logs from Initialize
 	stateDB.logs = nil
 
-	// Setup lock context and swap
-	pm.lockers = append(pm.lockers, caller)
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
+	// Swap with caller directly
 	params := SwapParams{
 		ZeroForOne:        true,
 		AmountSpecified:   big.NewInt(1000),
 		SqrtPriceLimitX96: MinSqrtRatio,
 	}
 
-	_, err = pm.Swap(stateDB, key, params, nil)
+	_, err = pm.Swap(stateDB, caller, key, params, nil)
 	if err != nil {
 		t.Fatalf("Swap failed: %v", err)
 	}
@@ -749,10 +766,7 @@ func TestModifyLiquidityEmitsEvent(t *testing.T) {
 	// Clear logs from Initialize
 	stateDB.logs = nil
 
-	// Setup lock context
-	pm.lockers = append(pm.lockers, caller)
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
+	// ModifyLiquidity with caller directly
 	params := ModifyLiquidityParams{
 		TickLower:      -1000,
 		TickUpper:      1000,
@@ -760,7 +774,7 @@ func TestModifyLiquidityEmitsEvent(t *testing.T) {
 		Salt:           [32]byte{},
 	}
 
-	_, _, err = pm.ModifyLiquidity(stateDB, key, params, nil)
+	_, _, err = pm.ModifyLiquidity(stateDB, caller, key, params, nil)
 	if err != nil {
 		t.Fatalf("ModifyLiquidity failed: %v", err)
 	}
@@ -838,15 +852,7 @@ func BenchmarkPoolManagerSwap(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Setup lock context
-		pm.lockers = []common.Address{caller}
-		pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
-		pm.Swap(stateDB, key, params, nil)
-
-		// Cleanup
-		pm.lockers = nil
-		delete(pm.currentDeltas, caller)
+		pm.Swap(stateDB, caller, key, params, nil)
 	}
 }
 
@@ -869,15 +875,7 @@ func BenchmarkPoolManagerModifyLiquidity(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Setup lock context
-		pm.lockers = []common.Address{caller}
-		pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
-		pm.ModifyLiquidity(stateDB, key, params, nil)
-
-		// Cleanup
-		pm.lockers = nil
-		delete(pm.currentDeltas, caller)
+		pm.ModifyLiquidity(stateDB, caller, key, params, nil)
 	}
 }
 
@@ -1032,15 +1030,12 @@ func TestModifyLiquidityRejectsNegativePoolLiquidity(t *testing.T) {
 	}
 
 	// Add some liquidity first
-	pm.lockers = append(pm.lockers, caller)
-	pm.currentDeltas[caller] = make(map[Currency]*big.Int)
-
 	addParams := ModifyLiquidityParams{
 		TickLower:      -1000,
 		TickUpper:      1000,
 		LiquidityDelta: big.NewInt(500),
 	}
-	_, _, err = pm.ModifyLiquidity(stateDB, key, addParams, nil)
+	_, _, err = pm.ModifyLiquidity(stateDB, caller, key, addParams, nil)
 	if err != nil {
 		t.Fatalf("AddLiquidity failed: %v", err)
 	}
@@ -1051,7 +1046,7 @@ func TestModifyLiquidityRejectsNegativePoolLiquidity(t *testing.T) {
 		TickUpper:      1000,
 		LiquidityDelta: big.NewInt(-1000), // more than the 500 we added
 	}
-	_, _, err = pm.ModifyLiquidity(stateDB, key, removeParams, nil)
+	_, _, err = pm.ModifyLiquidity(stateDB, caller, key, removeParams, nil)
 	if err == nil {
 		t.Fatal("expected error when removing more liquidity than exists")
 	}
@@ -1153,33 +1148,45 @@ func TestDecodeModifyLiquidityInputNegativeTicks(t *testing.T) {
 	t.Logf("F12: TickLower=%d, TickUpper=%d decoded correctly", params.TickLower, params.TickUpper)
 }
 
-// F9: popLocker must verify caller identity.
-func TestPopLockerVerifiesCaller(t *testing.T) {
+// F9: No lock/locker pattern — blockchain provides ordering.
+// This test verifies that operations work directly with caller address.
+func TestCallerBasedOperations(t *testing.T) {
 	pm := newTestPoolManager()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	other := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+	caller1 := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	caller2 := common.HexToAddress("0x2222222222222222222222222222222222222222")
 
-	pm.pushLocker(caller)
-
-	// Wrong caller should fail
-	err := pm.popLocker(other)
-	if err == nil {
-		t.Fatal("expected error when popping with wrong caller")
-	}
-	t.Logf("F9 correctly rejected: %v", err)
-
-	// Correct caller should succeed
-	err = pm.popLocker(caller)
+	// Initialize pool
+	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != nil {
-		t.Fatalf("expected success for correct caller, got: %v", err)
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	pool := pm.pools[key.ID()]
+	pool.Liquidity = big.NewInt(1000000000)
+
+	params := SwapParams{
+		ZeroForOne:        true,
+		AmountSpecified:   big.NewInt(1000),
+		SqrtPriceLimitX96: MinSqrtRatio,
 	}
 
-	// Empty stack should fail
-	err = pm.popLocker(caller)
-	if err == nil {
-		t.Fatal("expected error when popping empty stack")
+	// Both callers can swap independently — no lock needed
+	delta1, err := pm.Swap(stateDB, caller1, key, params, nil)
+	if err != nil {
+		t.Fatalf("caller1 swap failed: %v", err)
 	}
-	t.Log("F9: popLocker identity verification works correctly")
+
+	delta2, err := pm.Swap(stateDB, caller2, key, params, nil)
+	if err != nil {
+		t.Fatalf("caller2 swap failed: %v", err)
+	}
+
+	if delta1.Amount0.Sign() == 0 || delta2.Amount0.Sign() == 0 {
+		t.Error("Expected non-zero deltas for both callers")
+	}
+	t.Log("F9: caller-based operations work correctly without lock pattern")
 }
 
 // F8: Router executeV4Swap must use actual PoolKey (non-zero fee).
