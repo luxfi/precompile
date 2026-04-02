@@ -39,7 +39,7 @@ var (
 	lxVaultAddr  = common.HexToAddress(LXVaultAddress)  // LP-9030 LXVault
 	lxFeedAddr   = common.HexToAddress(LXFeedAddress)   // LP-9040 LXFeed
 	lxLendAddr   = common.HexToAddress(LXLendAddress)   // LP-9050 LXLend (lending pool)
-	lxLiquidAddr = common.HexToAddress(LXLiquidAddress) // LP-9060 LXLiquid (self-repaying loans)
+	lxLiquidAddr = common.HexToAddress(LXAutoRepayAddress) // LP-9060 LXLiquid (self-repaying loans)
 )
 
 // DEXPrecompile is the singleton instance.

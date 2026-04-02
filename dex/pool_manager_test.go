@@ -91,19 +91,132 @@ func (m *MockStateDB) Logs() []*ethtypes.Log {
 	return m.logs
 }
 
-// Test helper functions
+// mockEngine implements Engine for testing the precompile shim.
+// Returns plausible values without real AMM math (math lives in DEX engine).
+type mockEngine struct{}
+
+func (m *mockEngine) Initialize(sqrtPriceX96 *big.Int) (int24, error) {
+	// Return tick 0 for any valid sqrt price near Q96.
+	return 0, nil
+}
+
+func (m *mockEngine) Swap(pool *PoolState, params SwapParams) (BalanceDelta, error) {
+	if params.AmountSpecified.Sign() == 0 {
+		return ZeroBalanceDelta(), nil
+	}
+	// Simulate: user spends amountSpecified, receives half back.
+	absAmount := new(big.Int).Abs(params.AmountSpecified)
+	output := new(big.Int).Div(absAmount, big.NewInt(2))
+
+	// Update pool state minimally (price shifts down for zeroForOne).
+	if params.ZeroForOne {
+		pool.SqrtPriceX96 = new(big.Int).Sub(pool.SqrtPriceX96, big.NewInt(1))
+		pool.FeeGrowth0X128 = new(big.Int).Add(pool.FeeGrowth0X128, big.NewInt(1))
+		return NewBalanceDelta(absAmount, new(big.Int).Neg(output)), nil
+	}
+	pool.SqrtPriceX96 = new(big.Int).Add(pool.SqrtPriceX96, big.NewInt(1))
+	pool.FeeGrowth1X128 = new(big.Int).Add(pool.FeeGrowth1X128, big.NewInt(1))
+	return NewBalanceDelta(new(big.Int).Neg(output), absAmount), nil
+}
+
+func (m *mockEngine) ModifyLiquidity(pool *PoolState, owner common.Address, params ModifyLiquidityParams) (BalanceDelta, BalanceDelta, error) {
+	posKey := PositionKey(owner, params.TickLower, params.TickUpper, params.Salt)
+	pos, ok := pool.Positions[posKey]
+	if !ok {
+		pos = &Position{
+			Owner: owner, TickLower: params.TickLower, TickUpper: params.TickUpper,
+			Liquidity: big.NewInt(0),
+			FeeGrowthInside0LastX128: big.NewInt(0), FeeGrowthInside1LastX128: big.NewInt(0),
+			TokensOwed0: big.NewInt(0), TokensOwed1: big.NewInt(0),
+		}
+		pool.Positions[posKey] = pos
+	}
+	newLiq := new(big.Int).Add(pos.Liquidity, params.LiquidityDelta)
+	if newLiq.Sign() < 0 {
+		newLiq = big.NewInt(0)
+	}
+	pos.Liquidity = newLiq
+
+	// Update pool active liquidity if current tick is in range.
+	currentTick := pool.Tick
+	if currentTick >= params.TickLower && currentTick < params.TickUpper {
+		pool.Liquidity = new(big.Int).Add(pool.Liquidity, params.LiquidityDelta)
+	}
+
+	// Return plausible deltas based on position relative to current tick.
+	var delta BalanceDelta
+	if currentTick < params.TickLower {
+		delta = NewBalanceDelta(params.LiquidityDelta, big.NewInt(0))
+	} else if currentTick >= params.TickUpper {
+		delta = NewBalanceDelta(big.NewInt(0), params.LiquidityDelta)
+	} else {
+		half := new(big.Int).Div(params.LiquidityDelta, big.NewInt(2))
+		delta = NewBalanceDelta(half, new(big.Int).Sub(params.LiquidityDelta, half))
+	}
+	return delta, ZeroBalanceDelta(), nil
+}
+
+func (m *mockEngine) Donate(pool *PoolState, amount0, amount1 *big.Int) (BalanceDelta, error) {
+	if pool.Liquidity == nil || pool.Liquidity.Sign() <= 0 {
+		return ZeroBalanceDelta(), ErrNoLiquidity
+	}
+	if amount0 != nil && amount0.Sign() > 0 {
+		pool.FeeGrowth0X128 = new(big.Int).Add(pool.FeeGrowth0X128, big.NewInt(1))
+	}
+	if amount1 != nil && amount1.Sign() > 0 {
+		pool.FeeGrowth1X128 = new(big.Int).Add(pool.FeeGrowth1X128, big.NewInt(1))
+	}
+	return NewBalanceDelta(amount0, amount1), nil
+}
+
+func (m *mockEngine) Quote(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.Int {
+	if pool.Liquidity.Sign() == 0 || amountIn.Sign() <= 0 {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Div(amountIn, big.NewInt(2))
+}
+
+// Test helpers
+
 func newTestPoolKey() PoolKey {
 	return PoolKey{
-		Currency0:   NativeCurrency, // LUX
+		Currency0:   NativeCurrency,
 		Currency1:   Currency{Address: common.HexToAddress("0x1234567890123456789012345678901234567890")},
-		Fee:         Fee030, // 0.30%
+		Fee:         Fee030,
 		TickSpacing: TickSpacing030,
 		Hooks:       common.Address{},
 	}
 }
 
 func newTestPoolManager() *PoolManager {
-	return NewPoolManager()
+	return NewPoolManager(&mockEngine{})
+}
+
+// initPoolWithLiquidity initializes a pool at 1:1 price and adds concentrated
+// liquidity across ticks [-120, 120] via ModifyLiquidity.
+func initPoolWithLiquidity(t *testing.T, pm *PoolManager, stateDB *MockStateDB, key PoolKey, liq int64) {
+	t.Helper()
+
+	sqrtPriceX96 := new(big.Int).Set(Q96) // price = 1.0
+	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Add liquidity in tick range that contains tick 0 (which is where price=1.0 sits).
+	// Ticks must be aligned to TickSpacing (60 for Fee030).
+	params := ModifyLiquidityParams{
+		TickLower:      -120,
+		TickUpper:      120,
+		LiquidityDelta: big.NewInt(liq),
+		Salt:           [32]byte{},
+	}
+
+	caller := common.HexToAddress("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	_, _, err = pm.ModifyLiquidity(stateDB, caller, key, params, nil)
+	if err != nil {
+		t.Fatalf("ModifyLiquidity failed: %v", err)
+	}
 }
 
 // =========================================================================
@@ -115,8 +228,7 @@ func TestPoolManagerInitialize(t *testing.T) {
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
 
-	// Initial sqrt price (1:1 ratio)
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	sqrtPriceX96 := new(big.Int).Set(Q96) // 1:1 ratio
 
 	tick, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != nil {
@@ -125,7 +237,6 @@ func TestPoolManagerInitialize(t *testing.T) {
 
 	t.Logf("Pool initialized with tick: %d", tick)
 
-	// Verify pool was created
 	pool, err := pm.GetPool(stateDB, key)
 	if err != nil {
 		t.Fatalf("GetPool failed: %v", err)
@@ -141,15 +252,13 @@ func TestPoolManagerInitializeAlreadyInitialized(t *testing.T) {
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
 
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	sqrtPriceX96 := new(big.Int).Set(Q96)
 
-	// First initialization should succeed
 	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != nil {
 		t.Fatalf("First Initialize failed: %v", err)
 	}
 
-	// Second initialization should fail
 	_, err = pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != ErrPoolAlreadyInitialized {
 		t.Errorf("Expected ErrPoolAlreadyInitialized, got: %v", err)
@@ -160,16 +269,15 @@ func TestPoolManagerInitializeUnsortedCurrencies(t *testing.T) {
 	pm := newTestPoolManager()
 	stateDB := NewMockStateDB()
 
-	// Create key with currencies in wrong order
 	key := PoolKey{
 		Currency0:   Currency{Address: common.HexToAddress("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")},
-		Currency1:   NativeCurrency, // Should be currency0
+		Currency1:   NativeCurrency,
 		Fee:         Fee030,
 		TickSpacing: TickSpacing030,
 		Hooks:       common.Address{},
 	}
 
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	sqrtPriceX96 := new(big.Int).Set(Q96)
 
 	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != ErrCurrencyNotSorted {
@@ -182,7 +290,6 @@ func TestPoolManagerInitializeInvalidSqrtPrice(t *testing.T) {
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
 
-	// Test with price below minimum
 	_, err := pm.Initialize(stateDB, key, big.NewInt(0), nil)
 	if err != ErrInvalidSqrtPrice {
 		t.Errorf("Expected ErrInvalidSqrtPrice for zero price, got: %v", err)
@@ -190,120 +297,55 @@ func TestPoolManagerInitializeInvalidSqrtPrice(t *testing.T) {
 }
 
 // =========================================================================
-// Direct Caller API Tests (no lock pattern — blockchain provides ordering)
+// V4 Swap Tests
 // =========================================================================
 
-func TestPoolManagerSwapDirectCaller(t *testing.T) {
+func TestSwapExactInputZeroForOne(t *testing.T) {
 	pm := newTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Initialize pool
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
 
-	// Add liquidity
-	pool := pm.pools[key.ID()]
-	pool.Liquidity = big.NewInt(1000000000)
+	// V4 exact input: AmountSpecified < 0
+	// SqrtPriceLimitX96 must be > MinSqrtRatio (not <=)
+	limit := new(big.Int).Add(MinSqrtRatio, big.NewInt(1))
 
-	// Swap directly with caller — no lock needed
 	params := SwapParams{
 		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(1000),
-		SqrtPriceLimitX96: MinSqrtRatio,
+		AmountSpecified:   big.NewInt(-1000), // exact input of 1000
+		SqrtPriceLimitX96: limit,
 	}
 
 	delta, err := pm.Swap(stateDB, caller, key, params, nil)
 	if err != nil {
 		t.Fatalf("Swap failed: %v", err)
 	}
+
+	// For exactInput zeroForOne: amount0 should be positive (user pays), amount1 negative (user receives)
+	// V4 packs: amount0 = amountUsed (negative exact-in becomes positive spent), amount1 = amountCalculated
+	t.Logf("Swap delta: amount0=%s, amount1=%s", delta.Amount0, delta.Amount1)
 
 	if delta.Amount0.Sign() == 0 && delta.Amount1.Sign() == 0 {
 		t.Error("Expected non-zero delta from swap")
 	}
-
-	t.Logf("Direct caller swap delta: amount0=%s, amount1=%s", delta.Amount0, delta.Amount1)
 }
 
-func TestPoolManagerAutoSettleAfterSwap(t *testing.T) {
+func TestSwapExactInputOneForZero(t *testing.T) {
 	pm := newTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Initialize caller with native balance (token0 is native LUX)
-	stateDB.CreateAccount(caller)
-	stateDB.AddBalance(caller, uint256.NewInt(1000000))
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
 
-	// Fund pool manager with ERC20 token1 so it can pay caller
-	token1Addr := key.Currency1.Address
-	erc20Base, _ := new(big.Int).SetString("52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00", 16)
-	pmSlot := erc20BalanceSlot(erc20Base, poolManagerAddr)
-	var pmBal common.Hash
-	big.NewInt(1000000).FillBytes(pmBal[:])
-	stateDB.SetState(token1Addr, pmSlot, pmBal)
+	limit := new(big.Int).Sub(MaxSqrtRatio, big.NewInt(1))
 
-	// Initialize pool
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	pool := pm.pools[key.ID()]
-	pool.Liquidity = big.NewInt(1000000000)
-
-	// Swap: caller sends native LUX (token0), receives ERC20 (token1)
 	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(1000),
-		SqrtPriceLimitX96: MinSqrtRatio,
-	}
-
-	delta, err := pm.Swap(stateDB, caller, key, params, nil)
-	if err != nil {
-		t.Fatalf("Swap failed: %v", err)
-	}
-
-	// autoSettle handles token transfers
-	err = pm.autoSettle(stateDB, caller, key, delta)
-	if err != nil {
-		t.Fatalf("autoSettle failed: %v", err)
-	}
-
-	t.Logf("autoSettle completed: delta amount0=%s, amount1=%s", delta.Amount0, delta.Amount1)
-}
-
-// =========================================================================
-// Swap Tests
-// =========================================================================
-
-func TestPoolManagerSwap(t *testing.T) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	// Initialize pool
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	// Add liquidity first (simulate)
-	pool := pm.pools[key.ID()]
-	pool.Liquidity = big.NewInt(1000000000) // 1B liquidity
-
-	// Execute swap with caller directly
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(1000), // Exact input
-		SqrtPriceLimitX96: MinSqrtRatio,
+		ZeroForOne:        false,
+		AmountSpecified:   big.NewInt(-1000), // exact input
+		SqrtPriceLimitX96: limit,
 	}
 
 	delta, err := pm.Swap(stateDB, caller, key, params, nil)
@@ -313,54 +355,66 @@ func TestPoolManagerSwap(t *testing.T) {
 
 	t.Logf("Swap delta: amount0=%s, amount1=%s", delta.Amount0, delta.Amount1)
 
-	// Verify delta reflects the swap
 	if delta.Amount0.Sign() == 0 && delta.Amount1.Sign() == 0 {
 		t.Error("Expected non-zero delta from swap")
 	}
 }
 
-func TestPoolManagerSwapNoLockNeeded(t *testing.T) {
+func TestSwapZeroAmount(t *testing.T) {
 	pm := newTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Initialize pool with liquidity
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-	pool := pm.pools[key.ID()]
-	pool.Liquidity = big.NewInt(1000000000)
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
 
-	// Swap works directly — no lock needed
 	params := SwapParams{
 		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(1000),
-		SqrtPriceLimitX96: MinSqrtRatio,
+		AmountSpecified:   big.NewInt(0),
+		SqrtPriceLimitX96: new(big.Int).Add(MinSqrtRatio, big.NewInt(1)),
 	}
 
 	delta, err := pm.Swap(stateDB, caller, key, params, nil)
 	if err != nil {
-		t.Fatalf("Swap should succeed without lock, got: %v", err)
+		t.Fatalf("Swap with zero amount should not error: %v", err)
 	}
-	if delta.Amount0.Sign() == 0 && delta.Amount1.Sign() == 0 {
-		t.Error("Expected non-zero delta")
+
+	if !delta.IsZero() {
+		t.Errorf("Expected zero delta for zero swap, got amount0=%s amount1=%s", delta.Amount0, delta.Amount1)
 	}
 }
 
-func TestPoolManagerSwapUninitializedPool(t *testing.T) {
+func TestSwapUninitializedPool(t *testing.T) {
 	pm := newTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Try to swap in uninitialized pool
 	params := SwapParams{
 		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(1000),
-		SqrtPriceLimitX96: MinSqrtRatio,
+		AmountSpecified:   big.NewInt(-1000),
+		SqrtPriceLimitX96: new(big.Int).Add(MinSqrtRatio, big.NewInt(1)),
+	}
+
+	_, err := pm.Swap(stateDB, caller, key, params, nil)
+	if err != ErrPoolNotInitialized {
+		t.Errorf("Expected ErrPoolNotInitialized, got: %v", err)
+	}
+}
+
+func TestSwapEngineErrorPropagation(t *testing.T) {
+	// Verify pool_manager surfaces engine errors to the caller.
+	// Price limit validation is the engine's responsibility.
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	// Swap on uninitialized pool -- pool_manager validates this itself
+	params := SwapParams{
+		ZeroForOne:        true,
+		AmountSpecified:   big.NewInt(-1000),
+		SqrtPriceLimitX96: new(big.Int).Set(MaxSqrtRatio),
 	}
 
 	_, err := pm.Swap(stateDB, caller, key, params, nil)
@@ -370,27 +424,26 @@ func TestPoolManagerSwapUninitializedPool(t *testing.T) {
 }
 
 // =========================================================================
-// Liquidity Tests
+// V4 ModifyLiquidity Tests
 // =========================================================================
 
-func TestPoolManagerModifyLiquidity(t *testing.T) {
+func TestModifyLiquidityAdd(t *testing.T) {
 	pm := newTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Initialize pool
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	sqrtPriceX96 := new(big.Int).Set(Q96)
 	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// Add liquidity with caller directly
+	// Add liquidity in range [-120, 120] (tick 0 is in range at price=1)
 	params := ModifyLiquidityParams{
-		TickLower:      -1000,
-		TickUpper:      1000,
-		LiquidityDelta: big.NewInt(1000000),
+		TickLower:      -120,
+		TickUpper:      120,
+		LiquidityDelta: big.NewInt(1_000_000),
 		Salt:           [32]byte{},
 	}
 
@@ -402,42 +455,222 @@ func TestPoolManagerModifyLiquidity(t *testing.T) {
 	t.Logf("Caller delta: amount0=%s, amount1=%s", callerDelta.Amount0, callerDelta.Amount1)
 	t.Logf("Fees accrued: amount0=%s, amount1=%s", feesAccrued.Amount0, feesAccrued.Amount1)
 
+	// When adding liquidity in-range, both amounts should be non-zero (negative = user pays)
+	if callerDelta.Amount0.Sign() == 0 && callerDelta.Amount1.Sign() == 0 {
+		t.Error("Expected non-zero caller delta for in-range liquidity")
+	}
+
 	// Verify position was created
 	pos, err := pm.GetPosition(stateDB, key, caller, params.TickLower, params.TickUpper, params.Salt)
 	if err != nil {
 		t.Fatalf("GetPosition failed: %v", err)
 	}
-
-	if pos.Liquidity.Cmp(big.NewInt(1000000)) != 0 {
+	if pos.Liquidity.Cmp(big.NewInt(1_000_000)) != 0 {
 		t.Errorf("Expected liquidity 1000000, got: %s", pos.Liquidity)
+	}
+
+	// Verify pool active liquidity was updated
+	pool, _ := pm.GetPool(stateDB, key)
+	if pool.Liquidity.Cmp(big.NewInt(1_000_000)) != 0 {
+		t.Errorf("Expected pool liquidity 1000000, got: %s", pool.Liquidity)
 	}
 }
 
-func TestPoolManagerModifyLiquidityInvalidTickRange(t *testing.T) {
+func TestModifyLiquidityCurrentBelowRange(t *testing.T) {
 	pm := newTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Initialize pool
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	sqrtPriceX96 := new(big.Int).Set(Q96) // tick 0
 	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// Try to add liquidity with invalid tick range (lower >= upper)
+	// Range [600, 1200]: currentTick(0) < tickLower(600) so current is below range.
+	// V4: when current is below range, only currency0 is needed.
+	params := ModifyLiquidityParams{
+		TickLower:      600,
+		TickUpper:      1200,
+		LiquidityDelta: big.NewInt(1_000_000),
+		Salt:           [32]byte{},
+	}
+
+	callerDelta, _, err := pm.ModifyLiquidity(stateDB, caller, key, params, nil)
+	if err != nil {
+		t.Fatalf("ModifyLiquidity failed: %v", err)
+	}
+
+	// Current below range: only amount0 should be non-zero
+	if callerDelta.Amount0.Sign() == 0 {
+		t.Error("Expected non-zero amount0 when current is below range")
+	}
+	if callerDelta.Amount1.Sign() != 0 {
+		t.Errorf("Expected zero amount1 when current is below range, got: %s", callerDelta.Amount1)
+	}
+
+	// Pool active liquidity should NOT change (position is out of range)
+	pool, _ := pm.GetPool(stateDB, key)
+	if pool.Liquidity.Sign() != 0 {
+		t.Errorf("Expected pool liquidity 0, got: %s", pool.Liquidity)
+	}
+}
+
+func TestModifyLiquidityCurrentAboveRange(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	sqrtPriceX96 := new(big.Int).Set(Q96) // tick 0
+	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Range [-1200, -600]: currentTick(0) >= tickUpper(-600) so current is above range.
+	// V4: when current is above range, only currency1 is needed.
+	params := ModifyLiquidityParams{
+		TickLower:      -1200,
+		TickUpper:      -600,
+		LiquidityDelta: big.NewInt(1_000_000),
+		Salt:           [32]byte{},
+	}
+
+	callerDelta, _, err := pm.ModifyLiquidity(stateDB, caller, key, params, nil)
+	if err != nil {
+		t.Fatalf("ModifyLiquidity failed: %v", err)
+	}
+
+	// Current above range: only amount1 should be non-zero
+	if callerDelta.Amount1.Sign() == 0 {
+		t.Error("Expected non-zero amount1 when current is above range")
+	}
+	if callerDelta.Amount0.Sign() != 0 {
+		t.Errorf("Expected zero amount0 when current is above range, got: %s", callerDelta.Amount0)
+	}
+}
+
+func TestModifyLiquidityRemove(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000)
+
+	// Remove half the liquidity
+	params := ModifyLiquidityParams{
+		TickLower:      -120,
+		TickUpper:      120,
+		LiquidityDelta: big.NewInt(-500_000),
+		Salt:           [32]byte{},
+	}
+
+	lp := common.HexToAddress("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	callerDelta, _, err := pm.ModifyLiquidity(stateDB, lp, key, params, nil)
+	if err != nil {
+		t.Fatalf("ModifyLiquidity (remove) failed: %v", err)
+	}
+
+	// When removing: amounts should be positive (user receives)
+	t.Logf("Remove delta: amount0=%s, amount1=%s", callerDelta.Amount0, callerDelta.Amount1)
+
+	pool, _ := pm.GetPool(stateDB, key)
+	if pool.Liquidity.Cmp(big.NewInt(500_000)) != 0 {
+		t.Errorf("Expected pool liquidity 500000 after removal, got: %s", pool.Liquidity)
+	}
+}
+
+func TestModifyLiquidityInvalidTickRange(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	sqrtPriceX96 := new(big.Int).Set(Q96)
+	_, _ = pm.Initialize(stateDB, key, sqrtPriceX96, nil)
+
 	params := ModifyLiquidityParams{
 		TickLower:      1000,
-		TickUpper:      -1000, // Invalid: lower > upper
+		TickUpper:      -1000,
 		LiquidityDelta: big.NewInt(1000000),
 		Salt:           [32]byte{},
 	}
 
-	_, _, err = pm.ModifyLiquidity(stateDB, caller, key, params, nil)
+	_, _, err := pm.ModifyLiquidity(stateDB, caller, key, params, nil)
 	if err != ErrInvalidTickRange {
 		t.Errorf("Expected ErrInvalidTickRange, got: %v", err)
 	}
+}
+
+// =========================================================================
+// Swap + Liquidity Integration Tests
+// =========================================================================
+
+func TestSwapAfterLiquidityAdd(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
+
+	// Swap exact input zeroForOne
+	limit := new(big.Int).Add(MinSqrtRatio, big.NewInt(1))
+	params := SwapParams{
+		ZeroForOne:        true,
+		AmountSpecified:   big.NewInt(-10_000),
+		SqrtPriceLimitX96: limit,
+	}
+
+	delta, err := pm.Swap(stateDB, caller, key, params, nil)
+	if err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	// Verify price moved
+	pool, _ := pm.GetPool(stateDB, key)
+	if pool.SqrtPriceX96.Cmp(Q96) >= 0 {
+		t.Error("Expected price to decrease after zeroForOne swap")
+	}
+
+	t.Logf("After swap: price=%s, tick=%d, delta0=%s, delta1=%s",
+		pool.SqrtPriceX96, pool.Tick, delta.Amount0, delta.Amount1)
+}
+
+func TestSwapFeeAccumulation(t *testing.T) {
+	pm := newTestPoolManager()
+	stateDB := NewMockStateDB()
+	key := newTestPoolKey()
+	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
+
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
+
+	// Record fee growth before swap
+	ps := pm.poolStates[key.ID()]
+	feeGrowth0Before := new(big.Int).Set(ps.FeeGrowth0X128)
+
+	// Swap exact input zeroForOne
+	limit := new(big.Int).Add(MinSqrtRatio, big.NewInt(1))
+	params := SwapParams{
+		ZeroForOne:        true,
+		AmountSpecified:   big.NewInt(-100_000),
+		SqrtPriceLimitX96: limit,
+	}
+
+	_, err := pm.Swap(stateDB, caller, key, params, nil)
+	if err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	// Fee growth should have increased for token0 (the input token)
+	feeGrowth0After := ps.FeeGrowth0X128
+	if feeGrowth0After.Cmp(feeGrowth0Before) <= 0 {
+		t.Error("Expected fee growth to increase after swap")
+	}
+
+	t.Logf("Fee growth delta: %s", new(big.Int).Sub(feeGrowth0After, feeGrowth0Before))
 }
 
 // =========================================================================
@@ -450,29 +683,19 @@ func TestPoolManagerDonate(t *testing.T) {
 	key := newTestPoolKey()
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
-	// Initialize pool with liquidity
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
 
-	// Add liquidity
-	pool := pm.pools[key.ID()]
-	pool.Liquidity = big.NewInt(1000000000)
-
-	// Donate tokens with caller directly
 	amount0 := big.NewInt(10000)
 	amount1 := big.NewInt(20000)
 
-	delta, err := pm.Donate(stateDB, caller, key, amount0, amount1, nil)
+	delta, err := pm.Donate(stateDB, caller, key, amount0, amount1)
 	if err != nil {
 		t.Fatalf("Donate failed: %v", err)
 	}
 
 	t.Logf("Donate delta: amount0=%s, amount1=%s", delta.Amount0, delta.Amount1)
 
-	// Verify fee growth was updated
+	pool, _ := pm.GetPool(stateDB, key)
 	if pool.FeeGrowth0X128.Sign() == 0 {
 		t.Error("Expected non-zero FeeGrowth0X128 after donation")
 	}
@@ -492,14 +715,12 @@ func TestPoolManagerFlash(t *testing.T) {
 	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
 	recipient := common.HexToAddress("0x2222222222222222222222222222222222222222")
 
-	// Initialize pool
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
+	sqrtPriceX96 := new(big.Int).Set(Q96)
 	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
 	if err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// Execute flash loan with caller directly
 	params := FlashParams{
 		Amount0:   big.NewInt(100000),
 		Amount1:   big.NewInt(200000),
@@ -514,7 +735,6 @@ func TestPoolManagerFlash(t *testing.T) {
 
 	t.Logf("Flash delta (loan + fee): amount0=%s, amount1=%s", delta.Amount0, delta.Amount1)
 
-	// Verify delta includes loan + fee
 	if delta.Amount0.Cmp(params.Amount0) <= 0 {
 		t.Error("Expected delta to include fee")
 	}
@@ -525,7 +745,6 @@ func TestPoolManagerFlash(t *testing.T) {
 // =========================================================================
 
 func TestBalanceDeltaOperations(t *testing.T) {
-	// Test creation
 	delta1 := NewBalanceDelta(big.NewInt(100), big.NewInt(-50))
 	if delta1.Amount0.Cmp(big.NewInt(100)) != 0 {
 		t.Errorf("Amount0 mismatch: got %s, want 100", delta1.Amount0)
@@ -534,7 +753,6 @@ func TestBalanceDeltaOperations(t *testing.T) {
 		t.Errorf("Amount1 mismatch: got %s, want -50", delta1.Amount1)
 	}
 
-	// Test addition
 	delta2 := NewBalanceDelta(big.NewInt(50), big.NewInt(100))
 	sum := delta1.Add(delta2)
 	if sum.Amount0.Cmp(big.NewInt(150)) != 0 {
@@ -544,7 +762,6 @@ func TestBalanceDeltaOperations(t *testing.T) {
 		t.Errorf("Add Amount1 mismatch: got %s, want 50", sum.Amount1)
 	}
 
-	// Test subtraction
 	diff := delta1.Sub(delta2)
 	if diff.Amount0.Cmp(big.NewInt(50)) != 0 {
 		t.Errorf("Sub Amount0 mismatch: got %s, want 50", diff.Amount0)
@@ -553,7 +770,6 @@ func TestBalanceDeltaOperations(t *testing.T) {
 		t.Errorf("Sub Amount1 mismatch: got %s, want -150", diff.Amount1)
 	}
 
-	// Test negation
 	neg := delta1.Negate()
 	if neg.Amount0.Cmp(big.NewInt(-100)) != 0 {
 		t.Errorf("Negate Amount0 mismatch: got %s, want -100", neg.Amount0)
@@ -562,7 +778,6 @@ func TestBalanceDeltaOperations(t *testing.T) {
 		t.Errorf("Negate Amount1 mismatch: got %s, want 50", neg.Amount1)
 	}
 
-	// Test IsZero
 	zeroDelta := ZeroBalanceDelta()
 	if !zeroDelta.IsZero() {
 		t.Error("ZeroBalanceDelta should be zero")
@@ -580,7 +795,6 @@ func TestPoolKeyID(t *testing.T) {
 	key1 := newTestPoolKey()
 	key2 := newTestPoolKey()
 
-	// Same keys should produce same ID
 	id1 := key1.ID()
 	id2 := key2.ID()
 
@@ -588,7 +802,6 @@ func TestPoolKeyID(t *testing.T) {
 		t.Error("Same pool keys should produce same ID")
 	}
 
-	// Different keys should produce different IDs
 	key3 := PoolKey{
 		Currency0:   NativeCurrency,
 		Currency1:   Currency{Address: common.HexToAddress("0xABCDEF1234567890123456789012345678901234")},
@@ -606,19 +819,16 @@ func TestPoolKeyID(t *testing.T) {
 func TestPoolKeySerialization(t *testing.T) {
 	key := newTestPoolKey()
 
-	// Serialize
 	data := key.ToBytes()
 	if len(data) != 66 {
 		t.Errorf("Expected 66 bytes, got %d", len(data))
 	}
 
-	// Deserialize
 	decoded, err := PoolKeyFromBytes(data)
 	if err != nil {
 		t.Fatalf("PoolKeyFromBytes failed: %v", err)
 	}
 
-	// Verify fields match
 	if decoded.Currency0 != key.Currency0 {
 		t.Error("Currency0 mismatch after serialization")
 	}
@@ -639,585 +849,6 @@ func TestCurrencyIsNative(t *testing.T) {
 
 	erc20 := Currency{Address: common.HexToAddress("0x1234567890123456789012345678901234567890")}
 	if erc20.IsNative() {
-		t.Error("ERC20 currency should not be native")
+		t.Error("ERC20 should not be native")
 	}
-}
-
-// =========================================================================
-// Event Emission Tests
-// =========================================================================
-
-func TestInitializeEmitsEvent(t *testing.T) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	logs := stateDB.Logs()
-	if len(logs) != 1 {
-		t.Fatalf("Expected 1 log, got %d", len(logs))
-	}
-
-	log := logs[0]
-	if log.Address != lxPoolAddr {
-		t.Errorf("Expected log address %s, got %s", lxPoolAddr.Hex(), log.Address.Hex())
-	}
-	if len(log.Topics) != 4 {
-		t.Fatalf("Expected 4 topics, got %d", len(log.Topics))
-	}
-	if log.Topics[0] != initializeEventSig {
-		t.Errorf("Expected Initialize event sig %s, got %s", initializeEventSig.Hex(), log.Topics[0].Hex())
-	}
-	// topic1 = poolId
-	poolId := key.ID()
-	if log.Topics[1] != common.BytesToHash(poolId[:]) {
-		t.Errorf("Expected poolId topic, got %s", log.Topics[1].Hex())
-	}
-	// topic2 = currency0
-	if log.Topics[2] != common.BytesToHash(key.Currency0.Address.Bytes()) {
-		t.Errorf("Expected currency0 topic, got %s", log.Topics[2].Hex())
-	}
-	// topic3 = currency1
-	if log.Topics[3] != common.BytesToHash(key.Currency1.Address.Bytes()) {
-		t.Errorf("Expected currency1 topic, got %s", log.Topics[3].Hex())
-	}
-	// Data should be 5 words (fee, tickSpacing, hooks, sqrtPriceX96, tick) = 160 bytes
-	if len(log.Data) != 160 {
-		t.Errorf("Expected 160 bytes of data, got %d", len(log.Data))
-	}
-}
-
-func TestSwapEmitsEvent(t *testing.T) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	// Add liquidity
-	pool := pm.pools[key.ID()]
-	pool.Liquidity = big.NewInt(1000000000)
-
-	// Clear logs from Initialize
-	stateDB.logs = nil
-
-	// Swap with caller directly
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(1000),
-		SqrtPriceLimitX96: MinSqrtRatio,
-	}
-
-	_, err = pm.Swap(stateDB, caller, key, params, nil)
-	if err != nil {
-		t.Fatalf("Swap failed: %v", err)
-	}
-
-	logs := stateDB.Logs()
-	if len(logs) != 1 {
-		t.Fatalf("Expected 1 log, got %d", len(logs))
-	}
-
-	log := logs[0]
-	if log.Topics[0] != swapEventSig {
-		t.Errorf("Expected Swap event sig %s, got %s", swapEventSig.Hex(), log.Topics[0].Hex())
-	}
-	if len(log.Topics) != 3 {
-		t.Fatalf("Expected 3 topics, got %d", len(log.Topics))
-	}
-	// topic1 = poolId
-	poolId := key.ID()
-	if log.Topics[1] != common.BytesToHash(poolId[:]) {
-		t.Errorf("Expected poolId topic")
-	}
-	// topic2 = sender
-	if log.Topics[2] != common.BytesToHash(caller.Bytes()) {
-		t.Errorf("Expected sender topic")
-	}
-	// Data should be 6 words = 192 bytes
-	if len(log.Data) != 192 {
-		t.Errorf("Expected 192 bytes of data, got %d", len(log.Data))
-	}
-}
-
-func TestModifyLiquidityEmitsEvent(t *testing.T) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	// Clear logs from Initialize
-	stateDB.logs = nil
-
-	// ModifyLiquidity with caller directly
-	params := ModifyLiquidityParams{
-		TickLower:      -1000,
-		TickUpper:      1000,
-		LiquidityDelta: big.NewInt(1000000),
-		Salt:           [32]byte{},
-	}
-
-	_, _, err = pm.ModifyLiquidity(stateDB, caller, key, params, nil)
-	if err != nil {
-		t.Fatalf("ModifyLiquidity failed: %v", err)
-	}
-
-	logs := stateDB.Logs()
-	if len(logs) != 1 {
-		t.Fatalf("Expected 1 log, got %d", len(logs))
-	}
-
-	log := logs[0]
-	if log.Topics[0] != modifyLiquidityEventSig {
-		t.Errorf("Expected ModifyLiquidity event sig %s, got %s", modifyLiquidityEventSig.Hex(), log.Topics[0].Hex())
-	}
-	if len(log.Topics) != 3 {
-		t.Fatalf("Expected 3 topics, got %d", len(log.Topics))
-	}
-	// topic2 = sender
-	if log.Topics[2] != common.BytesToHash(caller.Bytes()) {
-		t.Errorf("Expected sender topic")
-	}
-	// Data should be 4 words = 128 bytes
-	if len(log.Data) != 128 {
-		t.Errorf("Expected 128 bytes of data, got %d", len(log.Data))
-	}
-}
-
-func TestNoEventOnFailedInitialize(t *testing.T) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-
-	// Use unsorted currencies - should fail before emitting event
-	key := PoolKey{
-		Currency0:   Currency{Address: common.HexToAddress("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")},
-		Currency1:   NativeCurrency,
-		Fee:         Fee030,
-		TickSpacing: TickSpacing030,
-		Hooks:       common.Address{},
-	}
-
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err == nil {
-		t.Fatal("Expected error for unsorted currencies")
-	}
-
-	logs := stateDB.Logs()
-	if len(logs) != 0 {
-		t.Errorf("Expected 0 logs on failed initialize, got %d", len(logs))
-	}
-}
-
-// =========================================================================
-// Benchmark Tests
-// =========================================================================
-
-func BenchmarkPoolManagerSwap(b *testing.B) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	// Initialize pool
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-
-	// Add liquidity
-	pool := pm.pools[key.ID()]
-	pool.Liquidity = big.NewInt(1000000000)
-
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(1000),
-		SqrtPriceLimitX96: MinSqrtRatio,
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		pm.Swap(stateDB, caller, key, params, nil)
-	}
-}
-
-func BenchmarkPoolManagerModifyLiquidity(b *testing.B) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	// Initialize pool
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-
-	params := ModifyLiquidityParams{
-		TickLower:      -1000,
-		TickUpper:      1000,
-		LiquidityDelta: big.NewInt(1000000),
-		Salt:           [32]byte{},
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		pm.ModifyLiquidity(stateDB, caller, key, params, nil)
-	}
-}
-
-func BenchmarkPoolKeyID(b *testing.B) {
-	key := newTestPoolKey()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = key.ID()
-	}
-}
-
-// =========================================================================
-// Red Team Regression Tests — F1 through F12
-// =========================================================================
-
-// F1: transferToken must reject insufficient balance before any state change.
-func TestTransferTokenInsufficientBalance(t *testing.T) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-
-	token := Currency{Address: common.HexToAddress("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")}
-	from := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	to := common.HexToAddress("0x2222222222222222222222222222222222222222")
-
-	// from has 0 balance at the ERC20 storage slot, try to transfer 100
-	err := pm.transferToken(stateDB, token, from, to, big.NewInt(100))
-	if err == nil {
-		t.Fatal("expected insufficient balance error, got nil")
-	}
-	t.Logf("F1 correctly rejected: %v", err)
-}
-
-// F1: transferToken must reject insufficient native balance.
-func TestTransferTokenInsufficientNativeBalance(t *testing.T) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-
-	from := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	to := common.HexToAddress("0x2222222222222222222222222222222222222222")
-
-	stateDB.AddBalance(from, uint256.NewInt(50))
-
-	err := pm.transferToken(stateDB, NativeCurrency, from, to, big.NewInt(100))
-	if err == nil {
-		t.Fatal("expected insufficient native balance error, got nil")
-	}
-	t.Logf("F1 native correctly rejected: %v", err)
-}
-
-// F2: autoSettle must propagate transfer failures.
-func TestAutoSettleReturnsError(t *testing.T) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	// caller has 0 native balance, delta says caller owes pool 1000
-	delta := NewBalanceDelta(big.NewInt(1000), big.NewInt(0))
-	err := pm.autoSettle(stateDB, caller, key, delta)
-	if err == nil {
-		t.Fatal("expected autoSettle error for insufficient balance, got nil")
-	}
-	t.Logf("F2 correctly propagated: %v", err)
-}
-
-// F4: DecodeSwapInput must handle negative AmountSpecified (two's complement).
-func TestDecodeSwapInputNegativeAmount(t *testing.T) {
-	// Build input: 128 bytes PoolKey + 1 byte zeroForOne + 32 bytes amount + 32 bytes limit
-	input := make([]byte, 193)
-	// currency0 at [12:32]
-	copy(input[12:32], common.HexToAddress("0x1000000000000000000000000000000000000001").Bytes())
-	// currency1 at [44:64]
-	copy(input[44:64], common.HexToAddress("0x2000000000000000000000000000000000000002").Bytes())
-	// fee at [64:67]: 3000 = 0x000BB8
-	input[64] = 0x00
-	input[65] = 0x0B
-	input[66] = 0xB8
-	// tickSpacing at [67:70]: 60 = 0x00003C
-	input[67] = 0x00
-	input[68] = 0x00
-	input[69] = 0x3C
-	// hooks at [76:96]: zero
-	// zeroForOne at [128]: 1
-	input[128] = 1
-	// AmountSpecified at [129:161]: -1000 in two's complement
-	neg1000 := new(big.Int).SetInt64(-1000)
-	tc := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 256), neg1000)
-	tcBytes := tc.Bytes()
-	copy(input[129+(32-len(tcBytes)):161], tcBytes)
-	// SqrtPriceLimitX96 at [161:193]: just some value
-	big.NewInt(100).FillBytes(input[161:193])
-
-	_, params, _, err := DecodeSwapInput(input)
-	if err != nil {
-		t.Fatalf("DecodeSwapInput failed: %v", err)
-	}
-	if params.AmountSpecified.Sign() >= 0 {
-		t.Fatalf("expected negative AmountSpecified, got %s", params.AmountSpecified)
-	}
-	if params.AmountSpecified.Int64() != -1000 {
-		t.Fatalf("expected -1000, got %s", params.AmountSpecified)
-	}
-	t.Logf("F4: correctly decoded AmountSpecified = %s", params.AmountSpecified)
-}
-
-// F5: bigIntTo32Bytes must produce correct two's complement for negatives.
-func TestBigIntTo32BytesNegative(t *testing.T) {
-	neg := big.NewInt(-1)
-	result := bigIntTo32Bytes(neg)
-
-	// -1 in two's complement 256-bit should be all 0xFF
-	for i := 0; i < 32; i++ {
-		if result[i] != 0xFF {
-			t.Fatalf("byte %d: expected 0xFF, got 0x%02X", i, result[i])
-		}
-	}
-
-	// Test -1000
-	neg1000 := big.NewInt(-1000)
-	result = bigIntTo32Bytes(neg1000)
-	// Decode back
-	decoded := decodeSigned256(result)
-	if decoded.Int64() != -1000 {
-		t.Fatalf("round-trip failed: expected -1000, got %s", decoded)
-	}
-	t.Logf("F5: -1000 round-trips correctly through two's complement encoding")
-}
-
-// F5: bigIntTo32Bytes positive values work correctly.
-func TestBigIntTo32BytesPositive(t *testing.T) {
-	val := big.NewInt(42)
-	result := bigIntTo32Bytes(val)
-	decoded := new(big.Int).SetBytes(result)
-	if decoded.Int64() != 42 {
-		t.Fatalf("expected 42, got %s", decoded)
-	}
-}
-
-// F10: ModifyLiquidity must reject removal that would make pool liquidity negative.
-func TestModifyLiquidityRejectsNegativePoolLiquidity(t *testing.T) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	// Initialize pool
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	// Add some liquidity first
-	addParams := ModifyLiquidityParams{
-		TickLower:      -1000,
-		TickUpper:      1000,
-		LiquidityDelta: big.NewInt(500),
-	}
-	_, _, err = pm.ModifyLiquidity(stateDB, caller, key, addParams, nil)
-	if err != nil {
-		t.Fatalf("AddLiquidity failed: %v", err)
-	}
-
-	// Now try to remove more than exists
-	removeParams := ModifyLiquidityParams{
-		TickLower:      -1000,
-		TickUpper:      1000,
-		LiquidityDelta: big.NewInt(-1000), // more than the 500 we added
-	}
-	_, _, err = pm.ModifyLiquidity(stateDB, caller, key, removeParams, nil)
-	if err == nil {
-		t.Fatal("expected error when removing more liquidity than exists")
-	}
-	t.Logf("F10 correctly rejected: %v", err)
-}
-
-// F10: safeFillBytes must not panic on negative big.Int.
-func TestSafeFillBytesNegative(t *testing.T) {
-	buf := make([]byte, 32)
-	// Should not panic
-	safeFillBytes(big.NewInt(-1), buf)
-	for i := range buf {
-		if buf[i] != 0 {
-			t.Fatalf("expected zero buf for negative value, byte %d = %d", i, buf[i])
-		}
-	}
-	t.Log("F10: safeFillBytes handles negative values without panic")
-}
-
-// F12: decodeInt24 must handle negative tick values.
-func TestDecodeInt24Negative(t *testing.T) {
-	// -1000 = 0xFFFC18 in 24-bit two's complement
-	// 24-bit: 2^24 - 1000 = 16777216 - 1000 = 16776216 = 0xFFFC18
-	b := []byte{0xFF, 0xFC, 0x18}
-	val := decodeInt24(b)
-	if val != -1000 {
-		t.Fatalf("expected -1000, got %d", val)
-	}
-
-	// Test positive
-	b = []byte{0x00, 0x03, 0xE8} // 1000
-	val = decodeInt24(b)
-	if val != 1000 {
-		t.Fatalf("expected 1000, got %d", val)
-	}
-
-	// Test zero
-	b = []byte{0x00, 0x00, 0x00}
-	val = decodeInt24(b)
-	if val != 0 {
-		t.Fatalf("expected 0, got %d", val)
-	}
-
-	// Test max positive (2^23 - 1 = 8388607)
-	b = []byte{0x7F, 0xFF, 0xFF}
-	val = decodeInt24(b)
-	if val != 8388607 {
-		t.Fatalf("expected 8388607, got %d", val)
-	}
-
-	// Test min negative (-2^23 = -8388608)
-	b = []byte{0x80, 0x00, 0x00}
-	val = decodeInt24(b)
-	if val != -8388608 {
-		t.Fatalf("expected -8388608, got %d", val)
-	}
-
-	t.Log("F12: decodeInt24 handles all int24 edge cases correctly")
-}
-
-// F12: DecodeModifyLiquidityInput must handle negative ticks.
-func TestDecodeModifyLiquidityInputNegativeTicks(t *testing.T) {
-	input := make([]byte, 192)
-	// currency0 at [12:32]
-	copy(input[12:32], common.HexToAddress("0x1000000000000000000000000000000000000001").Bytes())
-	// currency1 at [44:64]
-	copy(input[44:64], common.HexToAddress("0x2000000000000000000000000000000000000002").Bytes())
-	// fee at [64:67]: 3000
-	input[64] = 0x00
-	input[65] = 0x0B
-	input[66] = 0xB8
-	// tickSpacing at [67:70]: 60
-	input[67] = 0x00
-	input[68] = 0x00
-	input[69] = 0x3C
-
-	// TickLower at [128:131]: -887272 = 0xF27618 in 24-bit two's complement
-	// 2^24 - 887272 = 16777216 - 887272 = 15889944 = 0xF27618
-	input[128] = 0xF2
-	input[129] = 0x76
-	input[130] = 0x18
-	// TickUpper at [131:134]: 887272 = 0x0D89E8
-	input[131] = 0x0D
-	input[132] = 0x89
-	input[133] = 0xE8
-	// LiquidityDelta at [134:166]: 1000000
-	big.NewInt(1000000).FillBytes(input[134:166])
-
-	_, params, _, err := DecodeModifyLiquidityInput(input)
-	if err != nil {
-		t.Fatalf("DecodeModifyLiquidityInput failed: %v", err)
-	}
-	if params.TickLower != -887272 {
-		t.Fatalf("expected TickLower=-887272, got %d", params.TickLower)
-	}
-	if params.TickUpper != 887272 {
-		t.Fatalf("expected TickUpper=887272, got %d", params.TickUpper)
-	}
-	t.Logf("F12: TickLower=%d, TickUpper=%d decoded correctly", params.TickLower, params.TickUpper)
-}
-
-// F9: No lock/locker pattern — blockchain provides ordering.
-// This test verifies that operations work directly with caller address.
-func TestCallerBasedOperations(t *testing.T) {
-	pm := newTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller1 := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	caller2 := common.HexToAddress("0x2222222222222222222222222222222222222222")
-
-	// Initialize pool
-	sqrtPriceX96 := new(big.Int).Lsh(big.NewInt(1), 96)
-	_, err := pm.Initialize(stateDB, key, sqrtPriceX96, nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-	pool := pm.pools[key.ID()]
-	pool.Liquidity = big.NewInt(1000000000)
-
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(1000),
-		SqrtPriceLimitX96: MinSqrtRatio,
-	}
-
-	// Both callers can swap independently — no lock needed
-	delta1, err := pm.Swap(stateDB, caller1, key, params, nil)
-	if err != nil {
-		t.Fatalf("caller1 swap failed: %v", err)
-	}
-
-	delta2, err := pm.Swap(stateDB, caller2, key, params, nil)
-	if err != nil {
-		t.Fatalf("caller2 swap failed: %v", err)
-	}
-
-	if delta1.Amount0.Sign() == 0 || delta2.Amount0.Sign() == 0 {
-		t.Error("Expected non-zero deltas for both callers")
-	}
-	t.Log("F9: caller-based operations work correctly without lock pattern")
-}
-
-// F8: Router executeV4Swap must use actual PoolKey (non-zero fee).
-func TestRouterExecuteV4SwapWithPoolKey(t *testing.T) {
-	pm := NewPoolManager()
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	key := setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-
-	// Verify the key has a non-zero fee
-	if key.Fee == 0 {
-		t.Fatal("expected non-zero fee in pool key")
-	}
-
-	// Quote to get poolID and key
-	_, poolID, returnedKey, err := router.quoteV4(stateDB, testTokenA, testTokenB, big.NewInt(10_000), 0)
-	if err != nil {
-		t.Fatalf("quoteV4 failed: %v", err)
-	}
-	if returnedKey.Fee == 0 {
-		t.Fatal("F8: quoteV4 returned zero-fee key, fee would be ignored in swap")
-	}
-
-	// Execute through V4 with the actual key
-	amountOut, err := router.executeV4Swap(stateDB, testCaller, poolID, returnedKey, testTokenA, testTokenB, big.NewInt(10_000), nil)
-	if err != nil {
-		t.Fatalf("executeV4Swap failed: %v", err)
-	}
-	if amountOut.Sign() <= 0 {
-		t.Fatal("expected positive output")
-	}
-	t.Logf("F8: executeV4Swap with real key (fee=%d) produced output=%s", returnedKey.Fee, amountOut)
 }

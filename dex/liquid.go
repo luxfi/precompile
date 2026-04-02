@@ -13,7 +13,7 @@ import (
 )
 
 // Precompile address (LP-9060 LXLiquid)
-var liquidAddr = common.HexToAddress(LXLiquidAddress)
+var liquidAddr = common.HexToAddress(LXAutoRepayAddress)
 
 // Storage key prefixes for Liquid state
 var (
