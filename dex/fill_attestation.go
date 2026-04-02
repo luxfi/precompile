@@ -12,14 +12,14 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-// Precompile address LP-9090 LXFillAttest
-const LXFillAttestAddress = "0x0000000000000000000000000000000000009090"
+// Precompile address LP-9090 LXSettle
+const LXSettleAddress = "0x0000000000000000000000000000000000009090"
 
-var fillAttestAddr = common.HexToAddress(LXFillAttestAddress)
+var settleAddr = common.HexToAddress(LXSettleAddress)
 
-// Gas costs for FillAttestation operations
+// Gas costs for Settlement operations
 const (
-	GasFillAttest    uint64 = 30_000 // Record a broker fill attestation
+	GasSettle    uint64 = 30_000 // Record a broker fill attestation
 	GasFillChallenge uint64 = 50_000 // Challenge an attestation (reversal)
 	GasFillFinalize  uint64 = 20_000 // Finalize after fraud window
 	GasFillQuery     uint64 = 5_000  // Query attestation state
@@ -39,8 +39,8 @@ const (
 // Covers T+2 ACH settlement plus 1 day buffer.
 const DefaultFraudWindowBlocks uint64 = 259_200
 
-// FillAttestation records a broker fill for on-chain auditing and fraud proofs.
-type FillAttestation struct {
+// Settlement records a broker fill for on-chain auditing and fraud proofs.
+type Settlement struct {
 	OrderID   [32]byte       // Unique broker order identifier (blake3 of provider order ID)
 	Symbol    [32]byte       // Asset symbol (e.g., "AAPL", "BTC", "ETH")
 	Amount    *big.Int       // Number of shares/units filled
@@ -52,7 +52,7 @@ type FillAttestation struct {
 	Status    FillStatus     // Current lifecycle status
 }
 
-// Storage key prefixes for FillAttestation state
+// Storage key prefixes for Settlement state
 var (
 	fillAttestPrefix   = []byte("fill_attestation/attest/")  // per-order attestation
 	fillConfigPrefix   = []byte("fill_attestation/config/")  // global config
@@ -75,7 +75,7 @@ var (
 	ErrInvalidAttestationParam = errors.New("invalid attestation parameter")
 )
 
-// FillAttestationManager manages on-chain fill attestations.
+// SettlementManager manages on-chain fill attestations.
 //
 // Security model:
 //   - Only the registered attester (ATS MPC wallet) can create attestations.
@@ -83,17 +83,17 @@ var (
 //   - During the window, a challenger can submit a reversal proof to burn tokens.
 //   - After the window, anyone can call finalize() to mark as final.
 //   - A prefund ceiling limits total outstanding (unfinalized) attestation value.
-type FillAttestationManager struct {
+type SettlementManager struct {
 	mu sync.RWMutex
 
 	// In-memory cache of attestations (keyed by OrderID)
-	attestations map[[32]byte]*FillAttestation
+	attestations map[[32]byte]*Settlement
 }
 
-// NewFillAttestationManager creates a new manager instance.
-func NewFillAttestationManager() *FillAttestationManager {
-	return &FillAttestationManager{
-		attestations: make(map[[32]byte]*FillAttestation),
+// NewSettlementManager creates a new manager instance.
+func NewSettlementManager() *SettlementManager {
+	return &SettlementManager{
+		attestations: make(map[[32]byte]*Settlement),
 	}
 }
 
@@ -125,7 +125,7 @@ func SymbolToBytes32(symbol string) [32]byte {
 //   - Order ID is not already attested
 //   - Outstanding value does not exceed prefund ceiling
 //   - Amount and price are positive
-func (m *FillAttestationManager) Attest(
+func (m *SettlementManager) Attest(
 	stateDB StateDB,
 	caller common.Address,
 	orderID [32]byte,
@@ -178,7 +178,7 @@ func (m *FillAttestationManager) Attest(
 
 	// Record attestation
 	currentBlock := m.getCurrentBlock(stateDB)
-	attestation := &FillAttestation{
+	attestation := &Settlement{
 		OrderID:   orderID,
 		Symbol:    symbol,
 		Amount:    new(big.Int).Set(amount),
@@ -207,7 +207,7 @@ func (m *FillAttestationManager) Attest(
 //
 // On success, the caller is responsible for triggering the corresponding
 // LXLiquid.burn() in the same transaction.
-func (m *FillAttestationManager) Challenge(
+func (m *SettlementManager) Challenge(
 	stateDB StateDB,
 	caller common.Address,
 	orderID [32]byte,
@@ -259,7 +259,7 @@ func (m *FillAttestationManager) Challenge(
 //
 // Callable by anyone. The attestation must be in Pending state and the
 // fraud window must have elapsed.
-func (m *FillAttestationManager) Finalize(
+func (m *SettlementManager) Finalize(
 	stateDB StateDB,
 	orderID [32]byte,
 ) error {
@@ -306,24 +306,24 @@ func (m *FillAttestationManager) Finalize(
 // --------------------------------------------------------------------------
 
 // GetAttestation returns the attestation for an order ID, or nil if not found.
-func (m *FillAttestationManager) GetAttestation(
+func (m *SettlementManager) GetAttestation(
 	stateDB StateDB,
 	orderID [32]byte,
-) *FillAttestation {
+) *Settlement {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.getAttestation(stateDB, orderID)
 }
 
 // GetOutstanding returns the current outstanding unfinalized attestation value.
-func (m *FillAttestationManager) GetOutstanding(stateDB StateDB) *big.Int {
+func (m *SettlementManager) GetOutstanding(stateDB StateDB) *big.Int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.getOutstanding(stateDB)
 }
 
 // GetCeiling returns the prefund ceiling.
-func (m *FillAttestationManager) GetCeiling(stateDB StateDB) *big.Int {
+func (m *SettlementManager) GetCeiling(stateDB StateDB) *big.Int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.getCeiling(stateDB)
@@ -335,7 +335,7 @@ func (m *FillAttestationManager) GetCeiling(stateDB StateDB) *big.Int {
 
 // SetAttester sets the authorized attester address.
 // In production, this should be behind a timelock or multi-sig.
-func (m *FillAttestationManager) SetAttester(
+func (m *SettlementManager) SetAttester(
 	stateDB StateDB,
 	caller common.Address,
 	newAttester common.Address,
@@ -353,13 +353,13 @@ func (m *FillAttestationManager) SetAttester(
 	storageKey := makeStorageKey(fillConfigPrefix, fillAttesterKey)
 	var data common.Hash
 	copy(data[12:], newAttester.Bytes())
-	stateDB.SetState(fillAttestAddr, storageKey, data)
+	stateDB.SetState(settleAddr, storageKey, data)
 
 	return nil
 }
 
 // SetCeiling sets the prefund ceiling (max outstanding USD value).
-func (m *FillAttestationManager) SetCeiling(
+func (m *SettlementManager) SetCeiling(
 	stateDB StateDB,
 	caller common.Address,
 	ceiling *big.Int,
@@ -376,13 +376,13 @@ func (m *FillAttestationManager) SetCeiling(
 	var data common.Hash
 	ceilingBytes := ceiling.Bytes()
 	copy(data[32-len(ceilingBytes):], ceilingBytes)
-	stateDB.SetState(fillAttestAddr, storageKey, data)
+	stateDB.SetState(settleAddr, storageKey, data)
 
 	return nil
 }
 
 // SetFraudWindow sets the fraud window in blocks.
-func (m *FillAttestationManager) SetFraudWindow(
+func (m *SettlementManager) SetFraudWindow(
 	stateDB StateDB,
 	caller common.Address,
 	blocks uint64,
@@ -400,13 +400,13 @@ func (m *FillAttestationManager) SetFraudWindow(
 	blocksBig := new(big.Int).SetUint64(blocks)
 	blockBytes := blocksBig.Bytes()
 	copy(data[32-len(blockBytes):], blockBytes)
-	stateDB.SetState(fillAttestAddr, storageKey, data)
+	stateDB.SetState(settleAddr, storageKey, data)
 
 	// Write sentinel to indicate fraud window has been explicitly set
 	sentinelKey := makeStorageKey(fillConfigPrefix, []byte("fraud_window_set"))
 	var sentinel common.Hash
 	sentinel[31] = 1
-	stateDB.SetState(fillAttestAddr, sentinelKey, sentinel)
+	stateDB.SetState(settleAddr, sentinelKey, sentinel)
 
 	return nil
 }
@@ -415,64 +415,64 @@ func (m *FillAttestationManager) SetFraudWindow(
 // Internal State Management
 // --------------------------------------------------------------------------
 
-func (m *FillAttestationManager) getAttester(stateDB StateDB) common.Address {
+func (m *SettlementManager) getAttester(stateDB StateDB) common.Address {
 	storageKey := makeStorageKey(fillConfigPrefix, fillAttesterKey)
-	data := stateDB.GetState(fillAttestAddr, storageKey)
+	data := stateDB.GetState(settleAddr, storageKey)
 	if data == (common.Hash{}) {
 		return common.Address{}
 	}
 	return common.BytesToAddress(data[12:])
 }
 
-func (m *FillAttestationManager) getCeiling(stateDB StateDB) *big.Int {
+func (m *SettlementManager) getCeiling(stateDB StateDB) *big.Int {
 	storageKey := makeStorageKey(fillConfigPrefix, fillCeilingKey)
-	data := stateDB.GetState(fillAttestAddr, storageKey)
+	data := stateDB.GetState(settleAddr, storageKey)
 	return new(big.Int).SetBytes(data[:])
 }
 
-func (m *FillAttestationManager) getOutstanding(stateDB StateDB) *big.Int {
+func (m *SettlementManager) getOutstanding(stateDB StateDB) *big.Int {
 	storageKey := makeStorageKey(fillConfigPrefix, fillOutstandingKey)
-	data := stateDB.GetState(fillAttestAddr, storageKey)
+	data := stateDB.GetState(settleAddr, storageKey)
 	return new(big.Int).SetBytes(data[:])
 }
 
-func (m *FillAttestationManager) setOutstanding(stateDB StateDB, value *big.Int) {
+func (m *SettlementManager) setOutstanding(stateDB StateDB, value *big.Int) {
 	storageKey := makeStorageKey(fillConfigPrefix, fillOutstandingKey)
 	var data common.Hash
 	valueBytes := value.Bytes()
 	copy(data[32-len(valueBytes):], valueBytes)
-	stateDB.SetState(fillAttestAddr, storageKey, data)
+	stateDB.SetState(settleAddr, storageKey, data)
 }
 
-func (m *FillAttestationManager) getFraudWindow(stateDB StateDB) uint64 {
+func (m *SettlementManager) getFraudWindow(stateDB StateDB) uint64 {
 	// Check if fraud window has been explicitly set by looking at a sentinel key.
 	// If not set, return the default. If set (even to 0), return the stored value.
 	sentinelKey := makeStorageKey(fillConfigPrefix, []byte("fraud_window_set"))
-	sentinel := stateDB.GetState(fillAttestAddr, sentinelKey)
+	sentinel := stateDB.GetState(settleAddr, sentinelKey)
 	if sentinel == (common.Hash{}) {
 		return DefaultFraudWindowBlocks
 	}
 	storageKey := makeStorageKey(fillConfigPrefix, fillFraudWindowKey)
-	data := stateDB.GetState(fillAttestAddr, storageKey)
+	data := stateDB.GetState(settleAddr, storageKey)
 	return new(big.Int).SetBytes(data[:]).Uint64()
 }
 
-func (m *FillAttestationManager) getCurrentBlock(stateDB StateDB) uint64 {
+func (m *SettlementManager) getCurrentBlock(stateDB StateDB) uint64 {
 	blockKey := makeStorageKey(fillConfigPrefix, []byte("block"))
-	blockHash := stateDB.GetState(fillAttestAddr, blockKey)
+	blockHash := stateDB.GetState(settleAddr, blockKey)
 	if blockHash == (common.Hash{}) {
 		return 1
 	}
 	return new(big.Int).SetBytes(blockHash[:]).Uint64()
 }
 
-func (m *FillAttestationManager) getAttestation(stateDB StateDB, orderID [32]byte) *FillAttestation {
+func (m *SettlementManager) getAttestation(stateDB StateDB, orderID [32]byte) *Settlement {
 	if att, ok := m.attestations[orderID]; ok {
 		return att
 	}
 
 	storageKey := makeStorageKey(fillAttestPrefix, orderID[:])
-	data := stateDB.GetState(fillAttestAddr, storageKey)
+	data := stateDB.GetState(settleAddr, storageKey)
 	if data == (common.Hash{}) {
 		return nil
 	}
@@ -480,7 +480,7 @@ func (m *FillAttestationManager) getAttestation(stateDB StateDB, orderID [32]byt
 	// Attestation exists -- load full state from multiple storage slots.
 	// Slot 0: status (1 byte) + timestamp (8 bytes) + block (8 bytes)
 	// Remaining fields stored in subsequent slots keyed by orderID + offset.
-	att := &FillAttestation{
+	att := &Settlement{
 		OrderID: orderID,
 		Status:  FillStatus(data[0]),
 	}
@@ -491,34 +491,34 @@ func (m *FillAttestationManager) getAttestation(stateDB StateDB, orderID [32]byt
 
 	// Slot 1: amount (32 bytes)
 	amountKey := makeStorageKey(fillAttestPrefix, append(orderID[:], byte(1)))
-	amountData := stateDB.GetState(fillAttestAddr, amountKey)
+	amountData := stateDB.GetState(settleAddr, amountKey)
 	att.Amount = new(big.Int).SetBytes(amountData[:])
 
 	// Slot 2: price (32 bytes)
 	priceKey := makeStorageKey(fillAttestPrefix, append(orderID[:], byte(2)))
-	priceData := stateDB.GetState(fillAttestAddr, priceKey)
+	priceData := stateDB.GetState(settleAddr, priceKey)
 	att.Price = new(big.Int).SetBytes(priceData[:])
 
 	// Slot 3: user address (20 bytes) + attester address (first 12 bytes)
 	addrKey := makeStorageKey(fillAttestPrefix, append(orderID[:], byte(3)))
-	addrData := stateDB.GetState(fillAttestAddr, addrKey)
+	addrData := stateDB.GetState(settleAddr, addrKey)
 	att.User = common.BytesToAddress(addrData[12:])
 
 	// Slot 4: attester address (20 bytes) + symbol (first 12 bytes)
 	attesterKey := makeStorageKey(fillAttestPrefix, append(orderID[:], byte(4)))
-	attesterData := stateDB.GetState(fillAttestAddr, attesterKey)
+	attesterData := stateDB.GetState(settleAddr, attesterKey)
 	att.Attester = common.BytesToAddress(attesterData[12:])
 
 	// Slot 5: symbol (32 bytes)
 	symbolKey := makeStorageKey(fillAttestPrefix, append(orderID[:], byte(5)))
-	symbolData := stateDB.GetState(fillAttestAddr, symbolKey)
+	symbolData := stateDB.GetState(settleAddr, symbolKey)
 	copy(att.Symbol[:], symbolData[:])
 
 	m.attestations[orderID] = att
 	return att
 }
 
-func (m *FillAttestationManager) saveAttestation(stateDB StateDB, att *FillAttestation) {
+func (m *SettlementManager) saveAttestation(stateDB StateDB, att *Settlement) {
 	m.attestations[att.OrderID] = att
 
 	// Slot 0: status (1 byte) + timestamp (8 bytes) + block (8 bytes)
@@ -531,37 +531,37 @@ func (m *FillAttestationManager) saveAttestation(stateDB StateDB, att *FillAttes
 	blkBytes := blkBig.Bytes()
 	copy(slot0[17-len(blkBytes):17], blkBytes)
 	storageKey := makeStorageKey(fillAttestPrefix, att.OrderID[:])
-	stateDB.SetState(fillAttestAddr, storageKey, slot0)
+	stateDB.SetState(settleAddr, storageKey, slot0)
 
 	// Slot 1: amount
 	var slot1 common.Hash
 	amountBytes := att.Amount.Bytes()
 	copy(slot1[32-len(amountBytes):], amountBytes)
 	amountKey := makeStorageKey(fillAttestPrefix, append(att.OrderID[:], byte(1)))
-	stateDB.SetState(fillAttestAddr, amountKey, slot1)
+	stateDB.SetState(settleAddr, amountKey, slot1)
 
 	// Slot 2: price
 	var slot2 common.Hash
 	priceBytes := att.Price.Bytes()
 	copy(slot2[32-len(priceBytes):], priceBytes)
 	priceKey := makeStorageKey(fillAttestPrefix, append(att.OrderID[:], byte(2)))
-	stateDB.SetState(fillAttestAddr, priceKey, slot2)
+	stateDB.SetState(settleAddr, priceKey, slot2)
 
 	// Slot 3: user address
 	var slot3 common.Hash
 	copy(slot3[12:], att.User.Bytes())
 	addrKey := makeStorageKey(fillAttestPrefix, append(att.OrderID[:], byte(3)))
-	stateDB.SetState(fillAttestAddr, addrKey, slot3)
+	stateDB.SetState(settleAddr, addrKey, slot3)
 
 	// Slot 4: attester address
 	var slot4 common.Hash
 	copy(slot4[12:], att.Attester.Bytes())
 	attesterKey := makeStorageKey(fillAttestPrefix, append(att.OrderID[:], byte(4)))
-	stateDB.SetState(fillAttestAddr, attesterKey, slot4)
+	stateDB.SetState(settleAddr, attesterKey, slot4)
 
 	// Slot 5: symbol
 	var slot5 common.Hash
 	copy(slot5[:], att.Symbol[:])
 	symbolKey := makeStorageKey(fillAttestPrefix, append(att.OrderID[:], byte(5)))
-	stateDB.SetState(fillAttestAddr, symbolKey, slot5)
+	stateDB.SetState(settleAddr, symbolKey, slot5)
 }
