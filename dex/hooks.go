@@ -8,8 +8,8 @@ import (
 	"errors"
 	"math/big"
 
+	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
-	"github.com/zeebo/blake3"
 )
 
 // HookRegistry manages hook contract registrations and validations
@@ -25,21 +25,23 @@ func NewHookRegistry() *HookRegistry {
 	}
 }
 
-// HookPermissions contains the flags derived from a hook address
-// Following Uniswap v4 pattern where hook address encodes capabilities
+// HookPermissions contains the flags derived from a hook address.
+// V4: permissions are encoded in the TRAILING (least significant) bits of the hook address.
 type HookPermissions struct {
-	BeforeInitialize      bool
-	AfterInitialize       bool
-	BeforeAddLiquidity    bool
-	AfterAddLiquidity     bool
-	BeforeRemoveLiquidity bool
-	AfterRemoveLiquidity  bool
-	BeforeSwap            bool
-	AfterSwap             bool
-	BeforeDonate          bool
-	AfterDonate           bool
-	BeforeFlash           bool
-	AfterFlash            bool
+	BeforeInitialize                 bool
+	AfterInitialize                  bool
+	BeforeAddLiquidity               bool
+	AfterAddLiquidity                bool
+	BeforeRemoveLiquidity            bool
+	AfterRemoveLiquidity             bool
+	BeforeSwap                       bool
+	AfterSwap                        bool
+	BeforeDonate                     bool
+	AfterDonate                      bool
+	BeforeSwapReturnsDelta           bool
+	AfterSwapReturnsDelta            bool
+	AfterAddLiquidityReturnsDelta    bool
+	AfterRemoveLiquidityReturnsDelta bool
 }
 
 // HookCallResult contains the result of a hook call
@@ -50,21 +52,68 @@ type HookCallResult struct {
 	DeltaChange *BalanceDelta // Optional delta modification by hook
 }
 
-// Hook function signatures (4-byte selectors)
+// Hook function signatures (4-byte selectors).
+// Derived from keccak256 of V4 IHooks function signatures, matching Uniswap V4 exactly.
+// Verified at init() time — any mismatch is a hard panic at startup.
 var (
-	SigBeforeInitialize      = []byte{0x01, 0x00, 0x00, 0x01}
-	SigAfterInitialize       = []byte{0x01, 0x00, 0x00, 0x02}
-	SigBeforeAddLiquidity    = []byte{0x02, 0x00, 0x00, 0x01}
-	SigAfterAddLiquidity     = []byte{0x02, 0x00, 0x00, 0x02}
-	SigBeforeRemoveLiquidity = []byte{0x02, 0x00, 0x00, 0x03}
-	SigAfterRemoveLiquidity  = []byte{0x02, 0x00, 0x00, 0x04}
-	SigBeforeSwap            = []byte{0x03, 0x00, 0x00, 0x01}
-	SigAfterSwap             = []byte{0x03, 0x00, 0x00, 0x02}
-	SigBeforeDonate          = []byte{0x04, 0x00, 0x00, 0x01}
-	SigAfterDonate           = []byte{0x04, 0x00, 0x00, 0x02}
-	SigBeforeFlash           = []byte{0x05, 0x00, 0x00, 0x01}
-	SigAfterFlash            = []byte{0x05, 0x00, 0x00, 0x02}
+	SigBeforeInitialize      = hookSig("beforeInitialize(address,(address,address,uint24,int24,address),uint160,bytes)")
+	SigAfterInitialize       = hookSig("afterInitialize(address,(address,address,uint24,int24,address),uint160,int24,bytes)")
+	SigBeforeAddLiquidity    = hookSig("beforeAddLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)")
+	SigAfterAddLiquidity     = hookSig("afterAddLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),(int128,int128),(int128,int128),bytes)")
+	SigBeforeRemoveLiquidity = hookSig("beforeRemoveLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)")
+	SigAfterRemoveLiquidity  = hookSig("afterRemoveLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),(int128,int128),(int128,int128),bytes)")
+	SigBeforeSwap            = hookSig("beforeSwap(address,(address,address,uint24,int24,address),(bool,int256,uint160),bytes)")
+	SigAfterSwap             = hookSig("afterSwap(address,(address,address,uint24,int24,address),(bool,int256,uint160),(int128,int128),bytes)")
+	SigBeforeDonate          = hookSig("beforeDonate(address,(address,address,uint24,int24,address),uint256,uint256,bytes)")
+	SigAfterDonate           = hookSig("afterDonate(address,(address,address,uint24,int24,address),uint256,uint256,bytes)")
 )
+
+// hookSig computes the first 4 bytes of keccak256(sig) as a byte slice.
+func hookSig(sig string) []byte {
+	h := crypto.Keccak256([]byte(sig))
+	return []byte{h[0], h[1], h[2], h[3]}
+}
+
+// V4 IHooks function signatures used to derive selectors.
+// Exported for test verification.
+var HookSignatures = map[string]string{
+	"beforeInitialize":      "beforeInitialize(address,(address,address,uint24,int24,address),uint160,bytes)",
+	"afterInitialize":       "afterInitialize(address,(address,address,uint24,int24,address),uint160,int24,bytes)",
+	"beforeAddLiquidity":    "beforeAddLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)",
+	"afterAddLiquidity":     "afterAddLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),(int128,int128),(int128,int128),bytes)",
+	"beforeRemoveLiquidity": "beforeRemoveLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)",
+	"afterRemoveLiquidity":  "afterRemoveLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),(int128,int128),(int128,int128),bytes)",
+	"beforeSwap":            "beforeSwap(address,(address,address,uint24,int24,address),(bool,int256,uint160),bytes)",
+	"afterSwap":             "afterSwap(address,(address,address,uint24,int24,address),(bool,int256,uint160),(int128,int128),bytes)",
+	"beforeDonate":          "beforeDonate(address,(address,address,uint24,int24,address),uint256,uint256,bytes)",
+	"afterDonate":           "afterDonate(address,(address,address,uint24,int24,address),uint256,uint256,bytes)",
+}
+
+func init() {
+	// Verify all hook selectors match their signatures at startup.
+	sigs := map[string][]byte{
+		"beforeInitialize":      SigBeforeInitialize,
+		"afterInitialize":       SigAfterInitialize,
+		"beforeAddLiquidity":    SigBeforeAddLiquidity,
+		"afterAddLiquidity":     SigAfterAddLiquidity,
+		"beforeRemoveLiquidity": SigBeforeRemoveLiquidity,
+		"afterRemoveLiquidity":  SigAfterRemoveLiquidity,
+		"beforeSwap":            SigBeforeSwap,
+		"afterSwap":             SigAfterSwap,
+		"beforeDonate":          SigBeforeDonate,
+		"afterDonate":           SigAfterDonate,
+	}
+	for name, sel := range sigs {
+		sig, ok := HookSignatures[name]
+		if !ok {
+			panic("hook selector " + name + " missing from HookSignatures map")
+		}
+		expected := crypto.Keccak256([]byte(sig))[:4]
+		if sel[0] != expected[0] || sel[1] != expected[1] || sel[2] != expected[2] || sel[3] != expected[3] {
+			panic("hook selector mismatch for " + name)
+		}
+	}
+}
 
 // Hook errors
 var (
@@ -75,14 +124,13 @@ var (
 	ErrHookUnauthorizedDelta = errors.New("hook not authorized to modify delta")
 )
 
-// ValidateHookAddress validates that a hook address encodes the claimed permissions
-// Following Uniswap v4, the leading bits of the address encode hook capabilities
+// ValidateHookAddress validates that a hook address encodes the claimed permissions.
+// V4: the TRAILING (least significant) bits of the address encode hook capabilities.
 func ValidateHookAddress(addr common.Address, permissions HookPermissions) error {
 	encoded := EncodeHookPermissions(permissions)
 
-	// Check that the address prefix matches the permissions
-	// First 2 bytes of address should match permission flags
-	addrFlags := binary.BigEndian.Uint16(addr[0:2])
+	// V4: last 2 bytes of address (bytes 18-19) encode permission flags
+	addrFlags := binary.BigEndian.Uint16(addr[18:20])
 
 	if addrFlags != uint16(encoded) {
 		return ErrHookInvalidAddress
@@ -91,7 +139,7 @@ func ValidateHookAddress(addr common.Address, permissions HookPermissions) error
 	return nil
 }
 
-// EncodeHookPermissions encodes permissions into a HookFlags bitmap
+// EncodeHookPermissions encodes permissions into a HookFlags bitmap (V4 bit layout).
 func EncodeHookPermissions(p HookPermissions) HookFlags {
 	var flags HookFlags
 
@@ -125,50 +173,61 @@ func EncodeHookPermissions(p HookPermissions) HookFlags {
 	if p.AfterDonate {
 		flags |= HookAfterDonate
 	}
-	if p.BeforeFlash {
-		flags |= HookBeforeFlash
+	if p.BeforeSwapReturnsDelta {
+		flags |= HookBeforeSwapReturnsDelta
 	}
-	if p.AfterFlash {
-		flags |= HookAfterFlash
+	if p.AfterSwapReturnsDelta {
+		flags |= HookAfterSwapReturnsDelta
+	}
+	if p.AfterAddLiquidityReturnsDelta {
+		flags |= HookAfterAddLiquidityReturnsDelta
+	}
+	if p.AfterRemoveLiquidityReturnsDelta {
+		flags |= HookAfterRemoveLiquidityReturnsDelta
 	}
 
 	return flags
 }
 
-// DecodeHookPermissions decodes a HookFlags bitmap into permissions
+// DecodeHookPermissions decodes a HookFlags bitmap into V4 permissions.
 func DecodeHookPermissions(flags HookFlags) HookPermissions {
 	return HookPermissions{
-		BeforeInitialize:      flags&HookBeforeInitialize != 0,
-		AfterInitialize:       flags&HookAfterInitialize != 0,
-		BeforeAddLiquidity:    flags&HookBeforeAddLiquidity != 0,
-		AfterAddLiquidity:     flags&HookAfterAddLiquidity != 0,
-		BeforeRemoveLiquidity: flags&HookBeforeRemoveLiquidity != 0,
-		AfterRemoveLiquidity:  flags&HookAfterRemoveLiquidity != 0,
-		BeforeSwap:            flags&HookBeforeSwap != 0,
-		AfterSwap:             flags&HookAfterSwap != 0,
-		BeforeDonate:          flags&HookBeforeDonate != 0,
-		AfterDonate:           flags&HookAfterDonate != 0,
-		BeforeFlash:           flags&HookBeforeFlash != 0,
-		AfterFlash:            flags&HookAfterFlash != 0,
+		BeforeInitialize:                 flags&HookBeforeInitialize != 0,
+		AfterInitialize:                  flags&HookAfterInitialize != 0,
+		BeforeAddLiquidity:               flags&HookBeforeAddLiquidity != 0,
+		AfterAddLiquidity:                flags&HookAfterAddLiquidity != 0,
+		BeforeRemoveLiquidity:            flags&HookBeforeRemoveLiquidity != 0,
+		AfterRemoveLiquidity:             flags&HookAfterRemoveLiquidity != 0,
+		BeforeSwap:                       flags&HookBeforeSwap != 0,
+		AfterSwap:                        flags&HookAfterSwap != 0,
+		BeforeDonate:                     flags&HookBeforeDonate != 0,
+		AfterDonate:                      flags&HookAfterDonate != 0,
+		BeforeSwapReturnsDelta:           flags&HookBeforeSwapReturnsDelta != 0,
+		AfterSwapReturnsDelta:            flags&HookAfterSwapReturnsDelta != 0,
+		AfterAddLiquidityReturnsDelta:    flags&HookAfterAddLiquidityReturnsDelta != 0,
+		AfterRemoveLiquidityReturnsDelta: flags&HookAfterRemoveLiquidityReturnsDelta != 0,
 	}
 }
 
-// GetHookPermissionsFromAddress extracts permissions from hook address
+// GetHookPermissionsFromAddress extracts permissions from hook address.
+// V4: permissions are in the TRAILING (least significant) bits -- last 2 bytes of address.
 func GetHookPermissionsFromAddress(addr common.Address) HookPermissions {
-	flags := HookFlags(binary.BigEndian.Uint16(addr[0:2]))
+	flags := HookFlags(binary.BigEndian.Uint16(addr[18:20]))
 	return DecodeHookPermissions(flags)
 }
 
-// HasPermission checks if an address has a specific hook permission
+// HasPermission checks if an address has a specific hook permission.
+// V4: checks the TRAILING bits of the address.
 func HasPermission(addr common.Address, flag HookFlags) bool {
-	addrFlags := HookFlags(binary.BigEndian.Uint16(addr[0:2]))
+	addrFlags := HookFlags(binary.BigEndian.Uint16(addr[18:20]))
 	return addrFlags&flag != 0
 }
 
-// RegisterHook registers a hook contract with its capabilities
+// RegisterHook registers a hook contract with its capabilities.
+// V4: validates that the TRAILING bits of the address match the claimed flags.
 func (hr *HookRegistry) RegisterHook(addr common.Address, flags HookFlags) error {
-	// Validate address matches flags
-	addrFlags := HookFlags(binary.BigEndian.Uint16(addr[0:2]))
+	// Validate address trailing bits match flags
+	addrFlags := HookFlags(binary.BigEndian.Uint16(addr[18:20]))
 	if addrFlags != flags {
 		return ErrHookInvalidAddress
 	}
@@ -183,12 +242,13 @@ func (hr *HookRegistry) GetHookFlags(addr common.Address) (HookFlags, bool) {
 	return flags, ok
 }
 
-// IsHookEnabled checks if a specific hook type is enabled for an address
+// IsHookEnabled checks if a specific hook type is enabled for an address.
+// V4: derives from TRAILING bits if not registered.
 func (hr *HookRegistry) IsHookEnabled(addr common.Address, flag HookFlags) bool {
 	flags, ok := hr.registeredHooks[addr]
 	if !ok {
-		// If not registered, derive from address
-		flags = HookFlags(binary.BigEndian.Uint16(addr[0:2]))
+		// If not registered, derive from address trailing bits
+		flags = HookFlags(binary.BigEndian.Uint16(addr[18:20]))
 	}
 	return flags&flag != 0
 }
@@ -281,24 +341,22 @@ type RevealedSwap struct {
 // Hook Implementation Helpers
 // =========================================================================
 
-// GenerateHookAddress generates a valid hook address for given permissions
-// Uses CREATE2-style address derivation
+// GenerateHookAddress generates a valid hook address for given permissions.
+// V4: permission flags are encoded in the TRAILING (last 2) bytes of the address.
 func GenerateHookAddress(deployer common.Address, salt [32]byte, permissions HookPermissions) common.Address {
 	flags := EncodeHookPermissions(permissions)
 
-	h := blake3.New()
-	h.Write([]byte{0xff}) // CREATE2 prefix
-	h.Write(deployer.Bytes())
-	h.Write(salt[:])
+	// CREATE2-style address derivation using keccak256
+	data := make([]byte, 1+20+32) // 0xff + deployer + salt
+	data[0] = 0xff
+	copy(data[1:21], deployer.Bytes())
+	copy(data[21:53], salt[:])
+	hash := crypto.Keccak256(data)
 
-	// Derive address
-	var hash [32]byte
-	h.Digest().Read(hash[:])
-
-	// Set permission flags in first 2 bytes
+	// Take last 20 bytes as address, then set trailing permission flags
 	var addr common.Address
 	copy(addr[:], hash[12:32])
-	binary.BigEndian.PutUint16(addr[0:2], uint16(flags))
+	binary.BigEndian.PutUint16(addr[18:20], uint16(flags))
 
 	return addr
 }
@@ -434,26 +492,26 @@ func (crv *CommitRevealValidator) ValidateCommitment(commit *CommittedSwap, curr
 	return nil
 }
 
-// ValidateReveal checks if a reveal matches its commitment
+// ValidateReveal checks if a reveal matches its commitment.
 func (crv *CommitRevealValidator) ValidateReveal(commit *CommittedSwap, reveal *RevealedSwap) error {
-	// Verify hash
-	h := blake3.New()
-	h.Write(reveal.Sender.Bytes())
+	// Verify hash using keccak256 (matches on-chain preimage)
+	data := make([]byte, 0, 20+1+32+32)
+	data = append(data, reveal.Sender.Bytes()...)
 	if reveal.ZeroForOne {
-		h.Write([]byte{1})
+		data = append(data, 1)
 	} else {
-		h.Write([]byte{0})
+		data = append(data, 0)
 	}
 	amountBytes := make([]byte, 32)
 	reveal.Amount.FillBytes(amountBytes)
-	h.Write(amountBytes)
+	data = append(data, amountBytes...)
 
 	minOutputBytes := make([]byte, 32)
 	reveal.MinOutput.FillBytes(minOutputBytes)
-	h.Write(minOutputBytes)
+	data = append(data, minOutputBytes...)
 
 	var computedHash [32]byte
-	h.Digest().Read(computedHash[:])
+	copy(computedHash[:], crypto.Keccak256(data))
 
 	if computedHash != commit.CommitHash {
 		return errors.New("reveal does not match commitment")
