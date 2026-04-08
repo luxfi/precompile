@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/luxfi/accel"
+	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -53,16 +54,29 @@ const (
 	MessageLenSize = 32 // Size of message length field (uint256)
 )
 
+// Operation selectors (first byte of calldata)
+const (
+	OpVerify      uint8 = 0x00 // Single verify (default, backwards-compatible)
+	OpBatchVerify uint8 = 0x10 // Batch verify N signatures
+)
+
 // Gas costs - adjusted per mode based on computational complexity
 const (
-	// Base gas costs per mode
+	// Base gas costs per mode (single verify)
 	MLDSA44VerifyBaseGas uint64 = 75_000  // Smaller keys, faster
 	MLDSA65VerifyBaseGas uint64 = 100_000 // Medium (original)
 	MLDSA87VerifyBaseGas uint64 = 150_000 // Larger keys, slower
 
 	// Per-byte gas for message
 	MLDSAVerifyPerByteGas uint64 = 10
+
+	// Batch verify gas costs (cheaper than N * single)
+	BatchVerifyBaseGas   uint64 = 50_000 // Fixed overhead
+	BatchVerifyPerSigGas uint64 = 40_000 // Per signature (vs 75k-150k single)
 )
+
+// CountSize is the byte width of the batch count field (uint16, big-endian)
+const CountSize = 2
 
 type mldsaVerifyPrecompile struct{}
 
@@ -91,6 +105,11 @@ func (p *mldsaVerifyPrecompile) RequiredGas(input []byte) uint64 {
 		return MLDSA65VerifyBaseGas // Default to ML-DSA-65 gas for invalid input
 	}
 
+	// Check for batch verify op
+	if input[0] == OpBatchVerify {
+		return p.requiredGasBatch(input)
+	}
+
 	mode := input[0]
 	pubKeySize, _, baseGas, _, err := getModeParams(mode)
 	if err != nil {
@@ -111,10 +130,20 @@ func (p *mldsaVerifyPrecompile) RequiredGas(input []byte) uint64 {
 	return baseGas + (msgLen * MLDSAVerifyPerByteGas)
 }
 
+// requiredGasBatch calculates gas for batch verification
+func (p *mldsaVerifyPrecompile) requiredGasBatch(input []byte) uint64 {
+	// Minimum: op(1) + mode(1) + count(2)
+	if len(input) < 1+ModeByte+CountSize {
+		return BatchVerifyBaseGas
+	}
+	count := uint64(input[2])<<8 | uint64(input[3])
+	return BatchVerifyBaseGas + count*BatchVerifyPerSigGas
+}
+
 // Run implements the ML-DSA signature verification precompile
 // Input format (NEW - supports all modes):
 //
-//	[0]              = mode byte (0x44, 0x65, or 0x87)
+//	[0]              = mode byte (0x44, 0x65, or 0x87) -- OR op byte 0x10 for batch
 //	[1:pubKeyEnd]    = public key (size depends on mode)
 //	[pubKeyEnd:+32]  = message length as uint256 (32 bytes)
 //	[+32:+sigEnd]    = signature (size depends on mode)
@@ -138,6 +167,11 @@ func (p *mldsaVerifyPrecompile) Run(
 	// Minimum: mode byte
 	if len(input) < ModeByte {
 		return nil, suppliedGas - gasCost, fmt.Errorf("%w: need at least mode byte", ErrInvalidInputLength)
+	}
+
+	// Dispatch batch verify
+	if input[0] == OpBatchVerify {
+		return p.runBatchVerify(input, suppliedGas, gasCost)
 	}
 
 	// Parse mode
@@ -200,6 +234,126 @@ func (p *mldsaVerifyPrecompile) Run(
 	}
 
 	return result, suppliedGas - gasCost, nil
+}
+
+// runBatchVerify verifies N ML-DSA signatures in a single precompile call.
+//
+// Input format:
+//
+//	[0]       = 0x10 (OpBatchVerify)
+//	[1]       = mode byte (0x44, 0x65, or 0x87)
+//	[2:4]     = count as uint16 big-endian
+//	[4:...]   = count * entry, each entry:
+//	              [pubKey]   (pubKeySize bytes)
+//	              [msgLen]   (32 bytes, uint256 big-endian)
+//	              [signature](sigSize bytes)
+//	              [message]  (msgLen bytes)
+//
+// Output: count bytes, each 0x00 (invalid) or 0x01 (valid), left-padded to 32-byte alignment
+func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCost uint64) ([]byte, uint64, error) {
+	remainingGas := suppliedGas - gasCost
+
+	// Minimum header: op(1) + mode(1) + count(2) = 4
+	if len(input) < 4 {
+		return nil, remainingGas, fmt.Errorf("%w: batch header too short", ErrInvalidInputLength)
+	}
+
+	mode := input[1]
+	count := int(input[2])<<8 | int(input[3])
+
+	// Empty batch is valid -- return empty padded result
+	if count == 0 {
+		return make([]byte, 32), remainingGas, nil
+	}
+
+	pubKeySize, sigSize, _, mldsaMode, err := getModeParams(mode)
+	if err != nil {
+		return nil, remainingGas, fmt.Errorf("%w: 0x%02x", ErrUnsupportedMode, mode)
+	}
+
+	// Parse all entries
+	messages := make([][]byte, count)
+	signatures := make([][]byte, count)
+	publicKeys := make([][]byte, count)
+
+	offset := 4 // past header
+	for i := 0; i < count; i++ {
+		// pubkey
+		if offset+pubKeySize > len(input) {
+			return nil, remainingGas, fmt.Errorf("%w: entry %d truncated at pubkey", ErrInvalidInputLength, i)
+		}
+		publicKeys[i] = input[offset : offset+pubKeySize]
+		offset += pubKeySize
+
+		// message length
+		if offset+MessageLenSize > len(input) {
+			return nil, remainingGas, fmt.Errorf("%w: entry %d truncated at msglen", ErrInvalidInputLength, i)
+		}
+		msgLen := int(readUint256(input[offset : offset+MessageLenSize]))
+		offset += MessageLenSize
+
+		// signature
+		if offset+sigSize > len(input) {
+			return nil, remainingGas, fmt.Errorf("%w: entry %d truncated at signature", ErrInvalidInputLength, i)
+		}
+		signatures[i] = input[offset : offset+sigSize]
+		offset += sigSize
+
+		// message
+		if offset+msgLen > len(input) {
+			return nil, remainingGas, fmt.Errorf("%w: entry %d truncated at message", ErrInvalidInputLength, i)
+		}
+		messages[i] = input[offset : offset+msgLen]
+		offset += msgLen
+	}
+
+	if offset != len(input) {
+		return nil, remainingGas, fmt.Errorf("%w: %d trailing bytes", ErrInvalidInputLength, len(input)-offset)
+	}
+
+	// Try GPU-accelerated batch verification
+	results, gpuUsed := batchVerifyGPU(signatures, messages, publicKeys)
+
+	if !gpuUsed {
+		// CPU fallback: sequential single verify
+		results = make([]bool, count)
+		for i := 0; i < count; i++ {
+			pub, parseErr := mldsa.PublicKeyFromBytes(publicKeys[i], mldsaMode)
+			if parseErr != nil {
+				results[i] = false
+				continue
+			}
+			results[i] = pub.Verify(messages[i], signatures[i], nil)
+		}
+	}
+
+	// Pack results: pad to 32-byte word, results right-aligned
+	padded := 32
+	if count > padded {
+		// Round up to next 32-byte boundary
+		padded = ((count + 31) / 32) * 32
+	}
+	out := make([]byte, padded)
+	for i := 0; i < count; i++ {
+		if results[i] {
+			out[padded-count+i] = 1
+		}
+	}
+
+	return out, remainingGas, nil
+}
+
+// batchVerifyGPU attempts GPU-accelerated batch ML-DSA verification.
+// Returns (results, true) if GPU was used, (nil, false) if unavailable.
+func batchVerifyGPU(signatures, messages, publicKeys [][]byte) ([]bool, bool) {
+	if !accel.Available() {
+		return nil, false
+	}
+	results, err := accelcrypto.BatchVerify(accelcrypto.SigMLDSA65, signatures, messages, publicKeys)
+	if err != nil {
+		return nil, false
+	}
+	return results, true
 }
 
 // readUint256 reads a big-endian uint256 as uint64
