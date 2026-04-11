@@ -66,10 +66,14 @@ func (p *zkVerifyPrecompile) Address() common.Address {
 	return ZKVerifyContractAddress
 }
 
+// MinCallGas is charged for any precompile call, including unknown opcodes,
+// to prevent zero-cost abuse.
+const MinCallGas uint64 = 21_000
+
 // RequiredGas calculates gas for ZK operations
 func (p *zkVerifyPrecompile) RequiredGas(input []byte) uint64 {
 	if len(input) < 1 {
-		return 0
+		return MinCallGas
 	}
 
 	op := input[0]
@@ -108,13 +112,13 @@ func (p *zkVerifyPrecompile) RequiredGas(input []byte) uint64 {
 
 	case OpVerifyBatch:
 		if len(input) < 5 {
-			return 0
+			return MinCallGas
 		}
 		numProofs := binary.BigEndian.Uint32(input[1:5])
 		return uint64(numProofs) * GasPerBatchProof
 
 	default:
-		return 0
+		return MinCallGas
 	}
 }
 
