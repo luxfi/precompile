@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/consensys/gnark-crypto/ecc"
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
@@ -264,7 +265,7 @@ func (p *bls12381Precompile) g1MSM(input []byte, suppliedGas uint64) ([]byte, ui
 	}
 
 	var result bls12381.G1Affine
-	_, err = result.MultiExp(points, scalars, bls12381.MultiExpConfig{})
+	_, err = result.MultiExp(points, scalars, ecc.MultiExpConfig{})
 	if err != nil {
 		return nil, gas, err
 	}
@@ -343,7 +344,7 @@ func (p *bls12381Precompile) g2MSM(input []byte, suppliedGas uint64) ([]byte, ui
 	}
 
 	var result bls12381.G2Affine
-	_, err = result.MultiExp(points, scalars, bls12381.MultiExpConfig{})
+	_, err = result.MultiExp(points, scalars, ecc.MultiExpConfig{})
 	if err != nil {
 		return nil, gas, err
 	}
