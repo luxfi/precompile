@@ -20,8 +20,10 @@
 package hpke
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/cloudflare/circl/hpke"
 	"github.com/luxfi/accel"
@@ -59,6 +61,12 @@ const (
 	KEMXWing          = 0x647a // X-Wing: X25519 + ML-KEM-768
 )
 
+// SeedSize is the required length of the caller-provided deterministic seed.
+// Callers MUST provide a unique 32-byte seed per seal operation to ensure
+// consensus safety. Using crypto/rand on-chain produces different ciphertexts
+// per validator, causing state divergence.
+const SeedSize = 32
+
 // Gas costs
 const (
 	GasKEMEncapsP256   = 6000
@@ -76,6 +84,37 @@ const (
 )
 
 type hpkePrecompile struct{}
+
+// deterministicReader is an io.Reader that produces deterministic bytes from
+// a 32-byte seed using iterated SHA-256. Each time the 32-byte block is
+// exhausted, the state is hashed to produce the next block.
+//
+// This replaces crypto/rand inside circl's sender.Setup() to guarantee that
+// all validators produce identical ciphertexts for the same input, which is
+// required for EVM consensus.
+type deterministicReader struct {
+	state [32]byte
+	pos   int
+}
+
+func newDeterministicReader(seed [32]byte) *deterministicReader {
+	return &deterministicReader{state: seed}
+}
+
+func (r *deterministicReader) Read(p []byte) (int, error) {
+	for i := range p {
+		if r.pos >= len(r.state) {
+			r.state = sha256.Sum256(r.state[:])
+			r.pos = 0
+		}
+		p[i] = r.state[r.pos]
+		r.pos++
+	}
+	return len(p), nil
+}
+
+// Compile-time check that deterministicReader implements io.Reader.
+var _ io.Reader = (*deterministicReader)(nil)
 
 // Address returns the address of the HPKE precompile
 func (p *hpkePrecompile) Address() common.Address {
@@ -116,11 +155,14 @@ func (p *hpkePrecompile) RequiredGas(input []byte) uint64 {
 
 	switch op {
 	case OpSingleShotSeal:
-		if len(input) < 7 {
+		// Minimum: op(1) + suite(6) + seed(32) = 39
+		if len(input) < 1+6+SeedSize {
 			return GasKEMEncapsX25519 + GasKDFExtract + GasAEADBase
 		}
 		kemID := uint16(input[1])<<8 | uint16(input[2])
-		dataLen := len(input) - 100
+		// Overhead: op(1) + suite(6) + seed(32) + pkLen(2) + infoLen(2) + aadLen(2) = 45
+		// plus variable pk/info/aad lengths; estimate conservatively
+		dataLen := len(input) - (1 + 6 + SeedSize + 2 + 2 + 2)
 		if dataLen < 0 {
 			dataLen = 0
 		}
@@ -226,6 +268,7 @@ func (p *hpkePrecompile) parseSuite(input []byte) (hpke.Suite, error) {
 type sealParams struct {
 	kemID     uint16
 	suite     hpke.Suite
+	seed      [SeedSize]byte // caller-provided deterministic seed
 	recipient []byte
 	info      []byte
 	aad       []byte
@@ -233,7 +276,8 @@ type sealParams struct {
 }
 
 func (p *hpkePrecompile) parseSealParams(input []byte) (*sealParams, error) {
-	if len(input) < 6 {
+	// Minimum: 6 (suite) + 32 (seed) + 2 (pkLen) = 40
+	if len(input) < 6+SeedSize+2 {
 		return nil, ErrInvalidInput
 	}
 
@@ -245,6 +289,11 @@ func (p *hpkePrecompile) parseSealParams(input []byte) (*sealParams, error) {
 	}
 
 	offset := 6
+
+	// Parse 32-byte deterministic seed (mandatory for consensus safety)
+	var seed [SeedSize]byte
+	copy(seed[:], input[offset:offset+SeedSize])
+	offset += SeedSize
 
 	// Parse recipient public key length
 	if len(input) < offset+2 {
@@ -294,6 +343,7 @@ func (p *hpkePrecompile) parseSealParams(input []byte) (*sealParams, error) {
 	return &sealParams{
 		kemID:     kemID,
 		suite:     suite,
+		seed:      seed,
 		recipient: recipientPk,
 		info:      info,
 		aad:       aad,
@@ -332,7 +382,13 @@ func (p *hpkePrecompile) singleShotSealCPU(params *sealParams) ([]byte, error) {
 		return nil, err
 	}
 
-	enc, sealer, err := sender.Setup(nil)
+	// Use deterministic RNG derived from caller-provided seed.
+	// circl internally calls EncapsulateDeterministically(pk, seed) where
+	// seed bytes come from this reader. Identical seeds produce identical
+	// enc + shared secret across all validators -- consensus safe.
+	rng := newDeterministicReader(params.seed)
+
+	enc, sealer, err := sender.Setup(rng)
 	if err != nil {
 		return nil, err
 	}
