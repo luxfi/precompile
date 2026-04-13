@@ -4,6 +4,7 @@
 package hpke
 
 import (
+	"crypto/sha256"
 	"testing"
 
 	"github.com/cloudflare/circl/hpke"
@@ -92,6 +93,9 @@ func TestC03_HPKESealStillWorks(t *testing.T) {
 	input := []byte{OpSingleShotSeal}
 	// cipher suite: KEM=0x0020, KDF=0x0001, AEAD=0x0001
 	input = append(input, 0x00, 0x20, 0x00, 0x01, 0x00, 0x01)
+	// deterministic seed (32 bytes)
+	seed := sha256.Sum256([]byte("c03-seal-still-works"))
+	input = append(input, seed[:]...)
 	// recipient pk length (2 bytes big-endian)
 	input = append(input, byte(len(pkBytes)>>8), byte(len(pkBytes)))
 	// recipient pk

@@ -4,6 +4,7 @@
 package hpke
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"testing"
 
@@ -11,6 +12,11 @@ import (
 	"github.com/luxfi/geth/common"
 	"github.com/stretchr/testify/require"
 )
+
+// testSeed returns a deterministic seed for testing derived from the given label.
+func testSeed(label string) [SeedSize]byte {
+	return sha256.Sum256([]byte(label))
+}
 
 func TestHPKEPrecompile_Address(t *testing.T) {
 	expectedAddr := common.HexToAddress("0x0000000000000000000000000000000000009200")
@@ -32,7 +38,8 @@ func TestHPKE_SingleShotSeal_X25519(t *testing.T) {
 	info := []byte("test info")
 	aad := []byte("additional data")
 
-	sealInput := buildSealInput(KEMX25519, 0x0001, 0x0001, pkBytes, info, aad, plaintext)
+	seed := testSeed("x25519-seal-test")
+	sealInput := buildSealInput(KEMX25519, 0x0001, 0x0001, pkBytes, seed, info, aad, plaintext)
 	gas := HPKEPrecompile.RequiredGas(append([]byte{OpSingleShotSeal}, sealInput...))
 
 	result, remainingGas, err := HPKEPrecompile.Run(
@@ -67,7 +74,8 @@ func TestHPKE_SingleShotSeal_P256(t *testing.T) {
 	info := []byte("p256 info")
 	aad := []byte("p256 aad")
 
-	sealInput := buildSealInput(KEMP256, 0x0001, 0x0002, pkBytes, info, aad, plaintext)
+	seed := testSeed("p256-seal-test")
+	sealInput := buildSealInput(KEMP256, 0x0001, 0x0002, pkBytes, seed, info, aad, plaintext)
 	gas := HPKEPrecompile.RequiredGas(append([]byte{OpSingleShotSeal}, sealInput...))
 
 	result, _, err := HPKEPrecompile.Run(
@@ -96,7 +104,8 @@ func TestHPKE_SingleShotSeal_X25519Kyber768(t *testing.T) {
 	info := []byte("kyber info")
 	aad := []byte("kyber aad")
 
-	sealInput := buildSealInput(KEMX25519Kyber768, 0x0001, 0x0001, pkBytes, info, aad, plaintext)
+	seed := testSeed("kyber768-seal-test")
+	sealInput := buildSealInput(KEMX25519Kyber768, 0x0001, 0x0001, pkBytes, seed, info, aad, plaintext)
 	gas := HPKEPrecompile.RequiredGas(append([]byte{OpSingleShotSeal}, sealInput...))
 	require.GreaterOrEqual(t, gas, uint64(GasKEMEncapsX25519Kyber768))
 
@@ -124,7 +133,8 @@ func TestHPKE_SingleShotSeal_XWing(t *testing.T) {
 	info := []byte("xwing info")
 	aad := []byte("xwing aad")
 
-	sealInput := buildSealInput(KEMXWing, 0x0001, 0x0001, pkBytes, info, aad, plaintext)
+	seed := testSeed("xwing-seal-test")
+	sealInput := buildSealInput(KEMXWing, 0x0001, 0x0001, pkBytes, seed, info, aad, plaintext)
 	gas := HPKEPrecompile.RequiredGas(append([]byte{OpSingleShotSeal}, sealInput...))
 	require.GreaterOrEqual(t, gas, uint64(GasKEMEncapsXWing))
 
@@ -192,7 +202,8 @@ func TestHPKE_OutOfGas(t *testing.T) {
 	pkBytes, err := pk.MarshalBinary()
 	require.NoError(t, err)
 
-	sealInput := buildSealInput(KEMX25519, 0x0001, 0x0001, pkBytes, nil, nil, []byte("test"))
+	seed := testSeed("oog-test")
+	sealInput := buildSealInput(KEMX25519, 0x0001, 0x0001, pkBytes, seed, nil, nil, []byte("test"))
 
 	_, _, err = HPKEPrecompile.Run(
 		nil,
@@ -295,13 +306,16 @@ func TestHPKE_OpenRejected(t *testing.T) {
 
 // Helper functions
 
-func buildSealInput(kemID, kdfID, aeadID uint16, pk, info, aad, plaintext []byte) []byte {
+func buildSealInput(kemID, kdfID, aeadID uint16, pk []byte, seed [SeedSize]byte, info, aad, plaintext []byte) []byte {
 	input := make([]byte, 0)
 
 	// Cipher suite (6 bytes)
 	input = append(input, byte(kemID>>8), byte(kemID))
 	input = append(input, byte(kdfID>>8), byte(kdfID))
 	input = append(input, byte(aeadID>>8), byte(aeadID))
+
+	// Deterministic seed (32 bytes)
+	input = append(input, seed[:]...)
 
 	// Public key length + data
 	pkLen := make([]byte, 2)
@@ -327,6 +341,111 @@ func buildSealInput(kemID, kdfID, aeadID uint16, pk, info, aad, plaintext []byte
 	return input
 }
 
+// Consensus determinism regression tests
+
+func TestConsensusDeterministicSeal_X25519(t *testing.T) {
+	suite := hpke.NewSuite(hpke.KEM_X25519_HKDF_SHA256, hpke.KDF_HKDF_SHA256, hpke.AEAD_AES128GCM)
+	kem, _, _ := suite.Params()
+	pk, _, err := kem.Scheme().GenerateKeyPair()
+	require.NoError(t, err)
+	pkBytes, err := pk.MarshalBinary()
+	require.NoError(t, err)
+
+	seed := testSeed("consensus-x25519")
+	plaintext := []byte("consensus test payload")
+	info := []byte("consensus info")
+	aad := []byte("consensus aad")
+
+	sealInput := buildSealInput(KEMX25519, 0x0001, 0x0001, pkBytes, seed, info, aad, plaintext)
+	input := append([]byte{OpSingleShotSeal}, sealInput...)
+	gas := HPKEPrecompile.RequiredGas(input)
+
+	result1, _, err := HPKEPrecompile.Run(nil, common.Address{}, ContractAddress, input, gas, false)
+	require.NoError(t, err)
+
+	result2, _, err := HPKEPrecompile.Run(nil, common.Address{}, ContractAddress, input, gas, false)
+	require.NoError(t, err)
+
+	require.Equal(t, result1, result2, "HPKE Seal must be deterministic for consensus")
+
+	// Third call to rule out alternating patterns
+	result3, _, err := HPKEPrecompile.Run(nil, common.Address{}, ContractAddress, input, gas, false)
+	require.NoError(t, err)
+	require.Equal(t, result1, result3, "HPKE Seal must be deterministic across any number of calls")
+}
+
+func TestConsensusDeterministicSeal_P256(t *testing.T) {
+	suite := hpke.NewSuite(hpke.KEM_P256_HKDF_SHA256, hpke.KDF_HKDF_SHA256, hpke.AEAD_AES256GCM)
+	kem, _, _ := suite.Params()
+	pk, _, err := kem.Scheme().GenerateKeyPair()
+	require.NoError(t, err)
+	pkBytes, err := pk.MarshalBinary()
+	require.NoError(t, err)
+
+	seed := testSeed("consensus-p256")
+	sealInput := buildSealInput(KEMP256, 0x0001, 0x0002, pkBytes, seed, nil, nil, []byte("p256 consensus"))
+	input := append([]byte{OpSingleShotSeal}, sealInput...)
+	gas := HPKEPrecompile.RequiredGas(input)
+
+	result1, _, err := HPKEPrecompile.Run(nil, common.Address{}, ContractAddress, input, gas, false)
+	require.NoError(t, err)
+
+	result2, _, err := HPKEPrecompile.Run(nil, common.Address{}, ContractAddress, input, gas, false)
+	require.NoError(t, err)
+
+	require.Equal(t, result1, result2, "HPKE P-256 Seal must be deterministic for consensus")
+}
+
+func TestConsensusDeterministicSeal_XWing(t *testing.T) {
+	suite := hpke.NewSuite(hpke.KEM_XWING, hpke.KDF_HKDF_SHA256, hpke.AEAD_AES128GCM)
+	kem, _, _ := suite.Params()
+	pk, _, err := kem.Scheme().GenerateKeyPair()
+	require.NoError(t, err)
+	pkBytes, err := pk.MarshalBinary()
+	require.NoError(t, err)
+
+	seed := testSeed("consensus-xwing")
+	sealInput := buildSealInput(KEMXWing, 0x0001, 0x0001, pkBytes, seed, nil, nil, []byte("xwing consensus"))
+	input := append([]byte{OpSingleShotSeal}, sealInput...)
+	gas := HPKEPrecompile.RequiredGas(input)
+
+	result1, _, err := HPKEPrecompile.Run(nil, common.Address{}, ContractAddress, input, gas, false)
+	require.NoError(t, err)
+
+	result2, _, err := HPKEPrecompile.Run(nil, common.Address{}, ContractAddress, input, gas, false)
+	require.NoError(t, err)
+
+	require.Equal(t, result1, result2, "HPKE X-Wing Seal must be deterministic for consensus")
+}
+
+func TestConsensusDifferentSeedsDifferentOutput(t *testing.T) {
+	suite := hpke.NewSuite(hpke.KEM_X25519_HKDF_SHA256, hpke.KDF_HKDF_SHA256, hpke.AEAD_AES128GCM)
+	kem, _, _ := suite.Params()
+	pk, _, err := kem.Scheme().GenerateKeyPair()
+	require.NoError(t, err)
+	pkBytes, err := pk.MarshalBinary()
+	require.NoError(t, err)
+
+	plaintext := []byte("same plaintext")
+
+	seed1 := testSeed("seed-alpha")
+	seed2 := testSeed("seed-beta")
+
+	input1 := append([]byte{OpSingleShotSeal}, buildSealInput(KEMX25519, 0x0001, 0x0001, pkBytes, seed1, nil, nil, plaintext)...)
+	input2 := append([]byte{OpSingleShotSeal}, buildSealInput(KEMX25519, 0x0001, 0x0001, pkBytes, seed2, nil, nil, plaintext)...)
+
+	gas1 := HPKEPrecompile.RequiredGas(input1)
+	gas2 := HPKEPrecompile.RequiredGas(input2)
+
+	result1, _, err := HPKEPrecompile.Run(nil, common.Address{}, ContractAddress, input1, gas1, false)
+	require.NoError(t, err)
+
+	result2, _, err := HPKEPrecompile.Run(nil, common.Address{}, ContractAddress, input2, gas2, false)
+	require.NoError(t, err)
+
+	require.NotEqual(t, result1, result2, "different seeds must produce different ciphertexts")
+}
+
 // Benchmarks
 
 func BenchmarkHPKE_Seal_X25519(b *testing.B) {
@@ -336,7 +455,8 @@ func BenchmarkHPKE_Seal_X25519(b *testing.B) {
 	pkBytes, _ := pk.MarshalBinary()
 
 	plaintext := []byte("benchmark message")
-	sealInput := buildSealInput(KEMX25519, 0x0001, 0x0001, pkBytes, nil, nil, plaintext)
+	seed := testSeed("bench-x25519")
+	sealInput := buildSealInput(KEMX25519, 0x0001, 0x0001, pkBytes, seed, nil, nil, plaintext)
 	input := append([]byte{OpSingleShotSeal}, sealInput...)
 	gas := HPKEPrecompile.RequiredGas(input)
 
