@@ -12,8 +12,8 @@ Geth provides `NewPrecompileAdapter()` to wrap these into geth-compatible precom
 |---------|---------|-------------|-----|
 | `mldsa` | `0x0200...0006` | ML-DSA-65 signature verify (FIPS 204) | 100k + 10/byte |
 | `slhdsa` | `0x0600...0001` | SLH-DSA signature verify (FIPS 205) | 15k–250k by mode |
-| `pqcrypto` | `0x9003` | ML-KEM key encapsulation + hybrid PQ ops | variable |
 | `mlkem` | `0x0200...0007` | ML-KEM-768 encapsulate/decapsulate | 50k base |
+| `xwing` | `0x2221` | X-Wing hybrid KEM (X25519 + ML-KEM-768) | 40k |
 
 ### Threshold Signatures
 
@@ -63,8 +63,10 @@ Geth provides `NewPrecompileAdapter()` to wrap these into geth-compatible precom
 | `dead` | `0x0000...0000` | Dead address interceptor | minimal |
 | `graph` | — | GraphQL query precompile | variable |
 | `bridge` | — | Cross-chain bridge verification | variable |
-| `threshold` | — | Threshold key management | variable |
-| `attestation` | — | TEE/GPU attestation | variable |
+| `attestation` | `0x0300...0001-05` | TEE/GPU attestation (NVTrust, TPM, SGX/SEV/TDX) | 25k–75k |
+| `anchor` | `0x0700...0010` | Cross-chain state anchoring | 2.6k–25k |
+| `vrf` | `0x3213` | ECVRF verify (RFC 9381) | 20k |
+| `compute` | `0x0300...0010` | AI compute attestation | variable |
 
 ### Support Packages
 
