@@ -1,7 +1,7 @@
 // Copyright (C) 2026, Lux Industries Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package math
+package compute
 
 import (
 	"github.com/luxfi/precompile/contract"
@@ -11,7 +11,7 @@ import (
 
 var _ contract.Configurator = (*configurator)(nil)
 
-const ConfigKey = "fixedPointMathConfig"
+const ConfigKey = "computeMarketConfig"
 
 var Module = modules.Module{
 	ConfigKey:    ConfigKey,
