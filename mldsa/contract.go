@@ -27,6 +27,11 @@ var (
 	ErrInvalidInputLength  = contract.ErrInvalidInput
 	ErrInvalidMode        = errors.New("invalid ML-DSA mode")
 	ErrUnsupportedMode    = errors.New("unsupported ML-DSA mode")
+
+	// precompileCtx is the domain-separation context for EVM precompile signature
+	// verification. FIPS 204 Section 5.3: prevents cross-protocol replay between
+	// EVM precompile verify and other ML-DSA uses (UTXO, Warp, MPC).
+	precompileCtx = []byte("lux-evm-precompile-mldsa-v1")
 )
 
 // ML-DSA modes supported by this precompile
@@ -236,7 +241,7 @@ func (p *mldsaVerifyPrecompile) Run(
 		if err != nil {
 			return nil, remainingGas, fmt.Errorf("invalid public key: %w", err)
 		}
-		valid = pub.Verify(message, signature, nil)
+		valid = pub.VerifySignatureCtx(message, signature, precompileCtx)
 	}
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)
@@ -340,7 +345,7 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 				results[i] = false
 				continue
 			}
-			results[i] = pub.Verify(messages[i], signatures[i], nil)
+			results[i] = pub.VerifySignatureCtx(messages[i], signatures[i], precompileCtx)
 		}
 	}
 
