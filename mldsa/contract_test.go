@@ -14,12 +14,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// createTestSignature creates test keys and signatures using the specified mode
+// createTestSignature creates test keys and signatures using the specified mode.
+// Signs with the precompile domain-separation context so verification matches.
 func createTestSignature(t testing.TB, mode mldsa.Mode, message []byte) ([]byte, []byte, []byte) {
 	priv, err := mldsa.GenerateKey(rand.Reader, mode)
 	require.NoError(t, err)
 
-	signature, err := priv.Sign(rand.Reader, message, nil)
+	signature, err := priv.SignCtx(rand.Reader, message, precompileCtx)
 	require.NoError(t, err)
 
 	return priv.PublicKey.Bytes(), signature, message

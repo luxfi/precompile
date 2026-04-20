@@ -213,7 +213,7 @@ func testValidMode(t *testing.T, modeByte uint8, mode slhdsa.Mode, pkSize, sigSi
 	require.NoError(t, err)
 
 	message := []byte("test message for SLH-DSA")
-	sig, err := priv.Sign(rand.Reader, message, nil)
+	sig, err := priv.SignCtx(rand.Reader, message, precompileCtx)
 	require.NoError(t, err)
 
 	pk := priv.PublicKey.Bytes()

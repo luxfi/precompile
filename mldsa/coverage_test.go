@@ -239,7 +239,7 @@ func TestBatchVerify_TrailingBytes(t *testing.T) {
 	message := []byte("test")
 	priv, err := mldsa.GenerateKey(rand.Reader, mldsa.MLDSA44)
 	require.NoError(t, err)
-	sig, err := priv.Sign(rand.Reader, message, nil)
+	sig, err := priv.SignCtx(rand.Reader, message, precompileCtx)
 	require.NoError(t, err)
 	pk := priv.PublicKey.Bytes()
 
@@ -264,7 +264,7 @@ func TestBatchVerify_SingleValid(t *testing.T) {
 	message := []byte("batch test")
 	priv, err := mldsa.GenerateKey(rand.Reader, mldsa.MLDSA44)
 	require.NoError(t, err)
-	sig, err := priv.Sign(rand.Reader, message, nil)
+	sig, err := priv.SignCtx(rand.Reader, message, precompileCtx)
 	require.NoError(t, err)
 	pk := priv.PublicKey.Bytes()
 
@@ -330,7 +330,7 @@ func TestRun_MLDSA87_Valid(t *testing.T) {
 func createTestSig(t testing.TB, mode mldsa.Mode, message []byte) ([]byte, []byte, []byte) {
 	priv, err := mldsa.GenerateKey(rand.Reader, mode)
 	require.NoError(t, err)
-	sig, err := priv.Sign(rand.Reader, message, nil)
+	sig, err := priv.SignCtx(rand.Reader, message, precompileCtx)
 	require.NoError(t, err)
 	return priv.PublicKey.Bytes(), sig, message
 }
