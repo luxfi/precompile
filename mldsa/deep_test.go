@@ -67,7 +67,7 @@ func TestDeep_ValidSignature(t *testing.T) {
 
 	msg := []byte("test message for ML-DSA-65")
 	sigBytes := make([]byte, mldsa65.SignatureSize)
-	err = mldsa65.SignTo(priv, msg, nil, false, sigBytes)
+	err = mldsa65.SignTo(priv, msg, precompileCtx, false, sigBytes)
 	require.NoError(t, err)
 
 	pubBytes, _ := pub.MarshalBinary()
@@ -85,7 +85,7 @@ func TestDeep_WrongMessage(t *testing.T) {
 
 	msg := []byte("original")
 	sigBytes := make([]byte, mldsa65.SignatureSize)
-	err = mldsa65.SignTo(priv, msg, nil, false, sigBytes)
+	err = mldsa65.SignTo(priv, msg, precompileCtx, false, sigBytes)
 	require.NoError(t, err)
 
 	pubBytes, _ := pub.MarshalBinary()
@@ -103,7 +103,7 @@ func TestDeep_BitFlipSig(t *testing.T) {
 
 	msg := []byte("bit flip ML-DSA")
 	sigBytes := make([]byte, mldsa65.SignatureSize)
-	err = mldsa65.SignTo(priv, msg, nil, false, sigBytes)
+	err = mldsa65.SignTo(priv, msg, precompileCtx, false, sigBytes)
 	require.NoError(t, err)
 	sigBytes[0] ^= 0x01
 
@@ -139,7 +139,7 @@ func TestDeep_Concurrent(t *testing.T) {
 	pub, priv, _ := mldsa65.GenerateKey(nil)
 	msg := []byte("concurrent ML-DSA")
 	sigBytes := make([]byte, mldsa65.SignatureSize)
-	_ = mldsa65.SignTo(priv, msg, nil, false, sigBytes)
+	_ = mldsa65.SignTo(priv, msg, precompileCtx, false, sigBytes)
 	pubBytes, _ := pub.MarshalBinary()
 	input := buildMLDSAInput(t, ModeMLDSA65, pubBytes, msg, sigBytes)
 	gas := MLDSAVerifyPrecompile.RequiredGas(input)
