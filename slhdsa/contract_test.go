@@ -14,13 +14,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// createTestSignature creates test keys and signatures using the specified mode
+// createTestSignature creates test keys and signatures using the specified mode.
+// Signs with the precompile domain-separation context so verification matches.
 func createTestSignature(t testing.TB, mode slhdsa.Mode) ([]byte, []byte, []byte, []byte) {
 	priv, err := slhdsa.GenerateKey(rand.Reader, mode)
 	require.NoError(t, err)
 
 	message := []byte("test message for SLH-DSA signature verification")
-	signature, err := priv.Sign(rand.Reader, message, nil)
+	signature, err := priv.SignCtx(rand.Reader, message, precompileCtx)
 	require.NoError(t, err)
 
 	return priv.PublicKey.Bytes(), signature, message, nil
@@ -160,7 +161,7 @@ func TestSLHDSAVerify_EmptyMessage(t *testing.T) {
 	require.NoError(t, err)
 
 	message := []byte{}
-	signature, err := priv.Sign(rand.Reader, message, nil)
+	signature, err := priv.SignCtx(rand.Reader, message, precompileCtx)
 	require.NoError(t, err)
 
 	input := prepareInputWithMode(ModeSHA2_128s, priv.PublicKey.Bytes(), message, signature)
@@ -186,7 +187,7 @@ func TestSLHDSAVerify_LargeMessage(t *testing.T) {
 		message[i] = byte(i % 256)
 	}
 
-	signature, err := priv.Sign(rand.Reader, message, nil)
+	signature, err := priv.SignCtx(rand.Reader, message, precompileCtx)
 	require.NoError(t, err)
 
 	input := prepareInputWithMode(ModeSHA2_128s, priv.PublicKey.Bytes(), message, signature)
@@ -268,7 +269,7 @@ func TestSLHDSAVerify_OutOfGas(t *testing.T) {
 func BenchmarkSLHDSAVerify_SHA2_128s(b *testing.B) {
 	priv, _ := slhdsa.GenerateKey(rand.Reader, slhdsa.SHA2_128s)
 	message := []byte("benchmark message")
-	signature, _ := priv.Sign(rand.Reader, message, nil)
+	signature, _ := priv.SignCtx(rand.Reader, message, precompileCtx)
 	input := prepareInputWithMode(ModeSHA2_128s, priv.PublicKey.Bytes(), message, signature)
 
 	gas := SLHDSAVerifyPrecompile.RequiredGas(input)
@@ -285,7 +286,7 @@ func BenchmarkSLHDSAVerify_SHA2_128s(b *testing.B) {
 func BenchmarkSLHDSAVerify_SHA2_128f(b *testing.B) {
 	priv, _ := slhdsa.GenerateKey(rand.Reader, slhdsa.SHA2_128f)
 	message := []byte("benchmark message")
-	signature, _ := priv.Sign(rand.Reader, message, nil)
+	signature, _ := priv.SignCtx(rand.Reader, message, precompileCtx)
 	input := prepareInputWithMode(ModeSHA2_128f, priv.PublicKey.Bytes(), message, signature)
 
 	gas := SLHDSAVerifyPrecompile.RequiredGas(input)
