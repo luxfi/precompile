@@ -26,6 +26,11 @@ var (
 	ErrInvalidInputLength  = contract.ErrInvalidInput
 	ErrInvalidMode        = errors.New("invalid SLH-DSA mode")
 	ErrUnsupportedMode    = errors.New("unsupported SLH-DSA mode")
+
+	// precompileCtx is the domain-separation context for EVM precompile signature
+	// verification. FIPS 205: prevents cross-protocol replay between
+	// EVM precompile verify and other SLH-DSA uses (UTXO, Warp, MPC).
+	precompileCtx = []byte("lux-evm-precompile-slhdsa-v1")
 )
 
 // SLH-DSA modes supported by this precompile (12 parameter sets)
@@ -252,7 +257,7 @@ func (p *slhdsaVerifyPrecompile) Run(
 		if err != nil {
 			return nil, remainingGas, fmt.Errorf("invalid public key: %w", err)
 		}
-		valid = pub.Verify(message, signature, nil)
+		valid = pub.VerifySignatureCtx(message, signature, precompileCtx)
 	}
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)
