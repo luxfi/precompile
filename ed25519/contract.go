@@ -9,9 +9,8 @@
 package ed25519
 
 import (
-	"crypto/ed25519"
-
 	accelcrypto "github.com/luxfi/accel/ops/crypto"
+	"github.com/luxfi/crypto/ed25519"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
