@@ -4,11 +4,11 @@
 package secp256r1
 
 import (
-	"crypto/ecdsa"
 	"crypto/elliptic"
 	"math/big"
 
 	"github.com/luxfi/accel"
+	luxsecp256r1 "github.com/luxfi/crypto/secp256r1"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -93,13 +93,6 @@ func (c *Contract) Run(input []byte) ([]byte, error) {
 		return nil, nil
 	}
 
-	// Construct public key
-	pubKey := &ecdsa.PublicKey{
-		Curve: curve,
-		X:     x,
-		Y:     y,
-	}
-
 	// Try GPU-accelerated verification first
 	if gpuValid, gpuUsed := verifyGPU(hash, r, s, x, y); gpuUsed {
 		if gpuValid {
@@ -108,8 +101,8 @@ func (c *Contract) Run(input []byte) ([]byte, error) {
 		return nil, nil
 	}
 
-	// CPU fallback: verify signature
-	if ecdsa.Verify(pubKey, hash, r, s) {
+	// CPU fallback via canonical luxfi/crypto/secp256r1.
+	if luxsecp256r1.Verify(hash, r, s, x, y) {
 		return successResult, nil
 	}
 
@@ -189,29 +182,9 @@ func (c *Contract) Name() string {
 	return "P256VERIFY"
 }
 
-// Verify is a convenience function for direct verification
+// Verify is a convenience function for direct verification.
+// Delegates to canonical luxfi/crypto/secp256r1, which performs
+// curve membership and (r,s) range validation internally.
 func Verify(hash []byte, r, s, x, y *big.Int) bool {
-	curve := elliptic.P256()
-
-	// Validate point is on curve
-	if !curve.IsOnCurve(x, y) {
-		return false
-	}
-
-	// Validate r and s
-	n := curve.Params().N
-	if r.Sign() <= 0 || r.Cmp(n) >= 0 {
-		return false
-	}
-	if s.Sign() <= 0 || s.Cmp(n) >= 0 {
-		return false
-	}
-
-	pubKey := &ecdsa.PublicKey{
-		Curve: curve,
-		X:     x,
-		Y:     y,
-	}
-
-	return ecdsa.Verify(pubKey, hash, r, s)
+	return luxsecp256r1.Verify(hash, r, s, x, y)
 }

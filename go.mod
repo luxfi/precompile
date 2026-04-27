@@ -11,7 +11,7 @@ require (
 	github.com/holiman/uint256 v1.3.2
 	github.com/luxfi/accel v1.0.7
 	github.com/luxfi/ai v0.1.0
-	github.com/luxfi/crypto v1.17.43
+	github.com/luxfi/crypto v1.18.1
 	github.com/luxfi/database v1.17.43
 	github.com/luxfi/fhe v1.7.6
 	github.com/luxfi/geth v1.16.77
