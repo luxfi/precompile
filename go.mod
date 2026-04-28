@@ -12,11 +12,10 @@ require (
 	github.com/luxfi/accel v1.0.7
 	github.com/luxfi/ai v0.1.0
 	github.com/luxfi/crypto v1.18.1
-	github.com/luxfi/database v1.17.43
-	github.com/luxfi/fhe v1.7.6
+	github.com/luxfi/database v1.17.44
+	github.com/luxfi/fhe v1.8.0
 	github.com/luxfi/geth v1.16.77
 	github.com/luxfi/lattice/v7 v7.0.0
-	github.com/luxfi/log v1.4.1
 	github.com/luxfi/corona v0.2.0
 	github.com/luxfi/runtime v1.0.1
 	github.com/luxfi/threshold v1.5.5
@@ -58,6 +57,7 @@ require (
 	github.com/luxfi/constants v1.4.4 // indirect
 	github.com/luxfi/container v0.0.4 // indirect
 	github.com/luxfi/ids v1.2.9 // indirect
+	github.com/luxfi/log v1.4.1 // indirect
 	github.com/luxfi/math v1.2.4 // indirect
 	github.com/luxfi/math/big v0.1.0 // indirect
 	github.com/luxfi/metric v1.5.1 // indirect
@@ -74,7 +74,6 @@ require (
 	github.com/montanaflynn/stats v0.8.2 // indirect
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/onsi/ginkgo/v2 v2.27.5 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
