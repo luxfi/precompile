@@ -23,6 +23,7 @@ import (
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
+	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -246,12 +247,89 @@ func (o *blsOperations) g1MSM(input []byte, suppliedGas uint64) ([]byte, uint64,
 		scalars[i] = s
 	}
 
+	// Route through accel when its native CPU/GPU path is available; on
+	// ErrUnsupported (no cgo/native lib linked) fall back to gnark-crypto's
+	// MultiExp. The accel path uses the first-party luxcpp/crypto Pippenger
+	// MSM via gpukit_multi_pippenger when -tags=lux_crypto_native is set.
+	if result, ok := g1MSMAccel(points, scalars); ok {
+		return encodeG1(result), gas, nil
+	}
+
 	var result bls12381.G1Affine
 	_, err = result.MultiExp(points, scalars, ecc.MultiExpConfig{})
 	if err != nil {
 		return nil, gas, err
 	}
 	return encodeG1(&result), gas, nil
+}
+
+// g1MSMAccel attempts the BLS12-381 G1 MSM through luxfi/accel. Returns
+// (result, true) on success or (nil, false) when accel cannot handle the
+// request (not linked, unsupported, or runtime error -- in which case the
+// caller falls back to gnark-crypto MultiExp).
+//
+// Wire conversion: gpukit accepts 96-byte BE x||y per point (48 bytes each).
+// gnark-crypto G1Affine.X / .Y are already canonical fp.Element values, so
+// the BE byte serialisation matches gpukit's expected ABI exactly. The
+// result is the same wire format and is decoded back into a G1Affine.
+func g1MSMAccel(points []bls12381.G1Affine, scalars []fr.Element) (*bls12381.G1Affine, bool) {
+	const (
+		gpukitPointSize  = 96 // 48-byte BE x || 48-byte BE y
+		gpukitScalarSize = 32 // LE canonical
+		fpSize           = 48
+	)
+	n := len(points)
+	if n == 0 || n != len(scalars) {
+		return nil, false
+	}
+
+	scalarBufs := make([][]byte, n)
+	pointBufs := make([][]byte, n)
+	for i := 0; i < n; i++ {
+		s := make([]byte, gpukitScalarSize)
+		// fr.Element.Marshal returns BE; gpukit expects LE.
+		bigBytes := scalars[i].Bytes()
+		for j := 0; j < gpukitScalarSize; j++ {
+			s[j] = bigBytes[gpukitScalarSize-1-j]
+		}
+		scalarBufs[i] = s
+
+		p := make([]byte, gpukitPointSize)
+		if !points[i].IsInfinity() {
+			xb := points[i].X.Bytes()
+			yb := points[i].Y.Bytes()
+			copy(p[:fpSize], xb[:])
+			copy(p[fpSize:], yb[:])
+		}
+		pointBufs[i] = p
+	}
+
+	out, err := accelcrypto.MSM(accelcrypto.CurveBLS12_381, scalarBufs, pointBufs)
+	if err != nil {
+		return nil, false
+	}
+	if len(out) != gpukitPointSize {
+		return nil, false
+	}
+
+	var r bls12381.G1Affine
+	allZero := true
+	for _, b := range out {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		// identity
+		return &r, true
+	}
+	r.X.SetBytes(out[:fpSize])
+	r.Y.SetBytes(out[fpSize:])
+	if !r.IsOnCurve() {
+		return nil, false
+	}
+	return &r, true
 }
 
 func (o *blsOperations) g2Add(input []byte, suppliedGas uint64) ([]byte, uint64, error) {
