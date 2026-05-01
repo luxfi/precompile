@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	// ContractSLHDSAVerifyAddress is the address of the SLH-DSA verify precompile (Post-Quantum range 0x0600)
-	ContractSLHDSAVerifyAddress = common.HexToAddress("0x0600000000000000000000000000000000000001")
+	// ContractSLHDSAVerifyAddress is the address of the SLH-DSA verify precompile.
+	// LP-3501/LP-4200 unified PQCrypto block: 0x012203.
+	ContractSLHDSAVerifyAddress = common.HexToAddress("0x0000000000000000000000000000000000012203")
 
 	// Singleton instance
 	SLHDSAVerifyPrecompile = &slhdsaVerifyPrecompile{}

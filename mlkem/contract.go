@@ -2,7 +2,7 @@
 // See the file LICENSE for licensing terms.
 
 // Package mlkem implements the ML-KEM (FIPS 203) key encapsulation precompile.
-// Address: 0x0200000000000000000000000000000000000007
+// Address: 0x0000000000000000000000000000000000012201 (LP-4200 unified PQCrypto block)
 //
 // Operations:
 //   - 0x01: Encapsulate -- generate shared secret + ciphertext from public key
@@ -69,7 +69,7 @@ func deriveSeed(caller common.Address, raw [SeedSize]byte) [SeedSize]byte {
 
 var (
 	// ContractAddress is the address of the ML-KEM precompile
-	ContractAddress = common.HexToAddress("0x0200000000000000000000000000000000000007")
+	ContractAddress = common.HexToAddress("0x0000000000000000000000000000000000012201")
 
 	// Singleton instance
 	MLKEMPrecompile = &mlkemPrecompile{}
