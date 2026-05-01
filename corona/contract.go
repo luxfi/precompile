@@ -20,8 +20,10 @@ import (
 )
 
 var (
-	// ContractCoronaThresholdAddress is the address of the Corona threshold signature precompile (Threshold range 0x0800)
-	ContractCoronaThresholdAddress = common.HexToAddress("0x020000000000000000000000000000000000000B")
+	// ContractCoronaThresholdAddress is the address of the Corona threshold signature precompile.
+	// LP-4200 unified PQCrypto block (post-quantum threshold slot): 0x012204.
+	// Was 0x020000...000B which collides with FHE precompile space (0x0200...0080+).
+	ContractCoronaThresholdAddress = common.HexToAddress("0x0000000000000000000000000000000000012204")
 
 	// Singleton instance
 	CoronaThresholdPrecompile = &coronaThresholdPrecompile{}

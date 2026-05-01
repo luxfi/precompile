@@ -403,7 +403,7 @@ func TestMLDSAVerify_GasCost(t *testing.T) {
 }
 
 func TestMLDSAPrecompile_Address(t *testing.T) {
-	expectedAddr := common.HexToAddress("0x0200000000000000000000000000000000000006")
+	expectedAddr := common.HexToAddress("0x0000000000000000000000000000000000012202")
 	require.Equal(t, expectedAddr, ContractMLDSAVerifyAddress)
 	require.Equal(t, expectedAddr, MLDSAVerifyPrecompile.Address())
 }
