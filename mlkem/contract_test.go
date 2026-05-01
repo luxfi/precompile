@@ -11,7 +11,7 @@ import (
 )
 
 func TestMLKEMPrecompileAddress(t *testing.T) {
-	expected := common.HexToAddress("0x0200000000000000000000000000000000000007")
+	expected := common.HexToAddress("0x0000000000000000000000000000000000012201")
 	if MLKEMPrecompile.Address() != expected {
 		t.Errorf("expected address %s, got %s", expected.Hex(), MLKEMPrecompile.Address().Hex())
 	}

@@ -179,6 +179,14 @@ Example hook implementations:
 ## Complete Precompile Registry (v0.3.0)
 
 ### Address Ranges
+
+> **Canonical (LP-4200)**: the unified PQCrypto precompile block at
+> `0x012201..0x012204` is authoritative — ML-KEM `0x012201`, ML-DSA
+> `0x012202`, SLH-DSA `0x012203`, Ringtail `0x012204`. The `0x0600`
+> (Post-Quantum) and `0x0800` (Threshold) ranges below are the legacy
+> per-VM mapping; new code MUST target the unified block. See
+> `~/work/lux/evm/LLM.md` for the canonical per-feature address table.
+
 | Range | Category | Description |
 |-------|----------|-------------|
 | 0x0001-0x00FF | Standard EVM | ECRECOVER, SHA256, BN254, BLS12-381 |
@@ -187,9 +195,9 @@ Example hook implementations:
 | 0x0300-0x03FF | AI/ML | Mining, NVTrust, ModelRegistry |
 | 0x0400-0x04FF | DEX | Uniswap v4-style AMM, Lending, Perps |
 | 0x0500-0x05FF | Graph/Query | GraphQL, Subscriptions, Cache |
-| 0x0600-0x06FF | Post-Quantum | ML-DSA, ML-KEM, SLH-DSA, Quasar |
+| 0x0600-0x06FF | Post-Quantum (legacy) | superseded by LP-4200 0x012201..0x012204 |
 | 0x0700-0x07FF | Privacy | FHE, ECIES, Ring, HPKE |
-| 0x0800-0x08FF | Threshold | FROST, CGGMP21, Ringtail |
+| 0x0800-0x08FF | Threshold (legacy) | superseded by LP-4200 unified block |
 | 0x0900-0x09FF | ZK Proofs | KZG, Groth16, PLONK |
 | 0x0A00-0x0AFF | Curves | P-256 (secp256r1) |
 

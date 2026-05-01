@@ -20,8 +20,10 @@ import (
 )
 
 var (
-	// ContractRingtailThresholdAddress is the address of the Ringtail threshold signature precompile (Threshold range 0x0800)
-	ContractRingtailThresholdAddress = common.HexToAddress("0x020000000000000000000000000000000000000B")
+	// ContractRingtailThresholdAddress is the address of the Ringtail threshold signature precompile.
+	// LP-4200 unified PQCrypto block (post-quantum threshold slot): 0x012204.
+	// Was 0x020000...000B which collides with FHE precompile space (0x0200...0080+).
+	ContractRingtailThresholdAddress = common.HexToAddress("0x0000000000000000000000000000000000012204")
 
 	// Singleton instance
 	RingtailThresholdPrecompile = &ringtailThresholdPrecompile{}
