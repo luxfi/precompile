@@ -17,7 +17,9 @@ import (
 
 var (
 	// ContractMLDSAVerifyAddress is the address of the ML-DSA verify precompile
-	ContractMLDSAVerifyAddress = common.HexToAddress("0x0200000000000000000000000000000000000006")
+	// (LP-3500/LP-4200 unified PQCrypto block: 0x012202).
+	// 0x0200... is FHE-precompile space; PQ verify lives in 0x012200-0x0122FF.
+	ContractMLDSAVerifyAddress = common.HexToAddress("0x0000000000000000000000000000000000012202")
 
 	// Singleton instance
 	MLDSAVerifyPrecompile = &mldsaVerifyPrecompile{}

@@ -191,7 +191,7 @@ func TestCoronaThresholdVerify_GasCost(t *testing.T) {
 // TestCoronaThresholdPrecompile_Address tests precompile address
 func TestCoronaThresholdPrecompile_Address(t *testing.T) {
 	precompile := &coronaThresholdPrecompile{}
-	expectedAddress := common.HexToAddress("0x020000000000000000000000000000000000000B")
+	expectedAddress := common.HexToAddress("0x0000000000000000000000000000000000012204")
 	require.Equal(t, expectedAddress, precompile.Address())
 }
 
