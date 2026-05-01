@@ -191,7 +191,7 @@ func TestRingtailThresholdVerify_GasCost(t *testing.T) {
 // TestRingtailThresholdPrecompile_Address tests precompile address
 func TestRingtailThresholdPrecompile_Address(t *testing.T) {
 	precompile := &ringtailThresholdPrecompile{}
-	expectedAddress := common.HexToAddress("0x020000000000000000000000000000000000000B")
+	expectedAddress := common.HexToAddress("0x0000000000000000000000000000000000012204")
 	require.Equal(t, expectedAddress, precompile.Address())
 }
 
