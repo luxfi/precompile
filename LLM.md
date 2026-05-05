@@ -1038,7 +1038,7 @@ EVM interface to B-Chain MPC bridge operations:
 
 **Supported Chains:**
 - Lux ecosystem: C-Chain (96369), Hanzo (36963), Zoo (200200), SPC (36911)
-- External: Ethereum (1), Arbitrum (42161), Optimism (10), Base (8453), Polygon (137), BSC (56), Avalanche (43114)
+- External: Ethereum (1), Arbitrum (42161), Optimism (10), Base (8453), Polygon (137), BSC (56)
 
 **Key Features:**
 - LP-333 opt-in signer model (100 max signers, 100M LUX bond)
