@@ -265,7 +265,7 @@ struct Groth16Proof {
 For post-quantum security, use:
 - **Poseidon2** (`0x0501`) for commitments
 - **ML-DSA** (`0x0300`) for signatures
-- **Ringtail** for threshold signatures
+- **Pulsar** for threshold signatures
 
 ### Trusted Setup
 

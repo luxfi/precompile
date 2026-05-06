@@ -58,7 +58,7 @@ ThresholdVM at `~/work/lux/node/vms/thresholdvm/` is **complete and registered**
 - Factory registered in `node/node/vms_allvms.go:50` under `constants.ThresholdVMID`
 - Aliases: `T`, `threshold`, `thresholdvm`, `mpc`
 - Implements `chain.ChainVM` interface
-- Full MPC protocol suite (LSS, FROST, CGGMP21, Ringtail)
+- Full MPC protocol suite (LSS, FROST, CGGMP21, Pulsar)
 - FHE acceleration (GPU optional, CPU fallback)
 - RPC client implementation
 - 10+ Go files, extensive test coverage
