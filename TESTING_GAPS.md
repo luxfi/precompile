@@ -72,7 +72,7 @@ The test suite is broad (341+ tests across 62 files) but shallow in exactly the 
 | `verifySLHDSAGPU` — exported but untested | **MEDIUM** |
 | Gas = 0 (only tested once via `TestSLHDSAVerify_OutOfGas` with gas=1000, not gas=0) | **LOW** |
 
-### 1.6 Ringtail Lattice Threshold (ringtail/)
+### 1.6 Pulsar Lattice Threshold (ringtail/)
 
 | Missing Test | Severity |
 |-------------|----------|
