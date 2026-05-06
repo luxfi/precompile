@@ -4,7 +4,7 @@ Post-quantum digital signature verification precompile for Lux EVM.
 
 ## Overview
 
-The ML-DSA (Module-Lattice-Based Digital Signature Algorithm) precompile provides quantum-resistant signature verification based on the Dilithium algorithm and standardized in FIPS 204.
+The ML-DSA (Module-Lattice-Based Digital Signature Algorithm) precompile provides quantum-resistant signature verification based on the ML-DSA algorithm and standardized in FIPS 204.
 
 **Precompile Address**: `0x0200000000000000000000000000000000000006`
 
@@ -189,7 +189,7 @@ go test -v -run TestMLDSAVerify_LargeMessage
 ## References
 
 - [FIPS 204: Module-Lattice-Based Digital Signature Standard](https://csrc.nist.gov/pubs/fips/204/final)
-- [Dilithium Specification](https://pq-crystals.org/dilithium/)
+- [ML-DSA Specification](https://pq-crystals.org/dilithium/)
 - [Cloudflare CIRCL Library](https://github.com/cloudflare/circl)
 
 ## Related Precompiles
