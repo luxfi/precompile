@@ -235,7 +235,7 @@ Benchmarks on Apple M1 Max:
 |-----------|---------------|----------|--------------|
 | FROST (this) | 64 bytes | 50k-125k | ❌ |
 | CGGMP21 | 65 bytes | 75k-175k | ❌ |
-| Corona | 4KB | 150k-300k | ✅ |
+| Pulsar | 4KB | 150k-300k | ✅ |
 | BLS (Warp) | 96 bytes | 120k | ❌ |
 
 ## Integration with Lux Threshold

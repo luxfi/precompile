@@ -182,7 +182,7 @@ Example hook implementations:
 
 > **Canonical (LP-4200)**: the unified PQCrypto precompile block at
 > `0x012201..0x012204` is authoritative — ML-KEM `0x012201`, ML-DSA
-> `0x012202`, SLH-DSA `0x012203`, Corona `0x012204`. The `0x0600`
+> `0x012202`, SLH-DSA `0x012203`, Pulsar `0x012204`. The `0x0600`
 > (Post-Quantum) and `0x0800` (Threshold) ranges below are the legacy
 > per-VM mapping; new code MUST target the unified block. See
 > `~/work/lux/evm/LLM.md` for the canonical per-feature address table.
@@ -241,7 +241,7 @@ Example hook implementations:
 #### Post-Quantum Crypto (0x0600-0x06FF)
 | Address | Name | Package | Description | Gas |
 |---------|------|---------|-------------|-----|
-| 0x0600 | ML_DSA | mldsa/ | NIST ML-DSA signatures (Dilithium) | 50,000 |
+| 0x0600 | ML_DSA | mldsa/ | NIST ML-DSA signatures (ML-DSA) | 50,000 |
 | 0x0601 | ML_KEM | mlkem/ | NIST ML-KEM key encapsulation | 25,000 |
 | 0x0602 | SLH_DSA | slhdsa/ | Stateless hash-based signatures | 75,000 |
 | 0x0603 | PQ_CRYPTO | pqcrypto/ | Multi-PQ operations | 30,000 |
@@ -288,7 +288,7 @@ Example hook implementations:
 | **Z-Chain (Zoo)** | Warp, PoolManager, SwapRouter, AIMining, GraphQL |
 | **D-Chain (DEX)** | Warp, Full DEX suite, GraphQL |
 | **K-Chain (Keys)** | Warp, PQ Crypto, Privacy, Threshold, GraphQL |
-| **Q-Chain (Quantum)** | Warp, Full PQ suite, Corona, GraphQL |
+| **Q-Chain (Quantum)** | Warp, Full PQ suite, Pulsar, GraphQL |
 | **B-Chain (Bridge)** | Warp, TeleportBridge, GraphQL |
 
 ### Missing from Z-Chain (Zoo) for Full Integration
@@ -298,7 +298,7 @@ Current Z-Chain precompiles are limited. To enable full native chain functionali
 | Feature | Missing Precompiles | Priority |
 |---------|---------------------|----------|
 | **Bridge** | TeleportBridge (0x0440), OmnichainRouter (0x0441) | HIGH |
-| **Threshold** | FROST (0x0800), CGGMP21 (0x0801), Corona (0x0802) | HIGH |
+| **Threshold** | FROST (0x0800), CGGMP21 (0x0801), Pulsar (0x0802) | HIGH |
 | **FHE** | FHE (0x0700), ECIES (0x0701) | MEDIUM |
 | **Full DEX** | HooksRegistry, FlashLoan, LendingPool, PerpEngine | MEDIUM |
 | **PQ Crypto** | ML-DSA (0x0600), ML-KEM (0x0601) | LOW |
@@ -1019,7 +1019,7 @@ The Lux precompile system now provides comprehensive integration with all specia
 | VM | Chain | Precompile Package | Address Range | Purpose |
 |----|-------|-------------------|---------------|---------|
 | BridgeVM | B-Chain | `bridge/` | 0x0440-0x0445 | MPC-based cross-chain bridging |
-| ThresholdVM | T-Chain | `threshold/` | 0x0800-0x0813 | Threshold signatures (LSS, FROST, CGGMP21, Corona) |
+| ThresholdVM | T-Chain | `threshold/` | 0x0800-0x0813 | Threshold signatures (LSS, FROST, CGGMP21, Pulsar) |
 | ZKVM | Z-Chain | `zk/` | 0x0900-0x0932 | Zero-knowledge proofs, privacy, rollups |
 | QuantumVM | Q-Chain | `quantum/` | 0x0600-0x0632 | Post-quantum crypto, quantum stamps |
 
@@ -1072,7 +1072,7 @@ for `teleportvm` (LP-6332), which is unrelated.
 - secp256k1 (ECDSA)
 - Ed25519 (EdDSA)
 - BLS12-381
-- Corona (post-quantum)
+- Pulsar (post-quantum)
 - ML-DSA
 
 ### ZK Precompiles (zk/)
@@ -1111,13 +1111,13 @@ EVM interface to QuantumVM for post-quantum security:
 | Address | Name | Description | Gas |
 |---------|------|-------------|-----|
 | 0x0600 | QUANTUM_VERIFY | Generic quantum signature verification | 75,000 |
-| 0x0601 | CORONA | Corona threshold signatures | 75,000 |
-| 0x0602 | ML_DSA | NIST ML-DSA (Dilithium) | 50,000 |
-| 0x0603 | ML_KEM | NIST ML-KEM (Kyber) | 25,000 |
-| 0x0604 | SLH_DSA | NIST SLH-DSA (SPHINCS+) | 100,000 |
-| 0x0610 | HYBRID_BLS_CORONA | BLS + Corona hybrid | 100,000 |
+| 0x0601 | CORONA | Pulsar threshold signatures | 75,000 |
+| 0x0602 | ML_DSA | NIST ML-DSA | 50,000 |
+| 0x0603 | ML_KEM | NIST ML-KEM | 25,000 |
+| 0x0604 | SLH_DSA | NIST SLH-DSA (FIPS 205, formerly SPHINCS+) | 100,000 |
+| 0x0610 | HYBRID_BLS_CORONA | BLS + Pulsar hybrid | 100,000 |
 | 0x0611 | HYBRID_ECDSA_MLDSA | ECDSA + ML-DSA hybrid | 100,000 |
-| 0x0612 | HYBRID_SCHNORR_CORONA | Schnorr + Corona hybrid | 100,000 |
+| 0x0612 | HYBRID_SCHNORR_CORONA | Schnorr + Pulsar hybrid | 100,000 |
 | 0x0620 | QUANTUM_STAMP | Quantum timestamp verification | 50,000 |
 | 0x0621 | QUANTUM_ANCHOR | Quantum anchor verification | 50,000 |
 | 0x0630 | BLS_VERIFY | BLS12-381 signature verification | 25,000 |
@@ -1164,7 +1164,7 @@ EVM interface to QuantumVM for post-quantum security:
 │   └── verifier.go
 ├── quasar/       # Quantum consensus
 ├── ring/         # Ring signatures
-├── corona/     # Corona threshold
+├── corona/     # Pulsar threshold
 ├── secp256r1/    # P-256 curve
 ├── slhdsa/       # SLH-DSA signatures
 ├── threshold/    # Threshold precompiles (0x0800-0x0813) [NEW]
