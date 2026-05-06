@@ -95,9 +95,9 @@ Post-quantum cryptography replaces the hardness assumption.
 
 | Precompile | Address | Standard | Hardness |
 |------------|---------|----------|----------|
-| `mldsa`    | `0x0200..06` | FIPS 204 (Dilithium) | Module-LWE + Module-SIS |
-| `mlkem`    | `0x0200..07` | FIPS 203 (Kyber) | Module-LWE |
-| `slhdsa`   | `0x0600..01` | FIPS 205 (SPHINCS+) | Hash-based (no structured math) |
+| `mldsa`    | `0x0200..06` | FIPS 204 (ML-DSA) | Module-LWE + Module-SIS |
+| `mlkem`    | `0x0200..07` | FIPS 203 (ML-KEM) | Module-LWE |
+| `slhdsa`   | `0x0600..01` | FIPS 205 (SLH-DSA (FIPS 205, formerly SPHINCS+)) | Hash-based (no structured math) |
 | `ringtail` | `0x0200..0B` | — | LWE threshold signatures |
 | `xwing`    | `0x2221` | Draft hybrid | X25519 + ML-KEM-768 |
 
@@ -235,10 +235,10 @@ verifies those aggregates in one call.
 
 | Precompile | Address | Verifies |
 |------------|---------|----------|
-| `quasar` | `0x0300..20-24` | BLS + Verkle + Ringtail + hybrid |
+| `quasar` | `0x0300..20-24` | BLS + Verkle + Pulsar + hybrid |
 
 **Quasar** is the post-quantum consensus family: fast path uses BLS12-381
-aggregate signatures; PQ path uses Ringtail LWE threshold signatures; the
+aggregate signatures; PQ path uses Pulsar LWE threshold signatures; the
 two combine into a hybrid proof that's safe under both classical and quantum
 attackers. This precompile lets any contract (e.g. a bridge, a rollup)
 verify that a Quasar-consensus block was finalized.

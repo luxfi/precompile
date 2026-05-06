@@ -1,10 +1,10 @@
-# Ringtail Threshold Signature Precompile
+# Pulsar Threshold Signature Precompile
 
-Post-quantum threshold signature verification precompile for Lux EVM, implementing the LWE-based two-round threshold signature scheme from [Ringtail (ePrint 2024/1113)](https://eprint.iacr.org/2024/1113).
+Post-quantum threshold signature verification precompile for Lux EVM, implementing the LWE-based two-round threshold signature scheme from [Pulsar (ePrint 2024/1113)](https://eprint.iacr.org/2024/1113).
 
 ## Overview
 
-The Ringtail Threshold precompile enables verification of lattice-based threshold signatures on-chain, providing post-quantum security for multi-party consensus protocols. This is a critical component of the Quasar quantum consensus mechanism.
+The Pulsar Threshold precompile enables verification of lattice-based threshold signatures on-chain, providing post-quantum security for multi-party consensus protocols. This is a critical component of the Quasar quantum consensus mechanism.
 
 **Precompile Address**: `0x020000000000000000000000000000000000000B`
 
@@ -18,7 +18,7 @@ The Ringtail Threshold precompile enables verification of lattice-based threshol
 
 ## Algorithm
 
-Ringtail implements a threshold signature scheme based on:
+Pulsar implements a threshold signature scheme based on:
 - **Lattice Cryptography**: LWE problem hardness
 - **Ring Learning With Errors**: Polynomial ring operations
 - **Threshold Secret Sharing**: Shamir's secret sharing over rings
@@ -194,7 +194,7 @@ valid := sign.Verify(r, r_xi, r_nu, z, A, mu, bTilde, c, Delta)
 
 ## Quasar Consensus Integration
 
-The Ringtail threshold precompile is designed for Quasar consensus:
+The Pulsar threshold precompile is designed for Quasar consensus:
 
 ```solidity
 contract QuasarConsensus {
@@ -252,7 +252,7 @@ contract QuasarConsensus {
 |--------|---------------|-------------|----------------|
 | ECDSA (secp256k1) | 65 bytes | ~88μs | ❌ |
 | BLS | 96 bytes | ~2.1ms | ❌ |
-| **Ringtail** | **~20KB** | **~3.8ms** | **✅** |
+| **Pulsar** | **~20KB** | **~3.8ms** | **✅** |
 | ML-DSA-65 | 3.3KB | ~108μs | ✅ |
 | SLH-DSA | 7.9KB | ~4.2ms | ✅ |
 
@@ -298,7 +298,7 @@ function verify(bytes32 hash, bytes memory sig) public view {
     require(isAuthorized(signer), "Unauthorized");
 }
 
-// After (Ringtail Threshold)
+// After (Pulsar Threshold)
 function verify(bytes32 hash, bytes memory sig) public view {
     RingtailThresholdLib.verifyOrRevert(
         THRESHOLD,
@@ -316,7 +316,7 @@ function verify(bytes32 hash, bytes memory sig) public view {
     require(BLS.verify(aggregateKey, hash, sig), "Invalid");
 }
 
-// After (Ringtail Threshold)
+// After (Pulsar Threshold)
 function verify(bytes32 hash, bytes memory sig) public view {
     require(
         verifyThresholdSignature(THRESHOLD, N, hash, sig),
@@ -327,9 +327,9 @@ function verify(bytes32 hash, bytes memory sig) public view {
 
 ## References
 
-- [Ringtail Paper (ePrint 2024/1113)](https://eprint.iacr.org/2024/1113)
+- [Pulsar Paper (ePrint 2024/1113)](https://eprint.iacr.org/2024/1113)
 - [Lattice Library](https://github.com/luxfi/lattice)
-- [Ringtail Implementation](/Users/z/work/lux/ringtail/)
+- [Pulsar Implementation](/Users/z/work/lux/ringtail/)
 - [Quasar Consensus](/Users/z/work/lux/node/consensus/protocol/quasar/)
 
 ## License

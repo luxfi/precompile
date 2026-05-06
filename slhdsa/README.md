@@ -8,7 +8,7 @@ This precompile implements **SLH-DSA (Stateless Hash-Based Digital Signature Alg
 
 ## FIPS 205 - SLH-DSA
 
-SLH-DSA (formerly SPHINCS+) is a **post-quantum digital signature scheme** based on hash functions. It provides:
+SLH-DSA (FIPS 205, formerly SPHINCS+) is a **post-quantum digital signature scheme** based on hash functions. It provides:
 
 - **Quantum Resistance**: Secure against attacks by quantum computers
 - **Stateless Operation**: No state management required (unlike XMSS)
@@ -227,7 +227,7 @@ Large signatures are a characteristic of hash-based schemes:
 
 - **Library**: Cloudflare CIRCL v1.6.1
 - **Standard**: FIPS 205 (Final)
-- **Algorithm**: SPHINCS+ with FIPS 205 parameters
+- **Algorithm**: SLH-DSA with FIPS 205 parameters
 - **Hash Functions**: SHA-256, SHA-512, SHAKE256
 - **Security Levels**: 128-bit, 192-bit, 256-bit
 
@@ -268,7 +268,7 @@ forge test --match-path "**/slhdsa/**"
 ## References
 
 - [FIPS 205: Stateless Hash-Based Digital Signature Standard](https://csrc.nist.gov/pubs/fips/205/final)
-- [SPHINCS+ Website](https://sphincs.org/)
+- [SLH-DSA Website](https://sphincs.org/)
 - [Cloudflare CIRCL Library](https://github.com/cloudflare/circl)
 - [NIST PQC Standardization](https://csrc.nist.gov/projects/post-quantum-cryptography)
 
