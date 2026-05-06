@@ -191,7 +191,7 @@ Example hook implementations:
 |-------|----------|-------------|
 | 0x0001-0x00FF | Standard EVM | ECRECOVER, SHA256, BN254, BLS12-381 |
 | 0x0100-0x01FF | Warp/Teleport | Cross-chain messaging |
-| 0x0200-0x02FF | Chain Config | Subnet-EVM style (AllowLists, FeeManager) |
+| 0x0200-0x02FF | Chain Config | Lux EVM style (AllowLists, FeeManager) |
 | 0x0300-0x03FF | AI/ML | Mining, NVTrust, ModelRegistry |
 | 0x0400-0x04FF | DEX | Uniswap v4-style AMM, Lending, Perps |
 | 0x0500-0x05FF | Graph/Query | GraphQL, Subscriptions, Cache |
@@ -303,7 +303,7 @@ Current Z-Chain precompiles are limited. To enable full native chain functionali
 | **Full DEX** | HooksRegistry, FlashLoan, LendingPool, PerpEngine | MEDIUM |
 | **PQ Crypto** | ML-DSA (0x0600), ML-KEM (0x0601) | LOW |
 
-### Standard Precompiles (Subnet-EVM)
+### Standard Precompiles (Lux EVM)
 | Address | Name | Description |
 |---------|------|-------------|
 | 0x0200...01 | DeployerAllowList | Contract deployment permissions |
@@ -452,10 +452,10 @@ The geth fork's `DecodeHeader` supports multi-format decoding (15-24 fields) to 
 
 ---
 
-## Coreth/SubnetEVM Header Format Fix (2024-12-17)
+## Coreth/LuxEVM Header Format Fix (2024-12-17)
 
 ### Problem
-When importing blocks from coreth/subnet-evm chaindata via RLP export, block validation failed with:
+When importing blocks from coreth/evm chaindata via RLP export, block validation failed with:
 ```
 invalid blockGasCost: have <nil>, want 0
 ```
