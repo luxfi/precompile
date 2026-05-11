@@ -140,6 +140,41 @@ type RangeProof struct {
 	BitLength  uint32 // Maximum bits in the value
 }
 
+// RollupBatch represents a ZK rollup batch
+type RollupBatch struct {
+	BatchID       [32]byte // Unique batch identifier
+	RollupID      [32]byte // Rollup identifier
+	PrevStateRoot [32]byte // Previous state root
+	NewStateRoot  [32]byte // New state root
+	Transactions  uint64   // Number of transactions
+	Proof         *Proof   // Validity proof
+	L1BatchNum    uint64   // L1 batch number
+	Timestamp     uint64   // Batch timestamp
+	Proposer      common.Address
+}
+
+// RollupConfig represents rollup configuration
+type RollupConfig struct {
+	RollupID        [32]byte       // Unique rollup ID
+	Owner           common.Address // Rollup operator
+	VerifyingKey    *VerifyingKey  // Verification key for proofs
+	ProofSystem     ProofSystem    // Proof system used
+	MaxTxPerBatch   uint64         // Max transactions per batch
+	BatchInterval   uint64         // Seconds between batches
+	ChallengeWindow uint64         // Fraud proof window (if applicable)
+	Sequencer       common.Address // Authorized sequencer
+	Enabled         bool
+}
+
+// StateTransition represents a state transition for rollups
+type StateTransition struct {
+	PrevState   [32]byte // Previous state root
+	NewState    [32]byte // New state root
+	TxRoot      [32]byte // Transaction merkle root
+	ReceiptRoot [32]byte // Receipt merkle root
+	BlockNum    uint64   // L2 block number
+}
+
 // ConfidentialPool represents a confidential transaction pool
 type ConfidentialPool struct {
 	PoolID         [32]byte                 // Pool identifier
@@ -173,8 +208,28 @@ var (
 	ErrCommitmentNotFound   = errors.New("commitment not found")
 	ErrInvalidCommitment    = errors.New("invalid commitment")
 	ErrInvalidRangeProof    = errors.New("invalid range proof")
+	ErrRollupNotFound       = errors.New("rollup not found")
 	ErrInvalidStateRoot     = errors.New("invalid state root")
+	ErrBatchTooLarge        = errors.New("batch exceeds maximum size")
+	ErrUnauthorizedProposer = errors.New("unauthorized batch proposer")
 	ErrPoolNotFound         = errors.New("confidential pool not found")
 	ErrPoolDisabled         = errors.New("confidential pool disabled")
 	ErrInsufficientBalance  = errors.New("insufficient confidential balance")
 )
+
+// BN254 curve parameters (used by Groth16)
+var (
+	BN254P = new(big.Int).SetBytes([]byte{
+		0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29,
+		0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+		0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d,
+		0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c, 0xfd, 0x47,
+	})
+)
+
+// KZG trusted setup parameters
+type KZGSetup struct {
+	G1Powers  [][]byte // Powers of tau in G1
+	G2Powers  [][]byte // Powers of tau in G2
+	MaxDegree uint32   // Maximum polynomial degree
+}
