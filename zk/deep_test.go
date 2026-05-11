@@ -37,7 +37,7 @@ func TestDeep_InvalidOp(t *testing.T) {
 }
 
 func TestDeep_AllOps_ShortInput(t *testing.T) {
-	ops := []byte{OpVerifyNullifier, OpVerifyCommitment}
+	ops := []byte{OpVerifyGroth16, OpVerifyPLONK, OpVerifyFflonk, OpVerifyHalo2, OpVerifyKZG, OpVerifyIPA, OpVerifyRangeProof}
 	for _, op := range ops {
 		input := []byte{op, 0x00}
 		gas := ZKVerifyPrecompile.RequiredGas(input)
@@ -46,8 +46,20 @@ func TestDeep_AllOps_ShortInput(t *testing.T) {
 	}
 }
 
+func TestDeep_AllZerosGroth16(t *testing.T) {
+	// Groth16 input: op(1) + verifier_key + proof + public_inputs
+	input := make([]byte, 1+384+256+64) // typical BN254 sizes
+	input[0] = OpVerifyGroth16
+	gas := ZKVerifyPrecompile.RequiredGas(input)
+	ret, _, err := ZKVerifyPrecompile.Run(nil, addr0, ZKVerifyContractAddress, input, gas+100000, true)
+	// All zeros = invalid proof, should not verify
+	if err == nil {
+		require.Equal(t, byte(0), ret[31], "all-zero proof must not verify")
+	}
+}
+
 func TestDeep_GasAccounting(t *testing.T) {
-	ops := []byte{OpVerifyNullifier, OpVerifyCommitment}
+	ops := []byte{OpVerifyGroth16, OpVerifyPLONK}
 	for _, op := range ops {
 		input := make([]byte, 100)
 		input[0] = op
@@ -61,7 +73,7 @@ func TestDeep_GasAccounting(t *testing.T) {
 
 func TestDeep_GasZero(t *testing.T) {
 	input := make([]byte, 100)
-	input[0] = OpVerifyNullifier
+	input[0] = OpVerifyGroth16
 	_, _, err := ZKVerifyPrecompile.Run(nil, addr0, ZKVerifyContractAddress, input, 0, true)
 	require.Error(t, err)
 }
@@ -74,7 +86,7 @@ func TestDeep_GasForNil(t *testing.T) {
 
 func TestDeep_Concurrent(t *testing.T) {
 	input := make([]byte, 100)
-	input[0] = OpVerifyNullifier
+	input[0] = OpVerifyGroth16
 	gas := ZKVerifyPrecompile.RequiredGas(input)
 
 	var wg sync.WaitGroup
@@ -92,8 +104,8 @@ func TestDeep_Concurrent(t *testing.T) {
 }
 
 func FuzzZK(f *testing.F) {
-	f.Add([]byte{OpVerifyNullifier, 0x00})
-	f.Add([]byte{OpVerifyCommitment, 0x00})
+	f.Add([]byte{OpVerifyGroth16, 0x00})
+	f.Add([]byte{OpVerifyPLONK, 0x00})
 	f.Add([]byte{0xFF})
 	f.Add([]byte{})
 

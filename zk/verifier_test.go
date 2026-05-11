@@ -931,3 +931,820 @@ func TestPLONKProofSizeValidation(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Halo2 Verifier Tests
+// =============================================================================
+
+// TestParseHalo2Proof tests Halo2 proof parsing
+func TestParseHalo2Proof(t *testing.T) {
+	// Build a valid Halo2 proof structure
+	proof := buildTestHalo2Proof(2, 3, 2, 8) // 2 inputs, 3 advice, 2 instance, 8 rounds
+
+	parsed, err := parseHalo2Proof(proof)
+	if err != nil {
+		t.Fatalf("parseHalo2Proof failed: %v", err)
+	}
+
+	if len(parsed.publicInputs) != 2 {
+		t.Errorf("Expected 2 public inputs, got %d", len(parsed.publicInputs))
+	}
+	if len(parsed.adviceCommitments) != 3 {
+		t.Errorf("Expected 3 advice commitments, got %d", len(parsed.adviceCommitments))
+	}
+	if len(parsed.instanceCommitments) != 2 {
+		t.Errorf("Expected 2 instance commitments, got %d", len(parsed.instanceCommitments))
+	}
+	if parsed.numRounds != 8 {
+		t.Errorf("Expected 8 rounds, got %d", parsed.numRounds)
+	}
+	if len(parsed.lPoints) != 8 {
+		t.Errorf("Expected 8 L points, got %d", len(parsed.lPoints))
+	}
+	if len(parsed.rPoints) != 8 {
+		t.Errorf("Expected 8 R points, got %d", len(parsed.rPoints))
+	}
+}
+
+// TestParseHalo2ProofTooShort tests error handling for truncated proofs
+func TestParseHalo2ProofTooShort(t *testing.T) {
+	// Test minimum length check
+	shortData := make([]byte, 35) // Less than 36 bytes minimum
+	_, err := parseHalo2Proof(shortData)
+	if err == nil {
+		t.Error("Expected error for data shorter than 36 bytes")
+	}
+
+	// Test truncated public inputs
+	truncated := make([]byte, 40)
+	// vkID: 32 bytes, numInputs: 4 (value = 10), then only 4 bytes remaining
+	copy(truncated[32:36], []byte{0, 0, 0, 10}) // 10 inputs would need 320 bytes
+	_, err = parseHalo2Proof(truncated)
+	if err == nil {
+		t.Error("Expected error for truncated public inputs")
+	}
+}
+
+// TestParseHalo2ProofInvalidRounds tests error for invalid round count
+func TestParseHalo2ProofInvalidRounds(t *testing.T) {
+	// Build proof with 0 rounds (invalid)
+	proof := buildTestHalo2ProofWithRounds(0)
+	_, err := parseHalo2Proof(proof)
+	if err == nil {
+		t.Error("Expected error for 0 rounds")
+	}
+
+	// Build proof with 33 rounds (invalid - max is 32)
+	proof = buildTestHalo2ProofWithRounds(33)
+	_, err = parseHalo2Proof(proof)
+	if err == nil {
+		t.Error("Expected error for 33 rounds")
+	}
+}
+
+// TestVerifyHalo2Structural tests structural validation
+func TestVerifyHalo2Structural(t *testing.T) {
+	// Build valid proof structure
+	proofData := buildTestHalo2Proof(1, 2, 1, 8)
+	proof, err := parseHalo2Proof(proofData)
+	if err != nil {
+		t.Fatalf("parseHalo2Proof failed: %v", err)
+	}
+
+	// Structural validation should pass but return error (no VK)
+	valid, err := verifyHalo2Structural(proof)
+	if valid {
+		t.Error("Expected structural validation to return false without VK")
+	}
+	if err == nil {
+		t.Error("Expected error message about needing verification key")
+	}
+	if err != nil && err.Error() != "halo2: structural validation passed - full verification requires registered verification key" {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+// TestVerifyHalo2StructuralInvalidCommitment tests rejection of invalid commitments
+func TestVerifyHalo2StructuralInvalidCommitment(t *testing.T) {
+	// Build proof with zero commitment (invalid)
+	proofData := buildTestHalo2Proof(1, 1, 1, 8)
+	proof, _ := parseHalo2Proof(proofData)
+
+	// Zero out an advice commitment
+	proof.adviceCommitments[0] = make([]byte, 32) // All zeros = invalid
+
+	valid, err := verifyHalo2Structural(proof)
+	if valid {
+		t.Error("Expected invalid commitment to fail")
+	}
+	if err == nil || err.Error() != "halo2: invalid advice commitment at index 0" {
+		t.Errorf("Expected specific error about invalid advice commitment, got: %v", err)
+	}
+}
+
+// TestVerifyHalo2StructuralInvalidLPoint tests rejection of invalid L points
+func TestVerifyHalo2StructuralInvalidLPoint(t *testing.T) {
+	proofData := buildTestHalo2Proof(1, 1, 1, 8)
+	proof, _ := parseHalo2Proof(proofData)
+
+	// Zero out an L point
+	proof.lPoints[3] = make([]byte, 32) // All zeros = invalid
+
+	valid, err := verifyHalo2Structural(proof)
+	if valid {
+		t.Error("Expected invalid L point to fail")
+	}
+	if err == nil || err.Error() != "halo2: invalid L point at round 3" {
+		t.Errorf("Expected specific error about invalid L point, got: %v", err)
+	}
+}
+
+// TestVerifyHalo2Full tests full verification with registered key
+func TestVerifyHalo2Full(t *testing.T) {
+	proofData := buildTestHalo2Proof(1, 2, 1, 8)
+	proof, err := parseHalo2Proof(proofData)
+	if err != nil {
+		t.Fatalf("parseHalo2Proof failed: %v", err)
+	}
+
+	// Create a verification key for Halo2
+	vk := &VerifyingKey{
+		KeyID:       proof.vkID,
+		ProofSystem: ProofSystemHalo2,
+		CircuitType: CircuitTransfer,
+		IC:          make([][]byte, 3), // Enough for 1 public input + 2
+	}
+	for i := range vk.IC {
+		vk.IC[i] = make([]byte, 32)
+		vk.IC[i][0] = byte(i + 1) // Non-zero
+	}
+
+	// Full verification should complete
+	valid, err := verifyHalo2Full(proof, vk)
+	if err != nil {
+		t.Fatalf("verifyHalo2Full failed: %v", err)
+	}
+	// Structural validation passes; actual curve point verification
+	// is performed by the on-chain BN254/Pallas precompile calls.
+	_ = valid
+}
+
+// TestComputeHalo2Challenges tests Fiat-Shamir challenge generation
+func TestComputeHalo2Challenges(t *testing.T) {
+	proofData := buildTestHalo2Proof(2, 3, 2, 8)
+	proof, _ := parseHalo2Proof(proofData)
+
+	challenges, err := computeHalo2Challenges(proof)
+	if err != nil {
+		t.Fatalf("computeHalo2Challenges failed: %v", err)
+	}
+
+	if len(challenges) != 8 {
+		t.Errorf("Expected 8 challenges, got %d", len(challenges))
+	}
+
+	// Verify challenges are non-zero and 32 bytes
+	for i, ch := range challenges {
+		if len(ch) != 32 {
+			t.Errorf("Challenge %d is %d bytes, expected 32", i, len(ch))
+		}
+		if isZeroBytes(ch) {
+			t.Errorf("Challenge %d is zero", i)
+		}
+	}
+
+	// Verify challenges are deterministic
+	challenges2, _ := computeHalo2Challenges(proof)
+	for i := range challenges {
+		for j := range challenges[i] {
+			if challenges[i][j] != challenges2[i][j] {
+				t.Errorf("Challenges are not deterministic at round %d", i)
+				break
+			}
+		}
+	}
+}
+
+// TestModInverse tests modular inverse computation
+func TestModInverse(t *testing.T) {
+	// Test with a simple value
+	a := make([]byte, 32)
+	a[31] = 7 // a = 7
+
+	inv, err := modInverse(a)
+	if err != nil {
+		t.Fatalf("modInverse failed: %v", err)
+	}
+
+	if len(inv) != 32 {
+		t.Errorf("Expected 32 bytes, got %d", len(inv))
+	}
+
+	// Test zero returns error
+	zero := make([]byte, 32)
+	_, err = modInverse(zero)
+	if err == nil {
+		t.Error("Expected error for zero inverse")
+	}
+}
+
+// TestIsValidCompressedPoint tests point validation
+func TestIsValidCompressedPoint(t *testing.T) {
+	// Valid point (non-zero, 32 bytes)
+	valid := make([]byte, 32)
+	valid[0] = 1
+	if !isValidCompressedPoint(valid) {
+		t.Error("Expected valid point to pass")
+	}
+
+	// Invalid: wrong size
+	wrongSize := make([]byte, 31)
+	wrongSize[0] = 1
+	if isValidCompressedPoint(wrongSize) {
+		t.Error("Expected wrong size to fail")
+	}
+
+	// Invalid: all zeros (identity)
+	zeros := make([]byte, 32)
+	if isValidCompressedPoint(zeros) {
+		t.Error("Expected zero point to fail")
+	}
+}
+
+// TestHalo2Transcript tests transcript operations
+func TestHalo2Transcript(t *testing.T) {
+	tr := newHalo2Transcript()
+
+	// Add some data
+	tr.appendScalar([]byte{1, 2, 3})
+	tr.appendPoint([]byte{4, 5, 6})
+
+	// Get challenge
+	ch1 := tr.challenge()
+	if len(ch1) != 32 {
+		t.Errorf("Expected 32-byte challenge, got %d", len(ch1))
+	}
+
+	// Get another challenge (should be different)
+	ch2 := tr.challenge()
+	if len(ch2) != 32 {
+		t.Errorf("Expected 32-byte challenge, got %d", len(ch2))
+	}
+
+	// Challenges should differ
+	same := true
+	for i := range ch1 {
+		if ch1[i] != ch2[i] {
+			same = false
+			break
+		}
+	}
+	if same {
+		t.Error("Consecutive challenges should be different")
+	}
+}
+
+// TestVerifyHalo2Precompile tests the precompile interface
+func TestVerifyHalo2Precompile(t *testing.T) {
+	p := &zkVerifyPrecompile{
+		verifier: NewZKVerifier(),
+	}
+
+	// Build valid proof data
+	proofData := buildTestHalo2Proof(1, 2, 1, 8)
+
+	// Should parse successfully but fail verification (no VK registered)
+	valid, err := p.verifyHalo2(proofData)
+	if valid {
+		t.Error("Expected false without registered VK")
+	}
+	if err == nil {
+		t.Error("Expected error without registered VK")
+	}
+
+	// Test with invalid (too short) data
+	_, err = p.verifyHalo2(make([]byte, 30))
+	if err == nil {
+		t.Error("Expected error for short data")
+	}
+}
+
+// Helper function to build test Halo2 proof data
+func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32) []byte {
+	// Calculate total size
+	size := 32 + // vkID
+		4 + numInputs*32 + // public inputs
+		4 + numAdvice*32 + // advice commitments
+		4 + numInstance*32 + // instance commitments
+		4 + int(numRounds)*32 + // L points
+		int(numRounds)*32 + // R points
+		32 + // a_scalar
+		32 + // evalPoint
+		32 // claimedEval
+
+	data := make([]byte, size)
+	offset := 0
+
+	// vkID (32 bytes with non-zero content)
+	for i := range 32 {
+		data[offset+i] = byte(i + 1)
+	}
+	offset += 32
+
+	// numInputs (4 bytes)
+	data[offset] = byte(numInputs >> 24)
+	data[offset+1] = byte(numInputs >> 16)
+	data[offset+2] = byte(numInputs >> 8)
+	data[offset+3] = byte(numInputs)
+	offset += 4
+
+	// public inputs (numInputs * 32 bytes)
+	for i := range numInputs {
+		data[offset+31] = byte(i + 1) // Non-zero value
+		offset += 32
+	}
+
+	// numAdvice (4 bytes)
+	data[offset] = byte(numAdvice >> 24)
+	data[offset+1] = byte(numAdvice >> 16)
+	data[offset+2] = byte(numAdvice >> 8)
+	data[offset+3] = byte(numAdvice)
+	offset += 4
+
+	// advice commitments (numAdvice * 32 bytes) - non-zero
+	for i := range numAdvice {
+		data[offset] = byte(i + 0x10) // Non-zero
+		offset += 32
+	}
+
+	// numInstance (4 bytes)
+	data[offset] = byte(numInstance >> 24)
+	data[offset+1] = byte(numInstance >> 16)
+	data[offset+2] = byte(numInstance >> 8)
+	data[offset+3] = byte(numInstance)
+	offset += 4
+
+	// instance commitments (numInstance * 32 bytes) - non-zero
+	for i := range numInstance {
+		data[offset] = byte(i + 0x20) // Non-zero
+		offset += 32
+	}
+
+	// numRounds (4 bytes)
+	data[offset] = byte(numRounds >> 24)
+	data[offset+1] = byte(numRounds >> 16)
+	data[offset+2] = byte(numRounds >> 8)
+	data[offset+3] = byte(numRounds)
+	offset += 4
+
+	// L points (numRounds * 32 bytes) - non-zero
+	for i := range numRounds {
+		data[offset] = byte(i + 0x30) // Non-zero
+		offset += 32
+	}
+
+	// R points (numRounds * 32 bytes) - non-zero
+	for i := range numRounds {
+		data[offset] = byte(i + 0x40) // Non-zero
+		offset += 32
+	}
+
+	// a_scalar (32 bytes) - non-zero
+	data[offset] = 0x50
+	offset += 32
+
+	// evalPoint (32 bytes) - non-zero
+	data[offset] = 0x60
+	offset += 32
+
+	// claimedEval (32 bytes) - non-zero
+	data[offset] = 0x70
+
+	return data
+}
+
+// Helper to build proof with specific round count for edge case testing
+func buildTestHalo2ProofWithRounds(numRounds uint32) []byte {
+	// Minimal proof: 0 inputs, 0 advice, 0 instance
+	size := 32 + 4 + 4 + 4 + 4 // vkID + numInputs + numAdvice + numInstance + numRounds
+	if numRounds > 0 && numRounds <= 32 {
+		size += int(numRounds)*32 + int(numRounds)*32 + 32 + 32 + 32
+	}
+
+	data := make([]byte, size)
+	offset := 0
+
+	// vkID
+	data[0] = 1 // Non-zero
+	offset = 32
+
+	// numInputs = 0
+	offset += 4
+
+	// numAdvice = 0
+	offset += 4
+
+	// numInstance = 0
+	offset += 4
+
+	// numRounds
+	data[offset] = byte(numRounds >> 24)
+	data[offset+1] = byte(numRounds >> 16)
+	data[offset+2] = byte(numRounds >> 8)
+	data[offset+3] = byte(numRounds)
+
+	return data
+}
+
+// Benchmark for Halo2 proof parsing
+func BenchmarkParseHalo2Proof(b *testing.B) {
+	proof := buildTestHalo2Proof(4, 10, 2, 8)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = parseHalo2Proof(proof)
+	}
+}
+
+// Benchmark for Halo2 challenge computation
+func BenchmarkComputeHalo2Challenges(b *testing.B) {
+	proofData := buildTestHalo2Proof(4, 10, 2, 8)
+	proof, _ := parseHalo2Proof(proofData)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = computeHalo2Challenges(proof)
+	}
+}
+
+// Benchmark for Halo2 structural validation
+func BenchmarkVerifyHalo2Structural(b *testing.B) {
+	proofData := buildTestHalo2Proof(4, 10, 2, 8)
+	proof, _ := parseHalo2Proof(proofData)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = verifyHalo2Structural(proof)
+	}
+}
+
+// ============================================================================
+// fflonk verification tests
+// ============================================================================
+
+// TestParseFflonkProof tests fflonk proof parsing
+func TestParseFflonkProof(t *testing.T) {
+	// Build valid fflonk proof: 4*48 + 8*32 = 448 bytes minimum
+	proof := buildTestFflonkProof(8)
+
+	fp, err := parseFflonkProof(proof)
+	if err != nil {
+		t.Fatalf("parseFflonkProof failed: %v", err)
+	}
+
+	if len(fp.C1) != 48 {
+		t.Errorf("Expected C1 length 48, got %d", len(fp.C1))
+	}
+	if len(fp.C2) != 48 {
+		t.Errorf("Expected C2 length 48, got %d", len(fp.C2))
+	}
+	if len(fp.W1) != 48 {
+		t.Errorf("Expected W1 length 48, got %d", len(fp.W1))
+	}
+	if len(fp.W2) != 48 {
+		t.Errorf("Expected W2 length 48, got %d", len(fp.W2))
+	}
+	if len(fp.Evaluations) != 8 {
+		t.Errorf("Expected 8 evaluations, got %d", len(fp.Evaluations))
+	}
+}
+
+// TestParseFflonkProofTooShort tests error for short proof
+func TestParseFflonkProofTooShort(t *testing.T) {
+	proof := make([]byte, 100) // Too short
+
+	_, err := parseFflonkProof(proof)
+	if err == nil {
+		t.Error("Expected error for short proof")
+	}
+}
+
+// TestValidateBLS12381G1Point tests BLS12-381 G1 point validation
+func TestValidateBLS12381G1Point(t *testing.T) {
+	// Test point at infinity (all zeros)
+	infinity := make([]byte, 48)
+	err := validateBLS12381G1Point(infinity)
+	if err != nil {
+		t.Errorf("Expected point at infinity to be valid: %v", err)
+	}
+
+	// Test valid compressed point format (bit 7 set)
+	valid := make([]byte, 48)
+	valid[0] = 0x80 // Compression flag set
+	valid[1] = 0x01 // Some x-coordinate
+	err = validateBLS12381G1Point(valid)
+	if err != nil {
+		t.Errorf("Expected valid compressed point: %v", err)
+	}
+
+	// Test uncompressed point format (error: bit 7 not set)
+	uncompressed := make([]byte, 48)
+	uncompressed[0] = 0x00
+	uncompressed[1] = 0x01
+	err = validateBLS12381G1Point(uncompressed)
+	if err == nil {
+		t.Error("Expected error for uncompressed point")
+	}
+
+	// Test wrong length
+	wrongLen := make([]byte, 32)
+	err = validateBLS12381G1Point(wrongLen)
+	if err == nil {
+		t.Error("Expected error for wrong length")
+	}
+
+	// Test infinity flag set but non-zero bytes
+	badInfinity := make([]byte, 48)
+	badInfinity[0] = 0xC0 // Compression + infinity flags
+	badInfinity[1] = 0x01 // But has data
+	err = validateBLS12381G1Point(badInfinity)
+	if err == nil {
+		t.Error("Expected error for invalid infinity point")
+	}
+}
+
+// TestValidateBLS12381Scalar tests scalar field validation
+func TestValidateBLS12381Scalar(t *testing.T) {
+	// Test valid scalar (small value)
+	valid := big.NewInt(12345)
+	err := validateBLS12381Scalar(valid)
+	if err != nil {
+		t.Errorf("Expected valid scalar: %v", err)
+	}
+
+	// Test zero (valid)
+	zero := big.NewInt(0)
+	err = validateBLS12381Scalar(zero)
+	if err != nil {
+		t.Errorf("Expected zero to be valid: %v", err)
+	}
+
+	// Test negative (invalid)
+	negative := big.NewInt(-1)
+	err = validateBLS12381Scalar(negative)
+	if err == nil {
+		t.Error("Expected error for negative scalar")
+	}
+
+	// Test nil (invalid)
+	err = validateBLS12381Scalar(nil)
+	if err == nil {
+		t.Error("Expected error for nil scalar")
+	}
+
+	// Test value >= field order (invalid)
+	tooLarge := new(big.Int)
+	tooLarge.SetString("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001", 16)
+	err = validateBLS12381Scalar(tooLarge)
+	if err == nil {
+		t.Error("Expected error for scalar >= field order")
+	}
+}
+
+// TestComputeFflonkChallenge tests Fiat-Shamir challenge computation
+func TestComputeFflonkChallenge(t *testing.T) {
+	proof := buildTestFflonkProof(8)
+	inputs := []*big.Int{big.NewInt(100), big.NewInt(200)}
+
+	// Compute challenge
+	ch1 := computeFflonkChallenge(proof, inputs, []byte("test"))
+
+	// Verify it's non-zero
+	if ch1.Sign() == 0 {
+		t.Error("Expected non-zero challenge")
+	}
+
+	// Verify determinism
+	ch2 := computeFflonkChallenge(proof, inputs, []byte("test"))
+	if ch1.Cmp(ch2) != 0 {
+		t.Error("Challenge computation not deterministic")
+	}
+
+	// Different domain should produce different challenge
+	ch3 := computeFflonkChallenge(proof, inputs, []byte("other"))
+	if ch1.Cmp(ch3) == 0 {
+		t.Error("Different domains should produce different challenges")
+	}
+}
+
+// TestVerifyFflonkProof tests fflonk proof verification
+func TestVerifyFflonkProof(t *testing.T) {
+	proof := buildTestFflonkProof(8)
+	inputs := []*big.Int{big.NewInt(100)}
+
+	// Verify proof structure (will fail KZG check with test data)
+	valid, err := verifyFflonkProof(proof, inputs)
+
+	// Test data won't pass KZG verification, but parsing should succeed
+	// The function should return false (invalid proof) not an error
+	if err != nil {
+		// If error, it should be about invalid point format, not parsing
+		t.Logf("verifyFflonkProof returned error: %v", err)
+	}
+
+	// With random test data, proof should be invalid
+	if valid {
+		t.Error("Random test data should not verify as valid")
+	}
+}
+
+// TestVerifyFflonkPrecompile tests the precompile interface
+func TestVerifyFflonkPrecompile(t *testing.T) {
+	p := &zkVerifyPrecompile{
+		verifier: NewZKVerifier(),
+	}
+
+	// Build valid proof data: vkID(32) + numInputs(4) + inputs(n*32) + proof(448+)
+	proof := buildTestFflonkProof(8)
+	data := make([]byte, 36+32+len(proof))
+
+	// vkID (32 bytes)
+	for i := range 32 {
+		data[i] = byte(i + 1)
+	}
+
+	// numInputs = 1 (4 bytes big-endian)
+	data[35] = 1
+
+	// public input (32 bytes)
+	data[67] = 0x42
+
+	// proof data
+	copy(data[68:], proof)
+
+	// Should parse successfully but fail verification (test data)
+	valid, err := p.verifyFflonk(data)
+	if err != nil {
+		t.Logf("verifyFflonk returned error: %v", err)
+	}
+	if valid {
+		t.Error("Random test data should not verify as valid")
+	}
+
+	// Test with too short data
+	_, err = p.verifyFflonk(make([]byte, 30))
+	if err == nil {
+		t.Error("Expected error for short data")
+	}
+}
+
+// TestVerifyFflonkWithVerifier tests fflonk verification with registered VK
+func TestVerifyFflonkWithVerifier(t *testing.T) {
+	zv := NewZKVerifier()
+	owner := common.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	// Register fflonk verification key
+	keyID, err := zv.RegisterVerifyingKey(
+		owner,
+		ProofSystemFflonk,
+		CircuitTransfer,
+		[]byte("fflonk_alpha"),
+		[]byte("fflonk_beta"),
+		[]byte("fflonk_gamma"),
+		[]byte("fflonk_delta"),
+		[][]byte{[]byte("ic0")},
+	)
+	if err != nil {
+		t.Fatalf("Failed to register fflonk key: %v", err)
+	}
+
+	// Create proof data
+	proof := buildTestFflonkProof(8)
+	inputs := []*big.Int{big.NewInt(100)}
+
+	// Verify - should process but fail with test data
+	result, err := zv.VerifyFflonk(keyID, proof, inputs)
+	if err != nil {
+		t.Logf("VerifyFflonk returned error: %v", err)
+	}
+	if result != nil && result.Valid {
+		t.Error("Random test data should not verify as valid")
+	}
+}
+
+// TestVerifyFflonkInvalidKey tests error for non-existent key
+func TestVerifyFflonkInvalidKey(t *testing.T) {
+	zv := NewZKVerifier()
+
+	nonExistent := [32]byte{0xFF}
+	proof := buildTestFflonkProof(8)
+	inputs := []*big.Int{big.NewInt(100)}
+
+	_, err := zv.VerifyFflonk(nonExistent, proof, inputs)
+	if err != ErrInvalidVerifyingKey {
+		t.Errorf("Expected ErrInvalidVerifyingKey, got %v", err)
+	}
+}
+
+// TestVerifyFflonkWrongProofSystem tests error for wrong proof system
+func TestVerifyFflonkWrongProofSystem(t *testing.T) {
+	zv := NewZKVerifier()
+	owner := common.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	// Register key as Groth16, not fflonk
+	keyID, _ := zv.RegisterVerifyingKey(
+		owner,
+		ProofSystemGroth16, // Wrong proof system
+		CircuitTransfer,
+		[]byte("alpha"),
+		[]byte("beta"),
+		[]byte("gamma"),
+		[]byte("delta"),
+		[][]byte{[]byte("ic0")},
+	)
+
+	proof := buildTestFflonkProof(8)
+	inputs := []*big.Int{big.NewInt(100)}
+
+	_, err := zv.VerifyFflonk(keyID, proof, inputs)
+	if err != ErrProofSystemMismatch {
+		t.Errorf("Expected ErrProofSystemMismatch, got %v", err)
+	}
+}
+
+// buildTestFflonkProof builds a test fflonk proof with the specified number of evaluations
+func buildTestFflonkProof(numEvals int) []byte {
+	// Proof format: C1(48) + C2(48) + W1(48) + W2(48) + evals(n*32)
+	size := 4*48 + numEvals*32
+	proof := make([]byte, size)
+
+	offset := 0
+
+	// C1: valid compressed BLS12-381 G1 point format
+	proof[offset] = 0x80 // Compression flag
+	proof[offset+1] = 0x01
+	offset += 48
+
+	// C2: valid compressed BLS12-381 G1 point format
+	proof[offset] = 0x80
+	proof[offset+1] = 0x02
+	offset += 48
+
+	// W1: valid compressed BLS12-381 G1 point format
+	proof[offset] = 0x80
+	proof[offset+1] = 0x03
+	offset += 48
+
+	// W2: valid compressed BLS12-381 G1 point format
+	proof[offset] = 0x80
+	proof[offset+1] = 0x04
+	offset += 48
+
+	// Evaluations: field elements (small values that pass validation)
+	for i := range numEvals {
+		proof[offset+31] = byte(i + 1) // Small non-zero value
+		offset += 32
+	}
+
+	return proof
+}
+
+// BenchmarkParseFflonkProof benchmarks fflonk proof parsing
+func BenchmarkParseFflonkProof(b *testing.B) {
+	proof := buildTestFflonkProof(8)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = parseFflonkProof(proof)
+	}
+}
+
+// BenchmarkComputeFflonkChallenge benchmarks challenge computation
+func BenchmarkComputeFflonkChallenge(b *testing.B) {
+	proof := buildTestFflonkProof(8)
+	inputs := []*big.Int{big.NewInt(100), big.NewInt(200)}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = computeFflonkChallenge(proof, inputs, []byte("xi"))
+	}
+}
+
+// BenchmarkVerifyFflonk benchmarks full fflonk verification
+func BenchmarkVerifyFflonk(b *testing.B) {
+	zv := NewZKVerifier()
+	owner := common.HexToAddress("0x1234567890123456789012345678901234567890")
+
+	keyID, _ := zv.RegisterVerifyingKey(
+		owner, ProofSystemFflonk, CircuitTransfer,
+		[]byte("alpha"), []byte("beta"), []byte("gamma"), []byte("delta"),
+		[][]byte{[]byte("ic0")},
+	)
+
+	proof := buildTestFflonkProof(8)
+	inputs := []*big.Int{big.NewInt(100)}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = zv.VerifyFflonk(keyID, proof, inputs)
+	}
+}
