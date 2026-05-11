@@ -191,6 +191,18 @@ func (p *hpkePrecompile) Run(
 
 	op := input[0]
 
+	// Classical KEMs (P256/P384/P521/X25519) are gated by the chain's
+	// strict-PQ profile. Hybrid PQ KEMs (X25519+Kyber768, X-Wing) carry
+	// a lattice component and remain open on every chain.
+	if op == OpSingleShotSeal && len(input) >= 3 {
+		kemID := uint16(input[1])<<8 | uint16(input[2])
+		if !isKyberKEM(kemID) {
+			if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+				return nil, remainingGas, err
+			}
+		}
+	}
+
 	var result []byte
 
 	switch op {
