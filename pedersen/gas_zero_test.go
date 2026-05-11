@@ -11,9 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestGasZero_Rejected asserts the retired precompile refuses to execute
+// with zero gas and returns contract.ErrOutOfGas.
 func TestGasZero_Rejected(t *testing.T) {
 	input := make([]byte, 1+64)
-	input[0] = OpCommit // 0x01
 	_, remainingGas, err := PedersenPrecompile.Run(nil, common.Address{}, ContractAddress, input, 0, true)
 	require.Error(t, err)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
