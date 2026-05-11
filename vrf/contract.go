@@ -109,6 +109,9 @@ func (p *vrfPrecompile) Run(
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, remainingGas, err
+	}
 
 	if len(input) < 1 {
 		return nil, remainingGas, nil
