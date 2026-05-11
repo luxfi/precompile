@@ -18,13 +18,6 @@ var (
 	ErrOutOfGas    = errors.New("out of gas")
 	ErrInvalidInput = errors.New("invalid input")
 	ErrInvalidOp    = errors.New("invalid operation")
-
-	// ErrClassicalForbiddenInPQ is returned by precompiles that have been
-	// retired because their underlying cryptographic assumption (BN254 /
-	// BLS12-381 pairing, classical SNARK verifier) is broken by Shor's
-	// algorithm. The precompile address remains reserved so the registry
-	// keeps numbering stable; the contract refuses to execute.
-	ErrClassicalForbiddenInPQ = errors.New("classical pairing-based precompile forbidden in post-quantum Lux EVM")
 )
 
 // Gas costs for stateful precompiles
