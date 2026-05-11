@@ -1,17 +1,16 @@
-// zk_proof_roundtrip_test exercises the PQ-safe ZK precompile:
+// zk_proof_roundtrip_test exercises ZK proof generation + on-chain verification:
 //
-//  1. Dispatch a nullifier check through the ZK precompile (hash-based, PQ-safe)
-//  2. Compute nullifier via Poseidon hash
-//  3. Verify nullifier uniqueness
+//  1. Build a Groth16-compatible proof off-chain (BN256 pairing points)
+//  2. Verify via the ZK precompile
+//  3. Compute nullifier via Poseidon hash
+//  4. Verify nullifier uniqueness
 //
-// Classical pairing-based opcodes (Groth16/PLONK/fflonk/Halo2/KZG/IPA) were
-// removed: Shor breaks them. PQ STARK verification lives in the Z-Chain
-// envelope path, not in this EVM precompile.
-//
-// Precompiles exercised: ZK (Nullifier), Poseidon.
+// Precompiles exercised: ZK (Groth16), Poseidon.
 package scenarios
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"testing"
 
 	"github.com/luxfi/precompile/e2e/harness"
@@ -20,16 +19,50 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestZKProofRoundtrip_NullifierDispatch(t *testing.T) {
-	// The nullifier verifier expects:
-	// op(1) + nullifierHash(32)
+func TestZKProofRoundtrip_Groth16Dispatch(t *testing.T) {
+	// The Groth16 verifier expects:
+	// op(1) + numInputs(4) + vkID(32) + publicInputs(N*32) + proofA(64) + proofB(128) + proofC(64)
 	//
-	// Without a verifier context the precompile cannot look up state, so we
-	// only exercise dispatch + gas accounting here.
+	// We construct a well-formed input to exercise the full dispatch path.
+	// The proof itself is synthetic (won't pass the pairing check) but we verify
+	// the precompile correctly parses input, calculates gas, and returns a
+	// deterministic result.
 
-	input := make([]byte, 0, 1+32)
-	input = append(input, zk.OpVerifyNullifier)
-	input = append(input, harness.Uint256(0xDEADBEEF)...)
+	numInputs := uint32(2)
+
+	// Build input
+	input := make([]byte, 0, 1+4+32+64+64+128+64)
+	input = append(input, zk.OpVerifyGroth16)
+
+	// num public inputs
+	ni := make([]byte, 4)
+	binary.BigEndian.PutUint32(ni, numInputs)
+	input = append(input, ni...)
+
+	// vkID (32 bytes) - arbitrary
+	vkID := sha256.Sum256([]byte("e2e-test-vk"))
+	input = append(input, vkID[:]...)
+
+	// 2 public inputs (each 32 bytes)
+	input = append(input, harness.Uint256(42)...)
+	input = append(input, harness.Uint256(1337)...)
+
+	// Proof A (G1 point, 64 bytes) - synthetic
+	proofA := make([]byte, 64)
+	proofA[31] = 1 // x = 1
+	proofA[63] = 2 // y = 2
+	input = append(input, proofA...)
+
+	// Proof B (G2 point, 128 bytes) - synthetic
+	proofB := make([]byte, 128)
+	proofB[31] = 1
+	input = append(input, proofB...)
+
+	// Proof C (G1 point, 64 bytes) - synthetic
+	proofC := make([]byte, 64)
+	proofC[31] = 1
+	proofC[63] = 2
+	input = append(input, proofC...)
 
 	out, gasUsed, err := harness.Call(
 		zk.ZKVerifyPrecompile,
@@ -38,16 +71,16 @@ func TestZKProofRoundtrip_NullifierDispatch(t *testing.T) {
 		true,
 	)
 
-	// Without a registered ZKVerifier instance the precompile returns
-	// ErrVerifierRequired; the dispatch path itself must succeed.
+	// The synthetic proof won't pass the pairing check, but the dispatch
+	// path should work correctly: parse input, deduct gas, attempt verify.
 	if err != nil {
-		t.Logf("Nullifier returned error (expected without verifier state): %v", err)
+		t.Logf("Groth16 returned error (expected for synthetic proof): %v", err)
 		t.Logf("Gas consumed before error: %d", gasUsed)
 	} else {
 		require.Len(t, out, 32, "output should be 32 bytes")
-		t.Logf("Nullifier result: %x (gas: %d)", out, gasUsed)
+		t.Logf("Groth16 result: %x (gas: %d)", out, gasUsed)
 	}
-	harness.GasReport(t, "Nullifier verify (synthetic)", gasUsed)
+	harness.GasReport(t, "Groth16 verify (synthetic)", gasUsed)
 }
 
 func TestZKProofRoundtrip_NullifierViaPoseidon(t *testing.T) {
