@@ -98,6 +98,9 @@ func (p *g1AddPrecompile) Run(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	return blsOps.g1Add(input, suppliedGas)
 }
 
@@ -111,6 +114,9 @@ func (p *g1MulPrecompile) Run(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	return blsOps.g1Mul(input, suppliedGas)
 }
 
@@ -124,6 +130,9 @@ func (p *g1MSMPrecompile) Run(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	return blsOps.g1MSM(input, suppliedGas)
 }
 
@@ -137,6 +146,9 @@ func (p *g2AddPrecompile) Run(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	return blsOps.g2Add(input, suppliedGas)
 }
 
@@ -150,6 +162,9 @@ func (p *g2MulPrecompile) Run(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	return blsOps.g2Mul(input, suppliedGas)
 }
 
@@ -163,6 +178,9 @@ func (p *g2MSMPrecompile) Run(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	return blsOps.g2MSM(input, suppliedGas)
 }
 
@@ -176,6 +194,9 @@ func (p *pairingPrecompile) Run(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	return blsOps.pairing(input, suppliedGas)
 }
 
