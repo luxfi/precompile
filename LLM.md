@@ -182,10 +182,13 @@ Example hook implementations:
 
 > **Canonical (LP-4200)**: the unified PQCrypto precompile block at
 > `0x012201..0x012204` is authoritative — ML-KEM `0x012201`, ML-DSA
-> `0x012202`, SLH-DSA `0x012203`, Pulsar `0x012204`. The `0x0600`
-> (Post-Quantum) and `0x0800` (Threshold) ranges below are the legacy
-> per-VM mapping; new code MUST target the unified block. See
-> `~/work/lux/evm/LLM.md` for the canonical per-feature address table.
+> `0x012202`, SLH-DSA `0x012203`, Pulsar `0x012204` (threshold ML-DSA,
+> FIPS 204 byte-equal). All four are IMPLEMENTED; Pulsar lives in
+> `precompile/pulsar/` and dispatches to `luxfi/crypto/mldsa` under
+> the hood. The `0x0600` (Post-Quantum) and `0x0800` (Threshold) ranges
+> below are the legacy per-VM mapping; new code MUST target the unified
+> block. See `~/work/lux/evm/LLM.md` for the canonical per-feature
+> address table.
 
 | Range | Category | Description |
 |-------|----------|-------------|
