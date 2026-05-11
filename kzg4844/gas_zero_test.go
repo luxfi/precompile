@@ -11,9 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestGasZero_Rejected asserts the retired precompile refuses to execute
+// with zero gas and returns contract.ErrOutOfGas.
 func TestGasZero_Rejected(t *testing.T) {
 	input := make([]byte, 192)
-	input[0] = OpVerifyProof // 0x03
 	_, remainingGas, err := KZG4844Precompile.Run(nil, common.Address{}, ContractAddress, input, 0, true)
 	require.Error(t, err)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
