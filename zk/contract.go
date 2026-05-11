@@ -154,6 +154,17 @@ func (p *zkVerifyPrecompile) Run(
 	op := input[0]
 	data := input[1:]
 
+	// Classical pairing/DLOG opcodes are gated by the chain's strict-PQ
+	// profile. The hash-based opcodes (Nullifier 0x21, Commitment 0x22)
+	// remain open on every chain.
+	switch op {
+	case OpVerifyGroth16, OpVerifyPLONK, OpVerifyFflonk, OpVerifyHalo2,
+		OpVerifyKZG, OpVerifyIPA, OpVerifyRangeProof, OpVerifyBatch:
+		if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+			return nil, remainingGas, err
+		}
+	}
+
 	switch op {
 	case OpVerifyGroth16:
 		valid, err := p.verifyGroth16(data)
