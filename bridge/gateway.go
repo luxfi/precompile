@@ -67,6 +67,49 @@ func NewBridgeGateway() *BridgeGateway {
 	return gw
 }
 
+// NewBridgeGatewayWithRegistry constructs a gateway whose supported-chain set
+// is sourced from r. Used in tests and on networks that want to pin the set to
+// a curated list rather than the hard-coded ecosystem defaults.
+//
+// The gateway's SupportedChains map mirrors r.All() at construction time.
+// Live updates to r are not reflected; callers that need dynamic membership
+// should use a state-backed registry behind the precompile entry point.
+func NewBridgeGatewayWithRegistry(r Registry) *BridgeGateway {
+	gw := &BridgeGateway{
+		Requests:        make(map[[32]byte]*BridgeRequest),
+		Nonces:          make(map[common.Address]uint64),
+		SupportedTokens: make(map[common.Address]*BridgedToken),
+		SupportedChains: make(map[uint32]bool),
+		Pools:           make(map[uint32]map[common.Address]*LiquidityPool),
+		SignerSet: &SignerSet{
+			Signers:   make([]*SignerInfo, 0),
+			Waitlist:  make([][20]byte, 0),
+			Threshold: 67,
+		},
+		Config: &BridgeFeeConfig{
+			BaseFee:      big.NewInt(1e15),
+			PercentFee:   30,
+			MinFee:       big.NewInt(1e15),
+			MaxFee:       new(big.Int).Mul(big.NewInt(1e18), big.NewInt(100)),
+			LiquidityFee: 20,
+			ProtocolFee:  10,
+		},
+		Enabled: true,
+		Paused:  false,
+	}
+	for _, c := range r.All() {
+		gw.SupportedChains[uint32(c.ID)] = true
+	}
+	return gw
+}
+
+// Supports reports whether id is in the gateway's supported-chain set.
+func (gw *BridgeGateway) Supports(id uint32) bool {
+	gw.mu.RLock()
+	defer gw.mu.RUnlock()
+	return gw.SupportedChains[id]
+}
+
 func (gw *BridgeGateway) initSupportedChains() {
 	// Lux ecosystem
 	gw.SupportedChains[ChainLux] = true
