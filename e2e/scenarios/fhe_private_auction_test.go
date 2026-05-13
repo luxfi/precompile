@@ -33,6 +33,11 @@ var (
 func TestFHEPrivateAuction_EncryptAndCompare(t *testing.T) {
 	caller := common.HexToAddress("0xAA00000000000000000000000000000000000001")
 
+	// FHE handlers read and write ciphertext storage via the StateDB. Every
+	// call needs a stateful harness — calling FHEPrecompile.Run with a nil
+	// AccessibleState now returns ErrInvalidInput (was: nil-deref panic).
+	state := harness.NewMockAccessibleState()
+
 	// Step 1: Encrypt 5 bid values
 	bids := []uint64{100, 250, 175, 300, 50}
 	handles := make([][]byte, len(bids))
@@ -43,8 +48,10 @@ func TestFHEPrivateAuction_EncryptAndCompare(t *testing.T) {
 		input = append(input, harness.Uint256(bid)...)
 		input = append(input, fhe.TypeEuint32) // 32-bit encrypted uint
 
-		out, gas, err := harness.CallWithGas(
+		out, gas, err := harness.CallStatefulWithGas(
 			fhe.FHEPrecompile,
+			state,
+			caller,
 			fhe.ContractAddress,
 			input,
 			fhe.GasEncrypt+100_000,
@@ -54,8 +61,6 @@ func TestFHEPrivateAuction_EncryptAndCompare(t *testing.T) {
 		// initialized (requires network key). This is expected in unit tests.
 		if err != nil {
 			t.Logf("FHE encrypt bid[%d]=%d: %v (expected without FHE network key)", i, bid, err)
-			// Use synthetic handles for remaining tests
-			handles[i] = harness.Uint256(bid)
 			continue
 		}
 		require.Len(t, out, 32, "handle should be 32 bytes")
@@ -63,15 +68,19 @@ func TestFHEPrivateAuction_EncryptAndCompare(t *testing.T) {
 		harness.GasReport(t, "FHE encrypt", gas)
 	}
 
-	// Step 2: Test homomorphic addition (if we got real handles)
+	// Step 2: Test homomorphic addition (only if we got real handles — without
+	// a network key the ciphertext-storage handles never materialize, and the
+	// add handler would return zero-hash for missing operands).
 	if handles[0] != nil && handles[1] != nil {
 		addInput := make([]byte, 0, 4+64)
 		addInput = append(addInput, selectorAdd...)
 		addInput = append(addInput, handles[0]...)
 		addInput = append(addInput, handles[1]...)
 
-		_, addGas, err := harness.CallWithGas(
+		_, addGas, err := harness.CallStatefulWithGas(
 			fhe.FHEPrecompile,
+			state,
+			caller,
 			fhe.ContractAddress,
 			addInput,
 			fhe.GasAdd+100_000,
@@ -91,8 +100,10 @@ func TestFHEPrivateAuction_EncryptAndCompare(t *testing.T) {
 		gtInput = append(gtInput, handles[0]...)
 		gtInput = append(gtInput, handles[1]...)
 
-		_, gtGas, err := harness.CallWithGas(
+		_, gtGas, err := harness.CallStatefulWithGas(
 			fhe.FHEPrecompile,
+			state,
+			caller,
 			fhe.ContractAddress,
 			gtInput,
 			fhe.GasGt+100_000,
