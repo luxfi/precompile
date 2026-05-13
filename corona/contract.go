@@ -163,8 +163,13 @@ func verifyThresholdSignature(thresholdVal, totalParties uint32, messageHash, si
 		return false, fmt.Errorf("%w: %v", ErrDeserializationFailed, err)
 	}
 
-	// Convert message hash to string for verification (matching sign.Verify interface)
-	mu := fmt.Sprintf("%x", messageHash)
+	// Domain-separate the precompile-level verification context so an
+	// off-chain Corona signature produced by consensus/protocol/quasar
+	// for a per-block sid cannot be replayed as an on-chain precompile
+	// call when the bare message hashes happen to collide. Mirrors the
+	// Pulsar precompile's precompileCtx = "lux-evm-precompile-pulsar-v1".
+	const precompileCtx = "lux-evm-precompile-corona-v1"
+	mu := fmt.Sprintf("%s|%x", precompileCtx, messageHash)
 
 	// Verify using the threshold package's Verify function
 	valid := threshold.Verify(groupKey, mu, sig)
