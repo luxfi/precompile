@@ -176,6 +176,8 @@ func (m *mockEngine) Quote(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.
 	return new(big.Int).Div(amountIn, big.NewInt(2))
 }
 
+func (m *mockEngine) Brand() string { return "Mock DEX" }
+
 // Test helpers
 
 func newTestPoolKey() PoolKey {

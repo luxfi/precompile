@@ -29,6 +29,13 @@ func NewEmbeddedEngine() *EmbeddedEngine {
 	return &EmbeddedEngine{}
 }
 
+// Brand returns the OSS backend identity. White-label EVMs that wrap this
+// engine and want their brand to surface to users MUST construct their own
+// Engine — typically by wrapping EmbeddedEngine and overriding Brand() —
+// rather than mutating this default. See the LiquidDEXBackend reference
+// wrapper in the Liquidity tree for an example.
+func (e *EmbeddedEngine) Brand() string { return "Lux DEX" }
+
 // Initialize computes the tick from sqrtPriceX96.
 func (e *EmbeddedEngine) Initialize(sqrtPriceX96 *big.Int) (int24, error) {
 	tick, err := GetTickAtSqrtRatio(sqrtPriceX96)
