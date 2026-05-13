@@ -1,6 +1,6 @@
 module github.com/luxfi/precompile/e2e
 
-go 1.26.1
+go 1.26.3
 
 require (
 	filippo.io/edwards25519 v1.2.0
