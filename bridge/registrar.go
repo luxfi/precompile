@@ -90,6 +90,7 @@ var (
 	ErrUnauthorized            = errors.New("registrar: threshold not met")
 	ErrInvalidSignatureBytes   = errors.New("registrar: invalid signature bytes")
 	ErrDuplicateSigner         = errors.New("registrar: duplicate signer in signature set")
+	ErrChainNameTooLong        = errors.New("registrar: chain name exceeds max length")
 )
 
 // ABI arg sizes for RegisterChain.
