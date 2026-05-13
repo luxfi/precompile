@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math/big"
 
-	accellattice "github.com/luxfi/accel/ops/lattice"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v7/ring"
 	"github.com/luxfi/lattice/v7/utils/structs"
@@ -256,32 +255,30 @@ func deserializeSignature(params *threshold.Params, data []byte) (
 }
 
 // deserializePoly deserializes a polynomial from binary data.
-// Attempts GPU-accelerated NTT when converting to evaluation form.
+//
+// The verifier later calls r.NTT(poly, poly) to convert the coefficient-form
+// polynomial into evaluation form, which is where the actual hot-path NTT
+// happens. That NTT is performed by the lattice library on coefficients
+// stored inside ring.Poly's internal representation.
+//
+// A prior version of this function called accellattice.NTTForward on a
+// separate []uint64 coefficient array, discarded the result, and then did
+// r.SetCoefficientsBigint anyway — burning GPU dispatch latency without
+// ever consuming the GPU output. There is no byte-format bridge between
+// the accel NTT and ring.Poly's internal coefficient layout, so the GPU
+// path was unused even on success. Removed; GPU dispatch will be wired
+// in once accel publishes a kernel that produces ring.Poly-compatible
+// coefficient bytes (or once ring.Poly exposes a SetCoefficientsUint64
+// fast-path).
 func deserializePoly(buf *bytes.Reader, r *ring.Ring, poly ring.Poly) error {
 	coeffs := make([]*big.Int, r.N())
-	u64Coeffs := make([]uint64, r.N())
 	for i := 0; i < r.N(); i++ {
 		coeffBytes := make([]byte, 8) // 64-bit coefficients
 		if _, err := buf.Read(coeffBytes); err != nil {
 			return fmt.Errorf("failed to read coefficient %d: %w", i, err)
 		}
 		coeffs[i] = new(big.Int).SetBytes(coeffBytes)
-		u64Coeffs[i] = binary.BigEndian.Uint64(coeffBytes)
 	}
-
-	// Try GPU-accelerated NTT for the polynomial conversion
-	if n := r.N(); n >= 256 { // Only worth GPU dispatch for larger polynomials
-		nttParams := accellattice.NTTParams{
-			N:       uint32(n),
-			Modulus: r.Modulus().Uint64(),
-		}
-		if _, err := accellattice.NTTForward(nttParams, u64Coeffs); err == nil {
-			// GPU NTT succeeded, but we still need to set via the ring API
-			// to maintain compatibility with the lattice library's internal format
-		}
-	}
-
-	// Convert big.Int coefficients to ring polynomial
 	r.SetCoefficientsBigint(coeffs, poly)
 	return nil
 }
