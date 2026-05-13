@@ -39,6 +39,18 @@ var (
 	ErrInvalidInput     = contract.ErrInvalidInput
 	ErrInvalidSignature = errors.New("invalid signature")
 	ErrThresholdNotMet  = errors.New("threshold not met")
+
+	// ErrQuasarPrecompileDeprecated is returned by every quasar precompile.
+	// The package shipped pre-LP-4200 stubs (the verklePrecompile's
+	// 'simple hash check for demonstration' was a forgeable oracle —
+	// any proof whose first 17 bytes equaled the commitment returned
+	// true). The canonical PQ verifiers live in the LP-4200 0x012200
+	// block: 0x012201 ML-KEM, 0x012202 ML-DSA, 0x012203 SLH-DSA,
+	// 0x012204 Pulsar (Module-LWE threshold), 0x012205 P3Q (strict-PQ
+	// STARK), 0x012206 Corona (Ring-LWE threshold).
+	ErrQuasarPrecompileDeprecated = errors.New(
+		"quasar precompiles at 0x0300..20-25 are deprecated stubs; use LP-4200 0x012200 block",
+	)
 )
 
 // verklePrecompile verifies Verkle witnesses with PQ finality assumption
@@ -54,34 +66,20 @@ func (v *verklePrecompile) RequiredGas(input []byte) uint64 {
 }
 
 func (v *verklePrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	if suppliedGas < GasVerkleVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
 	remainingGas = suppliedGas - GasVerkleVerify
-
-	// Input format: [commitment(32)] [proof(32)] [threshold_met(1)]
-	if len(input) < 65 {
-		return nil, remainingGas, ErrInvalidInput
-	}
-
-	// With PQ finality assumption, just check threshold bit
-	thresholdMet := input[64] > 0
-	if !thresholdMet {
-		return []byte{0}, remainingGas, nil
-	}
-
-	// Lightweight Verkle verification (assumes PQ finality)
-	// In production: verify IPA opening proof
-	commitment := input[:32]
-	proof := input[32:64]
-
-	// Simple hash check for demonstration
-	valid := verifyVerkleLight(commitment, proof)
-	if valid {
-		return []byte{1}, remainingGas, nil
-	}
-
-	return []byte{0}, remainingGas, nil
+	// SAFE-REFUSE: the previous body called verifyVerkleLight which
+	// accepted any (commitment, proof) whose first 17 bytes matched
+	// — a trivially-forgeable oracle reachable from any EVM caller.
+	// The real Verkle verification path lives in lux/crypto/verkle
+	// reached through luxfi/geth's trie utils, not as a precompile.
+	// Until a real IPA verifier is wired here, refuse all calls.
+	return nil, remainingGas, ErrQuasarPrecompileDeprecated
 }
 
 // blsPrecompile handles BLS operations
@@ -96,6 +94,9 @@ func (b *blsPrecompile) RequiredGas(input []byte) uint64 {
 }
 
 func (b *blsPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	if suppliedGas < GasBLSVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
@@ -150,6 +151,9 @@ func (b *blsAggregatePrecompile) RequiredGas(input []byte) uint64 {
 }
 
 func (b *blsAggregatePrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	requiredGas := b.RequiredGas(input)
 	if suppliedGas < requiredGas {
 		return nil, 0, contract.ErrOutOfGas
@@ -201,6 +205,12 @@ func (r *coronaPrecompile) RequiredGas(input []byte) uint64 {
 }
 
 func (r *coronaPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
+	// This is the LEGACY Corona verify at 0x0300..0023. The canonical
+	// Corona Ring-LWE threshold lives at 0x012206 (LP-4200 block). Refuse
+	// here so callers route through the canonical address.
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	if suppliedGas < GasCoronaVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
@@ -261,6 +271,9 @@ func (h *hybridPrecompile) RequiredGas(input []byte) uint64 {
 }
 
 func (h *hybridPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	if suppliedGas < GasHybridVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
@@ -340,6 +353,9 @@ func (c *compressedPrecompile) RequiredGas(input []byte) uint64 {
 }
 
 func (c *compressedPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
+	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+		return nil, suppliedGas, err
+	}
 	if suppliedGas < GasCompressedVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
