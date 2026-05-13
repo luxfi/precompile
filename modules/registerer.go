@@ -40,7 +40,7 @@ var (
 	// HIGH-BYTE RANGES (legacy format: 0xXX00...0000):
 	// 0x0100-0x01FF: Warp/Teleport messaging
 	// 0x0200-0x02FF: Chain config (AllowLists, FeeManager, etc.)
-	// 0x0300-0x03FF: Reserved (legacy)
+	// 0x0300-0x03FF: AI Mining (sole owner; pre-LP-4200 quasar stubs retired)
 	// 0x0400-0x04FF: DEX (Uniswap v4-style)
 	// 0x0500-0x05FF: Graph/Query layer
 	// 0x0600-0x06FF: Post-quantum crypto
@@ -65,7 +65,10 @@ var (
 			Start: common.HexToAddress("0x0200000000000000000000000000000000000000"),
 			End:   common.HexToAddress("0x02000000000000000000000000000000000000ff"),
 		},
-		// AI Mining (0x0300-0x03FF)
+		// AI Mining (0x0300-0x03FF). Sole owner of this range —
+		// the pre-LP-4200 quasar precompiles at 0x0300..20-25
+		// (forgeable Verkle stub + classical BLS/Hybrid) were
+		// retired in favor of the LP-4200 0x012200 block.
 		{
 			Start: common.HexToAddress("0x0300000000000000000000000000000000000000"),
 			End:   common.HexToAddress("0x03000000000000000000000000000000000000ff"),
