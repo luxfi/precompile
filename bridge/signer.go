@@ -342,7 +342,7 @@ func (bs *BridgeSigner) initiateSigningProtocol(session *SigningSession) {
 
 func (bs *BridgeSigner) combineSignatures(session *SigningSession) ([]byte, error) {
 	// Concatenate signature shares for the threshold coordinator to combine.
-	// The actual FROST/CGGMP21/Ringtail combination is performed by the
+	// The actual FROST/CGGMP21/Corona combination is performed by the
 	// B-Chain's MPC coordinator in luxfi/threshold.
 	if len(session.Signatures) == 0 {
 		return nil, fmt.Errorf("no signatures to combine")

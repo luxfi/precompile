@@ -105,18 +105,18 @@ func TestDeep_BLSAggregate_GasZero(t *testing.T) {
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
 }
 
-// --- Ringtail Deep Tests ---
+// --- Corona Deep Tests ---
 
-func TestDeep_Ringtail_GasZero(t *testing.T) {
-	r := &ringtailPrecompile{}
+func TestDeep_Corona_GasZero(t *testing.T) {
+	r := &coronaPrecompile{}
 	input := make([]byte, 100)
 	_, _, err := r.Run(nil, common.Address{}, r.Address(), input, 0, true)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
 }
 
-func TestDeep_Ringtail_EmptyInput(t *testing.T) {
-	r := &ringtailPrecompile{}
-	_, _, err := r.Run(nil, common.Address{}, r.Address(), nil, GasRingtailVerify, true)
+func TestDeep_Corona_EmptyInput(t *testing.T) {
+	r := &coronaPrecompile{}
+	_, _, err := r.Run(nil, common.Address{}, r.Address(), nil, GasCoronaVerify, true)
 	require.Error(t, err)
 }
 

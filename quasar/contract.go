@@ -18,15 +18,15 @@ const (
 	GasVerkleVerify     = 3000  // Ultra-fast with PQ finality assumption
 	GasBLSVerify        = 5000  // BLS aggregate verification
 	GasBLSAggregate     = 2000  // BLS signature aggregation
-	GasRingtailVerify   = 8000  // Ringtail (ML-DSA) verification
-	GasHybridVerify     = 10000 // BLS+Ringtail hybrid verification
+	GasCoronaVerify   = 8000  // Corona (ML-DSA) verification
+	GasHybridVerify     = 10000 // BLS+Corona hybrid verification
 	GasCompressedVerify = 1000  // Compressed witness verification
 
 	// Precompile addresses
 	VerkleVerifyAddress   = "0x0300000000000000000000000000000000000020"
 	BLSVerifyAddress      = "0x0300000000000000000000000000000000000021"
 	BLSAggregateAddress   = "0x0300000000000000000000000000000000000022"
-	RingtailVerifyAddress = "0x0300000000000000000000000000000000000023"
+	CoronaVerifyAddress = "0x0300000000000000000000000000000000000023"
 	HybridVerifyAddress   = "0x0300000000000000000000000000000000000024"
 	CompressedAddress     = "0x0300000000000000000000000000000000000025"
 )
@@ -34,7 +34,7 @@ const (
 var (
 	_ contract.StatefulPrecompiledContract = &verklePrecompile{}
 	_ contract.StatefulPrecompiledContract = &blsPrecompile{}
-	_ contract.StatefulPrecompiledContract = &ringtailPrecompile{}
+	_ contract.StatefulPrecompiledContract = &coronaPrecompile{}
 
 	ErrInvalidInput     = contract.ErrInvalidInput
 	ErrInvalidSignature = errors.New("invalid signature")
@@ -189,22 +189,22 @@ func (b *blsAggregatePrecompile) Run(accessibleState contract.AccessibleState, c
 	return bls.SignatureToBytes(aggSig), remainingGas, nil
 }
 
-// ringtailPrecompile verifies Ringtail (ML-DSA) signatures
-type ringtailPrecompile struct{}
+// coronaPrecompile verifies Corona (ML-DSA) signatures
+type coronaPrecompile struct{}
 
-func (r *ringtailPrecompile) Address() common.Address {
-	return common.HexToAddress(RingtailVerifyAddress)
+func (r *coronaPrecompile) Address() common.Address {
+	return common.HexToAddress(CoronaVerifyAddress)
 }
 
-func (r *ringtailPrecompile) RequiredGas(input []byte) uint64 {
-	return GasRingtailVerify
+func (r *coronaPrecompile) RequiredGas(input []byte) uint64 {
+	return GasCoronaVerify
 }
 
-func (r *ringtailPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
-	if suppliedGas < GasRingtailVerify {
+func (r *coronaPrecompile) Run(accessibleState contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool) (ret []byte, remainingGas uint64, err error) {
+	if suppliedGas < GasCoronaVerify {
 		return nil, 0, contract.ErrOutOfGas
 	}
-	remainingGas = suppliedGas - GasRingtailVerify
+	remainingGas = suppliedGas - GasCoronaVerify
 
 	// Input format: [mode(1)] [pubkey_len(2)] [pubkey] [msg_len(2)] [msg] [sig]
 	if len(input) < 6 {
@@ -229,7 +229,7 @@ func (r *ringtailPrecompile) Run(accessibleState contract.AccessibleState, calle
 	signature := input[3+pubKeyLen+2+msgLen:]
 
 	// Try GPU-accelerated ML-DSA verification
-	if gpuValid, gpuUsed := ringtailVerifyGPU(message, signature, pubKeyBytes); gpuUsed {
+	if gpuValid, gpuUsed := coronaVerifyGPU(message, signature, pubKeyBytes); gpuUsed {
 		if gpuValid {
 			return []byte{1}, remainingGas, nil
 		}
@@ -249,7 +249,7 @@ func (r *ringtailPrecompile) Run(accessibleState contract.AccessibleState, calle
 	return []byte{0}, remainingGas, nil
 }
 
-// hybridPrecompile verifies BLS+Ringtail hybrid signatures
+// hybridPrecompile verifies BLS+Corona hybrid signatures
 type hybridPrecompile struct{}
 
 func (h *hybridPrecompile) Address() common.Address {
@@ -266,22 +266,22 @@ func (h *hybridPrecompile) Run(accessibleState contract.AccessibleState, caller 
 	}
 	remainingGas = suppliedGas - GasHybridVerify
 
-	// Input format: [bls_sig(96)] [ringtail_sig_len(2)] [ringtail_sig] [message(32)] [bls_pubkey(48)] [ringtail_pubkey]
+	// Input format: [bls_sig(96)] [corona_sig_len(2)] [corona_sig] [message(32)] [bls_pubkey(48)] [corona_pubkey]
 	if len(input) < 178 {
 		return nil, remainingGas, ErrInvalidInput
 	}
 
 	blsSig := input[:96]
-	ringtailSigLen := int(input[96])<<8 | int(input[97])
+	coronaSigLen := int(input[96])<<8 | int(input[97])
 
-	if len(input) < 98+ringtailSigLen+32+48 {
+	if len(input) < 98+coronaSigLen+32+48 {
 		return nil, remainingGas, ErrInvalidInput
 	}
 
-	ringtailSig := input[98 : 98+ringtailSigLen]
-	message := input[98+ringtailSigLen : 98+ringtailSigLen+32]
-	blsPubKey := input[98+ringtailSigLen+32 : 98+ringtailSigLen+32+48]
-	ringtailPubKey := input[98+ringtailSigLen+32+48:]
+	coronaSig := input[98 : 98+coronaSigLen]
+	message := input[98+coronaSigLen : 98+coronaSigLen+32]
+	blsPubKey := input[98+coronaSigLen+32 : 98+coronaSigLen+32+48]
+	coronaPubKey := input[98+coronaSigLen+32+48:]
 
 	// Try GPU-accelerated BLS verification
 	blsValid := false
@@ -307,20 +307,20 @@ func (h *hybridPrecompile) Run(accessibleState contract.AccessibleState, caller 
 	}
 
 	// Try GPU-accelerated ML-DSA verification
-	if gpuValid, gpuUsed := ringtailVerifyGPU(message, ringtailSig, ringtailPubKey); gpuUsed {
+	if gpuValid, gpuUsed := coronaVerifyGPU(message, coronaSig, coronaPubKey); gpuUsed {
 		if gpuValid {
 			return []byte{1}, remainingGas, nil
 		}
 		return []byte{0}, remainingGas, nil
 	}
 
-	// CPU fallback for Ringtail
-	ringtailPK, err := mldsa.PublicKeyFromBytes(ringtailPubKey, mldsa.MLDSA65)
+	// CPU fallback for Corona
+	coronaPK, err := mldsa.PublicKeyFromBytes(coronaPubKey, mldsa.MLDSA65)
 	if err != nil {
 		return []byte{0}, remainingGas, nil
 	}
 
-	if !ringtailPK.Verify(message, ringtailSig, nil) {
+	if !coronaPK.Verify(message, coronaSig, nil) {
 		return []byte{0}, remainingGas, nil
 	}
 
@@ -480,9 +480,9 @@ func blsAggregateGPU(input []byte, numSigs int) ([]byte, bool) {
 	return result, true
 }
 
-// ringtailVerifyGPU attempts GPU-accelerated ML-DSA (Ringtail) signature verification.
+// coronaVerifyGPU attempts GPU-accelerated ML-DSA (Corona) signature verification.
 // Returns (valid, true) if GPU was used, (false, false) if GPU unavailable.
-func ringtailVerifyGPU(message, signature, publicKey []byte) (valid bool, gpuUsed bool) {
+func coronaVerifyGPU(message, signature, publicKey []byte) (valid bool, gpuUsed bool) {
 	if !accel.Available() {
 		return false, false
 	}
@@ -527,7 +527,7 @@ func GetAllPrecompiles() map[common.Address]contract.StatefulPrecompiledContract
 		common.HexToAddress(VerkleVerifyAddress):   &verklePrecompile{},
 		common.HexToAddress(BLSVerifyAddress):      &blsPrecompile{},
 		common.HexToAddress(BLSAggregateAddress):   &blsAggregatePrecompile{},
-		common.HexToAddress(RingtailVerifyAddress): &ringtailPrecompile{},
+		common.HexToAddress(CoronaVerifyAddress): &coronaPrecompile{},
 		common.HexToAddress(HybridVerifyAddress):   &hybridPrecompile{},
 		common.HexToAddress(CompressedAddress):     &compressedPrecompile{},
 	}
