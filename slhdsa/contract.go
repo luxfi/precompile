@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/luxfi/accel"
 	"github.com/luxfi/crypto/slhdsa"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -248,18 +247,21 @@ func (p *slhdsaVerifyPrecompile) Run(
 	message := input[msgStart:msgEnd]
 	signature := input[sigStart:sigEnd]
 
-	// Try GPU-accelerated verification first
-	var valid bool
-	if gpuValid, gpuUsed := verifySLHDSAGPU(message, signature, publicKey); gpuUsed {
-		valid = gpuValid
-	} else {
-		// CPU fallback: parse public key and verify
-		pub, err := slhdsa.PublicKeyFromBytes(publicKey, slhdsaMode)
-		if err != nil {
-			return nil, remainingGas, fmt.Errorf("invalid public key: %w", err)
-		}
-		valid = pub.VerifySignatureCtx(message, signature, precompileCtx)
+	// SLH-DSA (FIPS 205) is hash-based (SPHINCS+ WOTS+ / FORS / Merkle), not
+	// lattice-based — there is no NTT in the verifier. The luxfi/accel
+	// `Lattice` op set exposes a Dilithium kernel, NOT an SLH-DSA kernel.
+	// A previous version dispatched to lattice.DilithiumVerify here, which
+	// silently verified a completely different algorithm against the input
+	// bytes whenever a GPU backend was present — a forgery / oracle hazard.
+	//
+	// Until accel ships a real SLH-DSA WOTS+/FORS/Merkle verifier kernel,
+	// the precompile uses the CPU verifier exclusively. The CPU path is
+	// constant-time and FIPS 205 compliant via luxfi/crypto/slhdsa.
+	pub, err := slhdsa.PublicKeyFromBytes(publicKey, slhdsaMode)
+	if err != nil {
+		return nil, remainingGas, fmt.Errorf("invalid public key: %w", err)
 	}
+	valid := pub.VerifySignatureCtx(message, signature, precompileCtx)
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)
 	result := make([]byte, 32)
@@ -268,49 +270,6 @@ func (p *slhdsaVerifyPrecompile) Run(
 	}
 
 	return result, remainingGas, nil
-}
-
-// verifySLHDSAGPU attempts GPU-accelerated SLH-DSA signature verification.
-// Returns (valid, true) if GPU was used, (false, false) if GPU unavailable.
-func verifySLHDSAGPU(message, signature, publicKey []byte) (valid bool, gpuUsed bool) {
-	if !accel.Available() {
-		return false, false
-	}
-
-	sess, err := accel.NewSession()
-	if err != nil {
-		return false, false
-	}
-	defer sess.Close()
-
-	lattice := sess.Lattice()
-
-	msgTensor, err := accel.NewTensorWithData[byte](sess, []int{len(message)}, message)
-	if err != nil {
-		return false, false
-	}
-	defer msgTensor.Close()
-
-	sigTensor, err := accel.NewTensorWithData[byte](sess, []int{len(signature)}, signature)
-	if err != nil {
-		return false, false
-	}
-	defer sigTensor.Close()
-
-	pkTensor, err := accel.NewTensorWithData[byte](sess, []int{len(publicKey)}, publicKey)
-	if err != nil {
-		return false, false
-	}
-	defer pkTensor.Close()
-
-	// SLH-DSA uses hash-based trees with lattice-style NTT internally;
-	// dispatch to DilithiumVerify which handles the PQ signature verification kernel.
-	result, err := lattice.DilithiumVerify(msgTensor.Untyped(), sigTensor.Untyped(), pkTensor.Untyped())
-	if err != nil {
-		return false, false
-	}
-
-	return result, true
 }
 
 // ModeName returns a human-readable name for the mode
