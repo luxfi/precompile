@@ -26,7 +26,7 @@ Pulsar implements a threshold signature scheme based on:
 
 ### Parameters
 
-From `ringtail/sign/config.go`:
+From `corona/sign/config.go`:
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
@@ -82,9 +82,9 @@ The signature consists of serialized lattice elements:
 ### Solidity
 
 ```solidity
-import "./IRingtailThreshold.sol";
+import "./ICoronaThreshold.sol";
 
-contract MyContract is RingtailThresholdVerifier {
+contract MyContract is CoronaThresholdVerifier {
     function verifyConsensus(
         bytes32 messageHash,
         bytes calldata signature
@@ -103,7 +103,7 @@ contract MyContract is RingtailThresholdVerifier {
         bytes calldata signature
     ) external {
         // Revert if invalid
-        RingtailThresholdLib.verifyOrRevert(
+        CoronaThresholdLib.verifyOrRevert(
             2, 3, messageHash, signature
         );
 
@@ -138,7 +138,7 @@ const isValid = await precompile.verifyThreshold(
 
 ```go
 import (
-    "ringtail/sign"
+    "corona/sign"
     "github.com/luxfi/lattice/v6/ring"
 )
 
@@ -152,7 +152,7 @@ r_xi, _ := ring.NewRing(1<<sign.LogN, []uint64{sign.QXi})
 r_nu, _ := ring.NewRing(1<<sign.LogN, []uint64{sign.QNu})
 
 // Run threshold signing protocol
-// ... (see ringtail/main.go for full example)
+// ... (see corona/main.go for full example)
 
 // Verify signature
 valid := sign.Verify(r, r_xi, r_nu, z, A, mu, bTilde, c, Delta)
@@ -206,7 +206,7 @@ contract QuasarConsensus {
         bytes calldata validatorSignature
     ) external {
         // Verify 4-of-5 validators signed
-        RingtailThresholdLib.verifyOrRevert(
+        CoronaThresholdLib.verifyOrRevert(
             THRESHOLD,
             VALIDATORS,
             blockHash,
@@ -267,14 +267,14 @@ contract QuasarConsensus {
 
 ```bash
 # Run tests
-cd /Users/z/work/lux/standard/src/precompiles/ringtail-threshold
+cd /Users/z/work/lux/standard/src/precompiles/corona-threshold
 go test -v
 
 # Run benchmarks
 go test -bench=. -benchmem
 
 # Test with specific threshold
-go test -run TestRingtailThresholdVerify_3of5
+go test -run TestCoronaThresholdVerify_3of5
 ```
 
 ### Test Coverage
@@ -300,7 +300,7 @@ function verify(bytes32 hash, bytes memory sig) public view {
 
 // After (Pulsar Threshold)
 function verify(bytes32 hash, bytes memory sig) public view {
-    RingtailThresholdLib.verifyOrRevert(
+    CoronaThresholdLib.verifyOrRevert(
         THRESHOLD,
         TOTAL_SIGNERS,
         hash,
@@ -329,7 +329,7 @@ function verify(bytes32 hash, bytes memory sig) public view {
 
 - [Pulsar Paper (ePrint 2024/1113)](https://eprint.iacr.org/2024/1113)
 - [Lattice Library](https://github.com/luxfi/lattice)
-- [Pulsar Implementation](/Users/z/work/lux/ringtail/)
+- [Pulsar Implementation](/Users/z/work/lux/corona/)
 - [Quasar Consensus](/Users/z/work/lux/node/consensus/protocol/quasar/)
 
 ## License

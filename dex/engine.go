@@ -10,10 +10,23 @@ import (
 )
 
 // Engine abstracts the DEX computation backend.
-// The precompile is a thin ABI shim -- all AMM math, tick crossing,
+// The precompile is a thin ABI shim — all AMM math, tick crossing,
 // fee growth, matching, and position management happen in the engine.
-// Production: ZAP binary protocol to ~/work/lux/dex process.
-// Embedded: Direct Go call to DEX engine linked in-process.
+//
+// Backends ship in their own packages. Two canonical implementations live
+// in-tree:
+//
+//   - EmbeddedEngine (engine_embedded.go) — pure-Go V4 math, default for
+//     upstream Lux EVM and any chain that wants a self-contained build.
+//   - ZAPEngine (engine_zap.go) — binary protocol shim to an external DEX
+//     process. The external process can be the upstream Lux DEX or a
+//     white-label DEX such as Liquid DEX; the precompile does not care.
+//
+// Adding a new backend is purely additive: implement Engine, ship it in
+// its own package, and have the host EVM call dex.SetBackend() before the
+// chain bootstraps. The on-chain ABI (selectors at LP-9010) is invariant
+// across backends — a contract compiled against the precompile address
+// runs unchanged on every chain.
 type Engine interface {
 	// Initialize computes the initial tick from sqrtPriceX96 and creates pool state.
 	Initialize(sqrtPriceX96 *big.Int) (int24, error)
@@ -33,7 +46,11 @@ type Engine interface {
 
 	// Quote estimates swap output without mutating state. Used by router.
 	Quote(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.Int
-}
 
-// Production: use ZAPEngine (engine_zap.go) pointing to the DEX process.
-// Testing: provide any Engine implementation.
+	// Brand returns the human-readable identity of the backend. The precompile
+	// uses this in log lines and error wrapping so user-facing strings on a
+	// Liquid EVM chain say "Liquid DEX", on Lux say "Lux DEX", etc. Implementations
+	// MUST return a non-empty constant; an empty value trips a sanity check at
+	// SetBackend() time.
+	Brand() string
+}

@@ -22,7 +22,17 @@ const (
 	ZAPMethodModifyLiquidity = "amm.modify_liquidity"
 	ZAPMethodDonate          = "amm.donate"
 	ZAPMethodQuote           = "amm.quote"
+	// ZAPMethodGetBrand returns the backend's display identity as raw UTF-8 bytes.
+	// Optional on the wire: a missing handler / connection failure returns the
+	// neutral "DEX" fallback rather than a panic. The brand is fetched once per
+	// process and cached for the lifetime of the engine.
+	ZAPMethodGetBrand = "amm.get_brand"
 )
+
+// brandFallback is the neutral, brand-free identity surfaced by ZAPEngine when
+// the external process does not advertise a brand (or is unreachable). It must
+// not leak any upstream OSS name — Liquidity surfaces enforce that property.
+const brandFallback = "DEX"
 
 // zapClient is the interface for a ZAP binary protocol connection.
 type zapClient interface {
@@ -38,7 +48,19 @@ type ZAPEngine struct {
 
 	mu     sync.Mutex
 	client zapClient
+
+	// brandMu and cachedBrand memoize the result of fetchBrand() so the round
+	// trip happens once per process. Brand() is called from log lines, error
+	// wrapping, and admin reads — it must not pay the dial cost every call.
+	brandMu     sync.Mutex
+	cachedBrand string
 }
+
+// Compile-time assertion that ZAPEngine satisfies the Engine contract. Without
+// this, adding a method to Engine (e.g. Brand()) and forgetting to implement
+// it on ZAPEngine compiles silently because no in-tree code does a direct
+// assignment — exactly the regression that produced RED V8 against v0.5.17.
+var _ Engine = (*ZAPEngine)(nil)
 
 // NewZAPEngine creates a ZAP engine client.
 // addr is the DEX engine's ZAP endpoint (e.g., "localhost:9100").
@@ -226,6 +248,63 @@ func (z *ZAPEngine) Quote(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.I
 	return new(big.Int).SetBytes(resp[:32])
 }
 
+// Brand returns the user-facing identity advertised by the external backend.
+//
+// The brand is fetched lazily on first call via the optional ZAP method
+// amm.get_brand and cached for the lifetime of the engine. Cache invalidation
+// is intentionally absent: brand is a deployment-time property of the binary
+// behind the wire, not something that drifts at runtime. If the backend is
+// unreachable or does not implement the method, the neutral fallback "DEX" is
+// returned — never an upstream OSS name. This guarantees the precompile
+// surface stays free of cross-brand leakage on white-label deployments.
+func (z *ZAPEngine) Brand() string {
+	z.brandMu.Lock()
+	defer z.brandMu.Unlock()
+	if z.cachedBrand != "" {
+		return z.cachedBrand
+	}
+	brand, err := z.fetchBrand()
+	if err != nil || brand == "" {
+		// Cache the fallback too — repeated failed dials would otherwise burn
+		// CPU on every brand read. The fallback is observable to admin tooling
+		// as "DEX" which signals "backend did not advertise a brand".
+		z.cachedBrand = brandFallback
+		return brandFallback
+	}
+	z.cachedBrand = brand
+	return brand
+}
+
+// fetchBrand issues a single amm.get_brand round trip. The wire payload is the
+// raw UTF-8 brand string; no length prefix or framing — the ZAP response body
+// length is authoritative. Returns the empty string + error if the backend is
+// unreachable, the method is unknown, or the response is not valid UTF-8 of
+// reasonable length.
+//
+// Bounded by the engine's configured timeout so a slow/broken backend cannot
+// stall Brand() callers. The maximum accepted brand length is 64 bytes, which
+// covers any reasonable display name and rejects pathological payloads.
+func (z *ZAPEngine) fetchBrand() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), z.timeout)
+	defer cancel()
+	resp, err := z.call(ctx, ZAPMethodGetBrand, nil)
+	if err != nil {
+		return "", err
+	}
+	const maxBrandLen = 64
+	if len(resp) == 0 || len(resp) > maxBrandLen {
+		return "", fmt.Errorf("ZAP GetBrand: response length %d out of range", len(resp))
+	}
+	// Treat the response as a UTF-8 string. Reject any control bytes that
+	// would corrupt log lines or admin tooling.
+	for _, b := range resp {
+		if b < 0x20 || b == 0x7F {
+			return "", fmt.Errorf("ZAP GetBrand: response contains control byte 0x%02x", b)
+		}
+	}
+	return string(resp), nil
+}
+
 // Close closes the ZAP connection.
 func (z *ZAPEngine) Close() error {
 	z.mu.Lock()
@@ -297,6 +376,12 @@ func encodeSwapRequest(pool *PoolState, params SwapParams) []byte {
 }
 
 // decodeSwapResponse: amount0[32] + amount1[32] + poolState[132] = 196 bytes
+//
+// V10 wire validation: every numeric field returned by an external DEX process
+// MUST be range-checked before it touches PoolState. A backend that lies (or a
+// MITM that flips bits on the loopback socket) cannot push the pool into a
+// state that the V4 math libraries would reject — that would let an attacker
+// poison fee growth, brick swap routing, or pin a pool at out-of-range tick.
 func decodeSwapResponse(data []byte) (BalanceDelta, poolStateWire, error) {
 	if len(data) < 196 {
 		return ZeroBalanceDelta(), poolStateWire{}, fmt.Errorf("swap response too short: %d", len(data))
@@ -304,7 +389,41 @@ func decodeSwapResponse(data []byte) (BalanceDelta, poolStateWire, error) {
 	amount0 := decodeSigned256(data[0:32])
 	amount1 := decodeSigned256(data[32:64])
 	state := decodePoolStateWire(data[64:196])
+	if err := validatePoolStateWire(state); err != nil {
+		return ZeroBalanceDelta(), poolStateWire{}, err
+	}
 	return NewBalanceDelta(amount0, amount1), state, nil
+}
+
+// validatePoolStateWire enforces V4 invariants on a pool state coming back
+// from the external engine. Rejecting here means the calling Swap /
+// ModifyLiquidity / Donate path returns an error and the caller's StateDB
+// snapshot is reverted — the bad data never reaches on-chain state.
+//
+//   - sqrtPriceX96 must be in [MinSqrtRatio, MaxSqrtRatio], matching the
+//     invariant enforced everywhere else in the package (see types.go).
+//   - tick must be in [MinTick, MaxTick] — the V4 tick range.
+//   - liquidity must be non-negative and fit in 128 bits (V4 stores liquidity
+//     as a uint128 on chain).
+//   - fee growth must be non-negative; the V4 spec treats it as a Q128.128
+//     unsigned accumulator. Negative would indicate sign-bit corruption.
+func validatePoolStateWire(s poolStateWire) error {
+	if s.sqrtPriceX96 == nil || s.sqrtPriceX96.Cmp(MinSqrtRatio) < 0 || s.sqrtPriceX96.Cmp(MaxSqrtRatio) > 0 {
+		return fmt.Errorf("ZAP: sqrtPriceX96 out of range")
+	}
+	if s.tick < MinTick || s.tick > MaxTick {
+		return fmt.Errorf("ZAP: tick %d out of range [%d, %d]", s.tick, MinTick, MaxTick)
+	}
+	if s.liquidity == nil || s.liquidity.Sign() < 0 || s.liquidity.BitLen() > 128 {
+		return fmt.Errorf("ZAP: liquidity out of uint128 range")
+	}
+	if s.feeGrowth0X128 == nil || s.feeGrowth0X128.Sign() < 0 || s.feeGrowth0X128.BitLen() > 256 {
+		return fmt.Errorf("ZAP: feeGrowth0X128 out of uint256 range")
+	}
+	if s.feeGrowth1X128 == nil || s.feeGrowth1X128.Sign() < 0 || s.feeGrowth1X128.BitLen() > 256 {
+		return fmt.Errorf("ZAP: feeGrowth1X128 out of uint256 range")
+	}
+	return nil
 }
 
 // encodeModifyLiquidityRequest: poolState[132] + owner[20] + tickLower[4] + tickUpper[4] + liquidityDelta[32] + salt[32] = 224 bytes
@@ -320,14 +439,24 @@ func encodeModifyLiquidityRequest(pool *PoolState, owner common.Address, params 
 }
 
 // decodeModifyLiquidityResponse: callerAmount0[32] + callerAmount1[32] + feesAmount0[32] + feesAmount1[32] + liquidity[32] + feeGrowth0[32] + feeGrowth1[32] = 224 bytes
+//
+// Wire fields are partial pool state (no sqrtPriceX96 / tick because
+// ModifyLiquidity does not move the price). Validate liquidity — V4 stores it
+// as uint128 on chain, so >128 bits from the backend is a corruption signal.
+// Fee growth uses the full 256-bit register so SetBytes on a 32-byte slice
+// is already structurally bounded; the type/protocol does the work there.
 func decodeModifyLiquidityResponse(data []byte) (BalanceDelta, BalanceDelta, poolStateWire, error) {
 	if len(data) < 224 {
 		return ZeroBalanceDelta(), ZeroBalanceDelta(), poolStateWire{}, fmt.Errorf("modifyLiquidity response too short: %d", len(data))
 	}
 	callerDelta := NewBalanceDelta(decodeSigned256(data[0:32]), decodeSigned256(data[32:64]))
 	feesAccrued := NewBalanceDelta(decodeSigned256(data[64:96]), decodeSigned256(data[96:128]))
+	liquidity := new(big.Int).SetBytes(data[128:160])
+	if liquidity.BitLen() > 128 {
+		return ZeroBalanceDelta(), ZeroBalanceDelta(), poolStateWire{}, fmt.Errorf("ZAP: liquidity out of uint128 range")
+	}
 	state := poolStateWire{
-		liquidity:      new(big.Int).SetBytes(data[128:160]),
+		liquidity:      liquidity,
 		feeGrowth0X128: new(big.Int).SetBytes(data[160:192]),
 		feeGrowth1X128: new(big.Int).SetBytes(data[192:224]),
 	}

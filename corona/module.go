@@ -1,7 +1,7 @@
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package ringtailthreshold
+package coronathreshold
 
 import (
 	"github.com/luxfi/precompile/contract"
@@ -14,11 +14,11 @@ var _ contract.Configurator = &configurator{}
 type configurator struct{}
 
 func init() {
-	// Register Ringtail threshold precompile module
+	// Register Corona threshold precompile module
 	if err := modules.RegisterModule(modules.Module{
-		ConfigKey:    "ringtailThreshold",
-		Address:      ContractRingtailThresholdAddress,
-		Contract:     RingtailThresholdPrecompile,
+		ConfigKey:    "coronaThreshold",
+		Address:      ContractCoronaThresholdAddress,
+		Contract:     CoronaThresholdPrecompile,
 		Configurator: &configurator{},
 	}); err != nil {
 		panic(err)
@@ -35,17 +35,17 @@ func (*configurator) Configure(
 	state contract.StateDB,
 	blockContext contract.ConfigurationBlockContext,
 ) error {
-	// No state initialization required for Ringtail threshold verification
+	// No state initialization required for Corona threshold verification
 	return nil
 }
 
-// Config implements the precompileconfig.Config interface for Ringtail
+// Config implements the precompileconfig.Config interface for Corona
 type Config struct {
 	Upgrade precompileconfig.Upgrade `json:"upgrade"`
 }
 
 func (c *Config) Key() string {
-	return "ringtailThreshold"
+	return "coronaThreshold"
 }
 
 func (c *Config) Timestamp() *uint64 {

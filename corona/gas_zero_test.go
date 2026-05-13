@@ -1,7 +1,7 @@
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package ringtailthreshold
+package coronathreshold
 
 import (
 	"testing"
@@ -13,7 +13,7 @@ import (
 
 func TestGasZero_Rejected(t *testing.T) {
 	input := make([]byte, 128)
-	_, remainingGas, err := RingtailThresholdPrecompile.Run(nil, common.Address{}, RingtailThresholdPrecompile.Address(), input, 0, true)
+	_, remainingGas, err := CoronaThresholdPrecompile.Run(nil, common.Address{}, CoronaThresholdPrecompile.Address(), input, 0, true)
 	require.Error(t, err)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Zero(t, remainingGas)
