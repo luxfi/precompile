@@ -1,8 +1,8 @@
 [package]
-name = "luxprecompile-sys"
+name = "lux-precompile"
 version = "0.1.0"
 edition = "2021"
-description = "FFI bindings to libluxprecompile — all Lux EVM precompiles via Go shared library"
+description = "Lux Network — FFI bindings to libluxprecompile (all Lux EVM precompiles via Go shared library)"
 license-file = "LICENSE"
 repository = "https://github.com/luxfi/precompile"
 homepage = "https://lux.network"
