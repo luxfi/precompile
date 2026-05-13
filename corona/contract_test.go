@@ -242,9 +242,11 @@ func generateThresholdSignature(thresholdVal, totalParties uint32, message strin
 
 	// Hash message first - this is what will be passed to the precompile
 	messageHash := hashMessage(message)
-	// Use hex encoding of messageHash as the signing message
-	// This matches what contract.go does: mu := fmt.Sprintf("%x", messageHash)
-	signMessage := fmt.Sprintf("%x", messageHash)
+	// Mirror the precompile's domain-separation context so the test
+	// signs over the same `mu` shape that verifyThresholdSignature
+	// derives from messageHash. Keep this string in lock-step with
+	// precompileCtx in contract.go.
+	signMessage := fmt.Sprintf("lux-evm-precompile-corona-v1|%x", messageHash)
 
 	// Round 1: Each party generates D matrix and MACs
 	round1Data := make(map[int]*threshold.Round1Data)
