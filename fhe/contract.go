@@ -89,6 +89,14 @@ func (c *FHEContract) Run(
 		return nil, suppliedGas, ErrInvalidInput
 	}
 
+	// Every FHE op reads or writes ciphertext storage via the StateDB. The
+	// precompile is meaningless without one — bail out cleanly rather than
+	// nil-deref inside performFHEOperation when a test harness or external
+	// caller invokes Run with a nil accessibleState.
+	if accessibleState == nil || accessibleState.GetStateDB() == nil {
+		return nil, suppliedGas, ErrInvalidInput
+	}
+
 	// Extract function selector (first 4 bytes)
 	selector := input[:4]
 	data := input[4:]
