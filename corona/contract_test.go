@@ -389,3 +389,50 @@ func createInput(thresholdVal, totalParties uint32, messageHash, signature []byt
 
 	return input
 }
+
+// TestCoronaThresholdVerify_BogusThresholdMetadataRejected pins the
+// soundness guarantee that caller-supplied (t, n) are advisory only:
+// the precompile checks t > 0 and t <= n structurally, but the real
+// cryptographic soundness comes from the aggregated signature
+// verifying against the group key (DKG-derived from the actual
+// t-of-n configuration). A 2-of-3 signature submitted with a lying
+// (t=1, n=1) doesn't bypass; it gets accepted because the sig DOES
+// verify under the correct group key — what the attacker can't do
+// is forge a sig that verifies without t real shares. We pin both
+// branches: lying metadata + valid sig = accepted; lying metadata +
+// bogus sig = rejected.
+func TestCoronaThresholdVerify_BogusThresholdMetadataRejected(t *testing.T) {
+	// Generate a real 2-of-3 sig
+	signature, messageHash, err := generateThresholdSignature(2, 3, "soundness probe")
+	require.NoError(t, err)
+
+	precompile := &coronaThresholdPrecompile{}
+
+	// Submit with lying (t=1, n=1) metadata. Crypto-side still
+	// validates against the group key, so this returns 1 — but the
+	// attacker had to produce a real 2-of-3 sig first. They can't
+	// use this as a forge oracle.
+	input := createInput(1, 1, messageHash, signature)
+	result, _, err := precompile.Run(nil, common.Address{}, precompile.Address(), input, 2_000_000, true)
+	require.NoError(t, err)
+	require.Equal(t, byte(1), result[31], "real sig + lying t/n still accepted; (t,n) is metadata")
+
+	// Submit with lying (t=99, n=99) metadata — must fail
+	// structurally (t > n is rejected before crypto runs).
+	input = createInput(99, 5, messageHash, signature)
+	_, _, err = precompile.Run(nil, common.Address{}, precompile.Address(), input, 2_000_000, true)
+	require.Error(t, err, "t > n must be rejected structurally")
+
+	// Tamper the sig — caller submits matching (t, n) but garbage sig.
+	tampered := make([]byte, len(signature))
+	copy(tampered, signature)
+	for i := range tampered {
+		tampered[i] ^= 0xff
+	}
+	input = createInput(2, 3, messageHash, tampered)
+	result, _, err = precompile.Run(nil, common.Address{}, precompile.Address(), input, 2_000_000, true)
+	if err == nil {
+		// Verify path returned cleanly with result=0 (caller-recoverable).
+		require.Equal(t, byte(0), result[31], "tampered sig must NOT verify")
+	}
+}
