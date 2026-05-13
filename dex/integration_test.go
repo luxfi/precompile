@@ -341,7 +341,7 @@ func testPauseFreezeCompliance(t *testing.T) {
 	if err := pm.PauseDEX(stateDB, intAdmin); err != nil {
 		t.Fatalf("PauseDEX failed: %v", err)
 	}
-	if !pm.IsPaused() {
+	if !pm.IsPaused(stateDB) {
 		t.Fatal("DEX should be paused")
 	}
 
@@ -368,7 +368,7 @@ func testPauseFreezeCompliance(t *testing.T) {
 	if err := pm.FreezePool(stateDB, intAdmin, poolID); err != nil {
 		t.Fatalf("FreezePool failed: %v", err)
 	}
-	if !pm.IsPoolFrozen(poolID) {
+	if !pm.IsPoolFrozen(stateDB, poolID) {
 		t.Fatal("USDL/ETH pool should be frozen")
 	}
 

@@ -199,8 +199,8 @@ const (
 	FROSTQChain     = "0x5300000000000000000000000000000000000000" // Q-Chain FROST
 	CGGMP21CChain   = "0x5201000000000000000000000000000000000000" // C-Chain CGGMP21
 	CGGMP21QChain   = "0x5301000000000000000000000000000000000000" // Q-Chain CGGMP21
-	RingtailCChain  = "0x5202000000000000000000000000000000000000" // C-Chain Ringtail
-	RingtailQChain  = "0x5302000000000000000000000000000000000000" // Q-Chain Ringtail
+	CoronaCChain  = "0x5202000000000000000000000000000000000000" // C-Chain Corona
+	CoronaQChain  = "0x5302000000000000000000000000000000000000" // Q-Chain Corona
 	DoernerCChain   = "0x5203000000000000000000000000000000000000" // C-Chain Doerner
 	DoernerQChain   = "0x5303000000000000000000000000000000000000" // Q-Chain Doerner
 	BLSThreshCChain = "0x5204000000000000000000000000000000000000" // C-Chain BLS Threshold
@@ -400,7 +400,7 @@ var ChainPrecompiles = map[string][]string{
 		// Privacy/ZK (P=4)
 		Groth16CChain, PLONKCChain, STARKCChain, KZGCChain, FHECChain, RangeProofCChain,
 		// Threshold (P=5)
-		FROSTCChain, CGGMP21CChain, RingtailCChain, LSSCChain, DKGCChain,
+		FROSTCChain, CGGMP21CChain, CoronaCChain, LSSCChain, DKGCChain,
 		// Bridges (P=6)
 		WarpSendCChain, WarpReceiveCChain, BridgeCChain, TeleportCChain,
 		// AI (P=7)
@@ -414,7 +414,7 @@ var ChainPrecompiles = map[string][]string{
 		// PQ (P=2)
 		MLDSAQChain, MLKEMQChain, SLHDSAQChain, FalconQChain, KyberQChain, HybridSignQChain,
 		// Threshold (P=5)
-		FROSTQChain, CGGMP21QChain, RingtailQChain, LSSQChain, DKGQChain,
+		FROSTQChain, CGGMP21QChain, CoronaQChain, LSSQChain, DKGQChain,
 	},
 
 	// A-Chain (AI) - AI focused
@@ -525,7 +525,7 @@ var AllPrecompiles = []PrecompileInfo{
 	// Threshold/MPC (P=5) → LP-5xxx
 	{FROSTCChain, "FROST", "Schnorr threshold signatures", 25000, []string{"C", "Q"}, "LP-5xxx"},
 	{CGGMP21CChain, "CGGMP21", "ECDSA threshold signatures", 50000, []string{"C", "Q"}, "LP-5xxx"},
-	{RingtailCChain, "RINGTAIL", "Threshold lattice signatures (PQ)", 75000, []string{"C", "Q"}, "LP-5xxx"},
+	{CoronaCChain, "CORONA", "Threshold Ring-LWE signatures (PQ)", 75000, []string{"C", "Q"}, "LP-5xxx"},
 	{LSSCChain, "LSS", "Lux Secret Sharing", 10000, []string{"C", "Q"}, "LP-5xxx"},
 	{DKGCChain, "DKG", "Distributed Key Generation", 100000, []string{"C", "Q"}, "LP-5xxx"},
 

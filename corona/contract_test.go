@@ -1,7 +1,7 @@
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package ringtailthreshold
+package coronathreshold
 
 import (
 	"bytes"
@@ -14,13 +14,13 @@ import (
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v7/ring"
 	"github.com/luxfi/precompile/contract"
-	"github.com/luxfi/ringtail/sign"
-	"github.com/luxfi/ringtail/threshold"
+	"github.com/luxfi/corona/sign"
+	"github.com/luxfi/corona/threshold"
 	"github.com/stretchr/testify/require"
 )
 
-// TestRingtailThresholdVerify_2of3 tests 2-of-3 threshold signature
-func TestRingtailThresholdVerify_2of3(t *testing.T) {
+// TestCoronaThresholdVerify_2of3 tests 2-of-3 threshold signature
+func TestCoronaThresholdVerify_2of3(t *testing.T) {
 	thresholdVal := uint32(2)
 	totalParties := uint32(3)
 	message := "test message for 2-of-3 threshold"
@@ -33,15 +33,15 @@ func TestRingtailThresholdVerify_2of3(t *testing.T) {
 	input := createInput(thresholdVal, totalParties, messageHash, signature)
 
 	// Verify signature
-	precompile := &ringtailThresholdPrecompile{}
+	precompile := &coronaThresholdPrecompile{}
 	result, _, err := precompile.Run(nil, common.Address{}, precompile.Address(), input, 1_000_000, true)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, byte(1), result[31], "Signature should be valid")
 }
 
-// TestRingtailThresholdVerify_3of5 tests 3-of-5 threshold signature
-func TestRingtailThresholdVerify_3of5(t *testing.T) {
+// TestCoronaThresholdVerify_3of5 tests 3-of-5 threshold signature
+func TestCoronaThresholdVerify_3of5(t *testing.T) {
 	thresholdVal := uint32(3)
 	totalParties := uint32(5)
 	message := "test message for 3-of-5 threshold"
@@ -54,15 +54,15 @@ func TestRingtailThresholdVerify_3of5(t *testing.T) {
 	input := createInput(thresholdVal, totalParties, messageHash, signature)
 
 	// Verify signature
-	precompile := &ringtailThresholdPrecompile{}
+	precompile := &coronaThresholdPrecompile{}
 	result, _, err := precompile.Run(nil, common.Address{}, precompile.Address(), input, 2_000_000, true)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, byte(1), result[31], "Signature should be valid")
 }
 
-// TestRingtailThresholdVerify_FullThreshold tests n-of-n (full threshold)
-func TestRingtailThresholdVerify_FullThreshold(t *testing.T) {
+// TestCoronaThresholdVerify_FullThreshold tests n-of-n (full threshold)
+func TestCoronaThresholdVerify_FullThreshold(t *testing.T) {
 	thresholdVal := uint32(3) // Use 3-of-4 since threshold package requires t < n
 	totalParties := uint32(4)
 	message := "test message for full threshold"
@@ -75,15 +75,15 @@ func TestRingtailThresholdVerify_FullThreshold(t *testing.T) {
 	input := createInput(thresholdVal, totalParties, messageHash, signature)
 
 	// Verify signature
-	precompile := &ringtailThresholdPrecompile{}
+	precompile := &coronaThresholdPrecompile{}
 	result, _, err := precompile.Run(nil, common.Address{}, precompile.Address(), input, 2_000_000, true)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, byte(1), result[31], "Signature should be valid")
 }
 
-// TestRingtailThresholdVerify_InvalidSignature tests invalid signature rejection
-func TestRingtailThresholdVerify_InvalidSignature(t *testing.T) {
+// TestCoronaThresholdVerify_InvalidSignature tests invalid signature rejection
+func TestCoronaThresholdVerify_InvalidSignature(t *testing.T) {
 	thresholdVal := uint32(2)
 	totalParties := uint32(3)
 	message := "test message"
@@ -99,15 +99,15 @@ func TestRingtailThresholdVerify_InvalidSignature(t *testing.T) {
 	input := createInput(thresholdVal, totalParties, messageHash, signature)
 
 	// Verify should fail
-	precompile := &ringtailThresholdPrecompile{}
+	precompile := &coronaThresholdPrecompile{}
 	result, _, err := precompile.Run(nil, common.Address{}, precompile.Address(), input, 1_000_000, true)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, byte(0), result[31], "Invalid signature should be rejected")
 }
 
-// TestRingtailThresholdVerify_WrongMessage tests wrong message rejection
-func TestRingtailThresholdVerify_WrongMessage(t *testing.T) {
+// TestCoronaThresholdVerify_WrongMessage tests wrong message rejection
+func TestCoronaThresholdVerify_WrongMessage(t *testing.T) {
 	thresholdVal := uint32(2)
 	totalParties := uint32(3)
 	message := "original message"
@@ -124,15 +124,15 @@ func TestRingtailThresholdVerify_WrongMessage(t *testing.T) {
 	input := createInput(thresholdVal, totalParties, wrongHash, signature)
 
 	// Verify should fail
-	precompile := &ringtailThresholdPrecompile{}
+	precompile := &coronaThresholdPrecompile{}
 	result, _, err := precompile.Run(nil, common.Address{}, precompile.Address(), input, 1_000_000, true)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, byte(0), result[31], "Wrong message should be rejected")
 }
 
-// TestRingtailThresholdVerify_ThresholdNotMet tests threshold not met rejection
-func TestRingtailThresholdVerify_ThresholdNotMet(t *testing.T) {
+// TestCoronaThresholdVerify_ThresholdNotMet tests threshold not met rejection
+func TestCoronaThresholdVerify_ThresholdNotMet(t *testing.T) {
 	// Generate signature with 2 parties
 	actualParties := uint32(2)
 	claimedThreshold := uint32(3)
@@ -146,24 +146,24 @@ func TestRingtailThresholdVerify_ThresholdNotMet(t *testing.T) {
 	input := createInput(claimedThreshold, actualParties, messageHash, signature)
 
 	// Verify should fail
-	precompile := &ringtailThresholdPrecompile{}
+	precompile := &coronaThresholdPrecompile{}
 	_, _, err = precompile.Run(nil, common.Address{}, precompile.Address(), input, 1_000_000, true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid threshold")
 }
 
-// TestRingtailThresholdVerify_InputTooShort tests short input rejection
-func TestRingtailThresholdVerify_InputTooShort(t *testing.T) {
+// TestCoronaThresholdVerify_InputTooShort tests short input rejection
+func TestCoronaThresholdVerify_InputTooShort(t *testing.T) {
 	input := make([]byte, 20) // Too short
 
-	precompile := &ringtailThresholdPrecompile{}
+	precompile := &coronaThresholdPrecompile{}
 	_, _, err := precompile.Run(nil, common.Address{}, precompile.Address(), input, 1_000_000, true)
 	require.Error(t, err)
 	require.ErrorIs(t, err, contract.ErrInvalidInput)
 }
 
-// TestRingtailThresholdVerify_GasCost tests gas cost calculation
-func TestRingtailThresholdVerify_GasCost(t *testing.T) {
+// TestCoronaThresholdVerify_GasCost tests gas cost calculation
+func TestCoronaThresholdVerify_GasCost(t *testing.T) {
 	tests := []struct {
 		name        string
 		parties     uint32
@@ -181,17 +181,17 @@ func TestRingtailThresholdVerify_GasCost(t *testing.T) {
 			binary.BigEndian.PutUint32(input[0:4], tt.parties)
 			binary.BigEndian.PutUint32(input[4:8], tt.parties)
 
-			precompile := &ringtailThresholdPrecompile{}
+			precompile := &coronaThresholdPrecompile{}
 			gas := precompile.RequiredGas(input)
 			require.Equal(t, tt.expectedGas, gas)
 		})
 	}
 }
 
-// TestRingtailThresholdPrecompile_Address tests precompile address
-func TestRingtailThresholdPrecompile_Address(t *testing.T) {
-	precompile := &ringtailThresholdPrecompile{}
-	expectedAddress := common.HexToAddress("0x0000000000000000000000000000000000012204")
+// TestCoronaThresholdPrecompile_Address tests precompile address
+func TestCoronaThresholdPrecompile_Address(t *testing.T) {
+	precompile := &coronaThresholdPrecompile{}
+	expectedAddress := common.HexToAddress("0x0000000000000000000000000000000000012206")
 	require.Equal(t, expectedAddress, precompile.Address())
 }
 

@@ -261,23 +261,23 @@ func TestBLSAggregatePrecompile_OutOfGas(t *testing.T) {
 }
 
 // =============================================================================
-// Ringtail (ML-DSA) Precompile Tests
+// Corona (ML-DSA) Precompile Tests
 // =============================================================================
 
-func TestRingtailPrecompile_Address(t *testing.T) {
-	r := &ringtailPrecompile{}
-	expected := common.HexToAddress(RingtailVerifyAddress)
+func TestCoronaPrecompile_Address(t *testing.T) {
+	r := &coronaPrecompile{}
+	expected := common.HexToAddress(CoronaVerifyAddress)
 	require.Equal(t, expected, r.Address())
 }
 
-func TestRingtailPrecompile_RequiredGas(t *testing.T) {
-	r := &ringtailPrecompile{}
-	require.Equal(t, uint64(GasRingtailVerify), r.RequiredGas(nil))
-	require.Equal(t, uint64(GasRingtailVerify), r.RequiredGas(make([]byte, 5000)))
+func TestCoronaPrecompile_RequiredGas(t *testing.T) {
+	r := &coronaPrecompile{}
+	require.Equal(t, uint64(GasCoronaVerify), r.RequiredGas(nil))
+	require.Equal(t, uint64(GasCoronaVerify), r.RequiredGas(make([]byte, 5000)))
 }
 
-func TestRingtailPrecompile_InputTooShort(t *testing.T) {
-	r := &ringtailPrecompile{}
+func TestCoronaPrecompile_InputTooShort(t *testing.T) {
+	r := &coronaPrecompile{}
 
 	// Input format: [mode(1)] [pubkey_len(2)] [pubkey] [msg_len(2)] [msg] [sig]
 	tests := []struct {
@@ -293,15 +293,15 @@ func TestRingtailPrecompile_InputTooShort(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			input := make([]byte, tc.size)
-			ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasRingtailVerify, true)
+			ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasCoronaVerify, true)
 			require.ErrorIs(t, err, ErrInvalidInput)
 			require.Nil(t, ret)
 		})
 	}
 }
 
-func TestRingtailPrecompile_TruncatedPubKey(t *testing.T) {
-	r := &ringtailPrecompile{}
+func TestCoronaPrecompile_TruncatedPubKey(t *testing.T) {
+	r := &coronaPrecompile{}
 
 	// [mode(1)] [pubkey_len(2)] but pubkey is truncated
 	input := make([]byte, 10)
@@ -310,13 +310,13 @@ func TestRingtailPrecompile_TruncatedPubKey(t *testing.T) {
 	input[2] = 0x20 // pubkey_len low byte = 32
 	// Only 7 bytes of pubkey follow (input[3:10])
 
-	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasRingtailVerify, true)
+	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasCoronaVerify, true)
 	require.ErrorIs(t, err, ErrInvalidInput)
 	require.Nil(t, ret)
 }
 
-func TestRingtailPrecompile_TruncatedMessage(t *testing.T) {
-	r := &ringtailPrecompile{}
+func TestCoronaPrecompile_TruncatedMessage(t *testing.T) {
+	r := &coronaPrecompile{}
 
 	// Build input with pubkey present but message truncated
 	pubKeyLen := 32
@@ -329,13 +329,13 @@ func TestRingtailPrecompile_TruncatedMessage(t *testing.T) {
 	input[3+pubKeyLen+1] = 0x10 // msg_len low = 16
 	// No message bytes follow
 
-	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasRingtailVerify, true)
+	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasCoronaVerify, true)
 	require.ErrorIs(t, err, ErrInvalidInput)
 	require.Nil(t, ret)
 }
 
-func TestRingtailPrecompile_InvalidPubKey(t *testing.T) {
-	r := &ringtailPrecompile{}
+func TestCoronaPrecompile_InvalidPubKey(t *testing.T) {
+	r := &coronaPrecompile{}
 
 	// Build complete input with invalid pubkey (all zeros)
 	pubKeyLen := 1952 // ML-DSA-65 pubkey size
@@ -350,17 +350,17 @@ func TestRingtailPrecompile_InvalidPubKey(t *testing.T) {
 	input[3+pubKeyLen+1] = byte(msgLen & 0xFF)
 	// Leave everything zeros - invalid pubkey
 
-	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasRingtailVerify, true)
+	ret, _, err := r.Run(nil, common.Address{}, r.Address(), input, GasCoronaVerify, true)
 	require.NoError(t, err) // No error, returns 0
 	require.Equal(t, []byte{0}, ret)
 }
 
-func TestRingtailPrecompile_OutOfGas(t *testing.T) {
-	r := &ringtailPrecompile{}
+func TestCoronaPrecompile_OutOfGas(t *testing.T) {
+	r := &coronaPrecompile{}
 
 	input := make([]byte, 100)
 
-	ret, remainingGas, err := r.Run(nil, common.Address{}, r.Address(), input, GasRingtailVerify-1, true)
+	ret, remainingGas, err := r.Run(nil, common.Address{}, r.Address(), input, GasCoronaVerify-1, true)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
 	require.Nil(t, ret)
 	require.Equal(t, uint64(0), remainingGas)
@@ -385,7 +385,7 @@ func TestHybridPrecompile_RequiredGas(t *testing.T) {
 func TestHybridPrecompile_InputTooShort(t *testing.T) {
 	h := &hybridPrecompile{}
 
-	// Minimum: [bls_sig(96)] [ringtail_sig_len(2)] [ringtail_sig] [message(32)] [bls_pubkey(48)] [ringtail_pubkey]
+	// Minimum: [bls_sig(96)] [corona_sig_len(2)] [corona_sig] [message(32)] [bls_pubkey(48)] [corona_pubkey]
 	tests := []struct {
 		name string
 		size int
@@ -407,14 +407,14 @@ func TestHybridPrecompile_InputTooShort(t *testing.T) {
 	}
 }
 
-func TestHybridPrecompile_TruncatedRingtailSig(t *testing.T) {
+func TestHybridPrecompile_TruncatedCoronaSig(t *testing.T) {
 	h := &hybridPrecompile{}
 
-	// Build input with ringtail_sig_len larger than actual data
+	// Build input with corona_sig_len larger than actual data
 	input := make([]byte, 200)
 	// bls_sig: input[0:96]
-	input[96] = 0x10 // ringtail_sig_len high = 4096 (way larger than remaining)
-	input[97] = 0x00 // ringtail_sig_len low
+	input[96] = 0x10 // corona_sig_len high = 4096 (way larger than remaining)
+	input[97] = 0x00 // corona_sig_len low
 
 	ret, _, err := h.Run(nil, common.Address{}, h.Address(), input, GasHybridVerify, true)
 	require.ErrorIs(t, err, ErrInvalidInput)
@@ -425,12 +425,12 @@ func TestHybridPrecompile_InvalidBLSPubKey(t *testing.T) {
 	h := &hybridPrecompile{}
 
 	// Build complete but invalid input (all zeros)
-	ringtailSigLen := 100
-	// [bls_sig(96)] [ringtail_sig_len(2)] [ringtail_sig] [message(32)] [bls_pubkey(48)] [ringtail_pubkey]
-	totalLen := 96 + 2 + ringtailSigLen + 32 + 48 + 100
+	coronaSigLen := 100
+	// [bls_sig(96)] [corona_sig_len(2)] [corona_sig] [message(32)] [bls_pubkey(48)] [corona_pubkey]
+	totalLen := 96 + 2 + coronaSigLen + 32 + 48 + 100
 	input := make([]byte, totalLen)
-	input[96] = byte(ringtailSigLen >> 8)
-	input[97] = byte(ringtailSigLen & 0xFF)
+	input[96] = byte(coronaSigLen >> 8)
+	input[97] = byte(coronaSigLen & 0xFF)
 	// All zeros = invalid keys
 
 	ret, _, err := h.Run(nil, common.Address{}, h.Address(), input, GasHybridVerify, true)
@@ -443,7 +443,7 @@ func TestHybridPrecompile_OutOfGas(t *testing.T) {
 
 	input := make([]byte, 300)
 	input[96] = 0x00
-	input[97] = 0x10 // ringtail_sig_len = 16
+	input[97] = 0x10 // corona_sig_len = 16
 
 	ret, remainingGas, err := h.Run(nil, common.Address{}, h.Address(), input, GasHybridVerify-1, true)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
@@ -662,7 +662,7 @@ func TestGetAllPrecompiles(t *testing.T) {
 		VerkleVerifyAddress,
 		BLSVerifyAddress,
 		BLSAggregateAddress,
-		RingtailVerifyAddress,
+		CoronaVerifyAddress,
 		HybridVerifyAddress,
 		CompressedAddress,
 	}
@@ -679,7 +679,7 @@ func TestPrecompileAddresses(t *testing.T) {
 		VerkleVerifyAddress,
 		BLSVerifyAddress,
 		BLSAggregateAddress,
-		RingtailVerifyAddress,
+		CoronaVerifyAddress,
 		HybridVerifyAddress,
 		CompressedAddress,
 	}

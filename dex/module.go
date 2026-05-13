@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"os"
 
 	"github.com/holiman/uint256"
 	"github.com/luxfi/crypto"
@@ -43,10 +44,73 @@ var (
 )
 
 // DEXPrecompile is the singleton instance.
-// Engine is nil at init time; Configure() must set it before use.
-// Production: ZAPEngine pointing to the DEX process.
-var DEXPrecompile = &DEXContract{
-	poolManager: NewPoolManager(),
+//
+// Backend strategy (decomplected — values, not places):
+//
+//   - The precompile lives at ONE address (LP-9010) across every Lux-derived
+//     EVM (Lux C-Chain, Hanzo, Zoo, SPC, and white-label deployments such as
+//     Partner EVM). The ABI is identical for every chain.
+//
+//   - The math/matching backend is parameterized. Default is the in-process
+//     EmbeddedEngine (Uniswap V4 math compiled into the precompile). A host
+//     binary (the EVM plugin main) may replace it before first use via
+//     SetBackend() — for example a Partner EVM build that points the precompile
+//     at a Liquidity-branded DEX process over ZAP.
+//
+//   - Brand identity is a value the backend carries (Engine.Brand()). User-
+//     facing error strings produced by the precompile MUST come from the
+//     backend, never hard-coded here. This keeps a Liquidity surface free of
+//     the word "Lux" while still letting the OSS package be called "Lux DEX"
+//     on Lux-network deployments.
+var DEXPrecompile = newDEXContract(NewEmbeddedEngine())
+
+// SetBackend swaps the DEX engine backing the singleton precompile.
+//
+// MUST be called from package main of the EVM plugin BEFORE the VM starts
+// initializing precompiles (i.e. before any genesis Configure() call). Calling
+// it after ANY pool-manager state has accumulated returns an error — backend
+// swaps must not race with live state. The guard covers every per-pool map
+// the precompile maintains (pools, poolStates, positions) so a future map
+// added without updating the guard doesn't silently re-open the race.
+//
+// Logs the backend brand to stderr on success so operators see in the boot
+// log which engine is wired (e.g. "Partner DEX" vs upstream OSS). RED V1.
+//
+// Threading: not safe for concurrent use. The host binary is the single caller
+// during process startup.
+func SetBackend(e Engine) error {
+	if e == nil {
+		return fmt.Errorf("dex: backend engine must not be nil")
+	}
+	pm := DEXPrecompile.poolManager
+	if len(pm.pools) != 0 || len(pm.poolStates) != 0 || len(pm.positions) != 0 {
+		return fmt.Errorf("dex: cannot swap backend after pool initialization")
+	}
+	pm.engine = e
+	// Surface the installed brand on the boot log. Stderr is the right sink
+	// for a process-lifecycle event that operators need to see even when
+	// structured logging hasn't been wired yet.
+	fmt.Fprintf(os.Stderr, "dex: precompile backend installed brand=%q\n", e.Brand())
+	return nil
+}
+
+// Backend returns the active engine. Useful for diagnostics and tests; do not
+// use this to mutate engine state from outside the package.
+func Backend() Engine {
+	return DEXPrecompile.poolManager.engine
+}
+
+// newDEXContract constructs the singleton with a non-nil engine. Separated
+// from the var declaration so the construction path is testable and so
+// reviewers can see the engine MUST be non-nil at init.
+func newDEXContract(e Engine) *DEXContract {
+	if e == nil {
+		// Bug in caller — panic at init time, not at first swap.
+		panic("dex: DEXContract requires a non-nil engine")
+	}
+	return &DEXContract{
+		poolManager: NewPoolManager(e),
+	}
 }
 
 // Module is the precompile module (LXPool at LP-9010)
@@ -523,49 +587,51 @@ func (c *DEXContract) runExtsload(
 // V4 ABI: extsload(bytes32[]) returns (bytes32[])
 // Input: ABI-encoded bytes32 array (offset word + length + slot0 + slot1 + ...)
 // Output: ABI-encoded bytes32 array with the same number of values
+//
+// Gas: the precompile uses the canonical RequiredGas formula
+// (extsloadArrayGas) as the single source of truth. Parse-time validation
+// failures still charge the base fee — the dispatcher already deducted it,
+// and the caller paid for the bounded work done before the error.
 func (c *DEXContract) runExtsloadArray(
 	state contract.AccessibleState,
 	input []byte,
 	suppliedGas uint64,
 ) ([]byte, uint64, error) {
-	if suppliedGas < GasPoolLookup {
+	// Canonical gas: same formula RequiredGas advertises, computed once.
+	totalGas := extsloadArrayGas(input)
+	if suppliedGas < totalGas {
 		return nil, 0, fmt.Errorf("out of gas")
 	}
+	remaining := suppliedGas - totalGas
 
 	// ABI-encoded dynamic array: first 32 bytes = offset to array data
 	if len(input) < 64 {
-		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("input too short for extsload array")
+		return nil, remaining, fmt.Errorf("input too short for extsload array")
 	}
 
 	inputLen := uint64(len(input))
 	offsetBig := new(big.Int).SetBytes(input[0:32])
 	if offsetBig.BitLen() > 63 {
-		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("extsload array: offset overflow")
+		return nil, remaining, fmt.Errorf("extsload array: offset overflow")
 	}
 	offset := offsetBig.Uint64()
 	if offset > inputLen || inputLen-offset < 32 {
-		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("extsload array: offset out of bounds")
+		return nil, remaining, fmt.Errorf("extsload array: offset out of bounds")
 	}
 
 	countBig := new(big.Int).SetBytes(input[offset : offset+32])
 	if countBig.BitLen() > 63 {
-		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("extsload array: count overflow")
+		return nil, remaining, fmt.Errorf("extsload array: count overflow")
 	}
 	count := countBig.Uint64()
 	const maxExtsloadSlots = 256
 	if count > maxExtsloadSlots {
-		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("extsload array: count %d exceeds max %d", count, maxExtsloadSlots)
+		return nil, remaining, fmt.Errorf("extsload array: count %d exceeds max %d", count, maxExtsloadSlots)
 	}
 	dataStart := offset + 32
 
 	if count > 0 && (dataStart > inputLen || inputLen-dataStart < count*32) {
-		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("extsload array: data out of bounds")
-	}
-
-	// Gas: charge per slot read
-	totalGas := GasPoolLookup + GasPoolLookup*count
-	if suppliedGas < totalGas {
-		return nil, 0, fmt.Errorf("out of gas for %d slot reads", count)
+		return nil, remaining, fmt.Errorf("extsload array: data out of bounds")
 	}
 
 	// Build ABI-encoded return: offset (32) + count (32) + values (count * 32)
@@ -583,7 +649,7 @@ func (c *DEXContract) runExtsloadArray(
 		copy(result[64+i*32:64+(i+1)*32], value.Bytes())
 	}
 
-	return result, suppliedGas - totalGas, nil
+	return result, remaining, nil
 }
 
 // --- Admin: Pause / Resume / Freeze handlers ---
@@ -701,7 +767,19 @@ func (c *DEXContract) runFreezePool(
 	return nil, suppliedGas - GasAdmin, nil
 }
 
-// RequiredGas returns the gas required for the precompile input
+// RequiredGas returns the gas required for the precompile input.
+//
+// This is the canonical gas source for the DEX precompile — every run handler
+// charges this exact value rather than re-deriving it inline. Putting the
+// gas formula in one place means a tariff change only edits one switch.
+//
+// For dynamic-sized selectors (extsload(bytes32[])) the value is derived
+// from the input: base cost + per-slot cost, capped at the maximum array
+// length the loader will accept. Selectors with no input data fall back to
+// their fixed tariff.
+//
+// RED V4 closes the divergence between this function and the previous inline
+// charge in runExtsloadArray: now there is one source of truth.
 func (c *DEXContract) RequiredGas(input []byte) uint64 {
 	if len(input) < 4 {
 		return GasSwap
@@ -723,13 +801,48 @@ func (c *DEXContract) RequiredGas(input []byte) uint64 {
 		return GasFlashLoan
 	case SelectorSync:
 		return GasPoolLookup
-	case SelectorExtsload, SelectorExtsloadArray:
+	case SelectorExtsload:
 		return GasPoolLookup
+	case SelectorExtsloadArray:
+		return extsloadArrayGas(input[4:])
 	case SelectorPauseDEX, SelectorResumeDEX, SelectorPausePool, SelectorResumePool, SelectorFreezePool:
 		return GasAdmin
 	default:
 		return GasSwap
 	}
+}
+
+// extsloadArrayGas computes the canonical gas charge for an extsload(bytes32[])
+// call: GasPoolLookup base + GasPoolLookup per slot. Returns the base alone
+// for malformed inputs — the Run path will surface the parse error and the
+// caller pays the base fee for the dispatch.
+//
+// Inputs that would overflow uint64 are clamped to the maximum supported
+// slot count (maxExtsloadSlots = 256). The Run path enforces the same cap,
+// so the gas formula and the read budget agree.
+func extsloadArrayGas(data []byte) uint64 {
+	if len(data) < 64 {
+		return GasPoolLookup
+	}
+	offsetBig := new(big.Int).SetBytes(data[0:32])
+	if offsetBig.BitLen() > 63 {
+		return GasPoolLookup
+	}
+	offset := offsetBig.Uint64()
+	dataLen := uint64(len(data))
+	if offset > dataLen || dataLen-offset < 32 {
+		return GasPoolLookup
+	}
+	countBig := new(big.Int).SetBytes(data[offset : offset+32])
+	if countBig.BitLen() > 63 {
+		return GasPoolLookup
+	}
+	count := countBig.Uint64()
+	const maxExtsloadSlots = 256
+	if count > maxExtsloadSlots {
+		count = maxExtsloadSlots
+	}
+	return GasPoolLookup + GasPoolLookup*count
 }
 
 // poolStateAdapter adapts contract.StateDB to dex.StateDB.

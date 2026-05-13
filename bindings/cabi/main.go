@@ -40,7 +40,7 @@ import (
 	_ "github.com/luxfi/precompile/mldsa"
 	_ "github.com/luxfi/precompile/mlkem"
 	_ "github.com/luxfi/precompile/ring"
-	_ "github.com/luxfi/precompile/ringtail"
+	_ "github.com/luxfi/precompile/corona"
 	_ "github.com/luxfi/precompile/slhdsa"
 	_ "github.com/luxfi/precompile/sr25519"
 	_ "github.com/luxfi/precompile/zk"

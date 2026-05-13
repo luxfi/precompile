@@ -36,7 +36,7 @@ func TestPauseDEX(t *testing.T) {
 		t.Fatalf("PauseDEX failed: %v", err)
 	}
 
-	if !pm.IsPaused() {
+	if !pm.IsPaused(stateDB) {
 		t.Fatal("DEX should be paused")
 	}
 
@@ -59,7 +59,7 @@ func TestPauseDEXUnauthorized(t *testing.T) {
 		t.Fatalf("expected ErrUnauthorized, got: %v", err)
 	}
 
-	if pm.IsPaused() {
+	if pm.IsPaused(stateDB) {
 		t.Fatal("DEX should not be paused after unauthorized call")
 	}
 }
@@ -85,7 +85,7 @@ func TestResumeDEX(t *testing.T) {
 		t.Fatalf("ResumeDEX failed: %v", err)
 	}
 
-	if pm.IsPaused() {
+	if pm.IsPaused(stateDB) {
 		t.Fatal("DEX should not be paused after resume")
 	}
 }
@@ -216,7 +216,7 @@ func TestPausePool(t *testing.T) {
 		t.Fatalf("PausePool failed: %v", err)
 	}
 
-	if !pm.IsPoolPaused(poolId) {
+	if !pm.IsPoolPaused(stateDB, poolId) {
 		t.Fatal("pool should be paused")
 	}
 }
@@ -232,7 +232,7 @@ func TestPausePoolUnauthorized(t *testing.T) {
 		t.Fatalf("expected ErrUnauthorized, got: %v", err)
 	}
 
-	if pm.IsPoolPaused(poolId) {
+	if pm.IsPoolPaused(stateDB, poolId) {
 		t.Fatal("pool should not be paused after unauthorized call")
 	}
 }
@@ -355,6 +355,7 @@ func TestFreezePool(t *testing.T) {
 	pm := newPauseTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
 	poolId := key.ID()
 
 	err := pm.FreezePool(stateDB, adminAddr, poolId)
@@ -362,7 +363,7 @@ func TestFreezePool(t *testing.T) {
 		t.Fatalf("FreezePool failed: %v", err)
 	}
 
-	if !pm.IsPoolFrozen(poolId) {
+	if !pm.IsPoolFrozen(stateDB, poolId) {
 		t.Fatal("pool should be frozen")
 	}
 }
@@ -378,7 +379,7 @@ func TestFreezePoolUnauthorized(t *testing.T) {
 		t.Fatalf("expected ErrUnauthorized, got: %v", err)
 	}
 
-	if pm.IsPoolFrozen(poolId) {
+	if pm.IsPoolFrozen(stateDB, poolId) {
 		t.Fatal("pool should not be frozen after unauthorized call")
 	}
 }
@@ -387,6 +388,7 @@ func TestFreezePoolAlreadyFrozen(t *testing.T) {
 	pm := newPauseTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
 	poolId := key.ID()
 
 	pm.FreezePool(stateDB, adminAddr, poolId)
@@ -464,6 +466,7 @@ func TestFrozenPoolCannotBeResumed(t *testing.T) {
 	pm := newPauseTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
 	poolId := key.ID()
 
 	pm.FreezePool(stateDB, adminAddr, poolId)
@@ -474,7 +477,7 @@ func TestFrozenPoolCannotBeResumed(t *testing.T) {
 	}
 
 	// Pool should still be frozen
-	if !pm.IsPoolFrozen(poolId) {
+	if !pm.IsPoolFrozen(stateDB, poolId) {
 		t.Fatal("pool should still be frozen")
 	}
 }
@@ -483,6 +486,7 @@ func TestFrozenPoolCannotBePaused(t *testing.T) {
 	pm := newPauseTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
 	poolId := key.ID()
 
 	pm.FreezePool(stateDB, adminAddr, poolId)
@@ -497,21 +501,22 @@ func TestFreezeClearsPauseState(t *testing.T) {
 	pm := newPauseTestPoolManager()
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
+	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
 	poolId := key.ID()
 
 	// Pause first, then freeze
 	pm.PausePool(stateDB, adminAddr, poolId)
-	if !pm.IsPoolPaused(poolId) {
+	if !pm.IsPoolPaused(stateDB, poolId) {
 		t.Fatal("pool should be paused")
 	}
 
 	pm.FreezePool(stateDB, adminAddr, poolId)
 
 	// Pause state should be cleared (freeze supersedes)
-	if pm.IsPoolPaused(poolId) {
+	if pm.IsPoolPaused(stateDB, poolId) {
 		t.Fatal("pool pause should be cleared after freeze")
 	}
-	if !pm.IsPoolFrozen(poolId) {
+	if !pm.IsPoolFrozen(stateDB, poolId) {
 		t.Fatal("pool should be frozen")
 	}
 }
@@ -576,6 +581,15 @@ func TestPauseResumeEmitsEvents(t *testing.T) {
 	stateDB := NewMockStateDB()
 	key := newTestPoolKey()
 	poolId := key.ID()
+
+	// Initialize the pool so per-pool ops have a pool to act on.
+	// Under V5 fix, PausePool/ResumePool/FreezePool require an
+	// initialized pool (return ErrPoolNotInitialized otherwise).
+	if _, err := pm.Initialize(stateDB, key, new(big.Int).Add(MinSqrtRatio, big.NewInt(1)), nil); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// Clear init log so the 5 we assert are the pause/resume/freeze ones.
+	stateDB.logs = nil
 
 	// Pause DEX
 	pm.PauseDEX(stateDB, adminAddr)

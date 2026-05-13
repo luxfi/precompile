@@ -311,7 +311,7 @@ func TestPauseFreeze_FreezePoolClearsPauseState(t *testing.T) {
 	if err := pm.PausePool(stateDB, admin, poolIdAB); err != nil {
 		t.Fatalf("PausePool failed: %v", err)
 	}
-	if !pm.IsPoolPaused(poolIdAB) {
+	if !pm.IsPoolPaused(stateDB, poolIdAB) {
 		t.Fatal("pool should be paused after PausePool")
 	}
 
@@ -321,10 +321,10 @@ func TestPauseFreeze_FreezePoolClearsPauseState(t *testing.T) {
 	}
 
 	// Pause state should be cleared.
-	if pm.IsPoolPaused(poolIdAB) {
+	if pm.IsPoolPaused(stateDB, poolIdAB) {
 		t.Fatal("pool pause state should be cleared after freeze")
 	}
-	if !pm.IsPoolFrozen(poolIdAB) {
+	if !pm.IsPoolFrozen(stateDB, poolIdAB) {
 		t.Fatal("pool should be frozen")
 	}
 }
@@ -927,13 +927,13 @@ func TestPauseFreeze_IsPausedIsFrozenAccessors(t *testing.T) {
 	_, poolIdAB, _, poolIdBC := initTwoPoolsPF(t, pm, stateDB)
 
 	// Initial state: nothing paused or frozen.
-	if pm.IsPaused() {
+	if pm.IsPaused(stateDB) {
 		t.Fatal("DEX should not be paused initially")
 	}
-	if pm.IsPoolPaused(poolIdAB) {
+	if pm.IsPoolPaused(stateDB, poolIdAB) {
 		t.Fatal("pool A/B should not be paused initially")
 	}
-	if pm.IsPoolFrozen(poolIdAB) {
+	if pm.IsPoolFrozen(stateDB, poolIdAB) {
 		t.Fatal("pool A/B should not be frozen initially")
 	}
 
@@ -941,7 +941,7 @@ func TestPauseFreeze_IsPausedIsFrozenAccessors(t *testing.T) {
 	if err := pm.PauseDEX(stateDB, admin); err != nil {
 		t.Fatalf("PauseDEX failed: %v", err)
 	}
-	if !pm.IsPaused() {
+	if !pm.IsPaused(stateDB) {
 		t.Fatal("DEX should be paused after PauseDEX")
 	}
 
@@ -949,7 +949,7 @@ func TestPauseFreeze_IsPausedIsFrozenAccessors(t *testing.T) {
 	if err := pm.ResumeDEX(stateDB, admin); err != nil {
 		t.Fatalf("ResumeDEX failed: %v", err)
 	}
-	if pm.IsPaused() {
+	if pm.IsPaused(stateDB) {
 		t.Fatal("DEX should not be paused after ResumeDEX")
 	}
 
@@ -957,10 +957,10 @@ func TestPauseFreeze_IsPausedIsFrozenAccessors(t *testing.T) {
 	if err := pm.PausePool(stateDB, admin, poolIdAB); err != nil {
 		t.Fatalf("PausePool failed: %v", err)
 	}
-	if !pm.IsPoolPaused(poolIdAB) {
+	if !pm.IsPoolPaused(stateDB, poolIdAB) {
 		t.Fatal("pool A/B should be paused")
 	}
-	if pm.IsPoolPaused(poolIdBC) {
+	if pm.IsPoolPaused(stateDB, poolIdBC) {
 		t.Fatal("pool B/C should not be paused")
 	}
 
@@ -968,10 +968,10 @@ func TestPauseFreeze_IsPausedIsFrozenAccessors(t *testing.T) {
 	if err := pm.FreezePool(stateDB, admin, poolIdBC); err != nil {
 		t.Fatalf("FreezePool failed: %v", err)
 	}
-	if !pm.IsPoolFrozen(poolIdBC) {
+	if !pm.IsPoolFrozen(stateDB, poolIdBC) {
 		t.Fatal("pool B/C should be frozen")
 	}
-	if pm.IsPoolFrozen(poolIdAB) {
+	if pm.IsPoolFrozen(stateDB, poolIdAB) {
 		t.Fatal("pool A/B should not be frozen")
 	}
 }
