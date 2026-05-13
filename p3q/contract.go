@@ -13,11 +13,12 @@
 //
 // LP-4200 unified PQCrypto block:
 //
-//	0x012201 = ML-KEM
-//	0x012202 = ML-DSA          (single-party FIPS 204)
-//	0x012203 = SLH-DSA         (FIPS 205)
-//	0x012204 = Pulsar          (threshold FIPS 204, byte-equal)
+//	0x012201 = ML-KEM          (Module-LWE KEM, FIPS 203)
+//	0x012202 = ML-DSA          (Module-LWE single-party signature, FIPS 204)
+//	0x012203 = SLH-DSA         (hash-based signature, FIPS 205)
+//	0x012204 = Pulsar          (Module-LWE threshold FIPS 204, byte-equal)
 //	0x012205 = P3Q             ← this precompile (strict-PQ STARK)
+//	0x012206 = Corona         
 //
 // Wire format (single dispatch, version byte differentiates future
 // proof formats; first deployment is v0x01):
