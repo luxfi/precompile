@@ -21,10 +21,14 @@ All crypto-heavy precompiles have GPU fast paths via `github.com/luxfi/accel` an
 ### Newly Wired
 - `ed25519/` -- `accelcrypto.BatchVerify(SigEd25519, ...)` in `Run()`
 - `sr25519/` -- `accelcrypto.BatchVerify(SigEd25519, ...)` in `Run()`, CPU fallback to sr25519-donna
-- `slhdsa/` -- `verifySLHDSAGPU()` via `accel.LatticeOps.DilithiumVerify`
+- `slhdsa/` -- CPU only. SLH-DSA is hash-based (SPHINCS+ WOTS+/FORS/Merkle),
+  there is no NTT in the verifier. A prior version dispatched to
+  `lattice.DilithiumVerify` (a Module-LWE kernel for a completely different
+  algorithm), which silently verified the wrong scheme on every GPU-enabled
+  node. Removed; awaiting a real accel SLH-DSA kernel.
 - `frost/` -- `accelcrypto.BatchVerify(SigECDSA, ...)` for Schnorr verification
 - `cggmp21/` -- `accelcrypto.BatchVerify(SigECDSA, ...)` for ECDSA verification
-- `corona/` -- `accellattice.NTTForward()` for polynomial deserialization
+- `corona/` -- `accellattice.NTTForward()` for polynomial deserialization (Ring-LWE threshold; renamed from corona in LP-4200)
 - `blake3/` -- `accelcrypto.Hash(HashBlake3, ...)` for hash256 and Merkle tree batch hashing
 - `fhe/` -- `accelfhe.Add/Sub/Multiply` in `performFHEOperation()` GPU fast path
 
