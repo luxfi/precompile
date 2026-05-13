@@ -146,8 +146,13 @@ var (
 			End:   common.HexToAddress("0x0000000000000000000000000000000000009fff"),
 		},
 		// LP-12xxx: Unified PQCrypto block (0x0..12000 - 0x0..12fff)
-		// LP-3500/LP-3501/LP-4200: ML-KEM=0x12201, ML-DSA=0x12202,
-		// SLH-DSA=0x12203, Corona-Threshold=0x12204.
+		// LP-3500/LP-3501/LP-4200:
+		//   0x12201 = ML-KEM    (Module-LWE KEM,        FIPS 203)
+		//   0x12202 = ML-DSA    (Module-LWE single-sig, FIPS 204)
+		//   0x12203 = SLH-DSA   (hash-based signature,  FIPS 205)
+		//   0x12204 = Pulsar    (Module-LWE threshold,  FIPS 204 byte-equal)
+		//   0x12205 = P3Q       (strict-PQ STARK)
+		//   0x12206 = Corona    (Ring-LWE threshold)
 		{
 			Start: common.HexToAddress("0x0000000000000000000000000000000000012000"),
 			End:   common.HexToAddress("0x0000000000000000000000000000000000012fff"),
