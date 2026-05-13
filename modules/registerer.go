@@ -147,7 +147,7 @@ var (
 		},
 		// LP-12xxx: Unified PQCrypto block (0x0..12000 - 0x0..12fff)
 		// LP-3500/LP-3501/LP-4200: ML-KEM=0x12201, ML-DSA=0x12202,
-		// SLH-DSA=0x12203, Ringtail-Threshold=0x12204.
+		// SLH-DSA=0x12203, Corona-Threshold=0x12204.
 		{
 			Start: common.HexToAddress("0x0000000000000000000000000000000000012000"),
 			End:   common.HexToAddress("0x0000000000000000000000000000000000012fff"),

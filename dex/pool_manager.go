@@ -90,6 +90,13 @@ func (ps *PoolState) getOrCreateTick(tick int32) *TickInfo {
 //
 // Checks are ordered: DEX pause > pool freeze > pool pause.
 // Freeze takes precedence over pause — a frozen pool cannot be un-paused.
+//
+// Pause/freeze are read STRAIGHT FROM StateDB on every check. The previous
+// design cached them in process memory; that cache survived StateDB
+// revertToSnapshot, producing a permanent DoS when a PauseDEX tx reverted but
+// the in-memory flag did not (RED V6). Reading from StateDB every call costs
+// 1–3 SLOAD-equivalents, which is acceptable on the swap hot path and
+// eliminates an entire class of divergence bug.
 type PoolManager struct {
 	engine     Engine
 	pools      map[[32]byte]*Pool
@@ -97,20 +104,6 @@ type PoolManager struct {
 	positions  map[[32]byte]*Position
 
 	protocolFeeController common.Address
-
-	// DEX-level pause: when true, ALL operations revert with ErrDEXPaused.
-	paused bool
-	// pauseLoaded tracks whether the DEX-level pause state has been reloaded
-	// from StateDB since this PoolManager instance was created. This ensures
-	// regulatory halts survive node restarts.
-	pauseLoaded bool
-
-	// Per-pool pause: operations on this pool revert with ErrPoolPaused.
-	poolPaused map[[32]byte]bool
-
-	// Per-pool freeze: operations on this pool revert with ErrPoolFrozen.
-	// Freeze is IRREVERSIBLE without governance action — ResumePool will not clear it.
-	poolFrozen map[[32]byte]bool
 }
 
 // NewPoolManager creates a new pool manager with the given engine.
@@ -126,8 +119,6 @@ func NewPoolManager(engine ...Engine) *PoolManager {
 		pools:      make(map[[32]byte]*Pool),
 		poolStates: make(map[[32]byte]*PoolState),
 		positions:  make(map[[32]byte]*Position),
-		poolPaused: make(map[[32]byte]bool),
-		poolFrozen: make(map[[32]byte]bool),
 	}
 }
 
@@ -224,77 +215,79 @@ func (pm *PoolManager) Initialize(
 // Pause/Freeze Controls (ATS Regulatory Compliance)
 // =========================================================================
 
+// dexPauseStorageKey is the single storage slot that carries the DEX-level
+// pause flag. Computed once at init time so the hot path doesn't re-hash.
+var dexPauseStorageKey = makeStorageKey(pauseStatePrefix, []byte("dex"))
+
+// isDEXPaused reads the durable pause flag from StateDB. Reading every call
+// (instead of caching in process memory) is what makes this safe under tx
+// revertToSnapshot: if a PauseDEX tx reverts, the StateDB write reverts with
+// it, and the next call reads the un-paused value. RED V6.
+func isDEXPaused(stateDB StateDB) bool {
+	v := stateDB.GetState(poolManagerAddr, dexPauseStorageKey)
+	return v[31] == 1
+}
+
+// isPoolFrozen reads the durable per-pool freeze flag from StateDB.
+func isPoolFrozen(stateDB StateDB, poolId [32]byte) bool {
+	v := stateDB.GetState(poolManagerAddr, makeStorageKey(freezeStatePrefix, poolId[:]))
+	return v[31] == 1
+}
+
+// isPoolPaused reads the durable per-pool pause flag from StateDB.
+func isPoolPaused(stateDB StateDB, poolId [32]byte) bool {
+	v := stateDB.GetState(poolManagerAddr, makeStorageKey(pauseStatePrefix, poolId[:]))
+	return v[31] == 1
+}
+
 // checkPauseState verifies that the DEX and pool are not paused or frozen.
-// Check order: DEX-level > pool freeze > pool pause.
-// Returns nil if all operations are permitted.
+// Check order: DEX-level > pool freeze > pool pause. Returns nil if all
+// operations are permitted.
 //
-// On first access (cold cache, e.g. after node restart), reads the durable
-// StateDB values so that regulatory halts survive restarts.
+// All reads come from StateDB — no in-process cache. See V6 docs above.
 func (pm *PoolManager) checkPauseState(stateDB StateDB, poolId [32]byte) error {
-	// Reload DEX-level pause from StateDB if not yet loaded this instance
-	if !pm.pauseLoaded {
-		dexPauseKey := makeStorageKey(pauseStatePrefix, []byte("dex"))
-		dexPauseVal := stateDB.GetState(poolManagerAddr, dexPauseKey)
-		pm.paused = dexPauseVal[31] == 1
-		pm.pauseLoaded = true
-	}
-	if pm.paused {
+	if isDEXPaused(stateDB) {
 		return ErrDEXPaused
 	}
-
-	// Reload per-pool freeze/pause from StateDB on first access per pool
-	if _, ok := pm.poolFrozen[poolId]; !ok {
-		freezeKey := makeStorageKey(freezeStatePrefix, poolId[:])
-		freezeVal := stateDB.GetState(poolManagerAddr, freezeKey)
-		pm.poolFrozen[poolId] = freezeVal[31] == 1
-	}
-	if pm.poolFrozen[poolId] {
+	if isPoolFrozen(stateDB, poolId) {
 		return ErrPoolFrozen
 	}
-
-	if _, ok := pm.poolPaused[poolId]; !ok {
-		pauseKey := makeStorageKey(pauseStatePrefix, poolId[:])
-		pauseVal := stateDB.GetState(poolManagerAddr, pauseKey)
-		pm.poolPaused[poolId] = pauseVal[31] == 1
-	}
-	if pm.poolPaused[poolId] {
+	if isPoolPaused(stateDB, poolId) {
 		return ErrPoolPaused
 	}
 	return nil
 }
 
-// IsPaused returns true if the entire DEX is paused.
-func (pm *PoolManager) IsPaused() bool {
-	return pm.paused
+// IsPaused returns true if the entire DEX is paused. Reads from StateDB.
+// Kept on the type so callers don't need to know the storage layout.
+func (pm *PoolManager) IsPaused(stateDB StateDB) bool {
+	return isDEXPaused(stateDB)
 }
 
 // IsPoolPaused returns true if the given pool is paused (not frozen).
-func (pm *PoolManager) IsPoolPaused(poolId [32]byte) bool {
-	return pm.poolPaused[poolId]
+func (pm *PoolManager) IsPoolPaused(stateDB StateDB, poolId [32]byte) bool {
+	return isPoolPaused(stateDB, poolId)
 }
 
 // IsPoolFrozen returns true if the given pool is permanently frozen.
-func (pm *PoolManager) IsPoolFrozen(poolId [32]byte) bool {
-	return pm.poolFrozen[poolId]
+func (pm *PoolManager) IsPoolFrozen(stateDB StateDB, poolId [32]byte) bool {
+	return isPoolFrozen(stateDB, poolId)
 }
 
 // PauseDEX pauses ALL DEX operations. Only callable by admin (protocolFeeController).
 // When paused, Swap/ModifyLiquidity/Donate all revert with ErrDEXPaused.
+//
+// Writes only to StateDB — no process-memory cache to drift on revert. V6.
 func (pm *PoolManager) PauseDEX(stateDB StateDB, caller common.Address) error {
 	if caller != pm.protocolFeeController {
 		return ErrUnauthorized
 	}
-	if pm.paused {
+	if isDEXPaused(stateDB) {
 		return ErrAlreadyPaused
 	}
-	pm.paused = true
-
-	// Persist to storage
-	key := makeStorageKey(pauseStatePrefix, []byte("dex"))
 	var val common.Hash
 	val[31] = 1
-	stateDB.SetState(poolManagerAddr, key, val)
-
+	stateDB.SetState(poolManagerAddr, dexPauseStorageKey, val)
 	emitDEXPausedEvent(stateDB, caller)
 	return nil
 }
@@ -304,39 +297,37 @@ func (pm *PoolManager) ResumeDEX(stateDB StateDB, caller common.Address) error {
 	if caller != pm.protocolFeeController {
 		return ErrUnauthorized
 	}
-	if !pm.paused {
+	if !isDEXPaused(stateDB) {
 		return ErrDEXNotPaused
 	}
-	pm.paused = false
-
-	// Clear from storage
-	key := makeStorageKey(pauseStatePrefix, []byte("dex"))
-	stateDB.SetState(poolManagerAddr, key, common.Hash{})
-
+	stateDB.SetState(poolManagerAddr, dexPauseStorageKey, common.Hash{})
 	emitDEXResumedEvent(stateDB, caller)
 	return nil
 }
 
 // PausePool pauses a single pool. Only callable by admin (protocolFeeController).
 // A frozen pool cannot be paused (it is already permanently halted).
+//
+// Refuses to act on a pool that has not been Initialize'd. Without this guard
+// an admin call against an arbitrary poolId would poison the storage slot,
+// and a future Initialize for that same id would find it pre-paused with no
+// way back. RED V5.
 func (pm *PoolManager) PausePool(stateDB StateDB, caller common.Address, poolId [32]byte) error {
 	if caller != pm.protocolFeeController {
 		return ErrUnauthorized
 	}
-	if pm.poolFrozen[poolId] {
+	if !pm.getPool(stateDB, poolId).IsInitialized() {
+		return ErrPoolNotInitialized
+	}
+	if isPoolFrozen(stateDB, poolId) {
 		return ErrPoolFrozen
 	}
-	if pm.poolPaused[poolId] {
+	if isPoolPaused(stateDB, poolId) {
 		return ErrAlreadyPaused
 	}
-	pm.poolPaused[poolId] = true
-
-	// Persist to storage
-	key := makeStorageKey(pauseStatePrefix, poolId[:])
 	var val common.Hash
 	val[31] = 1
-	stateDB.SetState(poolManagerAddr, key, val)
-
+	stateDB.SetState(poolManagerAddr, makeStorageKey(pauseStatePrefix, poolId[:]), val)
 	emitPoolPausedEvent(stateDB, caller, poolId)
 	return nil
 }
@@ -347,18 +338,16 @@ func (pm *PoolManager) ResumePool(stateDB StateDB, caller common.Address, poolId
 	if caller != pm.protocolFeeController {
 		return ErrUnauthorized
 	}
-	if pm.poolFrozen[poolId] {
+	if !pm.getPool(stateDB, poolId).IsInitialized() {
+		return ErrPoolNotInitialized
+	}
+	if isPoolFrozen(stateDB, poolId) {
 		return ErrFreezeIrreversible
 	}
-	if !pm.poolPaused[poolId] {
+	if !isPoolPaused(stateDB, poolId) {
 		return ErrPoolNotPaused
 	}
-	pm.poolPaused[poolId] = false
-
-	// Clear from storage
-	key := makeStorageKey(pauseStatePrefix, poolId[:])
-	stateDB.SetState(poolManagerAddr, key, common.Hash{})
-
+	stateDB.SetState(poolManagerAddr, makeStorageKey(pauseStatePrefix, poolId[:]), common.Hash{})
 	emitPoolResumedEvent(stateDB, caller, poolId)
 	return nil
 }
@@ -367,26 +356,24 @@ func (pm *PoolManager) ResumePool(stateDB StateDB, caller common.Address, poolId
 // Only callable by admin (protocolFeeController).
 // A frozen pool rejects all swap/modifyLiquidity/donate operations forever.
 // Existing positions can still be read but not modified.
+//
+// Refuses to act on a pool that has not been Initialize'd. See PausePool for
+// the attack this guards (RED V5).
 func (pm *PoolManager) FreezePool(stateDB StateDB, caller common.Address, poolId [32]byte) error {
 	if caller != pm.protocolFeeController {
 		return ErrUnauthorized
 	}
-	if pm.poolFrozen[poolId] {
+	if !pm.getPool(stateDB, poolId).IsInitialized() {
+		return ErrPoolNotInitialized
+	}
+	if isPoolFrozen(stateDB, poolId) {
 		return ErrAlreadyFrozen
 	}
-	pm.poolFrozen[poolId] = true
-
-	// Also clear any pause state — freeze supersedes pause
-	pm.poolPaused[poolId] = false
-	pauseKey := makeStorageKey(pauseStatePrefix, poolId[:])
-	stateDB.SetState(poolManagerAddr, pauseKey, common.Hash{})
-
-	// Persist freeze to storage
-	freezeKey := makeStorageKey(freezeStatePrefix, poolId[:])
+	// Freeze supersedes pause — clear any pending pause flag.
+	stateDB.SetState(poolManagerAddr, makeStorageKey(pauseStatePrefix, poolId[:]), common.Hash{})
 	var val common.Hash
 	val[31] = 1
-	stateDB.SetState(poolManagerAddr, freezeKey, val)
-
+	stateDB.SetState(poolManagerAddr, makeStorageKey(freezeStatePrefix, poolId[:]), val)
 	emitPoolFrozenEvent(stateDB, caller, poolId)
 	return nil
 }
@@ -458,9 +445,29 @@ func (pm *PoolManager) ModifyLiquidity(
 
 	poolId := key.ID()
 
-	// Pause/freeze gate: check BEFORE any state reads or mutations.
-	if err := pm.checkPauseState(stateDB, poolId); err != nil {
-		return ZeroBalanceDelta(), ZeroBalanceDelta(), err
+	// Pause/freeze gate with LP escape hatch (RED V13).
+	//
+	// A frozen pool with LP funds inside is a rug if withdrawals are blocked
+	// uniformly — the admin could permanently lock user assets. The
+	// regulatory intent of FreezePool is to halt PRICE DISCOVERY (no new
+	// trades, no fee accumulation, no new LPs), not seize existing principal.
+	// So we permit LiquidityDelta < 0 (burn) on frozen pools.
+	//
+	// Pool-level pause is reversible by admin, so withdrawal can wait —
+	// blocking is fine. DEX-level pause is the global emergency stop and
+	// blocks every direction including burns; that is the deliberate
+	// "freeze the entire venue" semantic.
+	isWithdraw := params.LiquidityDelta.Sign() < 0
+	if isWithdraw {
+		// Only the DEX-level kill switch blocks an LP exit.
+		if isDEXPaused(stateDB) {
+			return ZeroBalanceDelta(), ZeroBalanceDelta(), ErrDEXPaused
+		}
+	} else {
+		// Mint or zero-mod: pool must be fully active.
+		if err := pm.checkPauseState(stateDB, poolId); err != nil {
+			return ZeroBalanceDelta(), ZeroBalanceDelta(), err
+		}
 	}
 
 	ps := pm.getPoolState(stateDB, poolId, key.TickSpacing, key.Fee)

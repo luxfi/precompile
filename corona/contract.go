@@ -1,7 +1,7 @@
 // Copyright (C) 2025, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package ringtailthreshold
+package coronathreshold
 
 import (
 	"bytes"
@@ -15,20 +15,20 @@ import (
 	"github.com/luxfi/lattice/v7/ring"
 	"github.com/luxfi/lattice/v7/utils/structs"
 	"github.com/luxfi/precompile/contract"
-	"github.com/luxfi/ringtail/sign"
-	"github.com/luxfi/ringtail/threshold"
+	"github.com/luxfi/corona/sign"
+	"github.com/luxfi/corona/threshold"
 )
 
 var (
-	// ContractRingtailThresholdAddress is the address of the Ringtail threshold signature precompile.
-	// LP-4200 unified PQCrypto block (post-quantum threshold slot): 0x012204.
+	// ContractCoronaThresholdAddress is the address of the Corona Ring-LWE threshold signature precompile.
+	// LP-4200 unified PQCrypto block (Ring-LWE threshold): 0x012206.
 	// Was 0x020000...000B which collides with FHE precompile space (0x0200...0080+).
-	ContractRingtailThresholdAddress = common.HexToAddress("0x0000000000000000000000000000000000012204")
+	ContractCoronaThresholdAddress = common.HexToAddress("0x0000000000000000000000000000000000012206")
 
 	// Singleton instance
-	RingtailThresholdPrecompile = &ringtailThresholdPrecompile{}
+	CoronaThresholdPrecompile = &coronaThresholdPrecompile{}
 
-	_ contract.StatefulPrecompiledContract = &ringtailThresholdPrecompile{}
+	_ contract.StatefulPrecompiledContract = &coronaThresholdPrecompile{}
 
 	ErrInvalidInputLength  = contract.ErrInvalidInput
 	ErrInvalidThreshold      = errors.New("invalid threshold: t must be > 0 and <= n")
@@ -38,10 +38,10 @@ var (
 )
 
 const (
-	// Gas costs for Ringtail threshold signature verification
+	// Gas costs for Corona threshold signature verification
 	// Based on lattice operations being more expensive than elliptic curve
-	RingtailThresholdBaseGas     uint64 = 150_000 // Base cost for threshold verification
-	RingtailThresholdPerPartyGas uint64 = 10_000  // Cost per party in threshold
+	CoronaThresholdBaseGas     uint64 = 150_000 // Base cost for threshold verification
+	CoronaThresholdPerPartyGas uint64 = 10_000  // Cost per party in threshold
 
 	// Input format constants
 	ThresholdSize    = 4  // uint32 threshold t
@@ -51,7 +51,7 @@ const (
 	// Minimum input size: threshold + total parties + message hash + minimal signature
 	MinInputSize = ThresholdSize + TotalPartiesSize + MessageHashSize
 
-	// Ringtail signature component sizes (based on sign.go constants)
+	// Corona signature component sizes (based on sign.go constants)
 	// These are serialized sizes for the signature components
 	PolySize        = 256 // Approximate size per polynomial coefficient
 	VectorM         = 8   // M parameter from config
@@ -64,33 +64,33 @@ const (
 	ExpectedSignatureSize = CPolySize + ZVectorSize + DeltaVectorSize
 )
 
-type ringtailThresholdPrecompile struct{}
+type coronaThresholdPrecompile struct{}
 
-// Address returns the address of the Ringtail threshold signature precompile
-func (p *ringtailThresholdPrecompile) Address() common.Address {
-	return ContractRingtailThresholdAddress
+// Address returns the address of the Corona Ring-LWE threshold signature precompile
+func (p *coronaThresholdPrecompile) Address() common.Address {
+	return ContractCoronaThresholdAddress
 }
 
-// RequiredGas calculates the gas required for Ringtail threshold verification
-func (p *ringtailThresholdPrecompile) RequiredGas(input []byte) uint64 {
-	return RingtailThresholdGasCost(input)
+// RequiredGas calculates the gas required for Corona threshold verification
+func (p *coronaThresholdPrecompile) RequiredGas(input []byte) uint64 {
+	return CoronaThresholdGasCost(input)
 }
 
-// RingtailThresholdGasCost calculates the gas cost for threshold verification
-func RingtailThresholdGasCost(input []byte) uint64 {
+// CoronaThresholdGasCost calculates the gas cost for threshold verification
+func CoronaThresholdGasCost(input []byte) uint64 {
 	if len(input) < MinInputSize {
-		return RingtailThresholdBaseGas
+		return CoronaThresholdBaseGas
 	}
 
 	// Extract number of parties from input
 	totalParties := binary.BigEndian.Uint32(input[ThresholdSize : ThresholdSize+TotalPartiesSize])
 
 	// Base cost + per-party cost
-	return RingtailThresholdBaseGas + (uint64(totalParties) * RingtailThresholdPerPartyGas)
+	return CoronaThresholdBaseGas + (uint64(totalParties) * CoronaThresholdPerPartyGas)
 }
 
-// Run implements the Ringtail threshold signature verification precompile
-func (p *ringtailThresholdPrecompile) Run(
+// Run implements the Corona threshold signature verification precompile
+func (p *coronaThresholdPrecompile) Run(
 	accessibleState contract.AccessibleState,
 	caller common.Address,
 	addr common.Address,
@@ -149,7 +149,7 @@ func (p *ringtailThresholdPrecompile) Run(
 	return result, remainingGas, nil
 }
 
-// verifyThresholdSignature verifies a Ringtail threshold signature
+// verifyThresholdSignature verifies a Corona threshold signature
 func verifyThresholdSignature(thresholdVal, totalParties uint32, messageHash, signatureBytes []byte) (bool, error) {
 	// Initialize ring parameters using threshold package
 	params, err := threshold.NewParams()
@@ -304,5 +304,5 @@ func initializeMatrix(r *ring.Ring, rows, cols int) structs.Matrix[ring.Poly] {
 
 // EstimateGas estimates gas for a given number of parties
 func EstimateGas(parties uint32) uint64 {
-	return RingtailThresholdBaseGas + (uint64(parties) * RingtailThresholdPerPartyGas)
+	return CoronaThresholdBaseGas + (uint64(parties) * CoronaThresholdPerPartyGas)
 }
