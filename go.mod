@@ -11,12 +11,12 @@ require (
 	github.com/holiman/uint256 v1.3.2
 	github.com/luxfi/accel v1.0.8
 	github.com/luxfi/ai v0.1.0
+	github.com/luxfi/corona v0.3.1
 	github.com/luxfi/crypto v1.19.0
 	github.com/luxfi/database v1.17.44
 	github.com/luxfi/fhe v1.8.0
 	github.com/luxfi/geth v1.16.77
-	github.com/luxfi/lattice/v7 v7.0.0
-	github.com/luxfi/ringtail v0.2.0
+	github.com/luxfi/lattice/v7 v7.1.0
 	github.com/luxfi/runtime v1.0.1
 	github.com/luxfi/threshold v1.5.5
 	github.com/luxfi/warp v1.18.5
@@ -58,7 +58,7 @@ require (
 	github.com/luxfi/container v0.0.4 // indirect
 	github.com/luxfi/ids v1.2.9 // indirect
 	github.com/luxfi/log v1.4.1 // indirect
-	github.com/luxfi/math v1.2.4 // indirect
+	github.com/luxfi/math v1.4.0 // indirect
 	github.com/luxfi/math/big v0.1.0 // indirect
 	github.com/luxfi/metric v1.5.1 // indirect
 	github.com/luxfi/mock v0.1.1 // indirect
@@ -71,7 +71,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mimoo/StrobeGo v0.0.0-20220103164710-9a04d6ca976b // indirect
-	github.com/montanaflynn/stats v0.8.2 // indirect
+	github.com/montanaflynn/stats v0.9.0 // indirect
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
