@@ -89,6 +89,16 @@ func (c *FHEContract) Run(
 		return nil, suppliedGas, ErrInvalidInput
 	}
 
+	// Universal gas-exhaustion floor: even before we route to a handler
+	// (which knows the precise per-op cost), a caller that supplied zero
+	// gas cannot afford any FHE operation. Surface it as the canonical
+	// contract.ErrOutOfGas via the ErrInsufficientGas wrapper so callers
+	// using errors.Is(err, contract.ErrOutOfGas) catch the rejection at
+	// the same chokepoint as per-handler exhaustion.
+	if suppliedGas == 0 {
+		return nil, 0, ErrInsufficientGas
+	}
+
 	// Every FHE op reads or writes ciphertext storage via the StateDB. The
 	// precompile is meaningless without one — bail out cleanly rather than
 	// nil-deref inside performFHEOperation when a test harness or external
