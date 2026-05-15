@@ -7,10 +7,13 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/luxfi/crypto/hqc"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
+
+// Backend-stub-specific tests live in contract_stub_test.go (build-
+// tag-gated). End-to-end PQClean tests live in
+// contract_pqclean_test.go.
 
 // TestPrecompile_Address pins the canonical LP-4200 slot.
 func TestPrecompile_Address(t *testing.T) {
@@ -79,19 +82,3 @@ func TestRun_WrongPubkeyLen(t *testing.T) {
 	}
 }
 
-// TestRun_BackendStubSurfacesError — under the default no-backend
-// build, Encapsulate returns hqc.ErrBackendNotWired. The precompile
-// must propagate it as-is rather than swallowing into a generic error.
-func TestRun_BackendStubSurfacesError(t *testing.T) {
-	in := make([]byte, 2+SeedSize+2249)
-	in[0] = 0x01
-	in[1] = 0x00 // HQC-128
-	// pkBytes left zero — backend stub returns ErrBackendNotWired before
-	// any structural validation, which is the expected behaviour on a
-	// host without a wired HQC backend (cgo PQClean or CIRCL HQC).
-	_, _, err := HQCPrecompile.Run(nil, common.Address{}, ContractAddress,
-		in, 1_000_000, true)
-	if !errors.Is(err, hqc.ErrBackendNotWired) {
-		t.Errorf("backend-not-wired path: want hqc.ErrBackendNotWired, got %v", err)
-	}
-}
