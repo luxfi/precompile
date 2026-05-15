@@ -28,7 +28,6 @@ require (
 require (
 	github.com/ALTree/bigfloat v0.2.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20260311194731-d5b7577c683d // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -102,3 +101,8 @@ exclude (
 	github.com/luxfi/precompiles v0.1.10
 	github.com/luxfi/precompiles v0.1.11
 )
+
+// Local replace while the HQC PQClean cgo backend is being landed in
+// luxfi/crypto. Drop once crypto cuts a release including
+// crypto/hqc/pqclean/.
+replace github.com/luxfi/crypto => ../crypto
