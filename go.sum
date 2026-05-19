@@ -6,8 +6,6 @@ github.com/ChainSafe/go-schnorrkel v1.1.0 h1:rZ6EU+CZFCjB4sHUE1jIu8VDoB/wRKZxoe1
 github.com/ChainSafe/go-schnorrkel v1.1.0/go.mod h1:ABkENxiP+cvjFiByMIZ9LYbRoNNLeBLiakC1XeTFxfE=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
-github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20260311194731-d5b7577c683d h1:EA+kZ8mxGb1W/ewiIBMzb/1gg5BiW1Fvr3r4qCUBJEg=
-github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20260311194731-d5b7577c683d/go.mod h1:ioLG6R+5bUSO1oeGSDxOV3FADARuMoytZCSX6MEMQkI=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/bits-and-blooms/bitset v1.24.4 h1:95H15Og1clikBrKr/DuzMXkQzECs1M6hhoGXLwLQOZE=
@@ -77,6 +75,8 @@ github.com/leanovate/gopter v0.2.11 h1:vRjThO1EKPb/1NsDXuDrzldR28RLkBflWYcU9CvzW
 github.com/leanovate/gopter v0.2.11/go.mod h1:aK3tzZP/C+p1m3SPRE4SYZFGP7jjkuSI4f7Xvpt0S9c=
 github.com/luxfi/accel v1.0.8 h1:NYvCa31W9/ay3RPyfG1mUjUPRTdp0O0Qrx0zIRl78Xk=
 github.com/luxfi/accel v1.0.8/go.mod h1:XvgcJLYsLObbKlrOgd3E2OJx5Oy5c/HnDlIewjr+Y+c=
+github.com/luxfi/accel v1.1.0 h1:1dMCDt6qMLLL7scxRwz8c/353c9qJdf2fOMQsVVF/d0=
+github.com/luxfi/accel v1.1.0/go.mod h1:K00BcnLzEYMPHwCFq8Tf/450ApmTs9xBVvYOnofJCkc=
 github.com/luxfi/ai v0.1.0 h1:PwTGob0GJivbdqNpUs82bvwcE8/qxyTokxfY7BZVPoo=
 github.com/luxfi/ai v0.1.0/go.mod h1:lTuY32dGjEJUgVheYuanlt1O0jHj0AZ09sUSpRsmH6M=
 github.com/luxfi/atomic v1.0.0 h1:xUV60MuzRvXngaQ1sM0yVC2v4TRoLlUGkkH7M9PS4yw=
@@ -97,8 +97,6 @@ github.com/luxfi/container v0.0.4 h1:BXhF82WyfqVP5mjlNcr7tP0Fcnvl0Ap1rkiu+rq5XuM
 github.com/luxfi/container v0.0.4/go.mod h1:Z3SpmMF5d4t77MM0nHYXURpn+EMVaeu1fhbd/3BGaek=
 github.com/luxfi/corona v0.3.1 h1:Mzhv65snVc5Z3mb7HQMTLWhSp7EWbqba4ynCWqo1dgY=
 github.com/luxfi/corona v0.3.1/go.mod h1:ggyyXItOMyv14pvfr/9CINBCMbRkqk1Y8njK705AcD8=
-github.com/luxfi/crypto v1.19.0 h1:VtH6kvZrCEjCnkHPkhExDU+GJ0ZulYX4rnA+lXJdJHw=
-github.com/luxfi/crypto v1.19.0/go.mod h1:ee525i8Recbpb0jVTDZYZBr1MmvJ27OITJHZ/nlNMBw=
 github.com/luxfi/database v1.17.44 h1:hfiTls7sqbweW+o4iaZqB8P997paC+vpgWmhN6v5MJ0=
 github.com/luxfi/database v1.17.44/go.mod h1:6Ey5y3I0WNLHbxIlIdFqUuKfBg+b0fAgTA8FgRgQ8zg=
 github.com/luxfi/fhe v1.8.0 h1:JUCXmUH+NA/puFS4IKz7kfYb5H1WMiwxVA2hDwM1aPI=
