@@ -7,7 +7,7 @@
 // would not compromise HQC, and vice-versa.
 //
 // Address: 0x0000000000000000000000000000000000012208 (LP-4200 unified
-// PQCrypto block, slot following Comet 0x012207).
+// PQCrypto block, slot following Magnetar 0x012207).
 //
 // Operations:
 //
