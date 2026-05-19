@@ -156,6 +156,8 @@ var (
 		//   0x12204 = Pulsar    (Module-LWE threshold,  FIPS 204 byte-equal)
 		//   0x12205 = P3Q       (strict-PQ STARK)
 		//   0x12206 = Corona    (Ring-LWE threshold)
+		//   0x12207 = Magnetar  (hash-based threshold,  FIPS 205 byte-equal)
+		//   0x12208 = HQC       (code-based KEM, family-disjoint backup)
 		{
 			Start: common.HexToAddress("0x0000000000000000000000000000000000012000"),
 			End:   common.HexToAddress("0x0000000000000000000000000000000000012fff"),
