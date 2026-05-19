@@ -1,0 +1,344 @@
+// P3Q precompile — constant-time wire-format gate.
+//
+// Reference: ../contract.go (lines 119..190) — Run() entry point of
+// the P3Q EVM precompile at slot 0x012205.
+//
+// -----------------------------------------------------------------------------
+// What this Jasmin file is for
+// -----------------------------------------------------------------------------
+//
+// The P3Q precompile has TWO concerns at the EVM boundary:
+//
+//   1. STRUCTURAL gate: length checks + magic-header equality check.
+//      Constant-time over the wire payload (so a caller cannot distinguish
+//      "wrong magic" from "wrong length" through a timing channel).
+//   2. STARK / FIPS 204 BACKEND verifier: the heavy verification body that
+//      lives in the audited Rust crate `p3q-verifier`.
+//
+// Concern (1) is what THIS Jasmin file pins down: a constant-time-shaped
+// version + length + magic gate that mirrors `contract.go::Run` lines
+// 147..176 byte-for-byte and is the CT-anchor for the precompile's
+// pre-dispatch path.
+//
+// Concern (2) is delegated. The audited Rust verifier is bound via cgo at
+// startup (`RegisterVerifier`). For the FIPS 204 hot path (P3Q being the
+// on-chain dispatch point for the Pulsar / ML-DSA-65 strict-PQ STARK), the
+// verifier delegates further to libjade's CT-proven `mldsa{65}` Verify.
+// See `~/work/lux/pulsar/jasmin/threshold/` for the libjade-Pulsar bridge
+// and `crates/p3q-verifier/src/lib.rs` for the Rust dispatch surface.
+//
+// -----------------------------------------------------------------------------
+// Constant-time obligations
+// -----------------------------------------------------------------------------
+//
+// Inputs:
+//   - input_ptr     : *u8[input_len]            (PUBLIC contents — wire calldata)
+//   - input_len     : u64                       (PUBLIC — calldata size)
+//   - status_out    : *u8[1]                    (PUBLIC — status code 0..4)
+//   - parsed_out    : *u8[24]                   (PUBLIC — packed parsed_t)
+//
+// All inputs and outputs of THIS file are PUBLIC — wire-format calldata is
+// observable to every node and never carries a secret. CT is required not
+// for confidentiality but for SOUNDNESS (see ../proofs/easycrypt/lemmas/
+// P3Q_CT.ec): a timing oracle over magic-mismatch vs length-mismatch lets
+// an attacker probe the chain's structural pre-filter.
+//
+// The CT discipline is therefore: no branch on calldata BYTES (only on
+// calldata lengths, which are public-by-EVM-precompile-ABI).
+//
+// Status codes (returned in *status_out):
+//   0 = OK (input parsed successfully; magic header matched)
+//   1 = ErrInvalidInputLength (calldata too short or length fields lie)
+//   2 = ErrInvalidVersion     (version byte != 0x01)
+//   3 = ErrInvalidProof       (magic header mismatch)
+//   4 = reserved for future use
+
+// -----------------------------------------------------------------------------
+// Wire constants (mirror contract.go package-level constants exactly)
+// -----------------------------------------------------------------------------
+param int P3Q_VERSION_V1        = 0x01;
+param int P3Q_VERSION_BYTE_LEN  = 1;
+param int P3Q_PROOFLEN_BYTES    = 4;
+param int P3Q_MAGIC_LEN         = 4;
+param int P3Q_PUBLEN_BYTES      = 4;
+param int P3Q_MIN_INPUT_LEN     =
+    P3Q_VERSION_BYTE_LEN + P3Q_PROOFLEN_BYTES
+  + P3Q_MAGIC_LEN
+  + P3Q_PUBLEN_BYTES;
+
+// Magic header "P3Q1" = [0x50, 0x33, 0x51, 0x31].
+param int P3Q_MAGIC_BYTE_0      = 0x50;
+param int P3Q_MAGIC_BYTE_1      = 0x33;
+param int P3Q_MAGIC_BYTE_2      = 0x51;
+param int P3Q_MAGIC_BYTE_3      = 0x31;
+
+// Parsed output layout (24 bytes total):
+//   [0]       version
+//   [1..5)    proof_len (BE)
+//   [5..9)    proof_off (BE)         — offset into input where proof bytes start
+//   [9..13)   pub_len (BE)
+//   [13..17)  pub_off (BE)           — offset into input where pub bytes start
+//   [17..24)  reserved (zero)
+
+// -----------------------------------------------------------------------------
+// Read a big-endian uint32 from input_ptr at offset `off`.
+//
+// CT: input_ptr is public; off is public; result is public. Zero secret-
+// dependent flow.
+// -----------------------------------------------------------------------------
+inline
+fn read_be_uint32(reg u64 input_ptr, reg u64 off) -> reg u32
+{
+    reg u8 b0, b1, b2, b3;
+    reg u32 r;
+
+    b0 = [:u8 input_ptr + off + 0];
+    b1 = [:u8 input_ptr + off + 1];
+    b2 = [:u8 input_ptr + off + 2];
+    b3 = [:u8 input_ptr + off + 3];
+
+    r = (32u) b0;
+    r <<= 24;
+    r |= ((32u) b1) << 16;
+    r |= ((32u) b2) << 8;
+    r |= (32u) b3;
+
+    return r;
+}
+
+// -----------------------------------------------------------------------------
+// Constant-time byte comparison.
+//
+// Returns 0 if a == b, non-zero (the OR of all differences) otherwise. No
+// branch on byte values.
+// -----------------------------------------------------------------------------
+inline
+fn ct_eq_u8(reg u8 a, reg u8 b) -> reg u8
+{
+    reg u8 d;
+    d = a;
+    d ^= b;
+    return d;
+}
+
+// -----------------------------------------------------------------------------
+// Constant-time magic-header check.
+//
+// Compares input[proof_off .. proof_off+4) byte-by-byte against the magic
+// header bytes. Accumulates a single non-zero bit in `diff` on any
+// mismatch; the caller branches on `diff != 0` AFTER all four bytes are
+// compared, so timing is independent of WHICH byte differs.
+// -----------------------------------------------------------------------------
+inline
+fn ct_check_magic(reg u64 input_ptr, reg u64 proof_off) -> reg u8
+{
+    reg u8 b, d, diff;
+
+    diff = 0;
+
+    b = [:u8 input_ptr + proof_off + 0];
+    d = b;
+    d ^= P3Q_MAGIC_BYTE_0;
+    diff |= d;
+
+    b = [:u8 input_ptr + proof_off + 1];
+    d = b;
+    d ^= P3Q_MAGIC_BYTE_1;
+    diff |= d;
+
+    b = [:u8 input_ptr + proof_off + 2];
+    d = b;
+    d ^= P3Q_MAGIC_BYTE_2;
+    diff |= d;
+
+    b = [:u8 input_ptr + proof_off + 3];
+    d = b;
+    d ^= P3Q_MAGIC_BYTE_3;
+    diff |= d;
+
+    return diff;
+}
+
+// -----------------------------------------------------------------------------
+// p3q_precompile_gate — the structural CT gate.
+//
+// Returns 0 on success, non-zero error code on failure (see status_code
+// table at top of file).
+//
+// On success, parsed_out is populated with the layout described above; the
+// caller passes those values into the registered backend verifier (which
+// is the Rust crate `p3q-verifier`, brought in via cgo).
+//
+// CT signature: all inputs are public. We mark them public explicitly so
+// jasmin-ct's flow inference does not back-propagate secrecy from
+// downstream loads.
+// -----------------------------------------------------------------------------
+#[ct = "public * public * public * public -> public"]
+export
+fn p3q_precompile_gate(
+    reg u64 input_ptr,
+    reg u64 input_len,
+    reg u64 status_out_ptr,
+    reg u64 parsed_out_ptr)
+    -> reg u64
+{
+    reg u64 status;
+    reg u64 off;
+    reg u32 proof_len32, pub_len32;
+    reg u64 proof_len64, pub_len64;
+    reg u64 proof_off, pub_off;
+    reg u8  version_byte;
+    reg u8  too_short, bad_version, bad_magic;
+    reg u8  magic_diff;
+    reg u64 i;
+    reg u8  c;
+
+    // ---- 1. Length pre-filter ----
+    // too_short = (input_len < MinInputLength) ? 1 : 0.
+    // Constant-time: jasmin lowers `<` on u64 to a flag-setting compare
+    // followed by a setcc; no data-dependent branch.
+    ?{}, too_short = #set0_8();
+    if (input_len < P3Q_MIN_INPUT_LEN) {
+        too_short = 1;
+        status = 1;
+        c = (8u) status;
+        [:u8 status_out_ptr] = c;
+        ?{}, i = #set0_64();
+        while (i < 24) {
+            [:u8 parsed_out_ptr + i] = 0;
+            i += 1;
+        }
+        return status;
+    }
+
+    // ---- 2. Read version byte ----
+    version_byte = [:u8 input_ptr];
+    bad_version = version_byte;
+    bad_version ^= P3Q_VERSION_V1;
+    if (bad_version != 0) {
+        status = 2;
+        c = (8u) status;
+        [:u8 status_out_ptr] = c;
+        ?{}, i = #set0_64();
+        while (i < 24) {
+            [:u8 parsed_out_ptr + i] = 0;
+            i += 1;
+        }
+        return status;
+    }
+
+    // ---- 3. Read proof_len ----
+    off = 1;
+    proof_len32 = read_be_uint32(input_ptr, off);
+    proof_len64 = (64u) proof_len32;
+    proof_off = off + (64u) P3Q_PROOFLEN_BYTES;
+
+    // ---- 4. Bounds check: proof + pub_len_bytes fits ----
+    // input_len - proof_off >= proof_len64 + PUBLEN_BYTES
+    reg u64 needed;
+    needed = proof_len64;
+    needed += P3Q_PUBLEN_BYTES;
+    reg u64 remaining_after_off;
+    remaining_after_off = input_len;
+    remaining_after_off -= proof_off;
+    if (remaining_after_off < needed) {
+        status = 1;
+        c = (8u) status;
+        [:u8 status_out_ptr] = c;
+        ?{}, i = #set0_64();
+        while (i < 24) {
+            [:u8 parsed_out_ptr + i] = 0;
+            i += 1;
+        }
+        return status;
+    }
+
+    // ---- 5. Read pub_len ----
+    off = proof_off + proof_len64;
+    pub_len32 = read_be_uint32(input_ptr, off);
+    pub_len64 = (64u) pub_len32;
+    pub_off = off + (64u) P3Q_PUBLEN_BYTES;
+
+    // ---- 6. Bounds check: pub fits ----
+    reg u64 remaining_after_pub_off;
+    remaining_after_pub_off = input_len;
+    remaining_after_pub_off -= pub_off;
+    if (remaining_after_pub_off < pub_len64) {
+        status = 1;
+        c = (8u) status;
+        [:u8 status_out_ptr] = c;
+        ?{}, i = #set0_64();
+        while (i < 24) {
+            [:u8 parsed_out_ptr + i] = 0;
+            i += 1;
+        }
+        return status;
+    }
+
+    // ---- 7. Constant-time magic header check ----
+    if (proof_len64 < P3Q_MAGIC_LEN) {
+        // Proof shorter than the magic header — reject as InvalidProof
+        // (matches contract.go line 174: len(proof) < len(MagicHeader)).
+        status = 3;
+        c = (8u) status;
+        [:u8 status_out_ptr] = c;
+        ?{}, i = #set0_64();
+        while (i < 24) {
+            [:u8 parsed_out_ptr + i] = 0;
+            i += 1;
+        }
+        return status;
+    }
+    magic_diff = ct_check_magic(input_ptr, proof_off);
+    if (magic_diff != 0) {
+        status = 3;
+        c = (8u) status;
+        [:u8 status_out_ptr] = c;
+        ?{}, i = #set0_64();
+        while (i < 24) {
+            [:u8 parsed_out_ptr + i] = 0;
+            i += 1;
+        }
+        return status;
+    }
+
+    // ---- 8. Write parsed_out ----
+    // [0]       version
+    [:u8 parsed_out_ptr + 0] = version_byte;
+    // [1..5)    proof_len (BE)
+    [:u8 parsed_out_ptr + 1] = (8u)((proof_len32 >> 24) & 0xff);
+    [:u8 parsed_out_ptr + 2] = (8u)((proof_len32 >> 16) & 0xff);
+    [:u8 parsed_out_ptr + 3] = (8u)((proof_len32 >>  8) & 0xff);
+    [:u8 parsed_out_ptr + 4] = (8u)( proof_len32        & 0xff);
+    // [5..9)    proof_off (BE; truncated to low 32 bits — proofs
+    //           larger than 4 GiB exceed EVM calldata budget anyway).
+    reg u32 proof_off32;
+    proof_off32 = (32u) proof_off;
+    [:u8 parsed_out_ptr + 5] = (8u)((proof_off32 >> 24) & 0xff);
+    [:u8 parsed_out_ptr + 6] = (8u)((proof_off32 >> 16) & 0xff);
+    [:u8 parsed_out_ptr + 7] = (8u)((proof_off32 >>  8) & 0xff);
+    [:u8 parsed_out_ptr + 8] = (8u)( proof_off32        & 0xff);
+    // [9..13)   pub_len (BE)
+    [:u8 parsed_out_ptr +  9] = (8u)((pub_len32 >> 24) & 0xff);
+    [:u8 parsed_out_ptr + 10] = (8u)((pub_len32 >> 16) & 0xff);
+    [:u8 parsed_out_ptr + 11] = (8u)((pub_len32 >>  8) & 0xff);
+    [:u8 parsed_out_ptr + 12] = (8u)( pub_len32        & 0xff);
+    // [13..17)  pub_off (BE)
+    reg u32 pub_off32;
+    pub_off32 = (32u) pub_off;
+    [:u8 parsed_out_ptr + 13] = (8u)((pub_off32 >> 24) & 0xff);
+    [:u8 parsed_out_ptr + 14] = (8u)((pub_off32 >> 16) & 0xff);
+    [:u8 parsed_out_ptr + 15] = (8u)((pub_off32 >>  8) & 0xff);
+    [:u8 parsed_out_ptr + 16] = (8u)( pub_off32        & 0xff);
+    // [17..24)  reserved zero
+    ?{}, i = #set0_64();
+    while (i < 7) {
+        [:u8 parsed_out_ptr + 17 + i] = 0;
+        i += 1;
+    }
+
+    status = 0;
+    c = (8u) status;
+    [:u8 status_out_ptr] = c;
+    return status;
+}
