@@ -116,6 +116,31 @@ func loadVerifier() VerifierFn {
 	return v
 }
 
+// Verify is the in-process verification entry-point for callers outside
+// the EVM precompile path (chains/zkvm STARK dispatch, off-chain
+// verification, tests). It bypasses gas accounting and AccessibleState
+// because those concerns belong to the precompile wrapper, not to the
+// verifier primitive itself.
+//
+// Wire-format compatibility: proof must begin with MagicHeader "P3Q1"
+// (the same structural check the on-chain precompile applies). version
+// is fixed to VersionV1 — there is currently only one P3Q wire version.
+//
+// Returns (true, nil) on a verified proof; (false, nil) on a well-formed
+// but invalid proof; (false, ErrVerifierNotRegistered) when no FFI
+// callback is wired (binding pending, not "unimplemented"); (false, err)
+// on FFI / decode failures.
+func Verify(proof, pubInputs []byte) (bool, error) {
+	if len(proof) < len(MagicHeader) || string(proof[:len(MagicHeader)]) != MagicHeader {
+		return false, ErrInvalidProof
+	}
+	fn := loadVerifier()
+	if fn == nil {
+		return false, ErrVerifierNotRegistered
+	}
+	return fn(VersionV1, proof, pubInputs)
+}
+
 type p3qVerifyPrecompile struct{}
 
 // RequiredGas returns BaseVerifyGas + PerByteGas * len(input). STARK
