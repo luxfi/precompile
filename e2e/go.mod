@@ -4,10 +4,9 @@ go 1.26.3
 
 require (
 	filippo.io/edwards25519 v1.2.0
-	github.com/cloudflare/circl v1.6.3
 	github.com/consensys/gnark-crypto v0.20.1
 	github.com/holiman/uint256 v1.3.2
-	github.com/luxfi/crypto v1.17.43
+	github.com/luxfi/crypto v1.19.0
 	github.com/luxfi/geth v1.16.77
 	github.com/luxfi/precompile v0.4.7
 	github.com/stretchr/testify v1.11.1
@@ -20,6 +19,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.5.0 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240724233137-53bbb0ceb27a // indirect
 	github.com/cronokirby/saferith v0.33.0 // indirect
@@ -32,7 +32,7 @@ require (
 	github.com/gorilla/rpc v1.2.1 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/luxfi/accel v1.0.7 // indirect
+	github.com/luxfi/accel v1.0.8 // indirect
 	github.com/luxfi/ai v0.1.0 // indirect
 	github.com/luxfi/atomic v1.0.0 // indirect
 	github.com/luxfi/cache v1.2.1 // indirect
@@ -42,8 +42,8 @@ require (
 	github.com/luxfi/consensus v1.22.69 // indirect
 	github.com/luxfi/constants v1.4.4 // indirect
 	github.com/luxfi/container v0.0.4 // indirect
-	github.com/luxfi/database v1.17.43 // indirect
-	github.com/luxfi/fhe v1.7.6 // indirect
+	github.com/luxfi/database v1.17.44 // indirect
+	github.com/luxfi/fhe v1.8.0 // indirect
 	github.com/luxfi/ids v1.2.9 // indirect
 	github.com/luxfi/lattice/v7 v7.0.0 // indirect
 	github.com/luxfi/log v1.4.1 // indirect

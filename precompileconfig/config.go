@@ -62,9 +62,8 @@ type Accepter interface {
 }
 
 // ChainConfig defines an interface that provides information to a stateful precompile
-// about the chain configuration. The precompile can access this information to initialize
-// its state.
-type ChainConfig interface {
-	// IsDurango returns true if the time is after Durango.
-	IsDurango(time uint64) bool
-}
+// about the chain configuration. Under activate-all-implicitly there are no
+// upgrade gates left to ask about; the interface is intentionally empty.
+// Precompiles that need to discriminate runtime behaviour should declare
+// their own typed input rather than piggy-back on the chain config.
+type ChainConfig interface{}
