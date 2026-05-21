@@ -73,8 +73,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/leanovate/gopter v0.2.11 h1:vRjThO1EKPb/1NsDXuDrzldR28RLkBflWYcU9CvzWu4=
 github.com/leanovate/gopter v0.2.11/go.mod h1:aK3tzZP/C+p1m3SPRE4SYZFGP7jjkuSI4f7Xvpt0S9c=
-github.com/luxfi/accel v1.1.0 h1:1dMCDt6qMLLL7scxRwz8c/353c9qJdf2fOMQsVVF/d0=
-github.com/luxfi/accel v1.1.0/go.mod h1:K00BcnLzEYMPHwCFq8Tf/450ApmTs9xBVvYOnofJCkc=
+github.com/luxfi/accel v1.1.2 h1:V3vZOWTcOmR5mm7I27jRvXmpEPyb3oRf7lLnL6R+pFI=
+github.com/luxfi/accel v1.1.2/go.mod h1:K00BcnLzEYMPHwCFq8Tf/450ApmTs9xBVvYOnofJCkc=
 github.com/luxfi/ai v0.1.0 h1:PwTGob0GJivbdqNpUs82bvwcE8/qxyTokxfY7BZVPoo=
 github.com/luxfi/ai v0.1.0/go.mod h1:lTuY32dGjEJUgVheYuanlt1O0jHj0AZ09sUSpRsmH6M=
 github.com/luxfi/atomic v1.0.0 h1:xUV60MuzRvXngaQ1sM0yVC2v4TRoLlUGkkH7M9PS4yw=
@@ -93,10 +93,10 @@ github.com/luxfi/constants v1.4.4 h1:R5MaZkQs70eHceZx+2LS9G2gmG7OcLF98BSkJol3OJE
 github.com/luxfi/constants v1.4.4/go.mod h1:ENkJ121cmDEkwQPDiKK4QhnTnW9u37PGpepbrdVcAmc=
 github.com/luxfi/container v0.0.4 h1:BXhF82WyfqVP5mjlNcr7tP0Fcnvl0Ap1rkiu+rq5XuM=
 github.com/luxfi/container v0.0.4/go.mod h1:Z3SpmMF5d4t77MM0nHYXURpn+EMVaeu1fhbd/3BGaek=
-github.com/luxfi/corona v0.3.1 h1:Mzhv65snVc5Z3mb7HQMTLWhSp7EWbqba4ynCWqo1dgY=
-github.com/luxfi/corona v0.3.1/go.mod h1:ggyyXItOMyv14pvfr/9CINBCMbRkqk1Y8njK705AcD8=
-github.com/luxfi/crypto v1.19.3 h1:+DMXpf0FICE8QDvV4YkPBd0BdNoAyWpBx0/w6FQQghc=
-github.com/luxfi/crypto v1.19.3/go.mod h1:XuDGwoF+VassuAcuorv/XsqGV6FL7VGuHraW7zxMjAA=
+github.com/luxfi/corona v0.4.1 h1:DGMdZMrENl6vmJf9CgiQMD8c5ORSTMymL0z9KgcZstk=
+github.com/luxfi/corona v0.4.1/go.mod h1:4aD7+ZqnlZ2aVuU/DBQ5aspIagv5ux45LW2sJ4+siY8=
+github.com/luxfi/crypto v1.19.10 h1:2tdnBafuysfTkMJyLdz6+W181YmJJO1vndOatKmr5JQ=
+github.com/luxfi/crypto v1.19.10/go.mod h1:88cJ59mF/e199BYZK/p8UHmo4bSBPSVNOiHeY6AhMBw=
 github.com/luxfi/database v1.17.44 h1:hfiTls7sqbweW+o4iaZqB8P997paC+vpgWmhN6v5MJ0=
 github.com/luxfi/database v1.17.44/go.mod h1:6Ey5y3I0WNLHbxIlIdFqUuKfBg+b0fAgTA8FgRgQ8zg=
 github.com/luxfi/fhe v1.8.0 h1:JUCXmUH+NA/puFS4IKz7kfYb5H1WMiwxVA2hDwM1aPI=
