@@ -1,0 +1,69 @@
+name: CI
+
+# Go build/test for the precompile suite.
+#
+# luxfi/accel v1.1.2+ requires the mlx C ABI headers + libluxgpu_hqc.a
+# on the CGO include/link paths. CI checks out luxfi/mlx alongside,
+# builds it once, and exports CGO_CFLAGS / CGO_LDFLAGS into go via the
+# Makefile (see ../../Makefile MLX_ROOT).
+
+on:
+  push:
+    branches: [main, dev]
+    tags: ['v*']
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: off
+
+jobs:
+  test:
+    name: Build + Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Checkout luxfi/mlx sibling repo
+        uses: actions/checkout@v4
+        with:
+          repository: luxfi/mlx
+          path: ../mlx
+          ref: main
+
+      - name: Build libluxgpu_hqc.a (CPU only, no GPU device required)
+        working-directory: ../mlx
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLUX_GPU_BUILD_CUDA=OFF \
+            -DLUX_GPU_BUILD_METAL=OFF
+          cmake --build build --target luxgpu_hqc --parallel
+
+      - name: Build
+        run: make build MLX_ROOT=$GITHUB_WORKSPACE/../mlx
+
+      - name: Test (short)
+        run: make test MLX_ROOT=$GITHUB_WORKSPACE/../mlx
+
+      - name: Vet
+        run: make vet MLX_ROOT=$GITHUB_WORKSPACE/../mlx
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./... || true
