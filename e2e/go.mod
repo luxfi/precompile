@@ -6,16 +6,15 @@ require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/consensys/gnark-crypto v0.20.1
 	github.com/holiman/uint256 v1.3.2
-	github.com/luxfi/crypto v1.19.0
+	github.com/luxfi/crypto v1.19.10
 	github.com/luxfi/geth v1.16.77
-	github.com/luxfi/precompile v0.4.7
+	github.com/luxfi/precompile v0.5.24
 	github.com/stretchr/testify v1.11.1
 )
 
 require (
 	github.com/ALTree/bigfloat v0.2.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20260311194731-d5b7577c683d // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -32,7 +31,7 @@ require (
 	github.com/gorilla/rpc v1.2.1 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/luxfi/accel v1.0.8 // indirect
+	github.com/luxfi/accel v1.1.2 // indirect
 	github.com/luxfi/ai v0.1.0 // indirect
 	github.com/luxfi/atomic v1.0.0 // indirect
 	github.com/luxfi/cache v1.2.1 // indirect
@@ -45,9 +44,9 @@ require (
 	github.com/luxfi/database v1.17.44 // indirect
 	github.com/luxfi/fhe v1.8.0 // indirect
 	github.com/luxfi/ids v1.2.9 // indirect
-	github.com/luxfi/lattice/v7 v7.0.0 // indirect
+	github.com/luxfi/lattice/v7 v7.1.0 // indirect
 	github.com/luxfi/log v1.4.1 // indirect
-	github.com/luxfi/math v1.2.4 // indirect
+	github.com/luxfi/math v1.4.0 // indirect
 	github.com/luxfi/math/big v0.1.0 // indirect
 	github.com/luxfi/metric v1.5.1 // indirect
 	github.com/luxfi/mock v0.1.1 // indirect
@@ -83,5 +82,3 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/luxfi/precompile => ../
