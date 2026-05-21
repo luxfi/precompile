@@ -54,7 +54,7 @@ of the backend Rust crate.
   jazz` — `#[ct = "public * public * public * public -> public"]`-
   annotated structural-gate body. Discharges length checks, version
   byte check, and constant-time magic header comparison.
-- **Constant-time evidence.** `~/work/lux/precompile/p3q/ct/dudect/`
+- **Constant-time evidence.** `~/work/lux/crypto/p3q/ct/dudect/`
   — full harness present: `verify_ct.go` cgo bridge, `dudect_verify.c`
   main loop, `dudect_compat.h` ARM64 shim, `Makefile`, `fetch.sh`,
   `run-submission.sh` 10⁹-sample orchestrator. Submission-grade run
