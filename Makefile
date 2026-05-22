@@ -1,24 +1,33 @@
 # Lux precompile build wiring.
 #
 # accel v1.1.3+ auto-discovers the lux-gpu substrate (libluxgpu_hqc.a
-# + lux/gpu/hqc.h headers) by probing every standard install prefix
-# via cgo. The default `go build ./...` invocation works without any
-# env var, as long as ONE of the following is true:
+# + lux/gpu/hqc.h headers). The default build does NOT call pkg-config;
+# instead, `ops/code/code_cpu.go` hardcodes a list of `#cgo CFLAGS: -I`
+# and `#cgo LDFLAGS: -L` directives covering every standard prefix, and
+# the compiler/linker silently skip any -I/-L that doesn't exist on the
+# host. The default `go build ./...` invocation works without any env
+# var as long as ONE of the following has the install:
 #
-#   1. `pkg-config lux-gpu` resolves (cmake --install put a
-#      lux-gpu.pc on PKG_CONFIG_PATH); OR
-#   2. /usr/local has the lux-gpu install (cmake default prefix); OR
-#   3. /opt/homebrew has it (Homebrew on Apple Silicon); OR
-#   4. /opt/lux has it (canonical Lux prefix); OR
-#   5. The Go workspace has luxfi/mlx as a sibling repo with a
+#   1. /usr/local (cmake default prefix); OR
+#   2. /opt/homebrew (Homebrew on Apple Silicon); OR
+#   3. /opt/homebrew/opt/lux-gpu (keg-only Homebrew); OR
+#   4. /usr/local/opt/lux-gpu (Homebrew on Intel Mac); OR
+#   5. /opt/lux (canonical Lux prefix); OR
+#   6. The Go workspace has luxfi/mlx as a sibling repo with a
 #      ready-to-link `mlx/build/libluxgpu_hqc.a`.
 #
-# To target a non-standard install, set LUX_GPU_PREFIX:
+# To target a non-listed install, set LUX_GPU_PREFIX:
 #
 #   LUX_GPU_PREFIX=/opt/custom make ci
 #
 # That gets fed into CGO_CFLAGS / CGO_LDFLAGS automatically. Power
 # users can still set CGO_CFLAGS / CGO_LDFLAGS directly.
+#
+# pkg-config is only consulted when the build tag `lux_gpu_pkgconfig`
+# is set explicitly (`go build -tags=lux_gpu_pkgconfig ./...`). In
+# that mode the build FAILS if `pkg-config lux-gpu` does not resolve;
+# there is no hardcoded-prefix fallback. The runtime introspector
+# `accel.GPUPaths()` also queries pkg-config, but only as a diagnostic.
 
 # Optional override; empty means "use accel's auto-discovery".
 LUX_GPU_PREFIX ?=
