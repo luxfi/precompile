@@ -73,8 +73,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/leanovate/gopter v0.2.11 h1:vRjThO1EKPb/1NsDXuDrzldR28RLkBflWYcU9CvzWu4=
 github.com/leanovate/gopter v0.2.11/go.mod h1:aK3tzZP/C+p1m3SPRE4SYZFGP7jjkuSI4f7Xvpt0S9c=
-github.com/luxfi/accel v1.1.2 h1:V3vZOWTcOmR5mm7I27jRvXmpEPyb3oRf7lLnL6R+pFI=
-github.com/luxfi/accel v1.1.2/go.mod h1:K00BcnLzEYMPHwCFq8Tf/450ApmTs9xBVvYOnofJCkc=
+github.com/luxfi/accel v1.1.4 h1:UOvS/00vG6WByf2P1tGYRkoBcsUkFuCgw7o2xU03OoE=
+github.com/luxfi/accel v1.1.4/go.mod h1:K00BcnLzEYMPHwCFq8Tf/450ApmTs9xBVvYOnofJCkc=
 github.com/luxfi/ai v0.1.0 h1:PwTGob0GJivbdqNpUs82bvwcE8/qxyTokxfY7BZVPoo=
 github.com/luxfi/ai v0.1.0/go.mod h1:lTuY32dGjEJUgVheYuanlt1O0jHj0AZ09sUSpRsmH6M=
 github.com/luxfi/atomic v1.0.0 h1:xUV60MuzRvXngaQ1sM0yVC2v4TRoLlUGkkH7M9PS4yw=
