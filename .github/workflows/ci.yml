@@ -2,10 +2,14 @@ name: CI
 
 # Go build/test for the precompile suite.
 #
-# luxfi/accel v1.1.2+ requires the mlx C ABI headers + libluxgpu_hqc.a
-# on the CGO include/link paths. CI checks out luxfi/mlx alongside,
-# builds it once, and exports CGO_CFLAGS / CGO_LDFLAGS into go via the
-# Makefile (see ../../Makefile MLX_ROOT).
+# luxfi/accel v1.1.3+ auto-discovers the lux-gpu substrate (header +
+# libluxgpu_hqc.a) by probing every standard install prefix. CI:
+#   1. Checks out luxfi/mlx as a sibling repo
+#   2. Builds it once (CPU-only — no GPU device required on the runner)
+#   3. Installs it to /usr/local (cmake --install build)
+#   4. Runs the Go build/test/vet — no CGO_CFLAGS / CGO_LDFLAGS needed
+#
+# Setting MLX_ROOT or LUX_GPU_PREFIX is no longer required.
 
 on:
   push:
@@ -39,23 +43,32 @@ jobs:
           path: ../mlx
           ref: main
 
-      - name: Build libluxgpu_hqc.a (CPU only, no GPU device required)
+      - name: Build + install lux-gpu (CPU-only, no GPU device required)
         working-directory: ../mlx
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
             -DLUX_GPU_BUILD_CUDA=OFF \
             -DLUX_GPU_BUILD_METAL=OFF
-          cmake --build build --target luxgpu_hqc --parallel
+          cmake --build build --target luxgpu_hqc luxgpu_core_static --parallel
+          sudo cmake --install build
+          pkg-config --modversion lux-gpu
+          pkg-config --cflags --libs lux-gpu
+
+      - name: Show resolved GPU paths
+        run: |
+          go run -mod=mod ./... -h 2>/dev/null || true
+          go test -run TestPathReport_LogsResolved -v github.com/luxfi/accel || true
 
       - name: Build
-        run: make build MLX_ROOT=$GITHUB_WORKSPACE/../mlx
+        run: make build
 
       - name: Test (short)
-        run: make test MLX_ROOT=$GITHUB_WORKSPACE/../mlx
+        run: make test
 
       - name: Vet
-        run: make vet MLX_ROOT=$GITHUB_WORKSPACE/../mlx
+        run: make vet
 
   govulncheck:
     name: govulncheck
