@@ -49,7 +49,7 @@ type Engine interface {
 
 	// Brand returns the human-readable identity of the backend. The precompile
 	// uses this in log lines and error wrapping so user-facing strings on a
-	// Partner EVM chain say "Partner DEX", on Lux say "Lux DEX", etc. Implementations
+	// regulated EVM L1 chain say "Partner DEX", on Lux say "Lux DEX", etc. Implementations
 	// MUST return a non-empty constant; an empty value trips a sanity check at
 	// SetBackend() time.
 	Brand() string
