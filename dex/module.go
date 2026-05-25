@@ -49,13 +49,13 @@ var (
 //
 //   - The precompile lives at ONE address (LP-9010) across every Lux-derived
 //     EVM (Lux C-Chain, Hanzo, Zoo, SPC, and white-label deployments such as
-//     Partner EVM). The ABI is identical for every chain.
+//     downstream EVM). The ABI is identical for every chain.
 //
 //   - The math/matching backend is parameterized. Default is the in-process
 //     EmbeddedEngine (Uniswap V4 math compiled into the precompile). A host
 //     binary (the EVM plugin main) may replace it before first use via
-//     SetBackend() — for example a Partner EVM build that points the precompile
-//     at a Liquidity-branded DEX process over ZAP.
+//     SetBackend() — for example a downstream EVM build that points the precompile
+//     at a downstream-tenant DEX process over ZAP.
 //
 //   - Brand identity is a value the backend carries (Engine.Brand()). User-
 //     facing error strings produced by the precompile MUST come from the
