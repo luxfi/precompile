@@ -17,6 +17,7 @@ require (
 	github.com/luxfi/fhe v1.8.0
 	github.com/luxfi/geth v1.16.77
 	github.com/luxfi/lattice/v7 v7.1.0
+	github.com/luxfi/magnetar v0.5.1
 	github.com/luxfi/runtime v1.0.1
 	github.com/luxfi/threshold v1.5.5
 	github.com/luxfi/warp v1.18.5
