@@ -1,0 +1,108 @@
+{
+  "_source": "FIPS 205 SLH-DSA precompile KAT vectors for the 8 parameter sets called out as untested in TESTING_GAPS.md §1.5 (192-bit and 256-bit security levels in both SHA2 and SHAKE families).",
+  "_seed_construction": "Per FIPS 205 Algorithm 18 (slh_keygen_internal), keygen consumes (skSeed || skPrf || pkSeed). Each component is n bytes wide where n is the security parameter (16 for 128-bit, 24 for 192-bit, 32 for 256-bit). We use monotonically increasing seed bytes starting at 0x10, 0x20, 0x30 respectively so the per-component bytes are stable, recognizable, and easy to reproduce from a one-line generator. The resulting pk[:n] equals pkSeed (FIPS 205 §10.2) which serves as a deterministic anchor.",
+  "_context": "lux-evm-precompile-slhdsa-v1 (FIPS 205 ctx; bound by the SLH-DSA precompile in slhdsa/contract.go).",
+  "_message": "lux-precompile-nist-kat-v1 (ASCII)",
+  "_signing": "circl/sign/slhdsa.SignDeterministic is used internally by luxfi/crypto/slhdsa.SignCtx, so signatures are reproducible across runs for the same (sk, msg, ctx) triple.",
+  "_pinning_strategy": "We pin pk[:n] (== pkSeed by FIPS 205 construction) and sig[:16] (the early-phase R/output stream bytes). The full pk and signature are NOT embedded because SLH-DSA signatures are 16-50 KB. Embedding the prefixes is sufficient to detect library or wrapper regressions, and the assertion that the precompile returns 0x01 covers the end-to-end byte-equality of the verify equation.",
+  "_assertion": "The slhdsa precompile MUST return 0x01 at byte[31] for each (pk, msg, sig) constructed from the listed seed for the listed mode.",
+  "_omissions": "The 4 modes already covered by slhdsa/modes_test.go (SHA2_128s, SHA2_128f, SHAKE_128s, SHAKE_128f) are intentionally excluded here to avoid duplicating coverage; this KAT set adds the 8 missing modes.",
+  "vectors": [
+    {
+      "mode": "SHA2_192s",
+      "mode_byte": "0x02",
+      "n_bytes": 24,
+      "sk_seed_hex": "101112131415161718191a1b1c1d1e1f2021222324252627",
+      "sk_prf_hex":  "202122232425262728292a2b2c2d2e2f3031323334353637",
+      "pk_seed_hex": "303132333435363738393a3b3c3d3e3f4041424344454647",
+      "expected_public_key_prefix_hex": "303132333435363738393a3b3c3d3e3f",
+      "expected_signature_prefix_hex":  "eceeb6aecb541d49ceef3255c3e56805",
+      "public_key_size": 48,
+      "signature_size": 16224
+    },
+    {
+      "mode": "SHA2_192f",
+      "mode_byte": "0x03",
+      "n_bytes": 24,
+      "sk_seed_hex": "101112131415161718191a1b1c1d1e1f2021222324252627",
+      "sk_prf_hex":  "202122232425262728292a2b2c2d2e2f3031323334353637",
+      "pk_seed_hex": "303132333435363738393a3b3c3d3e3f4041424344454647",
+      "expected_public_key_prefix_hex": "303132333435363738393a3b3c3d3e3f",
+      "expected_signature_prefix_hex":  "eceeb6aecb541d49ceef3255c3e56805",
+      "public_key_size": 48,
+      "signature_size": 35664
+    },
+    {
+      "mode": "SHAKE_192s",
+      "mode_byte": "0x12",
+      "n_bytes": 24,
+      "sk_seed_hex": "101112131415161718191a1b1c1d1e1f2021222324252627",
+      "sk_prf_hex":  "202122232425262728292a2b2c2d2e2f3031323334353637",
+      "pk_seed_hex": "303132333435363738393a3b3c3d3e3f4041424344454647",
+      "expected_public_key_prefix_hex": "303132333435363738393a3b3c3d3e3f",
+      "expected_signature_prefix_hex":  "89cb77d2d78cd76e108935df348526e9",
+      "public_key_size": 48,
+      "signature_size": 16224
+    },
+    {
+      "mode": "SHAKE_192f",
+      "mode_byte": "0x13",
+      "n_bytes": 24,
+      "sk_seed_hex": "101112131415161718191a1b1c1d1e1f2021222324252627",
+      "sk_prf_hex":  "202122232425262728292a2b2c2d2e2f3031323334353637",
+      "pk_seed_hex": "303132333435363738393a3b3c3d3e3f4041424344454647",
+      "expected_public_key_prefix_hex": "303132333435363738393a3b3c3d3e3f",
+      "expected_signature_prefix_hex":  "89cb77d2d78cd76e108935df348526e9",
+      "public_key_size": 48,
+      "signature_size": 35664
+    },
+    {
+      "mode": "SHA2_256s",
+      "mode_byte": "0x04",
+      "n_bytes": 32,
+      "sk_seed_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "sk_prf_hex":  "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "pk_seed_hex": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "expected_public_key_prefix_hex": "303132333435363738393a3b3c3d3e3f",
+      "expected_signature_prefix_hex":  "5713f7f6c17da0bdc9b5de679387dc44",
+      "public_key_size": 64,
+      "signature_size": 29792
+    },
+    {
+      "mode": "SHA2_256f",
+      "mode_byte": "0x05",
+      "n_bytes": 32,
+      "sk_seed_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "sk_prf_hex":  "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "pk_seed_hex": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "expected_public_key_prefix_hex": "303132333435363738393a3b3c3d3e3f",
+      "expected_signature_prefix_hex":  "5713f7f6c17da0bdc9b5de679387dc44",
+      "public_key_size": 64,
+      "signature_size": 49856
+    },
+    {
+      "mode": "SHAKE_256s",
+      "mode_byte": "0x14",
+      "n_bytes": 32,
+      "sk_seed_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "sk_prf_hex":  "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "pk_seed_hex": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "expected_public_key_prefix_hex": "303132333435363738393a3b3c3d3e3f",
+      "expected_signature_prefix_hex":  "929df37c9c9b4e798ec5410fc72c7d0d",
+      "public_key_size": 64,
+      "signature_size": 29792
+    },
+    {
+      "mode": "SHAKE_256f",
+      "mode_byte": "0x15",
+      "n_bytes": 32,
+      "sk_seed_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "sk_prf_hex":  "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "pk_seed_hex": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "expected_public_key_prefix_hex": "303132333435363738393a3b3c3d3e3f",
+      "expected_signature_prefix_hex":  "929df37c9c9b4e798ec5410fc72c7d0d",
+      "public_key_size": 64,
+      "signature_size": 49856
+    }
+  ]
+}
