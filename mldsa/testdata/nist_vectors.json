@@ -1,0 +1,38 @@
+{
+  "_source": "Deterministic seed-based KAT vectors for FIPS 204 ML-DSA at the precompile EVM-dispatch layer.",
+  "_seed_construction": "Seed bytes 0x00..0x1f (canonical NIST FIPS 204 example seed pattern; see csrc.nist.gov FIPS 204 Appendix B example). Identical to the seed used in upstream luxfi/crypto/mldsa/kat_test.go so any divergence between the wrapper, precompile, and library can be triangulated.",
+  "_context": "lux-evm-precompile-mldsa-v1 (FIPS 204 Section 5.3 domain-separation context bound by the precompile)",
+  "_message": "lux-precompile-nist-kat-v1 (ASCII)",
+  "_pk_pinning": "First 32 bytes of MarshalBinary(pk) for the cloudflare/circl NewKeyFromSeed output. Locks the precompile's view of the upstream library; a change here means the underlying lattice keygen drifted from FIPS 204.",
+  "_sig_pinning": "First 32 bytes of deterministic (randomized=false) SignTo(sk, msg, ctx, false, sig). Locks signing path determinism.",
+  "_assertion": "The mldsa precompile (mode byte + EVM calldata frame) MUST return 0x01 at byte[31] for these inputs.",
+  "vectors": [
+    {
+      "mode": "ML-DSA-44",
+      "mode_byte": "0x44",
+      "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "expected_public_key_prefix_hex": "d7b2b47254aae0db45e7930d4a98d2c97d8f1397d1789dafa17024b316e9bec9",
+      "expected_signature_prefix_hex": "39b9d79f46e02eb47cf8135fa8d23c6f96d21638ddff059ee765c9cfab788bdd",
+      "public_key_size": 1312,
+      "signature_size": 2420
+    },
+    {
+      "mode": "ML-DSA-65",
+      "mode_byte": "0x65",
+      "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "expected_public_key_prefix_hex": "48683d91978e31eb3dddb8b0473482d2b88a5f625949fd8f58a561e696bd4c27",
+      "expected_signature_prefix_hex": "872bca411c52e568e2d2c6f985ab96899d1c79ff5f1886ae71523f6dd509d144",
+      "public_key_size": 1952,
+      "signature_size": 3309
+    },
+    {
+      "mode": "ML-DSA-87",
+      "mode_byte": "0x87",
+      "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "expected_public_key_prefix_hex": "9792bcec2f2430686a82fccf3c2f5ff665e771d7ab41b90258cfa7e90ec97124",
+      "expected_signature_prefix_hex": "e1c5e66982fcb51ff4c66b575e994515df5334bba14230a5db7f59e28ab8e192",
+      "public_key_size": 2592,
+      "signature_size": 4627
+    }
+  ]
+}
