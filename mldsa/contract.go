@@ -26,7 +26,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &mldsaVerifyPrecompile{}
 
-	ErrInvalidInputLength  = contract.ErrInvalidInput
+	ErrInvalidInputLength = contract.ErrInvalidInput
 	ErrInvalidMode        = errors.New("invalid ML-DSA mode")
 	ErrUnsupportedMode    = errors.New("unsupported ML-DSA mode")
 

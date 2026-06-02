@@ -23,10 +23,10 @@ func BenchmarkStableSwap_GetDy_10K(b *testing.B) {
 
 	input := make([]byte, 0, 1+1+1+32+1+64+32)
 	input = append(input, stableswap.OpGetDy)
-	input = append(input, 0)    // i
-	input = append(input, 1)    // j
+	input = append(input, 0) // i
+	input = append(input, 1) // j
 	input = append(input, dx...)
-	input = append(input, 2)    // numTokens
+	input = append(input, 2) // numTokens
 	input = append(input, balance...)
 	input = append(input, balance...)
 	input = append(input, amp...)

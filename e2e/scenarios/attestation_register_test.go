@@ -57,8 +57,8 @@ func TestAttestationRegister_ComputeMarketplace(t *testing.T) {
 	// Step 1: Register provider
 	regInput := make([]byte, 0, 1+32+32)
 	regInput = append(regInput, compute.OpRegisterProvider)
-	regInput = append(regInput, harness.PadLeft([]byte("H100-80GB"), 32)...)        // gpuType
-	regInput = append(regInput, harness.Uint256(0xCAFEBABE)...)                       // TEE attestation hash
+	regInput = append(regInput, harness.PadLeft([]byte("H100-80GB"), 32)...) // gpuType
+	regInput = append(regInput, harness.Uint256(0xCAFEBABE)...)              // TEE attestation hash
 
 	regOut, regGas, err := harness.CallStateful(
 		compute.Precompile,
@@ -78,7 +78,7 @@ func TestAttestationRegister_ComputeMarketplace(t *testing.T) {
 	jobInput = append(jobInput, compute.OpSubmitJob)
 	jobInput = append(jobInput, harness.Uint256(0x1234)...) // modelHash
 	jobInput = append(jobInput, harness.Uint256(0x5678)...) // inputHash
-	jobInput = append(jobInput, harness.Uint256(1e15)...)    // maxPrice in wei
+	jobInput = append(jobInput, harness.Uint256(1e15)...)   // maxPrice in wei
 
 	jobOut, jobGas, err := harness.CallStateful(
 		compute.Precompile,
@@ -96,7 +96,7 @@ func TestAttestationRegister_ComputeMarketplace(t *testing.T) {
 	// Step 3: Claim reward (provider completes the job)
 	claimInput := make([]byte, 0, 1+32+32)
 	claimInput = append(claimInput, compute.OpClaimReward)
-	claimInput = append(claimInput, jobOut...)              // jobID
+	claimInput = append(claimInput, jobOut...)                  // jobID
 	claimInput = append(claimInput, harness.Uint256(0xABCD)...) // outputHash
 
 	claimOut, claimGas, err := harness.CallStateful(
