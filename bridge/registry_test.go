@@ -65,16 +65,16 @@ func (*memStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int) {
 func (*memStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int) {
 	panic("not implemented")
 }
-func (*memStateDB) CreateAccount(common.Address)  { panic("not implemented") }
-func (*memStateDB) Exist(common.Address) bool     { panic("not implemented") }
-func (*memStateDB) AddLog(*ethtypes.Log)          { panic("not implemented") }
-func (*memStateDB) Logs() []*ethtypes.Log         { panic("not implemented") }
+func (*memStateDB) CreateAccount(common.Address) { panic("not implemented") }
+func (*memStateDB) Exist(common.Address) bool    { panic("not implemented") }
+func (*memStateDB) AddLog(*ethtypes.Log)         { panic("not implemented") }
+func (*memStateDB) Logs() []*ethtypes.Log        { panic("not implemented") }
 func (*memStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) {
 	panic("not implemented")
 }
-func (*memStateDB) TxHash() common.Hash    { panic("not implemented") }
-func (*memStateDB) Snapshot() int          { panic("not implemented") }
-func (*memStateDB) RevertToSnapshot(int)   { panic("not implemented") }
+func (*memStateDB) TxHash() common.Hash  { panic("not implemented") }
+func (*memStateDB) Snapshot() int        { panic("not implemented") }
+func (*memStateDB) RevertToSnapshot(int) { panic("not implemented") }
 
 func TestStaticRegistry_GetAndAll(t *testing.T) {
 	r := NewStatic(DefaultSeed())

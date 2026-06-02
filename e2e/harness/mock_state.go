@@ -159,8 +159,8 @@ type MockBlockContext struct {
 	BlockTimestamp uint64
 }
 
-func (b *MockBlockContext) Number() *big.Int    { return b.BlockNumber }
-func (b *MockBlockContext) Timestamp() uint64   { return b.BlockTimestamp }
+func (b *MockBlockContext) Number() *big.Int  { return b.BlockNumber }
+func (b *MockBlockContext) Timestamp() uint64 { return b.BlockTimestamp }
 func (b *MockBlockContext) GetPredicateResults(common.Hash, common.Address) []byte {
 	return nil
 }
@@ -188,8 +188,8 @@ func NewMockAccessibleState() *MockAccessibleState {
 	}
 }
 
-func (s *MockAccessibleState) GetStateDB() contract.StateDB               { return s.DB }
-func (s *MockAccessibleState) GetBlockContext() contract.BlockContext       { return s.Block }
-func (s *MockAccessibleState) GetConsensusContext() context.Context         { return context.Background() }
-func (s *MockAccessibleState) GetChainConfig() precompileconfig.ChainConfig { return s.Chain }
+func (s *MockAccessibleState) GetStateDB() contract.StateDB                     { return s.DB }
+func (s *MockAccessibleState) GetBlockContext() contract.BlockContext           { return s.Block }
+func (s *MockAccessibleState) GetConsensusContext() context.Context             { return context.Background() }
+func (s *MockAccessibleState) GetChainConfig() precompileconfig.ChainConfig     { return s.Chain }
 func (s *MockAccessibleState) GetPrecompileEnv() contract.PrecompileEnvironment { return nil }

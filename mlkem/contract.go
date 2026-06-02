@@ -76,7 +76,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &mlkemPrecompile{}
 
-	ErrInvalidInputLength  = contract.ErrInvalidInput
+	ErrInvalidInputLength   = contract.ErrInvalidInput
 	ErrInvalidMode          = errors.New("invalid ML-KEM mode")
 	ErrUnsupportedMode      = errors.New("unsupported ML-KEM mode")
 	ErrUnsupportedOperation = errors.New("unsupported operation")

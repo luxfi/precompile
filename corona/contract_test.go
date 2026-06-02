@@ -11,11 +11,11 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/luxfi/corona/sign"
+	"github.com/luxfi/corona/threshold"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v7/ring"
 	"github.com/luxfi/precompile/contract"
-	"github.com/luxfi/corona/sign"
-	"github.com/luxfi/corona/threshold"
 	"github.com/stretchr/testify/require"
 )
 

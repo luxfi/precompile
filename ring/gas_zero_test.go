@@ -15,8 +15,8 @@ func TestGasZero_Rejected(t *testing.T) {
 	// Valid OpVerify + valid SchemeLSAGSecp256k1 ensures we reach the
 	// gas check path rather than failing scheme validation first.
 	input := make([]byte, 128)
-	input[0] = OpVerify               // 0x02 — only supported op
-	input[1] = SchemeLSAGSecp256k1    // 0x01
+	input[0] = OpVerify            // 0x02 — only supported op
+	input[1] = SchemeLSAGSecp256k1 // 0x01
 	_, remainingGas, err := RingSignaturePrecompile.Run(nil, common.Address{}, ContractAddress, input, 0, true)
 	require.Error(t, err)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
