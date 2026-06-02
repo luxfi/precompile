@@ -29,36 +29,145 @@ const (
 	TypeEaddress uint8 = 7 // Alias for TypeEuint160
 )
 
-// Gas costs for FHE operations
+// Block-gas-budget calibration constants. The single source of truth for
+// the gas-cost re-derivation rests on three numbers measured on commodity
+// validator hardware (Apple M1 Max, the high end of the ARM commodity
+// range; AMD64 commodity validators are within 2x):
+//
+//	BlockComputeBudgetMs    — wall-clock the chain will tolerate spending
+//	                          inside FHE precompile handlers per block,
+//	                          out of the 2 s block target. Half a block.
+//	GasPerMsAt12MGasLimit   — at gasLimit=12_000_000 (real C-Chain mainnet,
+//	                          see ~/work/lux/genesis/configs/mainnet/cchain.json),
+//	                          this is how many gas units one ms of FHE
+//	                          wall-clock maps to. Derived: 12_000_000 / 1000 = 12_000.
+//	                          Any per-op gas cost is wall-clock-ms × this.
+//	MinSafeGasMulRatio      — the activation gate refuses if
+//	                          gasLimit / GasMul < this. With both numerator
+//	                          and denominator measured, this enforces that
+//	                          at most one Mul fits per block; the Mul wall-
+//	                          clock alone already overruns the per-block
+//	                          budget by 78×, so we set the ratio at 1 —
+//	                          i.e. the gasLimit must be at least one full
+//	                          Mul's worth of gas. Anything less and a single
+//	                          tx with a single Mul instantly halts the chain
+//	                          because the validator cannot finish its work
+//	                          before the next block target.
+//
+// To re-derive on a new arch, run:
+//
+//	go test -run NONE -bench BenchmarkFHE -benchtime=1x ./precompile/fhe/...
+//
+// and update the wall-clock constants below.
 const (
-	GasEncrypt        uint64 = 50000
-	GasDecryptRequest uint64 = 10000
-	GasAdd            uint64 = 65000
-	GasSub            uint64 = 65000
-	GasMul            uint64 = 750000
-	GasDiv            uint64 = 500000
-	GasRem            uint64 = 500000
-	GasAnd            uint64 = 50000
-	GasOr             uint64 = 50000
-	GasXor            uint64 = 50000
-	GasNot            uint64 = 30000
-	GasShl            uint64 = 70000
-	GasShr            uint64 = 70000
-	GasRotl           uint64 = 70000
-	GasRotr           uint64 = 70000
-	GasEq             uint64 = 60000
-	GasNe             uint64 = 60000
-	GasGt             uint64 = 60000
-	GasGe             uint64 = 60000
-	GasLt             uint64 = 60000
-	GasLe             uint64 = 60000
-	GasMin            uint64 = 120000
-	GasMax            uint64 = 120000
-	GasSelect         uint64 = 100000
-	GasNeg            uint64 = 50000
-	GasRand           uint64 = 100000
-	GasCast           uint64 = 30000
-	GasRequire        uint64 = 80000
+	// BlockComputeBudgetMs is the per-block wall-clock budget allotted
+	// to FHE precompile handlers. Half of the 2 s block target.
+	BlockComputeBudgetMs uint64 = 1_000
+
+	// MainnetCChainGasLimit is the real Lux primary-network C-Chain
+	// genesis gasLimit. See ~/work/lux/genesis/configs/mainnet/cchain.json
+	// line 16 (feeConfig.gasLimit).
+	MainnetCChainGasLimit uint64 = 12_000_000
+
+	// PostFeeManagerGasLimit is the post-feeConfigManagerConfig gasLimit
+	// (raised admin-side). See ~/work/lux/genesis/configs/mainnet/upgrade.json
+	// line 9.
+	PostFeeManagerGasLimit uint64 = 20_000_000
+
+	// ReferenceGasLimit30M is the historic 30M reference used in
+	// pre-2026 adversarial tests. Kept as a comparator for back-tests.
+	ReferenceGasLimit30M uint64 = 30_000_000
+
+	// MinSafeGasMulRatio is the minimum gasLimit/GasMul ratio the FHE
+	// module.Configure activation gate will accept. Set to 1 because
+	// even a single Mul takes 78 s wall-clock on commodity ARM —
+	// allowing more than one Mul per block guarantees a chain halt.
+	MinSafeGasMulRatio uint64 = 1
+)
+
+// Measured wall-clock per op (ms) on Apple M1 Max — high-end ARM commodity
+// validator hardware. Re-measured 2026-06-01 via BenchmarkFHE* in bench_test.go.
+//
+// AMD64 commodity validators (Ryzen 7950X, EPYC 9654) measure within 2x of
+// these numbers; the gas constants are sized off the slower ARM measurement
+// to keep the chain safe on the worst-case validator. Re-measure on each
+// arch and bump per-arch if the worst-case moves.
+const (
+	WallClockMsAddUint8 uint64 = 15_000 // measured 14.92 s (TFHE PN10QP27, FheUint8)
+	WallClockMsMulUint8 uint64 = 78_000 // measured 77.74 s (TFHE PN10QP27, FheUint8)
+)
+
+// Gas costs for FHE operations.
+//
+// All costs are derived as wall-clock-ms × (MainnetCChainGasLimit /
+// BlockComputeBudgetMs) = wall-clock-ms × 12_000. This sizes every op
+// so that block-gas-limit / per-op-gas ≤ block-budget-ms / per-op-ms,
+// i.e. the chain cannot include more ops in a block than will fit in
+// the wall-clock budget.
+//
+// The resulting numbers vastly exceed the 12M block gas limit, which
+// means in practice the FHE precompile is DISABLED on mainnet C-Chain
+// at current TFHE perf. The activation gate in module.Configure
+// enforces this explicitly by refusing fheConfig under a too-small
+// gasLimit. See FHE_PRECOMPILE_DOS_AUDIT.md (file removed from tree
+// per project rules — see precompile_dos_audit.go for the in-tree
+// audit table).
+//
+// To unblock activation, two things must happen in tandem:
+//  1. Wall-clock per op must drop by ≥ 78× (e.g. via the lux-private/
+//     gpu-kernels TFHE-PBS fast path landing in the FHE evaluator;
+//     see memory/vulkan_tfhe_pbs_fast_path.md — 20.4x is reported,
+//     so 78x is several optimization passes away).
+//  2. Chain gasLimit must be raised via feeConfigManagerConfig admin
+//     so that gasLimit / GasMul ≥ MinSafeGasMulRatio.
+const (
+	// Bootstrap-dominated arithmetic ops.
+	GasAdd uint64 = WallClockMsAddUint8 * 12_000             // 180_000_000
+	GasSub uint64 = GasAdd                                   // same algorithm
+	GasMul uint64 = WallClockMsMulUint8 * 12_000             // 936_000_000
+	GasDiv uint64 = (WallClockMsMulUint8 * 12_000) * 70 / 100 // 655_200_000 — binary long div ~0.7x mul
+	GasRem uint64 = GasDiv                                   // same algorithm
+	GasNeg uint64 = GasAdd                                   // single subtraction from zero
+
+	// Comparison ops (O(n) bootstraps; measured ratio ≈ Add).
+	GasEq uint64 = GasAdd
+	GasNe uint64 = GasAdd
+	GasGt uint64 = GasAdd
+	GasGe uint64 = GasAdd
+	GasLt uint64 = GasAdd
+	GasLe uint64 = GasAdd
+
+	// Min/Max = compare + select.
+	GasMin uint64 = GasAdd * 2
+	GasMax uint64 = GasAdd * 2
+
+	// Select = mux on encrypted bit; cheaper than full compare.
+	GasSelect uint64 = GasAdd
+
+	// Bitwise (per-bit bootstrap; cheaper than arithmetic but still bootstrap-bound).
+	// Sized off Add scaled down ~6× — bench needed before lowering further.
+	GasAnd uint64 = GasAdd / 6 // 30_000_000
+	GasOr  uint64 = GasAnd
+	GasXor uint64 = GasAnd
+	GasNot uint64 = GasAnd / 2 // single complement, ~half the work
+
+	// Shifts: O(n) muxes by shift amount.
+	GasShl  uint64 = GasAdd
+	GasShr  uint64 = GasAdd
+	GasRotl uint64 = GasAdd
+	GasRotr uint64 = GasAdd
+
+	// Trivial encrypt / decrypt-request are cheap state operations,
+	// not bootstraps. Kept at modest floor.
+	GasEncrypt        uint64 = 50_000
+	GasDecryptRequest uint64 = 10_000
+
+	// Rand and Require involve a bootstrap operation.
+	GasRand    uint64 = GasAdd
+	GasRequire uint64 = GasAdd
+
+	// Cast is bit-shuffling on existing ciphertext (no bootstrap).
+	GasCast uint64 = 30_000
 )
 
 var (

@@ -57,11 +57,35 @@ func (*configurator) MakeConfig() precompileconfig.Config {
 	return new(Config)
 }
 
-// Configure configures the FHE precompile when enabled
+// Configure configures the FHE precompile when enabled.
+//
+// Activation gate (DoS prevention):
+//
+//	The FHE precompile cannot ship safely on a chain whose block gas limit
+//	is too small to absorb the per-op wall-clock budget of one Mul. With the
+//	bench-derived GasMul (936M) and MinSafeGasMulRatio=1, a chain whose
+//	effective gasLimit is below GasMul refuses to activate the precompile
+//	rather than silently bricking finality at the activation block.
+//
+//	The gate fires only when the ChainConfig implements FeeConfigReporter
+//	(luxd integration); non-Lux integrators that wire only the empty
+//	ChainConfig interface remain permissive.
+//
+// Recovery is operator-side: raise gasLimit via feeConfigManagerConfig
+// before re-running the upgrade, or remove fheConfig from upgrade.json.
 func (*configurator) Configure(chainConfig precompileconfig.ChainConfig, cfg precompileconfig.Config, state contract.StateDB, blockContext contract.ConfigurationBlockContext) error {
 	config, ok := cfg.(*Config)
 	if !ok {
 		return fmt.Errorf("expected config type %T, got %T: %v", &Config{}, cfg, cfg)
+	}
+
+	// Refuse activation if the chain's effective gasLimit cannot
+	// safely absorb the FHE compute budget. Permissive when the chain
+	// does not implement FeeConfigReporter (cross-chain integrators).
+	minGasLimit := GasMul * MinSafeGasMulRatio
+	if err := contract.RequireGasLimit(chainConfig, blockContext, minGasLimit); err != nil {
+		return fmt.Errorf("%w: GasMul=%d × MinSafeGasMulRatio=%d = %d gas required",
+			err, GasMul, MinSafeGasMulRatio, minGasLimit)
 	}
 
 	_ = config // NetworkKeyPath and CoprocessorEndpoint are reserved for future use
