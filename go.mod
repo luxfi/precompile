@@ -9,7 +9,7 @@ require (
 	github.com/consensys/gnark-crypto v0.20.1
 	github.com/crate-crypto/go-kzg-4844 v1.1.0
 	github.com/holiman/uint256 v1.3.2
-	github.com/luxfi/accel v1.1.7
+	github.com/luxfi/accel v1.1.8
 	github.com/luxfi/ai v0.1.0
 	github.com/luxfi/corona v0.4.1
 	github.com/luxfi/crypto v1.19.10
