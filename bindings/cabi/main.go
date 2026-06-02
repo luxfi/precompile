@@ -33,6 +33,7 @@ import (
 	_ "github.com/luxfi/precompile/dead"
 	_ "github.com/luxfi/precompile/dex"
 	// REMOVED: ecies — secret keys in calldata are public on-chain
+	_ "github.com/luxfi/precompile/corona"
 	_ "github.com/luxfi/precompile/fhe"
 	_ "github.com/luxfi/precompile/frost"
 	_ "github.com/luxfi/precompile/graph"
@@ -40,7 +41,6 @@ import (
 	_ "github.com/luxfi/precompile/mldsa"
 	_ "github.com/luxfi/precompile/mlkem"
 	_ "github.com/luxfi/precompile/ring"
-	_ "github.com/luxfi/precompile/corona"
 	_ "github.com/luxfi/precompile/slhdsa"
 	_ "github.com/luxfi/precompile/sr25519"
 	_ "github.com/luxfi/precompile/zk"
@@ -97,9 +97,9 @@ func lux_precompile_run(
 	// Precompiles that need state (DEX, AI mining, dead) will panic on nil state;
 	// recover and return -3 (needs state) to distinguish from execution errors.
 	var (
-		ret     []byte
-		gasLeft uint64
-		runErr  error
+		ret      []byte
+		gasLeft  uint64
+		runErr   error
 		panicked bool
 	)
 	func() {

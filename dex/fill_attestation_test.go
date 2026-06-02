@@ -30,8 +30,8 @@ func TestFillAttestationAttest(t *testing.T) {
 
 	orderID := OrderIDFromString("alpaca-order-12345")
 	symbol := SymbolToBytes32("AAPL")
-	amount := big.NewInt(100)                                       // 100 shares
-	price := new(big.Int).Mul(big.NewInt(175), big.NewInt(1e18))    // $175/share
+	amount := big.NewInt(100)                                    // 100 shares
+	price := new(big.Int).Mul(big.NewInt(175), big.NewInt(1e18)) // $175/share
 
 	// Attest
 	err := mgr.Attest(stateDB, attester, orderID, symbol, amount, price, user, 1711036800)
