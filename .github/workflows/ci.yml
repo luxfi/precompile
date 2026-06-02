@@ -45,14 +45,29 @@ jobs:
           path: mlx-sibling
           ref: main
 
+      - name: Checkout PQClean sibling repo
+        uses: actions/checkout@v4
+        with:
+          repository: PQClean/PQClean
+          path: pqclean-sibling
+          # PQClean is upstream; pin via ref to keep build reproducible.
+          # main is fine for CI — we only consume hqc-{128,192,256} which
+          # are stable.
+          ref: master
+
       - name: Build + install lux-gpu (CPU-only, no GPU device required)
         working-directory: mlx-sibling
         run: |
+          # mlx's CMake silently disables luxgpu_hqc when PQClean source
+          # is unavailable, then `make luxgpu_hqc` fails with
+          # 'No rule to make target luxgpu_hqc'. Point it at our sibling
+          # checkout so the HQC kernel target is created.
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr/local \
             -DLUX_GPU_BUILD_CUDA=OFF \
-            -DLUX_GPU_BUILD_METAL=OFF
+            -DLUX_GPU_BUILD_METAL=OFF \
+            -DLUX_HQC_PQCLEAN_DIR="${GITHUB_WORKSPACE}/pqclean-sibling/crypto_kem"
           cmake --build build --target luxgpu_hqc luxgpu_core_static --parallel
           sudo cmake --install build
           pkg-config --modversion lux-gpu
