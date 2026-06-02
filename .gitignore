@@ -7,3 +7,4 @@ QWEN.md
 **/dist/
 *.test
 cabi
+*.eco
