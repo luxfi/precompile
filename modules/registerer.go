@@ -192,6 +192,26 @@ var (
 			Start: common.HexToAddress("0x0000000000000000000000000000000000000001"),
 			End:   common.HexToAddress("0x00000000000000000000000000000000000000ff"),
 		},
+		// EIP-7212 secp256r1 / P256 verify (0x100)
+		// Reserved post-EVM-standard band 0x100-0x1FF for upstream-EIP
+		// precompiles that EVM clients converge on (RIP-7212 picked 0x100
+		// for P256 verify). Keeping the range tight (one /248 of the 20-
+		// byte space) means future EIPs slot in here without colliding
+		// with anything Lux uses.
+		{
+			Start: common.HexToAddress("0x0000000000000000000000000000000000000100"),
+			End:   common.HexToAddress("0x00000000000000000000000000000000000001ff"),
+		},
+		// High-byte EVM/Crypto page (LP-3xxx classical signatures)
+		// Per precompile/registry/registry.go PCII scheme: P=3 (EVM/Crypto)
+		// at high-byte format 0x3PCC0000...0000. Reserved for the classical-
+		// signature sub-page so ed25519 (LP-3211 at 0x3211...0000), ECDSA
+		// extensions (LP-3210), BLS12-381 (LP-3212), VRF (LP-3213), etc.
+		// can register without each subsystem extending the table.
+		{
+			Start: common.HexToAddress("0x3200000000000000000000000000000000000000"),
+			End:   common.HexToAddress("0x32ff000000000000000000000000000000000000"),
+		},
 		// Dead/Burn Addresses (LP-0150)
 		// 0x0000...0000 - Zero address
 		{
