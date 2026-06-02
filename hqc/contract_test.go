@@ -81,4 +81,3 @@ func TestRun_WrongPubkeyLen(t *testing.T) {
 		t.Errorf("wrong pubkey len: want ErrInvalidInputLength, got %v", err)
 	}
 }
-

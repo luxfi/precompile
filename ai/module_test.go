@@ -47,30 +47,34 @@ func (m *testStateDB) SetState(addr common.Address, key, val common.Hash) common
 	return old
 }
 
-func (m *testStateDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason)       {}
-func (m *testStateDB) GetNonce(common.Address) uint64                                    { return 0 }
-func (m *testStateDB) GetBalance(common.Address) *uint256.Int                            { return new(uint256.Int) }
-func (m *testStateDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int { return uint256.Int{} }
-func (m *testStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int { return uint256.Int{} }
-func (m *testStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int          { return big.NewInt(0) }
-func (m *testStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int)         {}
-func (m *testStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int)         {}
-func (m *testStateDB) CreateAccount(common.Address)                                       {}
-func (m *testStateDB) Exist(common.Address) bool                                          { return false }
-func (m *testStateDB) AddLog(*ethtypes.Log)                                               {}
-func (m *testStateDB) Logs() []*ethtypes.Log                                              { return nil }
-func (m *testStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool)        { return nil, false }
-func (m *testStateDB) TxHash() common.Hash                                                { return common.Hash{} }
-func (m *testStateDB) Snapshot() int                                                      { return 0 }
-func (m *testStateDB) RevertToSnapshot(int)                                               {}
+func (m *testStateDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason) {}
+func (m *testStateDB) GetNonce(common.Address) uint64                             { return 0 }
+func (m *testStateDB) GetBalance(common.Address) *uint256.Int                     { return new(uint256.Int) }
+func (m *testStateDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return uint256.Int{}
+}
+func (m *testStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return uint256.Int{}
+}
+func (m *testStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int    { return big.NewInt(0) }
+func (m *testStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int)   {}
+func (m *testStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int)   {}
+func (m *testStateDB) CreateAccount(common.Address)                                {}
+func (m *testStateDB) Exist(common.Address) bool                                   { return false }
+func (m *testStateDB) AddLog(*ethtypes.Log)                                        {}
+func (m *testStateDB) Logs() []*ethtypes.Log                                       { return nil }
+func (m *testStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) { return nil, false }
+func (m *testStateDB) TxHash() common.Hash                                         { return common.Hash{} }
+func (m *testStateDB) Snapshot() int                                               { return 0 }
+func (m *testStateDB) RevertToSnapshot(int)                                        {}
 
 var _ contract.StateDB = (*testStateDB)(nil)
 
 type testBlockCtx struct{}
 
-func (t *testBlockCtx) Number() *big.Int                                                { return big.NewInt(1) }
-func (t *testBlockCtx) Timestamp() uint64                                               { return 1000 }
-func (t *testBlockCtx) GetPredicateResults(common.Hash, common.Address) []byte          { return nil }
+func (t *testBlockCtx) Number() *big.Int                                       { return big.NewInt(1) }
+func (t *testBlockCtx) Timestamp() uint64                                      { return 1000 }
+func (t *testBlockCtx) GetPredicateResults(common.Hash, common.Address) []byte { return nil }
 
 var _ contract.BlockContext = (*testBlockCtx)(nil)
 
@@ -90,11 +94,13 @@ type testAccessibleState struct {
 	db *testStateDB
 }
 
-func (t *testAccessibleState) GetStateDB() contract.StateDB                  { return t.db }
-func (t *testAccessibleState) GetBlockContext() contract.BlockContext         { return &testBlockCtx{} }
-func (t *testAccessibleState) GetConsensusContext() context.Context           { return context.Background() }
-func (t *testAccessibleState) GetChainConfig() precompileconfig.ChainConfig  { return &testChainCfg{} }
-func (t *testAccessibleState) GetPrecompileEnv() contract.PrecompileEnvironment { return &testPrecompileEnv{} }
+func (t *testAccessibleState) GetStateDB() contract.StateDB                 { return t.db }
+func (t *testAccessibleState) GetBlockContext() contract.BlockContext       { return &testBlockCtx{} }
+func (t *testAccessibleState) GetConsensusContext() context.Context         { return context.Background() }
+func (t *testAccessibleState) GetChainConfig() precompileconfig.ChainConfig { return &testChainCfg{} }
+func (t *testAccessibleState) GetPrecompileEnv() contract.PrecompileEnvironment {
+	return &testPrecompileEnv{}
+}
 
 var _ contract.AccessibleState = (*testAccessibleState)(nil)
 
@@ -105,6 +111,7 @@ func newTestAS() *testAccessibleState {
 // --- Config tests ---
 
 type fakeConfig struct{}
+
 func (f *fakeConfig) Key() string                               { return "fake" }
 func (f *fakeConfig) Timestamp() *uint64                        { return nil }
 func (f *fakeConfig) IsDisabled() bool                          { return false }
@@ -286,7 +293,9 @@ func TestRunVerifyTEE(t *testing.T) {
 	receipt := make([]byte, 48)
 	binary.BigEndian.PutUint64(receipt[32:40], 1700000000)
 	sig := make([]byte, 64)
-	for i := range sig { sig[i] = byte(i + 1) }
+	for i := range sig {
+		sig[i] = byte(i + 1)
+	}
 
 	data := make([]byte, 4+len(receipt)+4+len(sig))
 	binary.BigEndian.PutUint32(data[:4], uint32(len(receipt)))
@@ -387,8 +396,8 @@ func TestRunVerifyMLDSARealSig(t *testing.T) {
 
 	// Invalid signature length
 	fakeData2 := make([]byte, 200)
-	binary.BigEndian.PutUint32(fakeData2[:4], 10) // pkLen=10
-	binary.BigEndian.PutUint32(fakeData2[14:18], 10) // msgLen=10
+	binary.BigEndian.PutUint32(fakeData2[:4], 10)        // pkLen=10
+	binary.BigEndian.PutUint32(fakeData2[14:18], 10)     // msgLen=10
 	binary.BigEndian.PutUint32(fakeData2[28:32], 0xFFFF) // sigLen = huge
 	fullFake2 := make([]byte, 4+len(fakeData2))
 	binary.BigEndian.PutUint32(fullFake2[:4], SelectorVerifyMLDSA)
