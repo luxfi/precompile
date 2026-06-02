@@ -22,12 +22,15 @@ func TestPrecompileAddress(t *testing.T) {
 // gnark-crypto. This is the iden3/circom/Polygon-zkEVM convention.
 //
 // Reduced form (a = -1):
-//   Bx' = 9671717474070082183213120605117400219616337014328744928644933853176787189663
-//   By' = 16950150798460657717958625567821834550301663161624707787222815936182638968203
+//
+//	Bx' = 9671717474070082183213120605117400219616337014328744928644933853176787189663
+//	By' = 16950150798460657717958625567821834550301663161624707787222815936182638968203
 //
 // The equivalent EIP-2494 STANDARD form base point (a = 168700) is:
-//   Bx  = 5299619240641551281634865583518297030282874472190772894086521144482721001553
-//   By  = 16950150798460657717958625567821834550301663161624707787222815936182638968203
+//
+//	Bx  = 5299619240641551281634865583518297030282874472190772894086521144482721001553
+//	By  = 16950150798460657717958625567821834550301663161624707787222815936182638968203
+//
 // and the conversion is Bx' = Bx * (-f) mod r  (y is unchanged).
 // See TestEIP2494_ConversionStandardToReduced and the package doc comment.
 func getGenerator() twistededwards.PointAffine {
@@ -196,8 +199,8 @@ func TestInCurve_InvalidPoint(t *testing.T) {
 	// (1, 1) is not on the Baby Jubjub curve
 	input := make([]byte, 1+PointLen)
 	input[0] = OpInCurve
-	input[32] = 1  // x = 1
-	input[64] = 1  // y = 1
+	input[32] = 1 // x = 1
+	input[64] = 1 // y = 1
 
 	gas := p.RequiredGas(input)
 	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, true)
@@ -235,8 +238,8 @@ func TestPointAdd_PointNotOnCurve(t *testing.T) {
 	genBytes := encodeTestPoint(&gen)
 
 	bogus := make([]byte, PointLen)
-	bogus[31] = 2  // x = 2
-	bogus[63] = 3  // y = 3
+	bogus[31] = 2 // x = 2
+	bogus[63] = 3 // y = 3
 
 	input := make([]byte, 1+2*PointLen)
 	input[0] = OpPointAdd

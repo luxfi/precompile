@@ -44,8 +44,8 @@ func (s *testStateDB) SetState(addr common.Address, key, value common.Hash) comm
 }
 
 func (s *testStateDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason) {}
-func (s *testStateDB) GetNonce(common.Address) uint64                              { return 0 }
-func (s *testStateDB) GetBalance(common.Address) *uint256.Int                      { return uint256.NewInt(0) }
+func (s *testStateDB) GetNonce(common.Address) uint64                             { return 0 }
+func (s *testStateDB) GetBalance(common.Address) *uint256.Int                     { return uint256.NewInt(0) }
 func (s *testStateDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
 	return *uint256.NewInt(0)
 }
@@ -55,15 +55,15 @@ func (s *testStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceCh
 func (s *testStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int  { return big.NewInt(0) }
 func (s *testStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}
 func (s *testStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}
-func (s *testStateDB) CreateAccount(common.Address)                               {}
-func (s *testStateDB) Exist(common.Address) bool                                  { return false }
-func (s *testStateDB) AddLog(*ethtypes.Log)                                       {}
-func (s *testStateDB) Logs() []*ethtypes.Log                                      { return nil }
+func (s *testStateDB) CreateAccount(common.Address)                              {}
+func (s *testStateDB) Exist(common.Address) bool                                 { return false }
+func (s *testStateDB) AddLog(*ethtypes.Log)                                      {}
+func (s *testStateDB) Logs() []*ethtypes.Log                                     { return nil }
 func (s *testStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) {
 	return nil, false
 }
 func (s *testStateDB) TxHash() common.Hash  { return common.Hash{} }
-func (s *testStateDB) Snapshot() int         { return 0 }
+func (s *testStateDB) Snapshot() int        { return 0 }
 func (s *testStateDB) RevertToSnapshot(int) {}
 
 var _ contract.StateDB = (*testStateDB)(nil)
