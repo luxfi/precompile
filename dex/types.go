@@ -361,6 +361,21 @@ var (
 	ErrInvalidFee             = errors.New("invalid fee")
 	ErrCurrencyNotSorted      = errors.New("currencies not sorted")
 	ErrUnauthorized           = errors.New("unauthorized")
+
+	// ErrDEXNoProtocolFeeController is returned when the DEX precompile is
+	// configured without an explicit protocolFeeController address (or with
+	// the zero address). Activating the precompile without a real controller
+	// would leave PauseDEX / ResumeDEX / FreezePool callable by anyone, so
+	// configuration must explicitly populate the controller. luxd refuses to
+	// advance past the activation block until upgrade.json is fixed.
+	ErrDEXNoProtocolFeeController = errors.New("dex: protocolFeeController must be set in upgrade.json — refusing to activate")
+
+	// ErrDEXCompromisedController is returned when the configured
+	// protocolFeeController matches a known publicly-disclosed development
+	// key (e.g. Foundry/Anvil account #0). The matching private key is in
+	// every Foundry user's ~/.foundry — any random caller could pause /
+	// freeze the chain-wide AMM. Activation fails closed.
+	ErrDEXCompromisedController = errors.New("dex: protocolFeeController is a publicly-known dev key — refusing to activate")
 	ErrInvalidHookResponse    = errors.New("invalid hook response")
 	ErrSettlementFailed       = errors.New("settlement failed")
 	ErrInvalidSqrtPrice       = errors.New("invalid sqrt price")
