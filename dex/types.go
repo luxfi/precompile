@@ -36,7 +36,7 @@ const (
 	LXPriceAddress = "0x0000000000000000000000000000000000009040" // LP-9040 LXPrice (derived/computed pricing)
 
 	// Lending (LP-905x–906x)
-	LXLendAddress      = "0x0000000000000000000000000000000000009050" // LP-9050 LXLend (lending pool)
+	LXLendAddress    = "0x0000000000000000000000000000000000009050" // LP-9050 LXLend (lending pool)
 	LXRepayerAddress = "0x0000000000000000000000000000000000009060" // LP-9060 LXRepayer (self-repaying loans)
 
 	// Liquidation + Transmutation (LP-907x–908x)
@@ -45,7 +45,7 @@ const (
 
 	// Settlement (LP-909x)
 	// LXSettlementAddress is defined in fill_attestation.go               // LP-9090 LXSettlement (settlement attestation)
-	LiquidFXAddress   = LXTransmuterAddress
+	LiquidFXAddress = LXTransmuterAddress
 
 	// Bridge Precompiles (LP-6xxx)
 	TeleportAddress = "0x0000000000000000000000000000000000006010" // LP-6010 Teleport (cross-chain)
@@ -376,11 +376,11 @@ var (
 	// every Foundry user's ~/.foundry — any random caller could pause /
 	// freeze the chain-wide AMM. Activation fails closed.
 	ErrDEXCompromisedController = errors.New("dex: protocolFeeController is a publicly-known dev key — refusing to activate")
-	ErrInvalidHookResponse    = errors.New("invalid hook response")
-	ErrSettlementFailed       = errors.New("settlement failed")
-	ErrInvalidSqrtPrice       = errors.New("invalid sqrt price")
-	ErrTickOutOfRange         = errors.New("tick out of range")
-	ErrNoLiquidity            = errors.New("no liquidity in pool")
+	ErrInvalidHookResponse      = errors.New("invalid hook response")
+	ErrSettlementFailed         = errors.New("settlement failed")
+	ErrInvalidSqrtPrice         = errors.New("invalid sqrt price")
+	ErrTickOutOfRange           = errors.New("tick out of range")
+	ErrNoLiquidity              = errors.New("no liquidity in pool")
 )
 
 // Errors - Pause/Freeze Controls (ATS regulatory compliance)
