@@ -29,50 +29,66 @@ func newTestStateDB() *testStateDB {
 }
 
 func (m *testStateDB) GetState(addr common.Address, key common.Hash) common.Hash {
-	if m.state[addr] == nil { return common.Hash{} }
+	if m.state[addr] == nil {
+		return common.Hash{}
+	}
 	return m.state[addr][key]
 }
 func (m *testStateDB) SetState(addr common.Address, key, val common.Hash) common.Hash {
-	if m.state[addr] == nil { m.state[addr] = make(map[common.Hash]common.Hash) }
-	old := m.state[addr][key]; m.state[addr][key] = val; return old
+	if m.state[addr] == nil {
+		m.state[addr] = make(map[common.Hash]common.Hash)
+	}
+	old := m.state[addr][key]
+	m.state[addr][key] = val
+	return old
 }
 func (m *testStateDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason) {}
-func (m *testStateDB) GetNonce(common.Address) uint64 { return 0 }
-func (m *testStateDB) GetBalance(common.Address) *uint256.Int { return new(uint256.Int) }
-func (m *testStateDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int { return uint256.Int{} }
-func (m *testStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int { return uint256.Int{} }
-func (m *testStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int { return big.NewInt(0) }
-func (m *testStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}
-func (m *testStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}
-func (m *testStateDB) CreateAccount(common.Address) {}
-func (m *testStateDB) Exist(common.Address) bool { return false }
-func (m *testStateDB) AddLog(*ethtypes.Log) {}
-func (m *testStateDB) Logs() []*ethtypes.Log { return nil }
+func (m *testStateDB) GetNonce(common.Address) uint64                             { return 0 }
+func (m *testStateDB) GetBalance(common.Address) *uint256.Int                     { return new(uint256.Int) }
+func (m *testStateDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return uint256.Int{}
+}
+func (m *testStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return uint256.Int{}
+}
+func (m *testStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int    { return big.NewInt(0) }
+func (m *testStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int)   {}
+func (m *testStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int)   {}
+func (m *testStateDB) CreateAccount(common.Address)                                {}
+func (m *testStateDB) Exist(common.Address) bool                                   { return false }
+func (m *testStateDB) AddLog(*ethtypes.Log)                                        {}
+func (m *testStateDB) Logs() []*ethtypes.Log                                       { return nil }
 func (m *testStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) { return nil, false }
-func (m *testStateDB) TxHash() common.Hash { return common.Hash{} }
-func (m *testStateDB) Snapshot() int { return 0 }
-func (m *testStateDB) RevertToSnapshot(int) {}
+func (m *testStateDB) TxHash() common.Hash                                         { return common.Hash{} }
+func (m *testStateDB) Snapshot() int                                               { return 0 }
+func (m *testStateDB) RevertToSnapshot(int)                                        {}
 
 var _ contract.StateDB = (*testStateDB)(nil)
 
 type testBlockCtx struct{}
-func (t *testBlockCtx) Number() *big.Int { return big.NewInt(1) }
-func (t *testBlockCtx) Timestamp() uint64 { return 1000 }
+
+func (t *testBlockCtx) Number() *big.Int                                       { return big.NewInt(1) }
+func (t *testBlockCtx) Timestamp() uint64                                      { return 1000 }
 func (t *testBlockCtx) GetPredicateResults(common.Hash, common.Address) []byte { return nil }
+
 var _ contract.BlockContext = (*testBlockCtx)(nil)
 
 type testChainCfg struct{}
+
 func (t *testChainCfg) IsDurango(uint64) bool { return true }
 
 type testPrecompileEnv struct{}
+
 func (t *testPrecompileEnv) ReadOnly() bool { return false }
 
 type testAS struct{ db *testStateDB }
-func (t *testAS) GetStateDB() contract.StateDB { return t.db }
-func (t *testAS) GetBlockContext() contract.BlockContext { return &testBlockCtx{} }
-func (t *testAS) GetConsensusContext() context.Context { return context.Background() }
-func (t *testAS) GetChainConfig() precompileconfig.ChainConfig { return &testChainCfg{} }
+
+func (t *testAS) GetStateDB() contract.StateDB                     { return t.db }
+func (t *testAS) GetBlockContext() contract.BlockContext           { return &testBlockCtx{} }
+func (t *testAS) GetConsensusContext() context.Context             { return context.Background() }
+func (t *testAS) GetChainConfig() precompileconfig.ChainConfig     { return &testChainCfg{} }
 func (t *testAS) GetPrecompileEnv() contract.PrecompileEnvironment { return &testPrecompileEnv{} }
+
 var _ contract.AccessibleState = (*testAS)(nil)
 
 func newTestAS() *testAS { return &testAS{db: newTestStateDB()} }
@@ -88,10 +104,11 @@ func abiUint64(v uint64) []byte {
 // --- Config ---
 
 type fakeConfig struct{}
-func (f *fakeConfig) Key() string { return "fake" }
-func (f *fakeConfig) Timestamp() *uint64 { return nil }
-func (f *fakeConfig) IsDisabled() bool { return false }
-func (f *fakeConfig) Equal(precompileconfig.Config) bool { return false }
+
+func (f *fakeConfig) Key() string                               { return "fake" }
+func (f *fakeConfig) Timestamp() *uint64                        { return nil }
+func (f *fakeConfig) IsDisabled() bool                          { return false }
+func (f *fakeConfig) Equal(precompileconfig.Config) bool        { return false }
 func (f *fakeConfig) Verify(precompileconfig.ChainConfig) error { return nil }
 
 func TestConfigLifecycle(t *testing.T) {
@@ -192,8 +209,8 @@ func TestListToBeforeFrom(t *testing.T) {
 	appID := [32]byte{0x01}
 	data := make([]byte, 96)
 	copy(data[:32], appID[:])
-	binary.BigEndian.PutUint64(data[56:64], 10)  // from=10
-	binary.BigEndian.PutUint64(data[88:96], 5)   // to=5 (invalid)
+	binary.BigEndian.PutUint64(data[56:64], 10) // from=10
+	binary.BigEndian.PutUint64(data[88:96], 5)  // to=5 (invalid)
 	input := append(selectorList, data...)
 	_, _, err := p.Run(state, common.Address{}, ContractAddress, input, 100000, false)
 	require.ErrorIs(t, err, ErrInputTooShort)
@@ -206,7 +223,7 @@ func TestListRangeTooLarge(t *testing.T) {
 	data := make([]byte, 96)
 	copy(data[:32], appID[:])
 	binary.BigEndian.PutUint64(data[56:64], 1)    // from=1
-	binary.BigEndian.PutUint64(data[88:96], 1000)  // to=1000 (range=999 > 256)
+	binary.BigEndian.PutUint64(data[88:96], 1000) // to=1000 (range=999 > 256)
 	input := append(selectorList, data...)
 	_, _, err := p.Run(state, common.Address{}, ContractAddress, input, 10000000, false)
 	require.ErrorIs(t, err, ErrRangeTooLarge)

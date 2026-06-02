@@ -45,22 +45,26 @@ func (m *mockStateDB) SetState(addr common.Address, key, value common.Hash) comm
 }
 
 // Stubs to satisfy contract.StateDB interface.
-func (m *mockStateDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason)                 {}
-func (m *mockStateDB) GetNonce(common.Address) uint64                                              { return 0 }
-func (m *mockStateDB) GetBalance(common.Address) *uint256.Int                                      { return new(uint256.Int) }
-func (m *mockStateDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int { return uint256.Int{} }
-func (m *mockStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int { return uint256.Int{} }
-func (m *mockStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int                    { return big.NewInt(0) }
-func (m *mockStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int)                   {}
-func (m *mockStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int)                   {}
-func (m *mockStateDB) CreateAccount(common.Address)                                                {}
-func (m *mockStateDB) Exist(common.Address) bool                                                   { return false }
-func (m *mockStateDB) AddLog(*ethtypes.Log)                                                        {}
-func (m *mockStateDB) Logs() []*ethtypes.Log                                                       { return nil }
-func (m *mockStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool)                 { return nil, false }
-func (m *mockStateDB) TxHash() common.Hash                                                         { return common.Hash{} }
-func (m *mockStateDB) Snapshot() int                                                               { return 0 }
-func (m *mockStateDB) RevertToSnapshot(int)                                                        {}
+func (m *mockStateDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason) {}
+func (m *mockStateDB) GetNonce(common.Address) uint64                             { return 0 }
+func (m *mockStateDB) GetBalance(common.Address) *uint256.Int                     { return new(uint256.Int) }
+func (m *mockStateDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return uint256.Int{}
+}
+func (m *mockStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return uint256.Int{}
+}
+func (m *mockStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int    { return big.NewInt(0) }
+func (m *mockStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int)   {}
+func (m *mockStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int)   {}
+func (m *mockStateDB) CreateAccount(common.Address)                                {}
+func (m *mockStateDB) Exist(common.Address) bool                                   { return false }
+func (m *mockStateDB) AddLog(*ethtypes.Log)                                        {}
+func (m *mockStateDB) Logs() []*ethtypes.Log                                       { return nil }
+func (m *mockStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) { return nil, false }
+func (m *mockStateDB) TxHash() common.Hash                                         { return common.Hash{} }
+func (m *mockStateDB) Snapshot() int                                               { return 0 }
+func (m *mockStateDB) RevertToSnapshot(int)                                        {}
 
 // --- mock AccessibleState ---
 
@@ -68,11 +72,11 @@ type mockAccessibleState struct {
 	db *mockStateDB
 }
 
-func (m *mockAccessibleState) GetStateDB() contract.StateDB                             { return m.db }
-func (m *mockAccessibleState) GetBlockContext() contract.BlockContext                    { return nil }
-func (m *mockAccessibleState) GetConsensusContext() context.Context                     { return context.Background() }
-func (m *mockAccessibleState) GetChainConfig() precompileconfig.ChainConfig             { return nil }
-func (m *mockAccessibleState) GetPrecompileEnv() contract.PrecompileEnvironment         { return nil }
+func (m *mockAccessibleState) GetStateDB() contract.StateDB                     { return m.db }
+func (m *mockAccessibleState) GetBlockContext() contract.BlockContext           { return nil }
+func (m *mockAccessibleState) GetConsensusContext() context.Context             { return context.Background() }
+func (m *mockAccessibleState) GetChainConfig() precompileconfig.ChainConfig     { return nil }
+func (m *mockAccessibleState) GetPrecompileEnv() contract.PrecompileEnvironment { return nil }
 
 // --- helpers ---
 

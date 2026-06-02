@@ -285,8 +285,8 @@ func TestBatchVerify_SingleValid(t *testing.T) {
 }
 
 func TestBatchVerify_SingleInvalid(t *testing.T) {
-	pk := make([]byte, MLDSA44PublicKeySize)   // garbage key
-	sig := make([]byte, MLDSA44SignatureSize)   // garbage sig
+	pk := make([]byte, MLDSA44PublicKeySize)  // garbage key
+	sig := make([]byte, MLDSA44SignatureSize) // garbage sig
 	message := []byte("test")
 
 	entry := make([]byte, 0)
