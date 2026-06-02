@@ -229,4 +229,3 @@ func msb256(x *big.Int) int {
 	}
 	return x.BitLen() - 1
 }
-

@@ -62,9 +62,9 @@ var (
 // Without this guard, concurrent writes would data-race and cause consensus
 // splits across validators.
 var (
-	verifierMu       sync.RWMutex
-	globalVerifier   = attestation.NewVerifier()
-	nvtrustVerifier  = attestation.NewNvtrustVerifier(attestation.DefaultNvtrustConfig())
+	verifierMu      sync.RWMutex
+	globalVerifier  = attestation.NewVerifier()
+	nvtrustVerifier = attestation.NewNvtrustVerifier(attestation.DefaultNvtrustConfig())
 )
 
 // VerifyNVTrustInput represents input for GPU attestation verification
