@@ -53,8 +53,8 @@ func TestKeygenSignVerify_CGGMP21(t *testing.T) {
 
 	// Input: threshold(4) + totalSigners(4) + pubkey(65) + hash(32) + sig(65)
 	input := make([]byte, 0, 4+4+65+32+65)
-	input = append(input, harness.Uint32BE(2)...)  // threshold = 2
-	input = append(input, harness.Uint32BE(3)...)  // total signers = 3
+	input = append(input, harness.Uint32BE(2)...) // threshold = 2
+	input = append(input, harness.Uint32BE(3)...) // total signers = 3
 	input = append(input, pubKey...)
 	input = append(input, hash[:]...)
 	input = append(input, sig...)
@@ -120,8 +120,8 @@ func TestKeygenSignVerify_FROST(t *testing.T) {
 
 	// Input: threshold(4) + totalSigners(4) + pubkey(32) + hash(32) + sig(64)
 	input := make([]byte, 0, 4+4+32+32+64)
-	input = append(input, harness.Uint32BE(2)...)  // threshold = 2
-	input = append(input, harness.Uint32BE(3)...)  // total signers = 3
+	input = append(input, harness.Uint32BE(2)...) // threshold = 2
+	input = append(input, harness.Uint32BE(3)...) // total signers = 3
 	input = append(input, pubBytes...)
 	input = append(input, hash[:]...)
 	input = append(input, frostSig...)

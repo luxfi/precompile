@@ -16,11 +16,11 @@ import (
 
 // TestRun_E2E_HQC128 — full end-to-end under the cgo-PQClean backend.
 //
-//	1. Generate an HQC-128 keypair off-chain (crypto/hqc.KeyGen).
-//	2. Build the precompile wire input: op(0x01) || mode(0x00) || seed(32B) || pk.
-//	3. Run the precompile → returns ct || ss.
-//	4. Off-chain decapsulate the ct with the sk → recovered ss must
-//	   equal the precompile's ss byte-for-byte.
+//  1. Generate an HQC-128 keypair off-chain (crypto/hqc.KeyGen).
+//  2. Build the precompile wire input: op(0x01) || mode(0x00) || seed(32B) || pk.
+//  3. Run the precompile → returns ct || ss.
+//  4. Off-chain decapsulate the ct with the sk → recovered ss must
+//     equal the precompile's ss byte-for-byte.
 //
 // This is the property the HQC precompile exists to provide on-chain:
 // a verifier can generate a ciphertext that decapsulates (off-chain)
@@ -36,9 +36,9 @@ func TestRun_E2E_HQC128(t *testing.T) {
 
 	seed := bytes.Repeat([]byte{0xAB}, SeedSize)
 	in := make([]byte, 0, 2+SeedSize+params.PublicKeySize)
-	in = append(in, 0x01)      // op = Encapsulate
-	in = append(in, 0x00)      // mode = HQC-128
-	in = append(in, seed...)   // 32-byte deterministic-rng seed
+	in = append(in, 0x01)    // op = Encapsulate
+	in = append(in, 0x00)    // mode = HQC-128
+	in = append(in, seed...) // 32-byte deterministic-rng seed
 	in = append(in, pk.Bytes...)
 
 	out, _, err := HQCPrecompile.Run(nil, common.Address{}, ContractAddress,

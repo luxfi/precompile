@@ -12,14 +12,15 @@
 //   - 0x05: GetPrice(modelHash, inputSize) -> price in wei
 //
 // Storage layout (all keyed under ContractAddress):
-//   keccak256("provider", providerID)       -> gpuType (32 bytes)
-//   keccak256("provider.owner", providerID) -> owner address
-//   keccak256("job", jobID)                 -> modelHash
-//   keccak256("job.provider", jobID)        -> provider address
-//   keccak256("job.price", jobID)           -> maxPrice
-//   keccak256("job.status", jobID)          -> status (0=open, 1=claimed, 2=verified)
-//   keccak256("job.output", jobID)          -> outputHash
-//   keccak256("nonce", address)             -> provider nonce
+//
+//	keccak256("provider", providerID)       -> gpuType (32 bytes)
+//	keccak256("provider.owner", providerID) -> owner address
+//	keccak256("job", jobID)                 -> modelHash
+//	keccak256("job.provider", jobID)        -> provider address
+//	keccak256("job.price", jobID)           -> maxPrice
+//	keccak256("job.status", jobID)          -> status (0=open, 1=claimed, 2=verified)
+//	keccak256("job.output", jobID)          -> outputHash
+//	keccak256("nonce", address)             -> provider nonce
 //
 // Gas: 25,000 register, 10,000 submit, 50,000 verify, 5,000 claim/getPrice
 package compute

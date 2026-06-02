@@ -15,9 +15,10 @@ import (
 //
 // Vulnerability: The gas calculation was CGGMP21VerifyBaseGas + totalSigners * CGGMP21VerifyPerSignerGas
 // where totalSigners is a uint32 read from calldata. With totalSigners = 0xFFFFFFFF:
-//   0xFFFFFFFF * 10_000 = 42_949_672_950_000 which overflows uint64? No, but it
-//   produces an absurdly high gas cost (42.9 trillion) that a malicious caller
-//   could use to cause unexpected behavior in gas estimation or accounting.
+//
+//	0xFFFFFFFF * 10_000 = 42_949_672_950_000 which overflows uint64? No, but it
+//	produces an absurdly high gas cost (42.9 trillion) that a malicious caller
+//	could use to cause unexpected behavior in gas estimation or accounting.
 //
 // Fix: Cap totalSigners at a reasonable maximum (e.g., 256) and/or cap total
 // gas to a reasonable maximum. Gas must never exceed block gas limit equivalent.

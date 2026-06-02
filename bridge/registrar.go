@@ -81,16 +81,16 @@ const (
 
 // Errors.
 var (
-	ErrRegistrarInputTooShort  = errors.New("registrar: input too short")
+	ErrRegistrarInputTooShort   = errors.New("registrar: input too short")
 	ErrRegistrarUnknownSelector = errors.New("registrar: unknown selector")
-	ErrRegistrarReadOnly       = errors.New("registrar: write in read-only mode")
-	ErrAlreadyRegistered       = errors.New("registrar: chain already registered")
-	ErrNotRegistered           = errors.New("registrar: chain not registered")
-	ErrIndexOutOfRange         = errors.New("registrar: index out of range")
-	ErrUnauthorized            = errors.New("registrar: threshold not met")
-	ErrInvalidSignatureBytes   = errors.New("registrar: invalid signature bytes")
-	ErrDuplicateSigner         = errors.New("registrar: duplicate signer in signature set")
-	ErrChainNameTooLong        = errors.New("registrar: chain name exceeds max length")
+	ErrRegistrarReadOnly        = errors.New("registrar: write in read-only mode")
+	ErrAlreadyRegistered        = errors.New("registrar: chain already registered")
+	ErrNotRegistered            = errors.New("registrar: chain not registered")
+	ErrIndexOutOfRange          = errors.New("registrar: index out of range")
+	ErrUnauthorized             = errors.New("registrar: threshold not met")
+	ErrInvalidSignatureBytes    = errors.New("registrar: invalid signature bytes")
+	ErrDuplicateSigner          = errors.New("registrar: duplicate signer in signature set")
+	ErrChainNameTooLong         = errors.New("registrar: chain name exceeds max length")
 )
 
 // ABI arg sizes for RegisterChain.
