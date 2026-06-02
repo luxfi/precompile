@@ -15,7 +15,7 @@ import (
 
 // Shared error sentinels for all precompiles.
 var (
-	ErrOutOfGas    = errors.New("out of gas")
+	ErrOutOfGas     = errors.New("out of gas")
 	ErrInvalidInput = errors.New("invalid input")
 	ErrInvalidOp    = errors.New("invalid operation")
 )

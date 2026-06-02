@@ -18,7 +18,7 @@
 //	0x012203 = SLH-DSA         (hash-based signature, FIPS 205)
 //	0x012204 = Pulsar          (Module-LWE threshold FIPS 204, byte-equal)
 //	0x012205 = P3Q             ← this precompile (strict-PQ STARK)
-//	0x012206 = Corona         
+//	0x012206 = Corona
 //
 // Wire format (single dispatch, version byte differentiates future
 // proof formats; first deployment is v0x01):
@@ -61,7 +61,7 @@ const MagicHeader = "P3Q1"
 
 // Wire layout constants.
 const (
-	versionByte = 1
+	versionByte  = 1
 	proofLenByte = 4
 	pubLenByte   = 4
 
@@ -78,8 +78,8 @@ const (
 // size), but on-chain we only see the serialized proof; charge a flat
 // base plus a per-byte cost so callers pay for bandwidth and decode.
 const (
-	BaseVerifyGas   uint64 = 200_000
-	PerByteGas      uint64 = 10
+	BaseVerifyGas uint64 = 200_000
+	PerByteGas    uint64 = 10
 )
 
 // Error sentinels returned by this precompile.
