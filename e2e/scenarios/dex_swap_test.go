@@ -62,10 +62,10 @@ func TestDEXSwap_StableSwapGetDy(t *testing.T) {
 
 	input := make([]byte, 0, 1+1+1+32+1+64+32)
 	input = append(input, stableswap.OpGetDy)
-	input = append(input, 0)    // i = token 0
-	input = append(input, 1)    // j = token 1
+	input = append(input, 0)     // i = token 0
+	input = append(input, 1)     // j = token 1
 	input = append(input, dx...) // swap 1000
-	input = append(input, 2)    // numTokens
+	input = append(input, 2)     // numTokens
 	input = append(input, balance...)
 	input = append(input, balance...)
 	input = append(input, amp...)

@@ -288,7 +288,7 @@ func TestParseSealParams_ShortAADData(t *testing.T) {
 	input[4], input[5] = 0x00, 0x01
 	binary.BigEndian.PutUint16(input[6+SeedSize:], uint16(pkSize))
 	offset := 6 + SeedSize + 2 + pkSize
-	binary.BigEndian.PutUint16(input[offset:], 0)   // info len = 0
+	binary.BigEndian.PutUint16(input[offset:], 0)    // info len = 0
 	binary.BigEndian.PutUint16(input[offset+2:], 10) // aad len = 10 but no data
 	_, err := p.parseSealParams(input)
 	require.Error(t, err)
