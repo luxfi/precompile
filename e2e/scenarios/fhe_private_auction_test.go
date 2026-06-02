@@ -116,17 +116,26 @@ func TestFHEPrivateAuction_EncryptAndCompare(t *testing.T) {
 		}
 	}
 
-	// Step 4: Verify gas model is correct
-	// Even without network key, gas costs should be well-defined
-	require.Equal(t, uint64(50000), fhe.GasEncrypt, "encrypt gas should be 50K")
-	require.Equal(t, uint64(65000), fhe.GasAdd, "add gas should be 65K")
-	require.Equal(t, uint64(65000), fhe.GasSub, "sub gas should be 65K")
-	require.Equal(t, uint64(750000), fhe.GasMul, "mul gas should be 750K")
-	require.Equal(t, uint64(60000), fhe.GasGt, "gt gas should be 60K")
-	require.Equal(t, uint64(60000), fhe.GasLt, "lt gas should be 60K")
-	require.Equal(t, uint64(120000), fhe.GasMax, "max gas should be 120K")
-	require.Equal(t, uint64(120000), fhe.GasMin, "min gas should be 120K")
-	require.Equal(t, uint64(100000), fhe.GasSelect, "select gas should be 100K")
+	// Step 4: Verify gas model is correct.
+	//
+	// Gas costs were re-derived 2026-06-01 (CLOSE FHE Mul DoS audit) so
+	// that at the real C-Chain mainnet gasLimit (12_000_000 — not the
+	// historic 30M reference) no FHE op can stall a block beyond the
+	// per-block compute budget (1000 ms). Numbers are derived as
+	// (measured-ms-on-M1Max × 12_000 gas/ms calibration). See
+	// ~/work/lux/precompile/fhe/contract.go and dos_audit.go.
+	require.Equal(t, uint64(50_000), fhe.GasEncrypt, "encrypt gas (state op, no bootstrap)")
+	require.Equal(t, fhe.WallClockMsAddUint8*12_000, fhe.GasAdd,
+		"add gas must equal measured-add-ms × 12_000")
+	require.Equal(t, fhe.GasAdd, fhe.GasSub,
+		"sub gas must equal add gas (same algorithm)")
+	require.Equal(t, fhe.WallClockMsMulUint8*12_000, fhe.GasMul,
+		"mul gas must equal measured-mul-ms × 12_000")
+	require.Equal(t, fhe.GasAdd, fhe.GasGt, "gt has add-class cost")
+	require.Equal(t, fhe.GasAdd, fhe.GasLt, "lt has add-class cost")
+	require.Equal(t, fhe.GasAdd*2, fhe.GasMax, "max = compare + select")
+	require.Equal(t, fhe.GasAdd*2, fhe.GasMin, "min = compare + select")
+	require.Equal(t, fhe.GasAdd, fhe.GasSelect, "select = single mux")
 
 	_ = caller // used as sender context when FHE network key is available
 	t.Logf("FHE auction test complete (gas model verified, %d bids)", len(bids))
