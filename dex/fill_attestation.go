@@ -20,10 +20,10 @@ var settlementAddr = common.HexToAddress(LXSettlementAddress)
 // Gas costs for Settlement operations
 const (
 	GasFillAttestation uint64 = 30_000 // Record a broker fill attestation
-	GasFillChallenge uint64 = 50_000 // Challenge an attestation (reversal)
-	GasFillFinalize  uint64 = 20_000 // Finalize after fraud window
-	GasFillQuery     uint64 = 5_000  // Query attestation state
-	GasFillSetAdmin  uint64 = 25_000 // Set attester or ceiling (governance)
+	GasFillChallenge   uint64 = 50_000 // Challenge an attestation (reversal)
+	GasFillFinalize    uint64 = 20_000 // Finalize after fraud window
+	GasFillQuery       uint64 = 5_000  // Query attestation state
+	GasFillSetAdmin    uint64 = 25_000 // Set attester or ceiling (governance)
 )
 
 // FillStatus tracks the lifecycle of a fill attestation.
@@ -54,11 +54,11 @@ type Settlement struct {
 
 // Storage key prefixes for Settlement state
 var (
-	fillAttestPrefix   = []byte("fill_attestation/attest/")  // per-order attestation
-	fillConfigPrefix   = []byte("fill_attestation/config/")  // global config
-	fillAttesterKey    = []byte("fill_attestation/attester")  // authorized attester address
-	fillCeilingKey     = []byte("fill_attestation/ceiling")   // max outstanding USD value
-	fillOutstandingKey = []byte("fill_attestation/outstanding") // current outstanding USD
+	fillAttestPrefix   = []byte("fill_attestation/attest/")      // per-order attestation
+	fillConfigPrefix   = []byte("fill_attestation/config/")      // global config
+	fillAttesterKey    = []byte("fill_attestation/attester")     // authorized attester address
+	fillCeilingKey     = []byte("fill_attestation/ceiling")      // max outstanding USD value
+	fillOutstandingKey = []byte("fill_attestation/outstanding")  // current outstanding USD
 	fillFraudWindowKey = []byte("fill_attestation/fraud_window") // fraud window in blocks
 )
 

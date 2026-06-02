@@ -51,15 +51,15 @@ func (m *regStateDB) SetState(a common.Address, k, v common.Hash) common.Hash {
 }
 
 func (*regStateDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason) {}
-func (*regStateDB) GetNonce(common.Address) uint64                              { return 0 }
-func (*regStateDB) GetBalance(common.Address) *uint256.Int                      { return new(uint256.Int) }
+func (*regStateDB) GetNonce(common.Address) uint64                             { return 0 }
+func (*regStateDB) GetBalance(common.Address) *uint256.Int                     { return new(uint256.Int) }
 func (*regStateDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
 	return uint256.Int{}
 }
 func (*regStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
 	return uint256.Int{}
 }
-func (*regStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int { return big.NewInt(0) }
+func (*regStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int  { return big.NewInt(0) }
 func (*regStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}
 func (*regStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}
 func (*regStateDB) CreateAccount(common.Address)                              {}
@@ -77,9 +77,9 @@ var _ contract.StateDB = (*regStateDB)(nil)
 
 type regBlockCtx struct{}
 
-func (*regBlockCtx) Number() *big.Int                                           { return big.NewInt(1) }
-func (*regBlockCtx) Timestamp() uint64                                          { return 1700000000 }
-func (*regBlockCtx) GetPredicateResults(common.Hash, common.Address) []byte     { return nil }
+func (*regBlockCtx) Number() *big.Int                                       { return big.NewInt(1) }
+func (*regBlockCtx) Timestamp() uint64                                      { return 1700000000 }
+func (*regBlockCtx) GetPredicateResults(common.Hash, common.Address) []byte { return nil }
 
 type regChainCfg struct{}
 
@@ -91,10 +91,10 @@ func (*regEnv) ReadOnly() bool { return false }
 
 type regAS struct{ db *regStateDB }
 
-func (a *regAS) GetStateDB() contract.StateDB                  { return a.db }
-func (a *regAS) GetBlockContext() contract.BlockContext        { return &regBlockCtx{} }
-func (a *regAS) GetConsensusContext() context.Context          { return context.Background() }
-func (a *regAS) GetChainConfig() precompileconfig.ChainConfig  { return &regChainCfg{} }
+func (a *regAS) GetStateDB() contract.StateDB                     { return a.db }
+func (a *regAS) GetBlockContext() contract.BlockContext           { return &regBlockCtx{} }
+func (a *regAS) GetConsensusContext() context.Context             { return context.Background() }
+func (a *regAS) GetChainConfig() precompileconfig.ChainConfig     { return &regChainCfg{} }
 func (a *regAS) GetPrecompileEnv() contract.PrecompileEnvironment { return &regEnv{} }
 
 func newRegAS() *regAS { return &regAS{db: newRegState()} }

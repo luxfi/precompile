@@ -386,7 +386,7 @@ func (e *EmbeddedEngine) Quote(pool *Pool, amountIn *big.Int, zeroForOne bool) *
 		sqrtPriceLimitX96,
 		pool.Liquidity,
 		new(big.Int).Neg(amountIn), // exact input convention
-		3000,                        // default fee
+		3000,                       // default fee
 	)
 	return new(big.Int).Abs(step.AmountOut)
 }

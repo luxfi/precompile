@@ -23,7 +23,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &slhdsaVerifyPrecompile{}
 
-	ErrInvalidInputLength  = contract.ErrInvalidInput
+	ErrInvalidInputLength = contract.ErrInvalidInput
 	ErrInvalidMode        = errors.New("invalid SLH-DSA mode")
 	ErrUnsupportedMode    = errors.New("unsupported SLH-DSA mode")
 

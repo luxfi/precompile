@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/luxfi/corona/sign"
+	"github.com/luxfi/corona/threshold"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/lattice/v7/ring"
 	"github.com/luxfi/lattice/v7/utils/structs"
 	"github.com/luxfi/precompile/contract"
-	"github.com/luxfi/corona/sign"
-	"github.com/luxfi/corona/threshold"
 )
 
 var (
@@ -29,7 +29,7 @@ var (
 
 	_ contract.StatefulPrecompiledContract = &coronaThresholdPrecompile{}
 
-	ErrInvalidInputLength  = contract.ErrInvalidInput
+	ErrInvalidInputLength    = contract.ErrInvalidInput
 	ErrInvalidThreshold      = errors.New("invalid threshold: t must be > 0 and <= n")
 	ErrInvalidSignature      = errors.New("signature verification failed")
 	ErrInsufficientParties   = errors.New("insufficient parties for threshold")
