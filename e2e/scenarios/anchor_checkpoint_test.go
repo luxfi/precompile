@@ -38,7 +38,7 @@ func TestAnchorCheckpoint_FullLifecycle(t *testing.T) {
 	submitInput = append(submitInput, submitSelector...)
 	submitInput = append(submitInput, appID[:]...)           // appID (32 bytes)
 	submitInput = append(submitInput, harness.Uint256(1)...) // height = 1
-	submitInput = append(submitInput, stateHash[:]...)        // root (32 bytes)
+	submitInput = append(submitInput, stateHash[:]...)       // root (32 bytes)
 
 	out, gas, err := harness.CallStateful(
 		anchor.AnchorPrecompile,
