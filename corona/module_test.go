@@ -11,6 +11,7 @@ import (
 )
 
 type fakeConfig struct{}
+
 func (f *fakeConfig) Key() string                               { return "fake" }
 func (f *fakeConfig) Timestamp() *uint64                        { return nil }
 func (f *fakeConfig) IsDisabled() bool                          { return false }
@@ -18,6 +19,7 @@ func (f *fakeConfig) Equal(precompileconfig.Config) bool        { return false }
 func (f *fakeConfig) Verify(precompileconfig.ChainConfig) error { return nil }
 
 type testChainCfg struct{}
+
 func (t *testChainCfg) IsDurango(uint64) bool { return true }
 
 func TestConfigLifecycle(t *testing.T) {
