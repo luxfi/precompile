@@ -40,11 +40,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: luxfi/mlx
-          path: ../mlx
+          # actions/checkout requires path to live inside the workspace.
+          # Keep it adjacent under the workspace; build steps follow.
+          path: mlx-sibling
           ref: main
 
       - name: Build + install lux-gpu (CPU-only, no GPU device required)
-        working-directory: ../mlx
+        working-directory: mlx-sibling
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
