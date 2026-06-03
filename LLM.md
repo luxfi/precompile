@@ -636,8 +636,8 @@ Deploy complete Lux networks locally with C-Chain and Zoo EVM chains, then impor
 
 ### Network Configuration
 
-| Network | Network ID | HTTP Base Port | gRPC Port | Staking Port |
-|---------|------------|----------------|-----------|--------------|
+| Network | Network ID | HTTP Base Port | ZAP Port | Staking Port |
+|---------|------------|----------------|----------|--------------|
 | Mainnet | 1 | 9630 | 8369 | 9631 |
 | Testnet | 2 | 9640 | 8368 | 9641 |
 | Devnet | 5 | 9650 | 8370 | 9651 |
@@ -976,14 +976,14 @@ curl -s -X POST -H "Content-Type: application/json" \
 ### Current Network State
 
 **Mainnet (Network ID: 1)**
-- gRPC: `localhost:8369`
+- ZAP wire: `localhost:8369`
 - Validators: 5 nodes on ports 9630-9638
 - Chains:
   - C-Chain: `http://127.0.0.1:9630/ext/bc/C/rpc`
   - Zoo: `http://127.0.0.1:9630/ext/bc/2iJykKjE7gpWNjGUvGG6fVtj7u5Tbvo89CVCu6gjNPCnEdCVpY/rpc`
 
 **Testnet (Network ID: 2)**
-- gRPC: `localhost:8368`
+- ZAP wire: `localhost:8368`
 - Validators: 5 nodes on ports 9640-9648
 - Chains:
   - C-Chain: `http://127.0.0.1:9640/ext/bc/C/rpc`
