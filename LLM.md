@@ -526,7 +526,7 @@ Created `/Users/z/work/lux/scripts/cchain-import.sh` for the full export/import 
 ## LP Documentation - Network Upgrade Mapping
 
 Created LP-99 (`/Users/z/work/lux/lps/LPs/lp-0099-cchain-upgrade-mapping.md`) documenting:
-- All C-Chain upgrades (Apricot 1-6, Banff, Cortina, Durango, Etna, Fortuna, Granite)
+- All C-Chain upgrades (Apricot 1-6, Banff, Cortina, Durango, Quasar, Fortuna, Granite)
 - Mapping to Ethereum hard forks
 - Associated LP numbers for each upgrade
 - Header format evolution across upgrades
@@ -924,13 +924,13 @@ However, the original Zoo chain blocks were created with gasLimit 12,000,000 (un
 
 ### Solution
 
-Set Fortuna, Etna, and Granite timestamps to far-future (253399622400) instead of 0:
+Set Fortuna, Quasar, and Granite timestamps to far-future (253399622400) instead of 0:
 
 ```json
 {
   "config": {
     "durangoBlockTimestamp": 0,
-    "etnaTimestamp": 253399622400,
+    "quasarTimestamp": 253399622400,
     "fortunaTimestamp": 253399622400,
     "graniteTimestamp": 253399622400
   }
