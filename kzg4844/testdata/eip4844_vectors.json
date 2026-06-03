@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "description": "Known-answer test vectors for EIP-4844 KZG operations.",
+    "vectors": [
+      {
+        "name": "all_zero_blob",
+        "source": "EIP-4844 spec / consensus-specs polynomial-commitments.md G1_POINT_AT_INFINITY",
+        "blob_pattern": "all zero bytes (4096 zero field elements)",
+        "commitment_hex": "c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "note": "Polynomial commitment of the zero polynomial is the identity element in G1, serialized as 0xc0 followed by 47 zero bytes (BLS12-381 compressed infinity point)."
+      },
+      {
+        "name": "single_one_at_index_0",
+        "source": "Self-consistency: hand-constructed input, expected output computed by github.com/crate-crypto/go-kzg-4844 v1.1.0 ContextSecure (Ethereum trusted setup ceremony).",
+        "blob_pattern": "blob[31] = 0x01, all other bytes zero (one field element of value 1 at evaluation point 0, others zero)",
+        "commitment_hex": "",
+        "note": "Cross-checks precompile path against direct library call; commitment_hex is computed dynamically and compared with library output to detect divergence between the precompile and the reference library."
+      },
+      {
+        "name": "modulus_field_element",
+        "source": "EIP-4844 / consensus-specs validate_blob — BLS_MODULUS = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001 (BLS12-381 scalar field r)",
+        "blob_pattern": "blob[0:32] = BLS_MODULUS (big-endian); remaining bytes zero",
+        "commitment_hex": "REJECT",
+        "note": "Field element equal to r MUST be rejected as non-canonical (DeserializeBlob -> ErrNonCanonicalScalar). Silent modular reduction would be consensus-splitting."
+      },
+      {
+        "name": "modulus_plus_one_field_element",
+        "source": "EIP-4844 / consensus-specs validate_blob",
+        "blob_pattern": "blob[0:32] = BLS_MODULUS + 1 (big-endian); remaining bytes zero",
+        "commitment_hex": "REJECT",
+        "note": "Field element > r must also be rejected."
+      }
+    ]
+  }
+}
