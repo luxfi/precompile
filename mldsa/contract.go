@@ -336,7 +336,19 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 	// Try GPU-accelerated batch verification. Default builds (no -tags
 	// accel) fall through to CPU via accel/crypto_default.go; with accel,
 	// GPU runs but produces the same mathematical result.
-	results, gpuUsed := batchVerifyGPU(signatures, messages, publicKeys)
+	//
+	// Red CRITICAL #176 / #177 propagation: when the GPU C ABI returns
+	// ErrInvalidArgument (msg_len > cap, count > kBatchMaxFactor, null
+	// pointer with non-zero len), the precompile MUST fail closed — a
+	// silent CPU fallback would let the CPU oracle accept the same input
+	// the GPU has already declared malformed, shipping asymmetric
+	// verdicts across the validator set → consensus split. Other accel
+	// errors (NotSupported / OutOfMemory / KernelFailed / NoBackends)
+	// are recoverable and fall through to the per-element CPU verify.
+	results, gpuUsed, gpuErr := batchVerifyGPU(signatures, messages, publicKeys)
+	if gpuErr != nil {
+		return nil, remainingGas, gpuErr
+	}
 
 	if !gpuUsed {
 		// CPU fallback: sequential single verify
@@ -368,16 +380,30 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 }
 
 // batchVerifyGPU attempts GPU-accelerated batch ML-DSA verification.
-// Returns (results, true) if GPU was used, (nil, false) if unavailable.
-func batchVerifyGPU(signatures, messages, publicKeys [][]byte) ([]bool, bool) {
+// Returns (results, true, nil) on GPU success; (nil, false, nil) when the
+// GPU is unavailable or returned a recoverable error (caller should fall
+// back to CPU); (nil, false, err) when the GPU returned a HARD error
+// such as ErrInvalidArgument (caller MUST propagate — see Red CRITICAL
+// #176/#177 propagation policy at the call site).
+func batchVerifyGPU(signatures, messages, publicKeys [][]byte) ([]bool, bool, error) {
 	if !accel.Available() {
-		return nil, false
+		return nil, false, nil
 	}
 	results, err := accelcrypto.BatchVerify(accelcrypto.SigMLDSA65, signatures, messages, publicKeys)
 	if err != nil {
-		return nil, false
+		// Red CRITICAL #176 / M-1 propagation: ErrInvalidArgument is
+		// a HARD contract violation from the GPU C ABI. The lower
+		// layer (accel/ops/crypto/crypto_gpu.go SigMLDSA65 case) has
+		// already refused to silently fall back; propagate up so the
+		// precompile's Run() fails closed. All other accel errors
+		// (NotSupported, OutOfMemory, KernelFailed, NoBackends) stay
+		// recoverable and the caller uses the per-element CPU oracle.
+		if errors.Is(err, accel.ErrInvalidArgument) {
+			return nil, false, err
+		}
+		return nil, false, nil
 	}
-	return results, true
+	return results, true, nil
 }
 
 // readUint256 reads a big-endian uint256 as uint64
