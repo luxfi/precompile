@@ -106,11 +106,19 @@ int randombytes_set_implementation(randombytes_implementation *impl)
 SR25519_DONNA_EXPORT
 const char *randombytes_implementation_name(void);
 
-/* -- NaCl compatibility interface -- */
-
-SR25519_DONNA_EXPORT
-void randombytes(unsigned char * const buf, const unsigned long long buf_len)
-            __attribute__ ((nonnull));
+/* -- NaCl compatibility interface --
+ *
+ * The bare `randombytes(unsigned char*, unsigned long long)` declared
+ * here used to be a public export. It is now a file-local definition
+ * in sr25519-randombytes-default.c (`static`) to avoid colliding with
+ * the strong `randombytes(uint8_t*, size_t)` provided by PQClean's
+ * HQC reference (libluxgpu_hqc.a + luxfi/accel/ops/code +
+ * luxfi/crypto/hqc). No code in this archive calls the bare
+ * `randombytes` — every internal caller uses the namespaced
+ * sr25519_randombytes() in sr25519-randombytes-custom.h. The
+ * declaration is left out of the public header so that downstream
+ * consumers cannot link against a now-hidden symbol.
+ */
 
 #ifdef __cplusplus
 }
