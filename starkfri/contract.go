@@ -1,24 +1,38 @@
 // Copyright (C) 2025-2026, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-// Package p3q implements the EVM precompile entry for the P3Q strict
-// post-quantum STARK verifier, the Lux family canonical proof system.
+// Package starkfri implements the EVM precompile entry for the
+// strict-PQ STARK verifier (a Plonky3 fork with the classical-curve
+// surface stripped out: cSHAKE256 (FIPS 202 / SP 800-185) Merkle
+// hashes over the Goldilocks 64-bit prime field, no KZG, no
+// pairings).
 //
-// P3Q is a fork of Plonky3 with the classical-curve surface stripped
-// out: cSHAKE256 (FIPS 202 / SP 800-185) Merkle hashes over the
-// Goldilocks 64-bit prime field, no KZG, no pairings. The wire-byte
-// proof-backend ID is `ProofBackendP3QSTARKFRISHA3 = 0x22`, pinned in
-// `consensus/config/pq_mode.go`; this precompile is the on-chain
-// dispatch point for that backend.
+// History. This dispatch was previously misnamed "P3Q" and registered
+// at slot 0x012205. Per HANZO-CRYPTO-SUITE §5.2, ROADMAP-CRYPTO-STACK
+// §B.11, and LP-218, slot 0x012205 is reserved for "P3Q — Post-Quantum
+// Pulsar Proof", the on-chain Pulsar / FIPS 204 ML-DSA verifier. The
+// STARK dispatch lives here under its actual algorithmic identity
+// (STARK / FRI / SHAKE) at a separate slot. The previous P3Q-as-STARK
+// label was an aliasing error; this rename closes it.
 //
-// LP-4200 unified PQCrypto block:
+// LP-4200 unified PQCrypto block (post-fix):
 //
 //	0x012201 = ML-KEM          (Module-LWE KEM, FIPS 203)
 //	0x012202 = ML-DSA          (Module-LWE single-party signature, FIPS 204)
 //	0x012203 = SLH-DSA         (hash-based signature, FIPS 205)
 //	0x012204 = Pulsar          (Module-LWE threshold FIPS 204, byte-equal)
-//	0x012205 = P3Q             ← this precompile (strict-PQ STARK)
-//	0x012206 = Corona
+//	0x012205 = P3Q             (Post-Quantum Pulsar Proof — see precompile/p3q)
+//	0x012206 = Corona          (Ring-LWE threshold)
+//	0x012207 = Magnetar        (SLH-DSA threshold, FIPS 205 byte-equal)
+//	0x012208 = HQC             (code-based KEM, family-disjoint backup)
+//	0x012220 = STARK-FRI       ← this precompile (strict-PQ STARK / FRI / SHAKE)
+//
+// The 0x012220 slot is a placeholder pending dedicated LP allocation
+// (the prior 0x012205 claim is reverted to its canonical owner). The
+// 0x012220 base is one nibble above the dense PQ-signature block,
+// chosen so the strict-PQ STARK family can grow its own sub-range
+// (0x012220..0x01222F) without recolliding with the 0x012201..0x01220F
+// PQ-signature block.
 //
 // Wire format (single dispatch, version byte differentiates future
 // proof formats; first deployment is v0x01):
@@ -29,14 +43,22 @@
 //	[4 bytes pub_len (big-endian)]
 //	[pub_len bytes public_inputs]
 //
-// The Rust prover / verifier in `~/work/lux/p3q` runs out-of-band; at
-// startup the node calls `p3q.RegisterVerifier` to wire the Go-side
-// callback that actually invokes the FFI verifier. Without a
-// registered verifier the precompile returns ErrVerifierNotRegistered.
-// Structural validation (length checks + MagicHeader) runs in the
-// precompile itself and is constant-time-friendly: no secret-dependent
-// branches, public inputs and the proof are non-secret by construction.
-package p3q
+// The MagicHeader value "P3Q1" is preserved verbatim from the pre-
+// rename era to keep cryptographer sign-off and EasyCrypt / Lean /
+// Jasmin proof artifacts byte-identical against on-chain calldata.
+// Renaming the header would invalidate the wire-format proofs; the
+// header is a wire-bytes tag, not a name claim. A future v2 wire
+// format may rename it to "SFR1" or similar once the proof artifacts
+// are refreshed.
+//
+// The Rust prover / verifier runs out-of-band; at startup the node
+// calls `starkfri.RegisterVerifier` to wire the Go-side callback that
+// actually invokes the FFI verifier. Without a registered verifier
+// the precompile returns ErrVerifierNotRegistered. Structural
+// validation (length checks + MagicHeader) runs in the precompile
+// itself and is constant-time-friendly: no secret-dependent branches,
+// public inputs and the proof are non-secret by construction.
+package starkfri
 
 import (
 	"encoding/binary"
@@ -47,16 +69,21 @@ import (
 	"github.com/luxfi/precompile/contract"
 )
 
-// ContractP3QVerifyAddress is the canonical LP-4200 slot for P3Q.
-var ContractP3QVerifyAddress = common.HexToAddress("0x0000000000000000000000000000000000012205")
+// ContractStarkFRIVerifyAddress is the canonical slot for the
+// strict-PQ STARK verifier dispatch. Placeholder slot pending
+// dedicated LP allocation; see the package doc comment for rationale.
+var ContractStarkFRIVerifyAddress = common.HexToAddress("0x0000000000000000000000000000000000012220")
 
-// P3QVerifyPrecompile is the singleton instance.
-var P3QVerifyPrecompile = &p3qVerifyPrecompile{}
+// StarkFRIVerifyPrecompile is the singleton instance.
+var StarkFRIVerifyPrecompile = &starkFRIVerifyPrecompile{}
 
-var _ contract.StatefulPrecompiledContract = &p3qVerifyPrecompile{}
+var _ contract.StatefulPrecompiledContract = &starkFRIVerifyPrecompile{}
 
-// MagicHeader is the 4-byte prefix every P3Q proof MUST begin with.
-// Ties the wire to the Plonky3 fork's cSHAKE256/Goldilocks profile.
+// MagicHeader is the 4-byte prefix every STARK-FRI proof MUST begin
+// with. Ties the wire to the Plonky3 fork's cSHAKE256/Goldilocks
+// profile. Value preserved verbatim from the pre-rename era so
+// EasyCrypt / Lean / Jasmin / dudect proof artifacts continue to
+// reference the byte-identical wire tag.
 const MagicHeader = "P3Q1"
 
 // Wire layout constants.
@@ -84,24 +111,24 @@ const (
 
 // Error sentinels returned by this precompile.
 var (
-	ErrInvalidInputLength    = errors.New("p3q: invalid input length")
-	ErrInvalidVersion        = errors.New("p3q: invalid version byte")
-	ErrVerifierNotRegistered = errors.New("p3q: verifier not registered")
-	ErrInvalidProof          = errors.New("p3q: proof verification failed")
+	ErrInvalidInputLength    = errors.New("starkfri: invalid input length")
+	ErrInvalidVersion        = errors.New("starkfri: invalid version byte")
+	ErrVerifierNotRegistered = errors.New("starkfri: verifier not registered")
+	ErrInvalidProof          = errors.New("starkfri: proof verification failed")
 )
 
 // VerifierFn is the Go-side callback that bridges to the out-of-band
-// P3Q (Plonky3 fork) Rust verifier. Returns (ok, err). A non-nil err
-// indicates an internal verifier failure (FFI, decode); ok=false with
-// nil err indicates a well-formed proof that did not verify.
+// STARK-FRI (Plonky3 fork) Rust verifier. Returns (ok, err). A non-nil
+// err indicates an internal verifier failure (FFI, decode); ok=false
+// with nil err indicates a well-formed proof that did not verify.
 type VerifierFn func(version byte, proof, pubInputs []byte) (bool, error)
 
 // verifier is the registered callback. Atomic.Value so RegisterVerifier
 // is safe to call once at node startup without locking the hot path.
 var verifier atomic.Value // VerifierFn
 
-// RegisterVerifier wires the actual P3Q verifier. Called once at node
-// startup. Passing nil clears the registration (useful for tests).
+// RegisterVerifier wires the actual STARK-FRI verifier. Called once at
+// node startup. Passing nil clears the registration (useful for tests).
 func RegisterVerifier(fn VerifierFn) {
 	if fn == nil {
 		verifier.Store(VerifierFn(nil))
@@ -124,7 +151,8 @@ func loadVerifier() VerifierFn {
 //
 // Wire-format compatibility: proof must begin with MagicHeader "P3Q1"
 // (the same structural check the on-chain precompile applies). version
-// is fixed to VersionV1 — there is currently only one P3Q wire version.
+// is fixed to VersionV1 — there is currently only one STARK-FRI wire
+// version.
 //
 // Returns (true, nil) on a verified proof; (false, nil) on a well-formed
 // but invalid proof; (false, ErrVerifierNotRegistered) when no FFI
@@ -141,21 +169,21 @@ func Verify(proof, pubInputs []byte) (bool, error) {
 	return fn(VersionV1, proof, pubInputs)
 }
 
-type p3qVerifyPrecompile struct{}
+type starkFRIVerifyPrecompile struct{}
 
 // RequiredGas returns BaseVerifyGas + PerByteGas * len(input). STARK
 // verifier cost is dominated by FRI query rounds (logarithmic in
 // circuit size); per-byte covers serialization / hashing overhead.
-func (p *p3qVerifyPrecompile) RequiredGas(input []byte) uint64 {
+func (p *starkFRIVerifyPrecompile) RequiredGas(input []byte) uint64 {
 	return BaseVerifyGas + uint64(len(input))*PerByteGas
 }
 
-// Run verifies a P3Q STARK proof.
+// Run verifies a STARK-FRI proof.
 //
 // Returns:
 //   - empty bytes, nil error on successful verification.
 //   - empty bytes, typed error on any failure.
-func (p *p3qVerifyPrecompile) Run(
+func (p *starkFRIVerifyPrecompile) Run(
 	_ contract.AccessibleState,
 	_ common.Address,
 	_ common.Address,
@@ -194,7 +222,7 @@ func (p *p3qVerifyPrecompile) Run(
 	}
 	pub := input[off : off+int(pubLen)]
 
-	// Structural check: proof must begin with the MagicHeader. P3Q
+	// Structural check: proof must begin with the MagicHeader. STARK-FRI
 	// proofs are non-secret, so byte-equality is fine.
 	if len(proof) < len(MagicHeader) || string(proof[:len(MagicHeader)]) != MagicHeader {
 		return nil, remaining, ErrInvalidProof
