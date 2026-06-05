@@ -475,6 +475,20 @@ func (ba *BatchAccumulator) flushLocked() {
 	// Try GPU batch verification via accel
 	results, err := crypto.BatchVerify(crypto.SigMLDSA65, signatures, messages, pubkeys)
 	if err != nil {
+		// Red CRITICAL #176 / M-1 propagation: ErrInvalidArgument is
+		// a HARD contract violation. The CPU oracle here (VerifyMLDSA)
+		// has no length cap and would accept input the GPU already
+		// rejected → consensus split. Surface the hard error through
+		// every callback so the caller's pipeline fails closed at the
+		// right level. Other accel errors stay recoverable.
+		if errors.Is(err, accel.ErrInvalidArgument) {
+			for i := range signatures {
+				if callbacks[i] != nil {
+					callbacks[i](false, err)
+				}
+			}
+			return
+		}
 		// Fall back to CPU verification
 		for i := range signatures {
 			valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
@@ -507,11 +521,21 @@ func (ba *BatchAccumulator) Size() int {
 // BatchVerifyMLDSA verifies multiple ML-DSA signatures.
 // Uses GPU when batch size >= Threshold() and GPU is available.
 // Falls back to CPU verification otherwise.
+//
+// Red CRITICAL #176 / #177 propagation: ErrInvalidArgument from the
+// GPU C ABI is a HARD contract violation (msg_len > cap, count
+// overflow). Propagate it as an error so callers in the AI mining
+// pipeline fail closed instead of shipping CPU-vs-GPU asymmetric
+// verdicts → consensus split. Other accel errors are recoverable
+// and trigger the per-element CPU verify.
 func BatchVerifyMLDSA(pubkeys, messages, signatures [][]byte) ([]bool, error) {
 	// Try GPU path first via accel
 	results, err := crypto.BatchVerify(crypto.SigMLDSA65, signatures, messages, pubkeys)
 	if err == nil {
 		return results, nil
+	}
+	if errors.Is(err, accel.ErrInvalidArgument) {
+		return nil, err
 	}
 
 	// Fall back to CPU
