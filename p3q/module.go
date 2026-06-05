@@ -1,7 +1,7 @@
 // Copyright (C) 2025-2026, Lux Industries Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package starkfri
+package p3q
 
 import (
 	"github.com/luxfi/precompile/contract"
@@ -11,15 +11,19 @@ import (
 
 var _ contract.Configurator = &configurator{}
 
-const ConfigKey = "starkfriVerify"
+// ConfigKey is the globally unique JSON config key for this
+// precompile. Distinct from "pulsarVerify" (slot 0x012204) so a
+// chain config can independently enable/disable the LP-218 rollup-
+// commit verifier.
+const ConfigKey = "p3qVerify"
 
 type configurator struct{}
 
 func init() {
 	if err := modules.RegisterModule(modules.Module{
 		ConfigKey:    ConfigKey,
-		Address:      ContractStarkFRIVerifyAddress,
-		Contract:     StarkFRIVerifyPrecompile,
+		Address:      ContractP3QVerifyAddress,
+		Contract:     P3QVerifyPrecompile,
 		Configurator: &configurator{},
 	}); err != nil {
 		panic(err)
@@ -37,8 +41,14 @@ func (*configurator) Configure(
 	return nil
 }
 
-// Config is the precompileconfig.Config for the strict-PQ STARK-FRI
-// verify precompile.
+// Config is the precompileconfig.Config for the P3Q (Post-Quantum
+// Pulsar Proof) verify precompile at slot 0x012205.
+//
+// Activation: per LP-218, P3Q is callable from the genesis block of
+// the new final Lux network (2025-12-25 16:20 Pacific, unix
+// 1766708400). Chain configs that wire a non-zero Upgrade.Timestamp
+// can defer activation to later heights; the canonical mainnet
+// config pins the activation timestamp to the LP-218 genesis.
 type Config struct {
 	Upgrade precompileconfig.Upgrade `json:"upgrade"`
 }
