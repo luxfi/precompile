@@ -206,7 +206,24 @@ randombytes_close(void)
     return 0;
 }
 
-void
+/*
+ * NaCl-compatibility bare `randombytes`. Kept here for ABI symmetry
+ * with the libsodium-derived sr25519-donna header, but made file-local
+ * (`static`) because:
+ *
+ *   1. No code inside sr25519 calls it — sr25519's own sources use
+ *      `sr25519_randombytes` (the namespaced variant declared in
+ *      sr25519-randombytes-custom.h).
+ *   2. PQClean's HQC reference (linked via libluxgpu_hqc.a and
+ *      consumed by luxfi/crypto/hqc + luxfi/accel/ops/code) provides
+ *      its OWN strong `randombytes(uint8_t*, size_t)` with a different
+ *      signature. When both packages end up in the same Go binary
+ *      (e.g. chains/evm), the linker errors with duplicate symbol
+ *      '_randombytes'. Marking this one `static` resolves the
+ *      collision without touching PQClean's contract.
+ */
+__attribute__((unused))
+static void
 randombytes(unsigned char * const buf, const unsigned long long buf_len)
 {
     assert(buf_len <= SIZE_MAX);
