@@ -1,0 +1,39 @@
+{
+  "_source": "Deterministic seed-based KAT vectors for FIPS 203 ML-KEM at the precompile EVM-dispatch layer.",
+  "_keygen_seed_construction": "64-byte seed 0x00..0x3f (canonical NIST FIPS 203 example pattern; identical to upstream luxfi/crypto/mlkem/kat_test.go and circl ACVP fixtures).",
+  "_encap_seed_construction": "32-byte seed 0x40..0x5f (the encapsulation random coin r per FIPS 203 Algorithm 17).",
+  "_pk_pinning": "First 32 bytes of MarshalBinary(pk) for cloudflare/circl NewKeyFromSeed(64-byte seed). Cross-verified against upstream luxfi/crypto/mlkem/kat_test.go (katPKPrefixHex for ML-KEM-768).",
+  "_assertion": "The mlkem precompile applies a domain-separating sha256(\"MLKEM_ENCAP_v1\" || caller || rawSeed) over the caller-supplied 32-byte seed and uses an iterated-sha256 PRNG, so the precompile output (ciphertext || shared_secret) is NOT the same as raw FIPS 203 KAT output. We instead lock down (a) the input public key derived from the canonical 64-byte seed, and (b) the precompile-level determinism: given identical (caller, seed, pubkey), the precompile MUST produce identical (ciphertext, shared_secret) bytes. This catches both upstream library drift and accidental introduction of entropy into the precompile path.",
+  "vectors": [
+    {
+      "mode": "ML-KEM-512",
+      "mode_byte": "0x00",
+      "key_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "encap_seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "expected_public_key_prefix_hex": "3995815e597d104355cf29aa5333c93251869d5bcdbe487124f602b8b6a66c16",
+      "public_key_size": 800,
+      "ciphertext_size": 768,
+      "shared_secret_size": 32
+    },
+    {
+      "mode": "ML-KEM-768",
+      "mode_byte": "0x01",
+      "key_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "encap_seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "expected_public_key_prefix_hex": "298aa10d423c8dda069d02bc59e6cdf03a096b8b3da4cab9b80ca4a14907672c",
+      "public_key_size": 1184,
+      "ciphertext_size": 1088,
+      "shared_secret_size": 32
+    },
+    {
+      "mode": "ML-KEM-1024",
+      "mode_byte": "0x02",
+      "key_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "encap_seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "expected_public_key_prefix_hex": "4b94c29450111191823b3514c9ac1ea3d9825ccb86393a2dfb04654fa2192d37",
+      "public_key_size": 1568,
+      "ciphertext_size": 1568,
+      "shared_secret_size": 32
+    }
+  ]
+}
