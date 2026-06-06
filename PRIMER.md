@@ -98,7 +98,7 @@ Post-quantum cryptography replaces the hardness assumption.
 | `mldsa`    | `0x0200..06` | FIPS 204 (ML-DSA) | Module-LWE + Module-SIS |
 | `mlkem`    | `0x0200..07` | FIPS 203 (ML-KEM) | Module-LWE |
 | `slhdsa`   | `0x0600..01` | FIPS 205 (SLH-DSA (FIPS 205, formerly SPHINCS+)) | Hash-based (no structured math) |
-| `ringtail` | `0x0200..0B` | — | LWE threshold signatures |
+| `Corona` | `0x0200..0B` | — | LWE threshold signatures |
 | `xwing`    | `0x2221` | Draft hybrid | X25519 + ML-KEM-768 |
 
 **NIST standardized ML-DSA, ML-KEM, and SLH-DSA in 2024.** That's the

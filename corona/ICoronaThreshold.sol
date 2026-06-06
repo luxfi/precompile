@@ -2,11 +2,11 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title IRingtailThreshold
- * @notice Interface for the Ringtail Threshold Signature precompile
+ * @title ICoronaThreshold
+ * @notice Interface for the Corona Threshold Signature precompile
  * @dev Precompile address: 0x020000000000000000000000000000000000000B
  *
- * This precompile verifies LWE-based threshold signatures from the Ringtail protocol
+ * This precompile verifies LWE-based threshold signatures from the Corona protocol
  * (https://eprint.iacr.org/2024/1113) used in Quasar quantum consensus.
  *
  * Key Features:
@@ -20,9 +20,9 @@ pragma solidity ^0.8.24;
  * - Quantum: Resistant to Shor's algorithm
  * - Based on Learning With Errors (LWE) problem
  */
-interface IRingtailThreshold {
+interface ICoronaThreshold {
     /**
-     * @notice Verify a Ringtail threshold signature
+     * @notice Verify a Corona threshold signature
      * @param threshold The minimum number of parties required (t)
      * @param totalParties The total number of parties in the protocol (n)
      * @param messageHash The 32-byte hash of the message that was signed
@@ -57,12 +57,12 @@ interface IRingtailThreshold {
 }
 
 /**
- * @title RingtailThresholdLib
- * @notice Library for interacting with the Ringtail Threshold precompile
+ * @title CoronaThresholdLib
+ * @notice Library for interacting with the Corona Threshold precompile
  */
-library RingtailThresholdLib {
-    /// @notice Address of the Ringtail threshold precompile
-    address constant RINGTAIL_THRESHOLD = 0x020000000000000000000000000000000000000B;
+library CoronaThresholdLib {
+    /// @notice Address of the Corona threshold precompile
+    address constant CORONA_THRESHOLD = 0x020000000000000000000000000000000000000B;
 
     /// @notice Gas costs
     uint256 constant BASE_GAS = 150_000;
@@ -90,7 +90,7 @@ library RingtailThresholdLib {
             revert InvalidThreshold();
         }
 
-        bool valid = IRingtailThreshold(RINGTAIL_THRESHOLD).verifyThreshold(
+        bool valid = ICoronaThreshold(CORONA_THRESHOLD).verifyThreshold(
             threshold,
             totalParties,
             messageHash,
@@ -123,11 +123,11 @@ library RingtailThresholdLib {
 }
 
 /**
- * @title RingtailThresholdVerifier
- * @notice Abstract contract for using Ringtail threshold signatures
+ * @title CoronaThresholdVerifier
+ * @notice Abstract contract for using Corona threshold signatures
  */
-abstract contract RingtailThresholdVerifier {
-    using RingtailThresholdLib for *;
+abstract contract CoronaThresholdVerifier {
+    using CoronaThresholdLib for *;
 
     /// @notice Emitted when a threshold signature is verified
     event ThresholdSignatureVerified(
@@ -151,7 +151,7 @@ abstract contract RingtailThresholdVerifier {
         bytes32 messageHash,
         bytes calldata signature
     ) internal view returns (bool) {
-        return IRingtailThreshold(RingtailThresholdLib.RINGTAIL_THRESHOLD).verifyThreshold(
+        return ICoronaThreshold(CoronaThresholdLib.CORONA_THRESHOLD).verifyThreshold(
             threshold,
             totalParties,
             messageHash,
@@ -179,9 +179,9 @@ abstract contract RingtailThresholdVerifier {
 
 /**
  * @title QuasarValidator
- * @notice Example contract using Ringtail threshold signatures for Quasar consensus
+ * @notice Example contract using Corona threshold signatures for Quasar consensus
  */
-contract QuasarValidator is RingtailThresholdVerifier {
+contract QuasarValidator is CoronaThresholdVerifier {
     struct Validator {
         address addr;
         bytes publicKey;
@@ -219,7 +219,7 @@ contract QuasarValidator is RingtailThresholdVerifier {
         bytes32 messageHash,
         bytes calldata signature
     ) external {
-        RingtailThresholdLib.verifyOrRevert(
+        CoronaThresholdLib.verifyOrRevert(
             CONSENSUS_THRESHOLD,
             TOTAL_VALIDATORS,
             messageHash,
@@ -240,6 +240,6 @@ contract QuasarValidator is RingtailThresholdVerifier {
      * @return Gas estimate
      */
     function estimateConsensusGas() external pure returns (uint256) {
-        return RingtailThresholdLib.estimateGas(TOTAL_VALIDATORS);
+        return CoronaThresholdLib.estimateGas(TOTAL_VALIDATORS);
     }
 }

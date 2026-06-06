@@ -72,7 +72,7 @@ The test suite is broad (341+ tests across 62 files) but shallow in exactly the 
 | `verifySLHDSAGPU` — exported but untested | **MEDIUM** |
 | Gas = 0 (only tested once via `TestSLHDSAVerify_OutOfGas` with gas=1000, not gas=0) | **LOW** |
 
-### 1.6 Pulsar Lattice Threshold (ringtail/)
+### 1.6 Pulsar Lattice Threshold (Corona/)
 
 | Missing Test | Severity |
 |-------------|----------|
@@ -173,7 +173,7 @@ No package has a complete gas edge case test suite. The required tests per preco
 | Test | Packages That Have It | Packages Missing It |
 |------|----------------------|---------------------|
 | gas = 0 | NONE | ALL |
-| gas = RequiredGas - 1 | ed25519 (implicitly) | frost, cggmp21, mldsa, slhdsa, ringtail, blake3, kzg4844, pqcrypto, mlkem, secp256r1, x25519, xwing, fhe, quantum, quasar, bls12381, babyjubjub, curve25519, pasta, pedersen, poseidon, hpke, ring, math, stableswap, compute |
+| gas = RequiredGas - 1 | ed25519 (implicitly) | frost, cggmp21, mldsa, slhdsa, Corona, blake3, kzg4844, pqcrypto, mlkem, secp256r1, x25519, xwing, fhe, quantum, quasar, bls12381, babyjubjub, curve25519, pasta, pedersen, poseidon, hpke, ring, math, stableswap, compute |
 | gas = RequiredGas (exact) | mldsa, slhdsa | Most others supply excess gas |
 | gas = max uint64 | contract (partial) | ALL precompile packages |
 
