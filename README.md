@@ -21,7 +21,7 @@ Geth provides `NewPrecompileAdapter()` to wrap these into geth-compatible precom
 |---------|---------|-------------|-----|
 | `frost` | `0x0800...0002` | FROST Schnorr threshold verify (secp256k1/Ed25519) | 50k + 5k/signer |
 | `cggmp21` | `0x0800...0003` | CGGMP21 threshold ECDSA verify (secp256k1) | 75k + 10k/signer |
-| `corona` | `0x0200...000B` | Ring-LWE lattice threshold verify (post-quantum) | 150k + 10k/party |
+| `Corona` | `0x0200...000B` | Ring-LWE lattice threshold verify (post-quantum) | 150k + 10k/party |
 
 ### Curves & Signatures
 
