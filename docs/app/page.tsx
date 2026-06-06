@@ -3,7 +3,7 @@ import Link from 'next/link';
 const features = [
   {
     title: 'Cryptography',
-    description: 'ML-DSA, ML-KEM, SLH-DSA, FROST, Ringtail, CGGMP21',
+    description: 'ML-DSA, ML-KEM, SLH-DSA, FROST, Corona, CGGMP21',
     href: '/docs/crypto',
     icon: '🔐',
   },
@@ -33,7 +33,7 @@ const features = [
   },
   {
     title: 'Threshold',
-    description: 'FROST Schnorr, CGGMP21 ECDSA, Ringtail PQ',
+    description: 'FROST Schnorr, CGGMP21 ECDSA, Corona PQ',
     href: '/docs/threshold',
     icon: '🔑',
   },
@@ -191,7 +191,7 @@ export default function Home() {
 0x0500-0x05FF  Graph/Query      GraphQL, Subscriptions
 0x0600-0x06FF  Post-Quantum     ML-DSA, ML-KEM, SLH-DSA
 0x0700-0x07FF  Privacy          FHE, ECIES, Ring, HPKE
-0x0800-0x08FF  Threshold        FROST, CGGMP21, Ringtail
+0x0800-0x08FF  Threshold        FROST, CGGMP21, Corona
 0x0900-0x09FF  ZK Proofs        KZG, Groth16, PLONK`}</code>
               </pre>
             </div>

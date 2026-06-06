@@ -93,7 +93,7 @@ Since Go 1.24, `crypto/rand.Read` never returns an error [2]. Error checks on
 | `x25519/deep_test.go` | 112-113 | `_, _ = rand.Read(...)` | `rand.Read(...)` |
 | `curve25519/deep_test.go` | 213 | `_, err := rand.Read(buf[:])` | `rand.Read(buf[:])` |
 | `xwing/contract_test.go` | 130 | `_, err := rand.Read(garbage)` | `rand.Read(garbage)` |
-| `ringtail/contract_test.go` | 227 | `if _, err := rand.Read(prfKey); err != nil` | `rand.Read(prfKey)` |
+| `Corona/contract_test.go` | 227 | `if _, err := rand.Read(prfKey); err != nil` | `rand.Read(prfKey)` |
 | `ed25519/security_test.go` | 34,75 | `_, _ = rand.Read(message)` | `rand.Read(message)` |
 | `ring/security_test.go` | 55,152 | `_, _ = rand.Read(...)` | `rand.Read(...)` |
 
@@ -215,7 +215,7 @@ calibrated to unoptimized builds).
 **Hot paths for profiling** (by test duration):
 - `fhe`: 71.8s (FHE is inherently slow; PGO helps most here)
 - `pqcrypto`: 4.7s
-- `ringtail`: 4.8s
+- `Corona`: 4.8s
 - `slhdsa`: 3.7s
 - `zk`: 3.8s
 

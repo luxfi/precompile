@@ -117,13 +117,13 @@ contract MyContract is CoronaThresholdVerifier {
 ```typescript
 import { ethers } from 'ethers';
 
-const RINGTAIL_THRESHOLD = '0x020000000000000000000000000000000000000B';
+const CORONA_THRESHOLD = '0x020000000000000000000000000000000000000B';
 
 const abi = [
     'function verifyThreshold(uint32,uint32,bytes32,bytes) view returns(bool)'
 ];
 
-const precompile = new ethers.Contract(RINGTAIL_THRESHOLD, abi, provider);
+const precompile = new ethers.Contract(CORONA_THRESHOLD, abi, provider);
 
 // Verify 2-of-3 threshold signature
 const isValid = await precompile.verifyThreshold(
