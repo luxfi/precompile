@@ -28,7 +28,7 @@ All crypto-heavy precompiles have GPU fast paths via `github.com/luxfi/accel` an
   node. Removed; awaiting a real accel SLH-DSA kernel.
 - `frost/` -- `accelcrypto.BatchVerify(SigECDSA, ...)` for Schnorr verification
 - `cggmp21/` -- `accelcrypto.BatchVerify(SigECDSA, ...)` for ECDSA verification
-- `corona/` -- `accellattice.NTTForward()` for polynomial deserialization (Ring-LWE threshold; renamed from ringtail in LP-4200)
+- `corona/` -- `accellattice.NTTForward()` for polynomial deserialization (Ring-LWE threshold; renamed from Corona in LP-4200)
 - `blake3/` -- `accelcrypto.Hash(HashBlake3, ...)` for hash256 and Merkle tree batch hashing
 - `fhe/` -- `accelfhe.Add/Sub/Multiply` in `performFHEOperation()` GPU fast path
 
@@ -267,7 +267,7 @@ Example hook implementations:
 |---------|------|---------|-------------|-----|
 | 0x0800 | FROST | frost/ | Schnorr threshold signatures | 25,000 |
 | 0x0801 | CGGMP21 | cggmp21/ | ECDSA threshold signatures | 50,000 |
-| 0x0802 | RINGTAIL | ringtail/ | Threshold lattice signatures (PQ) | 75,000 |
+| 0x0802 | CORONA | Corona/ | Threshold lattice signatures (PQ) | 75,000 |
 
 #### ZK Proofs (0x0900-0x09FF)
 | Address | Name | Package | Description | Gas |
@@ -1057,7 +1057,7 @@ EVM interface to B-Chain MPC bridge operations:
 
 EVM interface to **M-Chain** MPC-as-a-service. Per LP-134 (Lux Chain
 Topology), M-Chain hosts the MPC ceremonies (CGGMP21 / FROST /
-Ringtail-gen) that the legacy T-Chain monolith used to host. The
+Corona-gen) that the legacy T-Chain monolith used to host. The
 implementation lives in `chains/thresholdvm/` running in MPC mode; the
 sibling F-Chain runs the same substrate in FHE mode for TFHE keygen
 and encrypted-EVM compute. The legacy "T-Chain" name is retained only
@@ -1072,7 +1072,7 @@ for `teleportvm` (LP-6332), which is unrelated.
 | 0x0804 | THRESHOLD_VERIFY | Signature verification | 25,000 |
 | 0x0810 | FROST | FROST threshold Schnorr | 25,000 |
 | 0x0811 | CGGMP21 | CGGMP21 threshold ECDSA | 50,000 |
-| 0x0812 | RINGTAIL | Post-quantum threshold | 75,000 |
+| 0x0812 | CORONA | Post-quantum threshold | 75,000 |
 | 0x0813 | LSS | Lux Secret Sharing | 25,000 |
 
 **Supported Key Types:**
@@ -1118,13 +1118,13 @@ EVM interface to QuantumVM for post-quantum security:
 | Address | Name | Description | Gas |
 |---------|------|-------------|-----|
 | 0x0600 | QUANTUM_VERIFY | Generic quantum signature verification | 75,000 |
-| 0x0601 | RINGTAIL | Pulsar threshold signatures | 75,000 |
+| 0x0601 | CORONA | Pulsar threshold signatures | 75,000 |
 | 0x0602 | ML_DSA | NIST ML-DSA | 50,000 |
 | 0x0603 | ML_KEM | NIST ML-KEM | 25,000 |
 | 0x0604 | SLH_DSA | NIST SLH-DSA (FIPS 205, formerly SPHINCS+) | 100,000 |
-| 0x0610 | HYBRID_BLS_RINGTAIL | BLS + Pulsar hybrid | 100,000 |
+| 0x0610 | HYBRID_BLS_CORONA | BLS + Pulsar hybrid | 100,000 |
 | 0x0611 | HYBRID_ECDSA_MLDSA | ECDSA + ML-DSA hybrid | 100,000 |
-| 0x0612 | HYBRID_SCHNORR_RINGTAIL | Schnorr + Pulsar hybrid | 100,000 |
+| 0x0612 | HYBRID_SCHNORR_CORONA | Schnorr + Pulsar hybrid | 100,000 |
 | 0x0620 | QUANTUM_STAMP | Quantum timestamp verification | 50,000 |
 | 0x0621 | QUANTUM_ANCHOR | Quantum anchor verification | 50,000 |
 | 0x0630 | BLS_VERIFY | BLS12-381 signature verification | 25,000 |
@@ -1171,7 +1171,7 @@ EVM interface to QuantumVM for post-quantum security:
 │   └── verifier.go
 ├── quasar/       # Quantum consensus
 ├── ring/         # Ring signatures
-├── ringtail/     # Pulsar threshold
+├── Corona/     # Pulsar threshold
 ├── secp256r1/    # P-256 curve
 ├── slhdsa/       # SLH-DSA signatures
 ├── threshold/    # Threshold precompiles (0x0800-0x0813) [NEW]
