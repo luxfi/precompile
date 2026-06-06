@@ -169,7 +169,7 @@ const (
 // libraries land (see LP-220 §"Per-kind specs").
 const (
 	KindPulsar   uint8 = 0x01 // FIPS 204 ML-DSA (Module-LWE threshold, byte-equal)
-	KindCorona   uint8 = 0x02 // Ring-LWE threshold (Ringtail eprint 2024/1113)
+	KindCorona   uint8 = 0x02 // Ring-LWE threshold (Corona eprint 2024/1113)
 	KindMagnetar uint8 = 0x03 // FIPS 205 SLH-DSA (hash-based threshold)
 )
 
