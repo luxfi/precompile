@@ -12,7 +12,7 @@ import (
 )
 
 // =========================================================================
-// Integration test: multi-hop, multi-venue trading through the Partner DEX
+// Integration test: multi-hop, multi-venue trading through the Lux DEX
 //
 // Demonstrates how the ATS backend connects to the DEX precompile:
 //   - LXRouter routes swaps through V4 pools (on-chain matching)
@@ -78,7 +78,7 @@ func newIntegrationPoolManager() *PoolManager {
 
 // TestIntegrationMultiHopMultiVenue is the full E2E scenario:
 //
-//	User wants to swap 10,000 USDL -> ETH via the Partner DEX.
+//	User wants to swap 10,000 USDL -> ETH via the Lux DEX.
 //	The test walks through every step: pool setup, single-hop, multi-hop,
 //	multi-venue quoting, external-venue-only fallback, compliance controls,
 //	and the simulated ATS order flow with FillAttestation.
