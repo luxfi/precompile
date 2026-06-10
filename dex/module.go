@@ -74,7 +74,7 @@ var DEXPrecompile = newDEXContract(NewEmbeddedEngine())
 // added without updating the guard doesn't silently re-open the race.
 //
 // Logs the backend brand to stderr on success so operators see in the boot
-// log which engine is wired (e.g. "Liquid DEX" vs upstream OSS). RED V1.
+// log which engine is wired (e.g. "Hanzo DEX" vs upstream OSS). RED V1.
 //
 // Threading: not safe for concurrent use. The host binary is the single caller
 // during process startup.
