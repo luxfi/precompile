@@ -10,7 +10,7 @@ import (
 
 // labeledEngine wraps EmbeddedEngine with a different brand. It exists only
 // to exercise the backend-swap path from a test — it stands in for the real
-// white-label backends (e.g. Liquid DEX) that live in dependent repos.
+// white-label backends (e.g. Hanzo DEX, Zoo DEX) that live in dependent repos.
 type labeledEngine struct {
 	*EmbeddedEngine
 	brand string
@@ -25,7 +25,7 @@ func (l *labeledEngine) Brand() string { return l.brand }
 // configures a different backend — only the brand string differs.
 func TestEngineContractAcrossBackends(t *testing.T) {
 	upstream := NewEmbeddedEngine()
-	whitelabel := &labeledEngine{EmbeddedEngine: NewEmbeddedEngine(), brand: "Liquid DEX"}
+	whitelabel := &labeledEngine{EmbeddedEngine: NewEmbeddedEngine(), brand: "Hanzo DEX"}
 
 	// Brand contract: each backend reports a non-empty, distinct identity.
 	if upstream.Brand() == "" || whitelabel.Brand() == "" {
