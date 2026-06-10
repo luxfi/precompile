@@ -19,8 +19,8 @@ import (
 //   - EmbeddedEngine (engine_embedded.go) — pure-Go V4 math, default for
 //     upstream Lux EVM and any chain that wants a self-contained build.
 //   - ZAPEngine (engine_zap.go) — binary protocol shim to an external DEX
-//     process. The external process can be the upstream Lux DEX or a
-//     white-label DEX such as Liquid DEX; the precompile does not care.
+//     process. The external process can be the upstream Lux DEX or any
+//     white-label DEX downstream; the precompile does not care.
 //
 // Adding a new backend is purely additive: implement Engine, ship it in
 // its own package, and have the host EVM call dex.SetBackend() before the
@@ -49,8 +49,8 @@ type Engine interface {
 
 	// Brand returns the human-readable identity of the backend. The precompile
 	// uses this in log lines and error wrapping so user-facing strings on a
-	// regulated EVM L1 chain say "Liquid DEX", on Lux say "Lux DEX", etc. Implementations
-	// MUST return a non-empty constant; an empty value trips a sanity check at
-	// SetBackend() time.
+	// downstream L1 chain say e.g. "Hanzo DEX", on Lux say "Lux DEX", etc.
+	// Implementations MUST return a non-empty constant; an empty value trips
+	// a sanity check at SetBackend() time.
 	Brand() string
 }
