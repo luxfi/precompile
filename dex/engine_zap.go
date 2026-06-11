@@ -31,7 +31,7 @@ const (
 
 // brandFallback is the neutral, brand-free identity surfaced by ZAPEngine when
 // the external process does not advertise a brand (or is unreachable). It must
-// not leak any upstream OSS name — Liquidity surfaces enforce that property.
+// not leak any upstream OSS name — downstream tenant surfaces enforce that property.
 const brandFallback = "DEX"
 
 // zapClient is the interface for a ZAP binary protocol connection.
