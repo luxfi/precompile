@@ -59,7 +59,7 @@ var (
 //
 //   - Brand identity is a value the backend carries (Engine.Brand()). User-
 //     facing error strings produced by the precompile MUST come from the
-//     backend, never hard-coded here. This keeps a Liquidity surface free of
+//     backend, never hard-coded here. This keeps a tenant surface free of
 //     the word "Lux" while still letting the OSS package be called "Lux DEX"
 //     on Lux-network deployments.
 var DEXPrecompile = newDEXContract(NewEmbeddedEngine())
