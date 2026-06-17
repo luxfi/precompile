@@ -77,19 +77,9 @@ type poolRouter interface {
 	SetPoolID(ps *PoolState, poolID [32]byte)
 }
 
-// idempotencyBinder is the OPTIONAL seam a backend implements when a marketable
-// order (Swap) must be bound to its originating EVM transaction so a
-// re-execution, reorg, or retry of the same tx maps to EXACTLY ONE match
-// against the d-chain book — never a double-fill (RED H1).
-//
-// The PoolManager, which alone sees the execution context, threads the tx hash
-// to the backend immediately before delegating Swap. The ZAPEngine records the
-// binding and, on a repeated tx hash, returns the previously-committed
-// BalanceDelta instead of submitting again. The inertEngine does NOT implement
-// this (it never submits); the PoolManager type-asserts and only binds when the
-// seam is present, so backends that need no idempotency are unaffected.
-type idempotencyBinder interface {
-	// BindTx records txHash as the identity of the next Swap. A zero hash means
-	// no binding is available (e.g. a non-EVM caller), disabling the cache.
-	BindTx(ps *PoolState, txHash common.Hash)
-}
+// Replay-idempotency for a marketable order (Swap) is NOT a backend concern: it
+// lives in the PoolManager against StateDB, keyed by (txHash, poolId, params).
+// That key is durable (survives a node restart) and consensus-shared (identical
+// on every validator replaying the same block), so it maps a re-executed / reorg
+// / retried tx to EXACTLY ONE d-chain match — properties an in-process backend
+// cache cannot provide (RED H1). See PoolManager.swapBindKey / loadSwapBinding.
