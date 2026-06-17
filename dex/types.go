@@ -381,6 +381,14 @@ var (
 	ErrInvalidSqrtPrice         = errors.New("invalid sqrt price")
 	ErrTickOutOfRange           = errors.New("tick out of range")
 	ErrNoLiquidity              = errors.New("no liquidity in pool")
+
+	// ErrDEXBackendNotConfigured is returned by every operation of the inert
+	// default engine. The LP-9010 precompile ships in the public EVM but is
+	// INERT until the venue wires a real backend via SetBackend(NewZAPEngine).
+	// V4 = CLOB, so the matcher lives on the d-chain (reached over ZAP), never
+	// embedded in the precompile — an unconfigured venue must revert cleanly
+	// rather than run a wrong, second matcher. See engine_inert.go.
+	ErrDEXBackendNotConfigured = errors.New("dex: backend not configured (set dex-zap-endpoint to enable LP-9010)")
 )
 
 // Errors - Pause/Freeze Controls (ATS regulatory compliance)
