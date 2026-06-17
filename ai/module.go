@@ -42,6 +42,9 @@ const (
 	SelectorIsSpent         uint32 = 0x04000000 // isSpent(bytes32)
 	SelectorMarkSpent       uint32 = 0x05000000 // markSpent(bytes32)
 	SelectorComputeWorkId   uint32 = 0x06000000 // computeWorkId(bytes32,bytes32,uint64)
+	// Atomic cross-chain mining claims (verify attestation -> reward -> mark spent).
+	SelectorVerifyAndMintWork uint32 = 0x07000000 // verifyAndMintWork(workProof,pubkey,sig,chainId) -> reward
+	SelectorVerifyAndMintData uint32 = 0x08000000 // verifyAndMintData(descriptor,pubkey,sig,chainId) -> reward
 )
 
 type configurator struct{}
@@ -127,6 +130,10 @@ func (c *AIMiningContract) Run(
 		return c.runMarkSpent(accessibleState, data, suppliedGas, readOnly)
 	case SelectorComputeWorkId:
 		return c.runComputeWorkId(data, suppliedGas)
+	case SelectorVerifyAndMintWork:
+		return c.runVerifyAndMintWork(accessibleState, data, suppliedGas, readOnly)
+	case SelectorVerifyAndMintData:
+		return c.runVerifyAndMintData(accessibleState, data, suppliedGas, readOnly)
 	default:
 		return nil, suppliedGas, fmt.Errorf("unknown method selector: %x", selector)
 	}
@@ -356,6 +363,10 @@ func (c *AIMiningContract) RequiredGas(input []byte) uint64 {
 		return GasMarkSpent
 	case SelectorComputeWorkId:
 		return GasComputeWorkId
+	case SelectorVerifyAndMintWork:
+		return GasVerifyAndMintWork
+	case SelectorVerifyAndMintData:
+		return GasVerifyAndMintData
 	default:
 		return GasCalculateReward
 	}
