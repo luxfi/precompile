@@ -69,6 +69,42 @@ func NewPoolState(pool *Pool, tickSpacing int32, lpFee uint32) *PoolState {
 	}
 }
 
+// routePool tells a poolRouter backend (e.g. ZAPEngine) which canonical pool a
+// PoolState maps to, so the next engine delegation forwards to the right
+// server-side pool. No-op for the embedded engine (not a poolRouter). Called on
+// every swap/modify/donate/quote because the cache PoolState may be rebuilt
+// from StateDB between calls, so the route must be (re)asserted each time.
+func (pm *PoolManager) routePool(poolId [32]byte, ps *PoolState) {
+	if router, ok := pm.engine.(poolRouter); ok {
+		router.SetPoolID(ps, poolId)
+	}
+}
+
+// txIdentified is the OPTIONAL capability a StateDB exposes when it can name the
+// executing EVM transaction. The production poolStateAdapter implements it
+// (sourced from contract.StateDB.TxHash); test StateDBs need not. PoolManager
+// uses it only to thread tx identity into an idempotencyBinder backend.
+type txIdentified interface {
+	TxHash() common.Hash
+}
+
+// bindTx threads the executing tx hash into an idempotencyBinder backend (e.g.
+// ZAPEngine) so a marketable order is submitted to the d-chain at most once per
+// EVM tx — re-execution / reorg / retry returns the committed delta instead of
+// double-filling (RED H1). No-op when the engine is not a binder or the StateDB
+// cannot name the tx (the binder then disables its cache for that call).
+func (pm *PoolManager) bindTx(stateDB StateDB, ps *PoolState) {
+	binder, ok := pm.engine.(idempotencyBinder)
+	if !ok {
+		return
+	}
+	var txHash common.Hash
+	if tx, ok := stateDB.(txIdentified); ok {
+		txHash = tx.TxHash()
+	}
+	binder.BindTx(ps, txHash)
+}
+
 // getOrCreateTick returns the TickInfo for a tick, creating it if absent.
 func (ps *PoolState) getOrCreateTick(tick int32) *TickInfo {
 	ti, ok := ps.Ticks[tick]
@@ -197,6 +233,21 @@ func (pm *PoolManager) Initialize(
 
 	ps := NewPoolState(pool, key.TickSpacing, key.Fee)
 	pm.poolStates[poolId] = ps
+
+	// ZAP path: create the CANONICAL pool on the D-Chain server and route this
+	// (cache) PoolState to it. The server's copy is the source of truth; the
+	// local ps/pool above are a read-through view persisted to StateDB. The
+	// embedded path skips this (engine is not a poolRouter) and keeps ps as the
+	// authoritative state, unchanged.
+	if router, ok := pm.engine.(poolRouter); ok {
+		serverTick, perr := router.InitializePool(ps, poolId, sqrtPriceX96, key.TickSpacing, uint32(key.Fee))
+		if perr != nil {
+			return 0, perr
+		}
+		// The server's tick is authoritative; sync the cache to it.
+		tick = serverTick
+		pool.Tick = serverTick
+	}
 
 	pm.setPool(stateDB, poolId, pool)
 
@@ -410,6 +461,8 @@ func (pm *PoolManager) Swap(
 		}
 	}
 
+	pm.routePool(poolId, ps)
+	pm.bindTx(stateDB, ps)
 	delta, err := pm.engine.Swap(ps, params)
 	if err != nil {
 		return ZeroBalanceDelta(), err
@@ -489,6 +542,7 @@ func (pm *PoolManager) ModifyLiquidity(
 		}
 	}
 
+	pm.routePool(poolId, ps)
 	callerDelta, feesAccrued, err := pm.engine.ModifyLiquidity(ps, caller, params)
 	if err != nil {
 		return ZeroBalanceDelta(), ZeroBalanceDelta(), err
@@ -552,6 +606,7 @@ func (pm *PoolManager) Donate(
 		}
 	}
 
+	pm.routePool(poolId, ps)
 	delta, err := pm.engine.Donate(ps, amount0, amount1)
 	if err != nil {
 		return ZeroBalanceDelta(), err
@@ -795,6 +850,33 @@ func (pm *PoolManager) transferERC20(stateDB StateDB, currency Currency, from, t
 	return pm.transferToken(stateDB, currency, from, to, amount)
 }
 
+// erc20BalanceSlot0 is the canonical Solidity storage slot for a `balanceOf`
+// mapping declared as the FIRST state variable (slot 0):
+// keccak256(abi.encode(holder, uint256(0))). This is the layout emitted by
+// OpenZeppelin ERC20 and the Lux-canonical LUSD/LETH tokens. It is NOT a guess
+// for arbitrary third-party tokens — a token whose balance mapping is not at
+// slot 0 must settle through the d-chain atomic import/export, never a poke.
+func erc20BalanceSlot0(holder common.Address) common.Hash {
+	key := make([]byte, 64)
+	copy(key[12:32], holder.Bytes()) // mapping key: left-padded address
+	// slot 0: key[32:64] left as zero.
+	return common.BytesToHash(crypto.Keccak256(key))
+}
+
+// transferToken settles a single currency leg on the C-Chain.
+//
+// Two — and only two — paths exist (decomplect: one home per asset class):
+//   - Native LUX (address(0)): move account balance directly.
+//   - C-resident ERC-20 using the canonical slot-0 balanceOf layout: adjust the
+//     two holders' balance slots with full sufficiency checks.
+//
+// The previous code poked a single HARDCODED slot for EVERY token, which
+// silently corrupted state for any token whose balanceOf was not at that magic
+// slot and bypassed allowances entirely (RED H3/C2). That magic constant is
+// removed: ERC-20 settlement is restricted to the documented standard layout,
+// and the maker/taker proceeds for D-chain-canonical or non-standard assets are
+// conserved by the d-chain atomic import/export + fill_attestation channel, not
+// by a C-Chain storage write.
 func (pm *PoolManager) transferToken(stateDB StateDB, currency Currency, from, to common.Address, amount *big.Int) error {
 	if amount.Sign() <= 0 {
 		return nil
@@ -813,31 +895,34 @@ func (pm *PoolManager) transferToken(stateDB StateDB, currency Currency, from, t
 		return nil
 	}
 
+	// C-resident ERC-20, canonical slot-0 balanceOf layout.
 	token := currency.Address
-	erc20Base, _ := new(big.Int).SetString("52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00", 16)
-	fromSlot := erc20BalanceSlot(erc20Base, from)
-	toSlot := erc20BalanceSlot(erc20Base, to)
+	fromSlot := erc20BalanceSlot0(from)
+	toSlot := erc20BalanceSlot0(to)
 	fromBal := new(big.Int).SetBytes(stateDB.GetState(token, fromSlot).Bytes())
 	if fromBal.Cmp(amount) < 0 {
 		return fmt.Errorf("%w: ERC20 %s balance %s < transfer %s", ErrInsufficientBalance, token.Hex(), fromBal, amount)
 	}
 	toBal := new(big.Int).SetBytes(stateDB.GetState(token, toSlot).Bytes())
-	fromBal.Sub(fromBal, amount)
+	newFrom := new(big.Int).Sub(fromBal, amount)
+	newTo := new(big.Int).Add(toBal, amount)
+
+	// Conservation guard: the two legs must net to zero. A credit that does not
+	// exactly match the debit (overflow, aliasing from==to) is refused rather
+	// than minting or burning token supply.
+	if from != to {
+		if new(big.Int).Add(newFrom, newTo).Cmp(new(big.Int).Add(fromBal, toBal)) != 0 {
+			return fmt.Errorf("%w: ERC20 %s settlement not conserving", ErrSettlementFailed, token.Hex())
+		}
+	}
+
 	var fromHash common.Hash
-	fromBal.FillBytes(fromHash[:])
+	safeFillBytes(newFrom, fromHash[:])
 	stateDB.SetState(token, fromSlot, fromHash)
-	toBal.Add(toBal, amount)
 	var toHash common.Hash
-	toBal.FillBytes(toHash[:])
+	safeFillBytes(newTo, toHash[:])
 	stateDB.SetState(token, toSlot, toHash)
 	return nil
-}
-
-func erc20BalanceSlot(base *big.Int, addr common.Address) common.Hash {
-	key := make([]byte, 64)
-	copy(key[12:32], addr.Bytes())
-	safeFillBytes(base, key[32:64])
-	return common.BytesToHash(crypto.Keccak256(key))
 }
 
 func (pm *PoolManager) autoSettle(stateDB StateDB, caller common.Address, key PoolKey, delta BalanceDelta) error {
@@ -899,6 +984,20 @@ func (pm *PoolManager) GetPosition(
 
 // calculateSwapOutput estimates the output for a given input without mutating state.
 // Used by the router for best-path estimation. Delegates to engine.Quote.
+//
+// On the ZAP path the backend reads its own canonical pool, so the *Pool must
+// be routed to a canonical poolId first; callers with a poolId/key in hand
+// should use calculateSwapOutputRouted instead. This bare form is kept for the
+// embedded engine and tests where the *Pool itself carries the state.
 func (pm *PoolManager) calculateSwapOutput(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.Int {
 	return pm.engine.Quote(pool, amountIn, zeroForOne)
+}
+
+// calculateSwapOutputRouted is the router's quote path. It resolves the cache
+// PoolState for poolId (so the ZAP backend can be routed to its canonical pool)
+// and then quotes. Embedded engine ignores the routing and quotes locally.
+func (pm *PoolManager) calculateSwapOutputRouted(stateDB StateDB, key PoolKey, poolId [32]byte, amountIn *big.Int, zeroForOne bool) *big.Int {
+	ps := pm.getPoolState(stateDB, poolId, key.TickSpacing, key.Fee)
+	pm.routePool(poolId, ps)
+	return pm.engine.Quote(ps.Pool, amountIn, zeroForOne)
 }
