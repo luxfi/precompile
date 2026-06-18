@@ -43,6 +43,7 @@ var (
 	pauseStatePrefix    = []byte("paus")
 	freezeStatePrefix   = []byte("frzn")
 	swapBindPrefix      = []byte("swpb")
+	modBindPrefix       = []byte("modb")
 )
 
 // PoolState extends the basic Pool with V4 tick-level state for concentrated
@@ -219,6 +220,78 @@ func slotToSigned(h common.Hash) *big.Int {
 	return v
 }
 
+// modifyBindKey is the ModifyLiquidity analog of swapBindKey (RED H1, same
+// reasoning): a place/cancel is an IRREVERSIBLE clob_place/clob_cancel on the
+// d-chain book, so the EVM's repeated executions of ONE modifyLiquidity tx
+// (gas-estimate, mempool validate, block build, block verify) must issue the
+// venue op EXACTLY ONCE. Without this, exec #1 rests the order on the venue and
+// every re-exec gets "order rejected" off the now-occupied book, reverting the
+// tx while the venue keeps the order — the C↔D split the swap path already
+// closes. The key is the consensus-deterministic tuple (txHash, poolId,
+// modifyParams): same on every validator, durable across restart, revert-safe
+// (StateDB snapshot). ok=false for a non-EVM caller (no tx identity) — that
+// caller skips the guard rather than colliding on the zero slot.
+func modifyBindKey(stateDB StateDB, poolId [32]byte, params ModifyLiquidityParams) (common.Hash, bool) {
+	idr, ok := stateDB.(txIdentified)
+	if !ok {
+		return common.Hash{}, false
+	}
+	txHash := idr.TxHash()
+	if txHash == (common.Hash{}) {
+		return common.Hash{}, false
+	}
+	h := blake3.New()
+	h.Write(txHash[:])
+	h.Write(poolId[:])
+	h.Write([]byte(modifyParamsDigest(params)))
+	var id [32]byte
+	h.Digest().Read(id[:])
+	return makeStorageKey(modBindPrefix, id[:]), true
+}
+
+// modifyParamsDigest serializes the position parameters that distinguish two
+// modifyLiquidity calls issued by the SAME tx against the SAME pool (tick range,
+// signed liquidity delta, salt) so each gets its own durable slot.
+func modifyParamsDigest(p ModifyLiquidityParams) string {
+	var b [4 + 4 + 1 + 32 + 32]byte
+	binary.BigEndian.PutUint32(b[0:4], uint32(p.TickLower))
+	binary.BigEndian.PutUint32(b[4:8], uint32(p.TickUpper))
+	if p.LiquidityDelta != nil && p.LiquidityDelta.Sign() < 0 {
+		b[8] = 1
+	}
+	if p.LiquidityDelta != nil {
+		new(big.Int).Abs(p.LiquidityDelta).FillBytes(b[9:41])
+	}
+	copy(b[41:73], p.Salt[:])
+	return string(b[:])
+}
+
+// loadModifyBinding / storeModifyBinding mirror loadSwapBinding / storeSwapBinding
+// (same three-slot flag+amount0+amount1 layout, reusing deriveSlot's suffix
+// scheme under modBindPrefix). A bound modifyLiquidity returns its recorded
+// callerDelta verbatim on re-execution WITHOUT a second clob_place/clob_cancel.
+func loadModifyBinding(stateDB StateDB, bindKey common.Hash) (delta BalanceDelta, settled bool) {
+	flag := stateDB.GetState(poolManagerAddr, deriveModSlot(bindKey, swapBindFlagSuffix))
+	if flag[31] != 1 {
+		return ZeroBalanceDelta(), false
+	}
+	a0 := stateDB.GetState(poolManagerAddr, deriveModSlot(bindKey, swapBindAmt0Suffix))
+	a1 := stateDB.GetState(poolManagerAddr, deriveModSlot(bindKey, swapBindAmt1Suffix))
+	return NewBalanceDelta(slotToSigned(a0), slotToSigned(a1)), true
+}
+
+func storeModifyBinding(stateDB StateDB, bindKey common.Hash, delta BalanceDelta) {
+	stateDB.SetState(poolManagerAddr, deriveModSlot(bindKey, swapBindAmt0Suffix), signedToSlot(delta.Amount0))
+	stateDB.SetState(poolManagerAddr, deriveModSlot(bindKey, swapBindAmt1Suffix), signedToSlot(delta.Amount1))
+	var flag common.Hash
+	flag[31] = 1
+	stateDB.SetState(poolManagerAddr, deriveModSlot(bindKey, swapBindFlagSuffix), flag)
+}
+
+func deriveModSlot(base common.Hash, suffix []byte) common.Hash {
+	return makeStorageKey(modBindPrefix, append(base[:], suffix...))
+}
+
 // getOrCreateTick returns the TickInfo for a tick, creating it if absent.
 func (ps *PoolState) getOrCreateTick(tick int32) *TickInfo {
 	ti, ok := ps.Ticks[tick]
@@ -275,8 +348,18 @@ func NewPoolManager(engine ...Engine) *PoolManager {
 // getPoolState returns the extended V4 pool state, creating one from the
 // base pool if it doesn't exist yet.
 func (pm *PoolManager) getPoolState(stateDB StateDB, poolId [32]byte, tickSpacing int32, lpFee uint32) *PoolState {
+	// Same revert-safety rule as getPool: the poolStates cache survives the EVM's
+	// repeated executions of one tx, so a cached PoolState from a speculative
+	// (later reverted) Initialize must NOT mask the StateDB truth. Gate the cache
+	// on the pool's StateDB existence; a cached state for a pool StateDB no longer
+	// has is stale and is rebuilt from the (StateDB-authoritative) getPool.
+	sqrtPriceKey := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("sqrtPrice")...))
+	committed := stateDB.GetState(poolManagerAddr, sqrtPriceKey) != (common.Hash{})
 	if ps, ok := pm.poolStates[poolId]; ok {
-		return ps
+		if committed {
+			return ps
+		}
+		delete(pm.poolStates, poolId)
 	}
 	pool := pm.getPool(stateDB, poolId)
 	ps := NewPoolState(pool, tickSpacing, lpFee)
@@ -678,10 +761,24 @@ func (pm *PoolManager) ModifyLiquidity(
 		}
 	}
 
+	// Replay-idempotency (RED H1), mirroring Swap: a place/cancel is an
+	// irreversible venue op, so the EVM's repeated executions of one tx must issue
+	// it exactly once. A bound modify returns its recorded delta without a second
+	// clob_place/clob_cancel.
+	bindKey, bound := modifyBindKey(stateDB, poolId, params)
+	if bound {
+		if prior, settled := loadModifyBinding(stateDB, bindKey); settled {
+			return prior, ZeroBalanceDelta(), nil
+		}
+	}
+
 	pm.routePool(poolId, ps)
 	callerDelta, feesAccrued, err := pm.engine.ModifyLiquidity(ps, caller, params)
 	if err != nil {
 		return ZeroBalanceDelta(), ZeroBalanceDelta(), err
+	}
+	if bound {
+		storeModifyBinding(stateDB, bindKey, callerDelta)
 	}
 
 	posKey := PositionKey(caller, params.TickLower, params.TickUpper, params.Salt)
@@ -802,14 +899,29 @@ func (pm *PoolManager) Flash(
 // =========================================================================
 
 func (pm *PoolManager) getPool(stateDB StateDB, poolId [32]byte) *Pool {
+	// StateDB is the revert-safe authority for pool EXISTENCE: a pool's sqrtPrice
+	// slot is zero unless an Initialize committed it, and it reverts to zero with
+	// any tx that rolls back. The process-memory cache (pm.pools) does NOT roll
+	// back, so trusting it first leaks state across the EVM's multiple
+	// (estimate/build/verify) executions of one tx — a speculative Initialize
+	// would populate the cache, then every re-execution sees "already
+	// initialized" off the stale cache and reverts. So consult StateDB FIRST;
+	// only serve the cached *Pool when StateDB confirms the pool still exists
+	// (matches the StateDB-authoritative discipline already used for
+	// pause/freeze — see isDEXPaused, RED V6). A cache entry contradicted by
+	// StateDB is stale and dropped.
+	sqrtPriceKey := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("sqrtPrice")...))
+	sqrtPriceHash := stateDB.GetState(poolManagerAddr, sqrtPriceKey)
+	committed := sqrtPriceHash != (common.Hash{})
 	if pool, ok := pm.pools[poolId]; ok {
-		return pool
+		if committed {
+			return pool
+		}
+		delete(pm.pools, poolId)
 	}
 	pool := NewPool()
 
-	sqrtPriceKey := makeStorageKey(poolStatePrefix, append(poolId[:], []byte("sqrtPrice")...))
-	sqrtPriceHash := stateDB.GetState(poolManagerAddr, sqrtPriceKey)
-	if sqrtPriceHash != (common.Hash{}) {
+	if committed {
 		pool.SqrtPriceX96 = new(big.Int).SetBytes(sqrtPriceHash[:])
 	}
 
