@@ -35,6 +35,35 @@ const (
 	ZAPMethodPlace        = "clob_place"
 	ZAPMethodCancel       = "clob_cancel"
 	ZAPMethodSubmit       = "clob_submit"
+	// ZAPMethodOpenMarket binds a market's (base, quote) D-Chain asset handles so
+	// the D-Chain custody gate value-checks orders against deposited balances. The
+	// precompile calls it at InitializePool time (alongside ensure_market) so EVM-
+	// path markets are custody-active — without it the D-Chain falls into its
+	// no-custody fallback and a swap could not settle in the ledger.
+	ZAPMethodOpenMarket = "clob_open_market"
+	// ZAPMethodDeposit credits an account's available D-Chain balance (the funds-in
+	// leg). The precompile calls it after the EVM has locked the asset in the 0x9010
+	// vault (native LUX via msg.value, ERC-20 via transferFrom).
+	ZAPMethodDeposit = "clob_deposit"
+	// ZAPMethodWithdraw debits an account's realized available D-Chain balance,
+	// returning the realized amount the precompile then releases from the vault.
+	ZAPMethodWithdraw = "clob_withdraw"
+	// ZAPMethodBalance is the read-only available/locked balance observation
+	// (clob_balance). Request: user[16]+asset[8]. Response: available[8]+locked[8].
+	ZAPMethodBalance = "clob_balance"
+)
+
+// Frozen custody frame sizes (byte-identical to github.com/luxfi/dex/pkg/zapwire;
+// the precompile cannot import the cgo-tagged d-chain package, so the canonical
+// frame is re-declared here and pinned by a parity test — the same three-homes
+// pattern the place/cancel/submit frames already use).
+const (
+	zapUserSize       = 16 // user identity field width
+	zapAssetIDSize    = 8  // asset handle field width
+	depositReqSize    = zapUserSize + zapAssetIDSize + 8 // user[16]+asset[8]+amount[8] = 32
+	withdrawReqSize   = zapUserSize + zapAssetIDSize + 8 // = 32
+	openMarketReqSize = 32 + zapAssetIDSize + zapAssetIDSize // poolId[32]+base[8]+quote[8] = 48
+	balanceRespSize   = 1 + 8 // status[1]+amount[8]
 )
 
 // brandFallback is the neutral, brand-free identity surfaced by ZAPEngine. The
@@ -240,7 +269,7 @@ func (z *ZAPEngine) InitializePool(ps *PoolState, poolID [32]byte, sqrtPriceX96 
 // CLOB taker size is |AmountSpecified| in base (currency0) units for exact-input
 // of a sell / exact-output of a buy; for the cross-cases we still submit the
 // magnitude as base size, which is the faithful single-leg CLOB primitive.
-func (z *ZAPEngine) Swap(pool *PoolState, params SwapParams) (BalanceDelta, error) {
+func (z *ZAPEngine) Swap(pool *PoolState, caller common.Address, params SwapParams) (BalanceDelta, error) {
 	// Replay-idempotency is enforced UPSTREAM by the PoolManager against StateDB
 	// (durable + consensus-shared), so by the time a Swap reaches this adapter it
 	// is the unique submit for its EVM tx. This method therefore stays a pure,
@@ -279,7 +308,13 @@ func (z *ZAPEngine) Swap(pool *PoolState, params SwapParams) (BalanceDelta, erro
 	}
 	putFloat64(payload[34:42], limitPrice)
 	putFloat64(payload[42:50], sizeF)
-	// user left zero: the taker identity is the EVM caller, settled on-chain.
+	// Bind the TAKER identity = the EVM caller's 16-byte handle, so the D-Chain
+	// locks the taker's spend from + settles the fills' proceeds INTO the caller's
+	// own ledger account (the funds the caller DEPOSITED). The submit frame's user
+	// field is bytes [50:66]. Leaving it zero (the old behaviour) keyed the taker's
+	// balance under user=0, so the trade could not settle against the real caller —
+	// the reason settlement formerly fell back to a C-Chain reserve move.
+	copy(payload[50:66], caller.Bytes()[:16])
 
 	ctx, cancel := context.WithTimeout(context.Background(), z.timeout)
 	defer cancel()
@@ -496,6 +531,142 @@ func (z *ZAPEngine) Close() error {
 		return err
 	}
 	return nil
+}
+
+// =========================================================================
+// Custody: deposit / withdraw / open-market (the funds-in/out + asset binding)
+// =========================================================================
+
+// assetHandle folds a 20-byte EVM currency address to the 8-byte D-Chain asset
+// handle the ledger keys balances by (big-endian over the leading 8 bytes). It is
+// the EVM-side view of the same 8-byte handle the proxy derives from a 32-byte
+// cross-chain asset id (chains/dexvm.assetHandle), so an asset deposited via the
+// precompile and one deposited via the atomic proxy address the SAME ledger
+// balance. Native LUX (address(0)) folds to 0 — a unique handle, since no ERC-20
+// address is the zero address. The deposit, the open-market binding, and the
+// order MUST all use this fold so they name the same asset.
+func assetHandle(c Currency) uint64 {
+	b := c.Address.Bytes() // 20 bytes
+	return binary.BigEndian.Uint64(b[:8])
+}
+
+// userHandle renders the caller's 20-byte address to the 16-byte user identity
+// the frozen CLOB frames carry (the leading 16 bytes — the same width place/
+// submit use). The D-Chain folds this 16-byte user to its 8-byte ledger key, so
+// binding deposit/withdraw to the same 16-byte slice keeps the credited/debited
+// account consistent with the orders that account places.
+func userHandle(addr common.Address) string {
+	return string(addr.Bytes()[:16])
+}
+
+// OpenMarket binds a market's (base, quote) asset handles on the D-Chain so the
+// custody gate value-checks orders against deposited balances. Idempotent. Called
+// at InitializePool time. base is currency0, quote is currency1 (V4 sorts them).
+func (z *ZAPEngine) OpenMarket(poolID [32]byte, base, quote Currency) error {
+	ctx, cancel := context.WithTimeout(context.Background(), z.timeout)
+	defer cancel()
+	payload := make([]byte, openMarketReqSize)
+	copy(payload[0:32], poolID[:])
+	binary.BigEndian.PutUint64(payload[32:40], assetHandle(base))
+	binary.BigEndian.PutUint64(payload[40:48], assetHandle(quote))
+	resp, err := z.call(ctx, ZAPMethodOpenMarket, payload)
+	if err != nil {
+		return fmt.Errorf("ZAP OpenMarket: %w", err)
+	}
+	if _, status, reason, derr := decodeAck(resp); derr != nil {
+		return fmt.Errorf("ZAP OpenMarket ack: %w", derr)
+	} else if status == clobStatusRejected {
+		return fmt.Errorf("ZAP OpenMarket rejected: %s", reason)
+	}
+	return nil
+}
+
+// Deposit credits exactly `amount` of `asset` into `account`'s available D-Chain
+// balance (clob_deposit). It is the funds-in leg: the precompile calls it AFTER
+// the EVM has locked the asset in the 0x9010 vault. It refuses if the D-Chain
+// credited less than requested (a short credit would strand locked vault value).
+func (z *ZAPEngine) Deposit(account common.Address, asset Currency, amount uint64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), z.timeout)
+	defer cancel()
+	payload := make([]byte, depositReqSize)
+	copy(payload[0:16], padUserHandle(account))
+	binary.BigEndian.PutUint64(payload[16:24], assetHandle(asset))
+	binary.BigEndian.PutUint64(payload[24:32], amount)
+	resp, err := z.call(ctx, ZAPMethodDeposit, payload)
+	if err != nil {
+		return fmt.Errorf("ZAP Deposit: %w", err)
+	}
+	_, credited, derr := decodeBalanceResp(resp)
+	if derr != nil {
+		return fmt.Errorf("ZAP Deposit resp: %w", derr)
+	}
+	if credited != amount {
+		return fmt.Errorf("%w: credited %d != deposited %d", ErrSettlementFailed, credited, amount)
+	}
+	return nil
+}
+
+// Withdraw debits up to `want` of `asset` from `account`'s available D-Chain
+// balance (clob_withdraw) and returns the REALIZED amount the ledger released
+// (clamped to availability). The precompile then releases exactly the realized
+// amount from the vault. A realized > want is refused upstream (mint guard). 0
+// means nothing available — the precompile releases nothing.
+func (z *ZAPEngine) Withdraw(account common.Address, asset Currency, want uint64) (uint64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), z.timeout)
+	defer cancel()
+	payload := make([]byte, withdrawReqSize)
+	copy(payload[0:16], padUserHandle(account))
+	binary.BigEndian.PutUint64(payload[16:24], assetHandle(asset))
+	binary.BigEndian.PutUint64(payload[24:32], want)
+	resp, err := z.call(ctx, ZAPMethodWithdraw, payload)
+	if err != nil {
+		return 0, fmt.Errorf("ZAP Withdraw: %w", err)
+	}
+	_, realized, derr := decodeBalanceResp(resp)
+	if derr != nil {
+		return 0, fmt.Errorf("ZAP Withdraw resp: %w", derr)
+	}
+	if realized > want {
+		return 0, fmt.Errorf("%w: withdraw realized %d > requested %d (mint risk)", ErrSettlementFailed, realized, want)
+	}
+	return realized, nil
+}
+
+// Balance returns account's AVAILABLE D-Chain balance for asset (clob_balance is
+// a read-only observation; it does not mutate the ledger). The response carries
+// available[8]+locked[8]; the EVM view returns available (the spendable claim).
+func (z *ZAPEngine) Balance(account common.Address, asset Currency) (uint64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), z.timeout)
+	defer cancel()
+	req := make([]byte, zapUserSize+zapAssetIDSize)
+	copy(req[0:zapUserSize], padUserHandle(account))
+	binary.BigEndian.PutUint64(req[zapUserSize:], assetHandle(asset))
+	resp, err := z.call(ctx, ZAPMethodBalance, req)
+	if err != nil {
+		return 0, fmt.Errorf("ZAP Balance: %w", err)
+	}
+	if len(resp) < 16 {
+		return 0, fmt.Errorf("ZAP Balance: short response %d", len(resp))
+	}
+	return binary.BigEndian.Uint64(resp[0:8]), nil // available
+}
+
+// padUserHandle left-copies the caller's 16-byte user identity into a fresh
+// 16-byte buffer (the frozen frame's user field encoding).
+func padUserHandle(addr common.Address) []byte {
+	b := make([]byte, zapUserSize)
+	copy(b, addr.Bytes()[:16])
+	return b
+}
+
+// decodeBalanceResp reads (status, realized amount) from a clob_deposit /
+// clob_withdraw response (status[1] + amount[8]). Byte-identical to
+// zapwire.DecodeBalanceResp.
+func decodeBalanceResp(resp []byte) (status uint8, amount uint64, err error) {
+	if len(resp) < balanceRespSize {
+		return 0, 0, fmt.Errorf("balance response too short: %d", len(resp))
+	}
+	return resp[0], binary.BigEndian.Uint64(resp[1:9]), nil
 }
 
 // =========================================================================
