@@ -10,17 +10,21 @@ import (
 )
 
 // Engine abstracts the DEX computation backend.
-// The precompile is a thin ABI shim — all AMM math, tick crossing,
-// fee growth, matching, and position management happen in the engine.
+// The precompile is a thin ABI shim — it holds NO canonical DEX state and runs
+// NO matching itself. Matching, the resting book, fills, and value conservation
+// all live on the d-chain, reached over ZAP. The precompile only translates the
+// V4 PoolManager (CLOB facade) ABI into engine operations and commits the
+// server-returned BalanceDelta.
 //
-// Backends ship in their own packages. Two canonical implementations live
-// in-tree:
+// Two implementations live in-tree:
 //
-//   - EmbeddedEngine (engine_embedded.go) — pure-Go V4 math, default for
-//     upstream Lux EVM and any chain that wants a self-contained build.
-//   - ZAPEngine (engine_zap.go) — binary protocol shim to an external DEX
-//     process. The external process can be the upstream Lux DEX or any
-//     white-label DEX downstream; the precompile does not care.
+//   - inertEngine (engine_inert.go) — the package DEFAULT. No backend wired:
+//     every call reverts ErrDEXBackendNotConfigured. The public EVM ships this
+//     so an unconfigured chain's LP-9010 cleanly reverts instead of running a
+//     wrong, second matcher.
+//   - ZAPEngine (engine_zap.go) — the stateless V4->CLOB adapter that forwards
+//     every operation to the d-chain CLOB gateway over ZAP. The venue installs
+//     it via dex.SetBackend(NewZAPEngine(...)) when dex-zap-endpoint is set.
 //
 // Adding a new backend is purely additive: implement Engine, ship it in
 // its own package, and have the host EVM call dex.SetBackend() before the
@@ -54,3 +58,28 @@ type Engine interface {
 	// a sanity check at SetBackend() time.
 	Brand() string
 }
+
+// poolRouter is the OPTIONAL seam a backend implements when its canonical pool
+// state lives elsewhere (e.g. ZAPEngine, whose pools live on the D-Chain DEX
+// server). The PoolManager, which alone knows the V4 poolId, threads it to the
+// backend so operations route to the right canonical pool.
+//
+// The inertEngine does NOT implement this: it has no backend to route to. The
+// PoolManager type-asserts for poolRouter and only calls it when present, so a
+// backend that holds its own state (none in-tree today) needs no routing.
+type poolRouter interface {
+	// InitializePool creates the canonical pool on the backend keyed by poolID
+	// and records the route for ps. Returns the authoritative initial tick.
+	InitializePool(ps *PoolState, poolID [32]byte, sqrtPriceX96 *big.Int, tickSpacing int32, lpFee uint32) (int24, error)
+
+	// SetPoolID records the canonical poolID for ps so a later swap / modify /
+	// donate / quote forwards to the correct server-side pool. Idempotent.
+	SetPoolID(ps *PoolState, poolID [32]byte)
+}
+
+// Replay-idempotency for a marketable order (Swap) is NOT a backend concern: it
+// lives in the PoolManager against StateDB, keyed by (txHash, poolId, params).
+// That key is durable (survives a node restart) and consensus-shared (identical
+// on every validator replaying the same block), so it maps a re-executed / reorg
+// / retried tx to EXACTLY ONE d-chain match — properties an in-process backend
+// cache cannot provide (RED H1). See PoolManager.swapBindKey / loadSwapBinding.

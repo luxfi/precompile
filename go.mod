@@ -13,7 +13,7 @@ require (
 	github.com/luxfi/ai v0.1.0
 	github.com/luxfi/corona v0.7.6
 	github.com/luxfi/crypto v1.19.17
-	github.com/luxfi/database v1.18.3
+	github.com/luxfi/database v1.19.0
 	github.com/luxfi/fhe v1.8.2
 	github.com/luxfi/geth v1.16.98
 	github.com/luxfi/lattice/v7 v7.1.4
@@ -24,6 +24,17 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.52.0
+)
+
+require (
+	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
+	github.com/grandcat/zeroconf v1.0.0 // indirect
+	github.com/luxfi/mdns v0.1.1 // indirect
+	github.com/luxfi/zap v0.7.2 // indirect
+	github.com/miekg/dns v1.1.72 // indirect
+	github.com/shopspring/decimal v1.4.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 )
 
 require (
@@ -41,7 +52,7 @@ require (
 	github.com/gorilla/rpc v1.2.1 // indirect
 	github.com/gtank/merlin v0.1.1 // indirect
 	github.com/gtank/ristretto255 v0.2.0 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/luxfi/atomic v1.0.0 // indirect
 	github.com/luxfi/cache v1.2.1 // indirect
@@ -52,29 +63,30 @@ require (
 	github.com/luxfi/constants v1.5.8 // indirect
 	github.com/luxfi/container v0.0.4 // indirect
 	github.com/luxfi/crypto/ipa v1.2.4 // indirect
-	github.com/luxfi/ids v1.2.10 // indirect
-	github.com/luxfi/log v1.4.1 // indirect
+	github.com/luxfi/ids v1.2.13 // indirect
+	github.com/luxfi/log v1.4.3 // indirect
 	github.com/luxfi/math v1.4.1 // indirect
 	github.com/luxfi/math/big v0.1.0 // indirect
-	github.com/luxfi/metric v1.5.7 // indirect
+	github.com/luxfi/metric v1.5.8 // indirect
 	github.com/luxfi/mock v0.1.1 // indirect
 	github.com/luxfi/p2p v1.21.1 // indirect
 	github.com/luxfi/pq v1.0.3 // indirect
+	github.com/luxfi/rpc v1.1.0
 	github.com/luxfi/sampler v1.1.0 // indirect
 	github.com/luxfi/utils v1.2.0 // indirect
 	github.com/luxfi/validators v1.2.0 // indirect
 	github.com/luxfi/version v1.0.1 // indirect
 	github.com/luxfi/vm v1.2.3 // indirect
-	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-colorable v0.1.15 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mimoo/StrobeGo v0.0.0-20220103164710-9a04d6ca976b // indirect
 	github.com/montanaflynn/stats v0.9.0 // indirect
-	github.com/mr-tron/base58 v1.2.0 // indirect
+	github.com/mr-tron/base58 v1.3.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/supranational/blst v0.3.16 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.uber.org/mock v0.6.0 // indirect
-	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
+	golang.org/x/exp v0.0.0-20260529124908-c761662dc8c9 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect

@@ -123,24 +123,52 @@ var (
 // with nil err indicates a well-formed proof that did not verify.
 type VerifierFn func(version byte, proof, pubInputs []byte) (bool, error)
 
-// verifier is the registered callback. Atomic.Value so RegisterVerifier
-// is safe to call once at node startup without locking the hot path.
-var verifier atomic.Value // VerifierFn
+// verifier is the registered callback. An atomic.Pointer so the hot
+// path is lock-free AND so RegisterDefaultVerifier can compare-and-swap
+// against "no verifier yet" without racing RegisterVerifier (the two
+// must not clobber each other across package-init order — see
+// RegisterDefaultVerifier).
+var verifier atomic.Pointer[VerifierFn]
 
-// RegisterVerifier wires the actual STARK-FRI verifier. Called once at
-// node startup. Passing nil clears the registration (useful for tests).
+// RegisterVerifier wires the actual STARK-FRI verifier. This is the
+// authoritative seam: it FORCES the given verifier, overriding any
+// previously-registered one (including a safe-refuse default). The real
+// cgo binding (verify_cgo.go) and tests use this. Passing nil clears the
+// registration (so loadVerifier returns nil ⇒ ErrVerifierNotRegistered).
 func RegisterVerifier(fn VerifierFn) {
 	if fn == nil {
-		verifier.Store(VerifierFn(nil))
+		verifier.Store(nil)
 		return
 	}
-	verifier.Store(fn)
+	verifier.Store(&fn)
+}
+
+// RegisterDefaultVerifier installs fn ONLY IF no verifier is currently
+// registered. It is the safe-refuse / fallback seam: a node-init path
+// (e.g. the geth precompile registry) calls this to guarantee the
+// precompile never silently no-ops, WITHOUT clobbering a real verifier
+// that a package init() may have already installed via RegisterVerifier.
+//
+// Decomplected policy vs. binding: RegisterVerifier is "this IS the
+// verifier"; RegisterDefaultVerifier is "be the verifier iff nobody
+// better volunteered". Because Go runs an imported package's init()
+// before the importer's, the real cgo binding (in this package) wins the
+// CAS first, and a downstream refuse-default no-ops harmlessly —
+// independent of which init runs last. Returns true iff it installed fn.
+func RegisterDefaultVerifier(fn VerifierFn) bool {
+	if fn == nil {
+		return false
+	}
+	return verifier.CompareAndSwap(nil, &fn)
 }
 
 // loadVerifier returns the currently-registered verifier, or nil.
 func loadVerifier() VerifierFn {
-	v, _ := verifier.Load().(VerifierFn)
-	return v
+	p := verifier.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // Verify is the in-process verification entry-point for callers outside
