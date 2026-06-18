@@ -44,7 +44,7 @@ func (inertEngine) Initialize(_ *big.Int) (int24, error) {
 }
 
 // Swap refuses: there is no matcher to submit a marketable order to.
-func (inertEngine) Swap(_ *PoolState, _ SwapParams) (BalanceDelta, error) {
+func (inertEngine) Swap(_ *PoolState, _ common.Address, _ SwapParams) (BalanceDelta, error) {
 	return ZeroBalanceDelta(), ErrDEXBackendNotConfigured
 }
 

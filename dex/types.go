@@ -422,6 +422,12 @@ var (
 	ErrLiquidationTooSmall      = errors.New("liquidation amount too small")
 	ErrFlashLiquidationDisabled = errors.New("flash liquidation disabled")
 	ErrInvalidParameter         = errors.New("invalid parameter")
+	// ErrERC20DepositUnsupported is returned by deposit/withdraw for a non-native
+	// (ERC-20) asset until the real C-Chain lock/mint bridge (transferFrom on
+	// deposit, transfer on release) is wired. The CLOB still settles ONLY inside
+	// the D-Chain ledger; this refusal prevents minting an UNBACKED D-Chain credit
+	// (or releasing an unbacked C-Chain token) rather than faking a reserve.
+	ErrERC20DepositUnsupported = errors.New("dex: ERC-20 deposit/withdraw not yet supported (native LUX only); use the atomic proxy import/export for canonical D-Chain assets")
 )
 
 // Errors - Perpetuals
