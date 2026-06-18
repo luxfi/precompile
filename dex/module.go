@@ -418,8 +418,12 @@ func (c *DEXContract) runSwap(
 		return nil, suppliedGas - GasSwap, err
 	}
 
-	// Auto-settle: transfer tokens based on the delta
-	if err := c.poolManager.autoSettle(stateAdapter, caller, key, delta); err != nil {
+	// Settle the NATIVE-LUX leg on C-Chain (if either currency is address(0)). A
+	// CLOB has no two-leg C-Chain ERC-20 settlement: a non-native asset's value
+	// lives in the D-Chain book (deposited via the atomic rail, settled in the
+	// D-Chain ledger when the order filled). Only native LUX is C-Chain account
+	// balance backing the V4 facade. (Was autoSettle, which poked ERC-20 slots.)
+	if err := c.poolManager.settleNativeLegs(stateAdapter, caller, key, delta); err != nil {
 		return nil, suppliedGas - GasSwap, err
 	}
 
@@ -455,8 +459,11 @@ func (c *DEXContract) runModifyLiquidity(
 		return nil, suppliedGas - GasAddLiquidity, err
 	}
 
-	// Auto-settle: transfer tokens based on the delta
-	if err := c.poolManager.autoSettle(stateAdapter, caller, key, delta); err != nil {
+	// Settle the NATIVE-LUX leg on C-Chain. Resting non-native liquidity is funded
+	// from the maker's D-Chain balance (the order locks it inside the book); only a
+	// native-LUX leg is C-Chain account balance. (Was autoSettle, which poked
+	// ERC-20 slots and failed for any deposited/non-standard token.)
+	if err := c.poolManager.settleNativeLegs(stateAdapter, caller, key, delta); err != nil {
 		return nil, suppliedGas - GasAddLiquidity, err
 	}
 
