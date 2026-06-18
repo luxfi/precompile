@@ -142,6 +142,15 @@ var (
 	SelectorExtsload        uint32 = 0x1E2EAEAF // extsload(bytes32)
 	SelectorExtsloadArray   uint32 = 0xDBD035FF // extsload(bytes32[])
 
+	// CLOB custody selectors — the EVM ingress for funds in/out of the D-Chain
+	// ledger ("the money lives in the order book"). deposit LOCKS the asset in the
+	// 0x9010 vault (native LUX via msg.value) and MINTS the D-Chain available
+	// balance; withdraw BURNS the D-Chain balance and RELEASES the vault. The CLOB
+	// settles ONLY inside the D-Chain; these never fund a trade from 0x9010.
+	SelectorDeposit   uint32 = 0x47E7EF24 // deposit(address,uint256)  — asset, amount (msg.value==amount for native)
+	SelectorWithdraw  uint32 = 0xF3FEF3A3 // withdraw(address,uint256) — asset, want
+	SelectorBalanceOf uint32 = 0xF7888AEC // balanceOf(address,address) — account, asset (read-only available)
+
 	// Admin pause/freeze selectors — computed in init() via keccak4.
 	SelectorPauseDEX   uint32
 	SelectorResumeDEX  uint32
@@ -173,6 +182,9 @@ func init() {
 	verifySelector("unlock", SelectorUnlock, "unlock(bytes)")
 	verifySelector("settle", SelectorSettle, "settle()")
 	verifySelector("take", SelectorTake, "take(address,address,uint256)")
+	verifySelector("deposit", SelectorDeposit, "deposit(address,uint256)")
+	verifySelector("withdraw", SelectorWithdraw, "withdraw(address,uint256)")
+	verifySelector("balanceOf", SelectorBalanceOf, "balanceOf(address,address)")
 
 	// Compute admin selectors at init time (not compile-time constants).
 	SelectorPauseDEX = keccak4("pauseDEX()")
@@ -317,6 +329,12 @@ func (c *DEXContract) Run(
 		return c.runSwap(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorModifyLiquidity:
 		return c.runModifyLiquidity(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorDeposit:
+		return c.runDeposit(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorWithdraw:
+		return c.runWithdraw(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorBalanceOf:
+		return c.runBalanceOf(accessibleState, data, suppliedGas)
 	case SelectorDonate:
 		return c.runDonate(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorUnlock:
@@ -418,14 +436,17 @@ func (c *DEXContract) runSwap(
 		return nil, suppliedGas - GasSwap, err
 	}
 
-	// Settle the NATIVE-LUX leg on C-Chain (if either currency is address(0)). A
-	// CLOB has no two-leg C-Chain ERC-20 settlement: a non-native asset's value
-	// lives in the D-Chain book (deposited via the atomic rail, settled in the
-	// D-Chain ledger when the order filled). Only native LUX is C-Chain account
-	// balance backing the V4 facade. (Was autoSettle, which poked ERC-20 slots.)
-	if err := c.poolManager.settleNativeLegs(stateAdapter, caller, key, delta); err != nil {
-		return nil, suppliedGas - GasSwap, err
-	}
+	// NO C-CHAIN SETTLEMENT. A marketable order settles ENTIRELY inside the D-Chain
+	// ledger (the taker's locked spend moves to the maker, the maker's locked asset
+	// moves to the taker — dchain.settleFills, value-conserving by construction).
+	// The taker's funds were DEPOSITED into the D-Chain (deposit selector ->
+	// clob_deposit -> available) before this swap; the swap locked + spent them in
+	// the book. 0x9010 is a pure ingress adapter — it holds NO reserve, is NEVER a
+	// counterparty, and does NOT move value here. The returned BalanceDelta is the
+	// fills' net for the V4 ABI's caller, NOT an instruction to settle on C-Chain.
+	// (The former settleNativeLegs did a caller<->0x9010 native transfer = an
+	// AMM-style C-Chain reserve settlement; it left native LUX sitting in 0x9010
+	// "backing resting asks" — the exact reserve hazard the CLOB model forbids.)
 
 	// V4: Return BalanceDelta as single int256 (amount0 in upper 128 bits, amount1 in lower 128 bits)
 	result := PackBalanceDelta(delta.Amount0, delta.Amount1)
@@ -459,19 +480,119 @@ func (c *DEXContract) runModifyLiquidity(
 		return nil, suppliedGas - GasAddLiquidity, err
 	}
 
-	// Settle the NATIVE-LUX leg on C-Chain. Resting non-native liquidity is funded
-	// from the maker's D-Chain balance (the order locks it inside the book); only a
-	// native-LUX leg is C-Chain account balance. (Was autoSettle, which poked
-	// ERC-20 slots and failed for any deposited/non-standard token.)
-	if err := c.poolManager.settleNativeLegs(stateAdapter, caller, key, delta); err != nil {
-		return nil, suppliedGas - GasAddLiquidity, err
-	}
+	// NO C-CHAIN SETTLEMENT. Placing a resting order LOCKS the maker's already-
+	// DEPOSITED D-Chain balance (available -> locked, inside the book); cancelling
+	// UNLOCKS it. The maker's funds never touch C-Chain here and 0x9010 holds no
+	// reserve backing the order — the resting order's funds live in the D-Chain
+	// ledger's locked[maker][asset], not in 0x9010. (Was settleNativeLegs, which
+	// moved native LUX caller<->0x9010 to "back" the resting ask = a reserve.)
 
 	// V4: Return two packed BalanceDeltas (callerDelta + feesAccrued), each 32 bytes
 	result := make([]byte, 64)
 	copy(result[0:32], PackBalanceDelta(delta.Amount0, delta.Amount1))
 	copy(result[32:64], PackBalanceDelta(feeDelta.Amount0, feeDelta.Amount1))
 	return result, suppliedGas - GasAddLiquidity, nil
+}
+
+// runDeposit is the EVM ingress for funds-IN: deposit(address asset, uint256
+// amount). For native LUX (asset == address(0)) the caller MUST send msg.value ==
+// amount; the EVM has already moved that value into the 0x9010 vault before this
+// precompile runs, so the deposit LOCKS it there and MINTS the caller's available
+// D-Chain balance. 0x9010 is a passive vault, never a trade counterparty.
+//
+// ABI: input = asset[32] (address, right-aligned) || amount[32] (uint256).
+// Returns the deposited amount as uint256 (the credited available balance delta).
+func (c *DEXContract) runDeposit(
+	state contract.AccessibleState,
+	caller common.Address,
+	input []byte,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
+	}
+	if suppliedGas < GasSettlement {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+	if len(input) < 64 {
+		return nil, suppliedGas - GasSettlement, fmt.Errorf("deposit: input too short")
+	}
+	asset := Currency{Address: common.BytesToAddress(input[12:32])}
+	amount := new(big.Int).SetBytes(input[32:64])
+
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	if err := c.poolManager.Deposit(stateAdapter, caller, asset, amount); err != nil {
+		return nil, suppliedGas - GasSettlement, err
+	}
+
+	out := make([]byte, 32)
+	amount.FillBytes(out)
+	return out, suppliedGas - GasSettlement, nil
+}
+
+// runWithdraw is the EVM ingress for funds-OUT: withdraw(address asset, uint256
+// want). It BURNS up to `want` of the caller's available D-Chain balance (the
+// ledger clamps to availability) and RELEASES exactly the realized amount from the
+// 0x9010 vault back to the caller. Conserving: the vault never pays more than the
+// ledger burned. Returns the realized amount as uint256.
+func (c *DEXContract) runWithdraw(
+	state contract.AccessibleState,
+	caller common.Address,
+	input []byte,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
+	}
+	if suppliedGas < GasSettlement {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+	if len(input) < 64 {
+		return nil, suppliedGas - GasSettlement, fmt.Errorf("withdraw: input too short")
+	}
+	asset := Currency{Address: common.BytesToAddress(input[12:32])}
+	want := new(big.Int).SetBytes(input[32:64])
+
+	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	realized, err := c.poolManager.Withdraw(stateAdapter, caller, asset, want)
+	if err != nil {
+		return nil, suppliedGas - GasSettlement, err
+	}
+
+	out := make([]byte, 32)
+	realized.FillBytes(out)
+	return out, suppliedGas - GasSettlement, nil
+}
+
+// runBalanceOf is a read-only observation of an account's AVAILABLE D-Chain
+// balance for an asset: balanceOf(address account, address asset). It forwards to
+// the custody backend's Withdraw with want=0? No — a read must not mutate. It
+// queries the D-Chain via the backend's read path. Returns the available balance
+// as uint256. (The locked balance is queryable on the venue's clob_balance; this
+// EVM view returns available, the spendable claim.)
+func (c *DEXContract) runBalanceOf(
+	state contract.AccessibleState,
+	input []byte,
+	suppliedGas uint64,
+) ([]byte, uint64, error) {
+	if suppliedGas < GasPoolLookup {
+		return nil, 0, fmt.Errorf("out of gas")
+	}
+	if len(input) < 64 {
+		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("balanceOf: input too short")
+	}
+	account := common.BytesToAddress(input[12:32])
+	asset := Currency{Address: common.BytesToAddress(input[44:64])}
+
+	avail, err := c.poolManager.BalanceOf(account, asset)
+	if err != nil {
+		return nil, suppliedGas - GasPoolLookup, err
+	}
+	out := make([]byte, 32)
+	avail.FillBytes(out)
+	return out, suppliedGas - GasPoolLookup, nil
 }
 
 func (c *DEXContract) runTake(
@@ -838,6 +959,10 @@ func (c *DEXContract) RequiredGas(input []byte) uint64 {
 		return GasSwap
 	case SelectorModifyLiquidity:
 		return GasAddLiquidity
+	case SelectorDeposit, SelectorWithdraw:
+		return GasSettlement
+	case SelectorBalanceOf:
+		return GasPoolLookup
 	case SelectorTake:
 		return GasBalanceUpdate
 	case SelectorSettle, SelectorSettleFor:
