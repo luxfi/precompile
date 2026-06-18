@@ -43,6 +43,8 @@ var (
 	freezeStatePrefix   = []byte("frzn")
 	swapBindPrefix      = []byte("swpb")
 	modBindPrefix       = []byte("modb")
+	depBindPrefix       = []byte("depb") // deposit idempotency binding
+	wdrBindPrefix       = []byte("wdrb") // withdraw idempotency binding
 )
 
 // PoolState extends the basic Pool with V4 tick-level state for concentrated
@@ -217,6 +219,85 @@ func slotToSigned(h common.Hash) *big.Int {
 		v.Sub(v, mod)
 	}
 	return v
+}
+
+// ---- custody (deposit / withdraw) idempotency bindings (RED H1) ----
+//
+// A clob_deposit (mint) and a clob_withdraw (burn + vault release) are IRREVERSIBLE
+// D-Chain ops, so the EVM's repeated executions of ONE deposit/withdraw tx must
+// issue each EXACTLY ONCE. The key is the consensus-deterministic tuple (txHash,
+// asset, amount): same on every validator, durable across restart, revert-safe
+// (StateDB snapshot). ok=false for a non-EVM caller (no tx identity).
+
+// custodyBindKey derives the binding slot for a (txHash, asset, amount) custody op
+// under the given prefix. amount is the requested deposit/withdraw magnitude.
+func custodyBindKey(stateDB StateDB, prefix []byte, caller common.Address, asset Currency, amount *big.Int) (common.Hash, bool) {
+	idr, ok := stateDB.(txIdentified)
+	if !ok {
+		return common.Hash{}, false
+	}
+	txHash := idr.TxHash()
+	if txHash == (common.Hash{}) {
+		return common.Hash{}, false
+	}
+	h := blake3.New()
+	h.Write(txHash[:])
+	h.Write(caller.Bytes())
+	h.Write(asset.Address.Bytes())
+	var amtBuf [32]byte
+	if amount != nil {
+		amount.FillBytes(amtBuf[:])
+	}
+	h.Write(amtBuf[:])
+	var id [32]byte
+	h.Digest().Read(id[:])
+	return makeStorageKey(prefix, id[:]), true
+}
+
+func depositBindKey(stateDB StateDB, caller common.Address, asset Currency, amount *big.Int) (common.Hash, bool) {
+	return custodyBindKey(stateDB, depBindPrefix, caller, asset, amount)
+}
+
+func withdrawBindKey(stateDB StateDB, caller common.Address, asset Currency, want *big.Int) (common.Hash, bool) {
+	return custodyBindKey(stateDB, wdrBindPrefix, caller, asset, want)
+}
+
+// loadCustodyBinding / storeCustodyBinding record a one-bit "deposit committed"
+// flag for a deposit binding. A deposit has no realized amount to carry (it
+// credits exactly the requested amount), so a single presence flag suffices.
+func loadCustodyBinding(stateDB StateDB, bindKey common.Hash) bool {
+	flag := stateDB.GetState(poolManagerAddr, makeStorageKey(depBindPrefix, append(bindKey[:], 'f')))
+	return flag[31] == 1
+}
+
+func storeCustodyBinding(stateDB StateDB, bindKey common.Hash) {
+	var flag common.Hash
+	flag[31] = 1
+	stateDB.SetState(poolManagerAddr, makeStorageKey(depBindPrefix, append(bindKey[:], 'f')), flag)
+}
+
+// loadWithdrawBinding / storeWithdrawBinding record a withdraw's REALIZED amount
+// (clamped to availability) so a replay returns the same realized value without a
+// second burn/release. The realized amount is stored as an unsigned word; a
+// settled flag distinguishes a genuine realized-zero from "not yet settled".
+func loadWithdrawBinding(stateDB StateDB, bindKey common.Hash) (*big.Int, bool) {
+	flag := stateDB.GetState(poolManagerAddr, makeStorageKey(wdrBindPrefix, append(bindKey[:], 'f')))
+	if flag[31] != 1 {
+		return big.NewInt(0), false
+	}
+	amt := stateDB.GetState(poolManagerAddr, makeStorageKey(wdrBindPrefix, append(bindKey[:], 'r')))
+	return new(big.Int).SetBytes(amt[:]), true
+}
+
+func storeWithdrawBinding(stateDB StateDB, bindKey common.Hash, realized *big.Int) {
+	var amt common.Hash
+	if realized != nil {
+		realized.FillBytes(amt[:])
+	}
+	stateDB.SetState(poolManagerAddr, makeStorageKey(wdrBindPrefix, append(bindKey[:], 'r')), amt)
+	var flag common.Hash
+	flag[31] = 1
+	stateDB.SetState(poolManagerAddr, makeStorageKey(wdrBindPrefix, append(bindKey[:], 'f')), flag)
 }
 
 // modifyBindKey is the ModifyLiquidity analog of swapBindKey (RED H1, same
@@ -443,6 +524,18 @@ func (pm *PoolManager) Initialize(
 		// The server's tick is authoritative; sync the cache to it.
 		tick = serverTick
 		pool.Tick = serverTick
+	}
+
+	// CUSTODY: bind the market's (base=currency0, quote=currency1) asset handles on
+	// the D-Chain so its custody gate value-checks orders against deposited
+	// balances (available -> locked on place/submit, settled maker<->taker on a
+	// fill). Without this the D-Chain falls into its no-custody fallback and a swap
+	// could not settle in the ledger — the reason settlement formerly leaked to a
+	// C-Chain reserve move. A non-custody backend (inert) skips this.
+	if custody, ok := pm.engine.(custodyEngine); ok {
+		if oerr := custody.OpenMarket(poolId, key.Currency0, key.Currency1); oerr != nil {
+			return 0, oerr
+		}
 	}
 
 	pm.setPool(stateDB, poolId, pool)
@@ -674,7 +767,7 @@ func (pm *PoolManager) Swap(
 	}
 
 	pm.routePool(poolId, ps)
-	delta, err := pm.engine.Swap(ps, params)
+	delta, err := pm.engine.Swap(ps, caller, params)
 	if err != nil {
 		return ZeroBalanceDelta(), err
 	}
@@ -1093,86 +1186,199 @@ func (pm *PoolManager) calculateFlashFee(amount *big.Int, fee uint24) *big.Int {
 	return feeAmount.Div(feeAmount, big.NewInt(1_000_000))
 }
 
-// transferToken moves a single NATIVE-LUX (address(0)) currency leg on C-Chain.
+// lockNativeIntoVault is the C-Chain LOCK leg of a native-LUX DEPOSIT. The EVM
+// has ALREADY moved msg.value from the caller into 0x9010 (the precompile
+// address) before this precompile runs (core/vm/evm.go Transfer precedes the
+// precompile dispatch), so the value is sitting in 0x9010's balance. This
+// function only VERIFIES that 0x9010 holds at least `amount` (a defensive
+// sufficiency check — the caller must have sent msg.value == amount) and leaves
+// it there as the passive lock backing. It moves NOTHING and is NEVER a trade
+// counterparty.
 //
-// It is NATIVE-ONLY by design (the CLOB custody model — see settleNativeLegs).
-// The former ERC-20 slot-0 poke is REMOVED: a non-native asset's value lives in
-// the D-Chain (deposited via the proxy's atomic import, settled in the D-Chain
-// ledger), never in a C-Chain storage write. A non-native currency reaching here
-// is a routing bug, not a settlement path — refused explicitly rather than
-// silently poking a storage slot (the RED H3/C2 hazard). Native LUX moves as
-// account balance with a full sufficiency check.
-func (pm *PoolManager) transferToken(stateDB StateDB, currency Currency, from, to common.Address, amount *big.Int) error {
-	if amount.Sign() <= 0 {
-		return nil
+// This is the native analog of an ERC-20 lock-and-mint bridge: the real asset
+// (native LUX) is LOCKED in 0x9010 on C-Chain, and a canonical D-Chain balance is
+// MINTED (credited via clob_deposit) against it by the caller. Withdraw burns the
+// D-Chain balance and RELEASES the locked LUX. The invariant 0x9010 maintains is
+//
+//	balanceOf(0x9010) == Σ available[*][LUX] + Σ locked[*][LUX]
+//
+// every unit of native LUX in the vault has exactly one D-Chain claim unit, so no
+// trade is ever funded from 0x9010 and value is conserved across deposit ->
+// (trade settles inside the D-Chain ledger) -> withdraw.
+func (pm *PoolManager) lockNativeIntoVault(stateDB StateDB, amount *big.Int) error {
+	if amount == nil || amount.Sign() <= 0 {
+		return fmt.Errorf("%w: deposit amount must be positive", ErrInvalidAmount)
 	}
-	if !currency.IsNative() {
-		// A non-native leg must settle in the D-Chain (deposit/withdraw + ledger),
-		// never as a C-Chain ERC-20 storage poke.
-		return fmt.Errorf("%w: non-native currency %s settles in the D-Chain, not on C-Chain", ErrSettlementFailed, currency.Address.Hex())
-	}
-	fromBal := stateDB.GetBalance(from)
 	amountU256, overflow := uint256.FromBig(amount)
 	if overflow {
-		return fmt.Errorf("%w: amount overflows uint256", ErrInsufficientBalance)
+		return fmt.Errorf("%w: amount overflows uint256", ErrInvalidAmount)
 	}
-	if fromBal.Lt(amountU256) {
-		return fmt.Errorf("%w: native balance %s < transfer %s", ErrInsufficientBalance, fromBal, amountU256)
+	// The EVM credited 0x9010 with msg.value before dispatch. If 0x9010 does not
+	// hold at least `amount`, the caller did not send msg.value == amount and the
+	// deposit is unfunded — refuse rather than mint an unbacked D-Chain credit.
+	vaultBal := stateDB.GetBalance(poolManagerAddr)
+	if vaultBal.Lt(amountU256) {
+		return fmt.Errorf("%w: deposit %s not funded by msg.value (0x9010 holds %s)", ErrInsufficientBalance, amountU256, vaultBal)
 	}
-	stateDB.SubBalance(from, amountU256)
-	stateDB.AddBalance(to, amountU256)
+	// Value already locked in the vault by the EVM value transfer. Nothing to move.
 	return nil
 }
 
-// settleNativeLegs moves ONLY the native-LUX (address(0)) leg of a V4
-// BalanceDelta on C-Chain. It is the corrected replacement for the former
-// "autoSettle", which poked C-Chain ERC-20 balance slots for BOTH legs.
-//
-// WHY THIS IS RIGHT (the CLOB custody model): the D-Chain is a central-limit
-// order book where the money LIVES IN THE BOOK. A token's value is DEPOSITED into
-// the D-Chain (atomic shared-memory ImportTx via the chains/dexvm proxy), lives
-// as the account's available D-Chain balance the book draws from, and is settled
-// ENTIRELY inside D-Chain consensus when an order fills (the maker's locked base
-// moves to the taker and the taker's locked quote moves to the maker — see
-// dchain.settleFills). A swap therefore has NO two-leg C-Chain ERC-20 settlement:
-// the token leg is already on the D-Chain. The previous autoSettle tried to
-// transfer the token ON C-Chain (caller -> poolManager), which (a) required the
-// caller to hold the C-Chain ERC-20 it had actually deposited into the D-Chain
-// (the "ERC20 balance 0 < transfer N" e2e failure) and (b) poked a hardcoded
-// storage slot that corrupted any non-standard token (RED H3/C2).
-//
-// The ONLY asset that genuinely settles on C-Chain is NATIVE LUX (address(0)):
-// it is C-Chain account balance, and the V4 facade backs resting native
-// liquidity with real native value held by the PoolManager (the e2e proved the
-// PoolManager holding 17 wei behind 17 resting asks). A non-native leg is a
-// D-Chain-canonical asset and is intentionally NOT moved here — its value
-// conservation is the D-Chain ledger's job + the proxy's atomic import/export.
-func (pm *PoolManager) settleNativeLegs(stateDB StateDB, caller common.Address, key PoolKey, delta BalanceDelta) error {
-	if key.Currency0.IsNative() {
-		if err := pm.settleNativeLeg(stateDB, caller, delta.Amount0); err != nil {
-			return fmt.Errorf("%w: currency0 native settlement: %v", ErrSettlementFailed, err)
-		}
-	}
-	if key.Currency1.IsNative() {
-		if err := pm.settleNativeLeg(stateDB, caller, delta.Amount1); err != nil {
-			return fmt.Errorf("%w: currency1 native settlement: %v", ErrSettlementFailed, err)
-		}
-	}
-	return nil
-}
-
-// settleNativeLeg moves one native-LUX leg: a positive delta (caller owes the
-// pool) debits the caller and credits the PoolManager; a negative delta (pool
-// owes the caller) does the reverse. Zero is a no-op.
-func (pm *PoolManager) settleNativeLeg(stateDB StateDB, caller common.Address, amount *big.Int) error {
-	switch amount.Sign() {
-	case 1:
-		return pm.transferToken(stateDB, NativeCurrency, caller, poolManagerAddr, amount)
-	case -1:
-		return pm.transferToken(stateDB, NativeCurrency, poolManagerAddr, caller, new(big.Int).Neg(amount))
-	default:
+// releaseNativeFromVault is the C-Chain RELEASE leg of a native-LUX WITHDRAW: it
+// moves `amount` native LUX from the 0x9010 vault back to the caller, AFTER the
+// D-Chain ledger has debited (burned) exactly `amount` of the caller's available
+// balance. It refuses to release more than the vault holds (a release that would
+// drain another account's locked backing) — but under the maintained invariant
+// the vault always holds >= the realized D-Chain debit, so this is defense in
+// depth, never the normal path. This is the only direction 0x9010 ever pays out
+// native LUX, and only against a realized ledger burn — never as a trade.
+func (pm *PoolManager) releaseNativeFromVault(stateDB StateDB, caller common.Address, amount *big.Int) error {
+	if amount == nil || amount.Sign() <= 0 {
 		return nil
 	}
+	amountU256, overflow := uint256.FromBig(amount)
+	if overflow {
+		return fmt.Errorf("%w: amount overflows uint256", ErrInvalidAmount)
+	}
+	vaultBal := stateDB.GetBalance(poolManagerAddr)
+	if vaultBal.Lt(amountU256) {
+		// The vault cannot back this release. Under the invariant this is
+		// impossible; refusing prevents a mint against the vault.
+		return fmt.Errorf("%w: vault %s < release %s (invariant breach)", ErrInsufficientBalance, vaultBal, amountU256)
+	}
+	stateDB.SubBalance(poolManagerAddr, amountU256)
+	stateDB.AddBalance(caller, amountU256)
+	return nil
+}
+
+// Deposit is the EVM ingress for funds-IN: it LOCKS the asset in the 0x9010 vault
+// on C-Chain, then MINTS the canonical D-Chain balance (credits available) for
+// the caller via the custody backend. It is the only way native value enters the
+// D-Chain ledger from an EVM chain, and it makes 0x9010 a passive lock vault, not
+// a trade counterparty.
+//
+//	NATIVE LUX: the EVM has already moved msg.value (== amount) into 0x9010 before
+//	  this precompile ran; lockNativeIntoVault verifies the vault holds it. The LUX
+//	  stays locked in the vault; the matching D-Chain available balance is the
+//	  caller's claim against it.
+//	ERC-20: not yet a real lock/mint (no on-chain token transferFrom path wired) —
+//	  refused explicitly (ErrERC20DepositUnsupported) rather than minting an
+//	  unbacked D-Chain credit. See the deposit handler.
+//
+// IDEMPOTENCY (RED H1): the EVM executes one tx ~5× (estimate/validate/build/
+// verify) and only the canonical exec commits StateDB; a clob_deposit is an
+// irreversible D-Chain credit. The deposit is bound on (txHash, asset, amount) in
+// StateDB so a re-execution returns the prior result WITHOUT a second mint — the
+// vault lock is idempotent too (the EVM transfers msg.value once per real tx, and
+// a replay sees the binding before touching the vault).
+func (pm *PoolManager) Deposit(stateDB StateDB, caller common.Address, asset Currency, amount *big.Int) error {
+	if amount == nil || amount.Sign() <= 0 {
+		return fmt.Errorf("%w: deposit amount must be positive", ErrInvalidAmount)
+	}
+	if !amount.IsUint64() {
+		return fmt.Errorf("%w: deposit amount exceeds uint64 ledger range", ErrInvalidAmount)
+	}
+	custody, ok := pm.engine.(custodyEngine)
+	if !ok {
+		return ErrDEXBackendNotConfigured
+	}
+
+	// Replay-idempotency: a committed deposit for this (txHash, asset, amount) is
+	// served from StateDB without a second vault lock or D-Chain mint.
+	bindKey, bound := depositBindKey(stateDB, caller, asset, amount)
+	if bound && loadCustodyBinding(stateDB, bindKey) {
+		return nil
+	}
+
+	// 1) LOCK leg (C-Chain). Native: verify msg.value is in the vault. ERC-20:
+	//    refused upstream in the handler before reaching here.
+	if asset.IsNative() {
+		if err := pm.lockNativeIntoVault(stateDB, amount); err != nil {
+			return err
+		}
+	} else {
+		return ErrERC20DepositUnsupported
+	}
+
+	// 2) MINT leg (D-Chain): credit exactly the locked amount into available.
+	if err := custody.Deposit(caller, asset, amount.Uint64()); err != nil {
+		return fmt.Errorf("%w: clob_deposit: %v", ErrSettlementFailed, err)
+	}
+
+	if bound {
+		storeCustodyBinding(stateDB, bindKey)
+	}
+	return nil
+}
+
+// Withdraw is the EVM ingress for funds-OUT: it BURNS up to `want` of the
+// caller's D-Chain available balance (the ledger clamps to availability and
+// returns the realized amount), then RELEASES exactly the realized amount from the
+// 0x9010 vault back to the caller. Conserving: the vault never releases more than
+// the ledger burned, so 0x9010 cannot mint native value.
+//
+//	NATIVE LUX: releaseNativeFromVault pays the realized amount from the vault.
+//	ERC-20: refused (no real release path) — the withdraw never burns the ledger.
+//
+// Returns the realized amount released (0 = nothing available). Idempotency mirrors
+// Deposit: bound on (txHash, asset, want) so a replay does not double-burn/release.
+func (pm *PoolManager) Withdraw(stateDB StateDB, caller common.Address, asset Currency, want *big.Int) (*big.Int, error) {
+	if want == nil || want.Sign() <= 0 {
+		return big.NewInt(0), fmt.Errorf("%w: withdraw amount must be positive", ErrInvalidAmount)
+	}
+	if !want.IsUint64() {
+		return big.NewInt(0), fmt.Errorf("%w: withdraw amount exceeds uint64 ledger range", ErrInvalidAmount)
+	}
+	if !asset.IsNative() {
+		return big.NewInt(0), ErrERC20DepositUnsupported
+	}
+	custody, ok := pm.engine.(custodyEngine)
+	if !ok {
+		return big.NewInt(0), ErrDEXBackendNotConfigured
+	}
+
+	// Replay-idempotency: a committed withdraw for this (txHash, asset, want)
+	// returns its realized amount without a second burn or release.
+	bindKey, bound := withdrawBindKey(stateDB, caller, asset, want)
+	if bound {
+		if realized, settled := loadWithdrawBinding(stateDB, bindKey); settled {
+			return realized, nil
+		}
+	}
+
+	// 1) BURN leg (D-Chain): debit realized (clamped) from available.
+	realizedU64, err := custody.Withdraw(caller, asset, want.Uint64())
+	if err != nil {
+		return big.NewInt(0), fmt.Errorf("%w: clob_withdraw: %v", ErrSettlementFailed, err)
+	}
+	realized := new(big.Int).SetUint64(realizedU64)
+
+	// 2) RELEASE leg (C-Chain): pay exactly the realized amount from the vault.
+	if realizedU64 > 0 {
+		if rerr := pm.releaseNativeFromVault(stateDB, caller, realized); rerr != nil {
+			return big.NewInt(0), rerr
+		}
+	}
+
+	if bound {
+		storeWithdrawBinding(stateDB, bindKey, realized)
+	}
+	return realized, nil
+}
+
+// BalanceOf returns account's AVAILABLE D-Chain balance for asset (read-only). It
+// reads through the custody backend (clob_balance); no StateDB mutation. Returns
+// 0 for a non-custody backend (nothing deposited).
+func (pm *PoolManager) BalanceOf(account common.Address, asset Currency) (*big.Int, error) {
+	custody, ok := pm.engine.(custodyEngine)
+	if !ok {
+		return big.NewInt(0), nil
+	}
+	avail, err := custody.Balance(account, asset)
+	if err != nil {
+		return big.NewInt(0), err
+	}
+	return new(big.Int).SetUint64(avail), nil
 }
 
 func (pm *PoolManager) callHook(stateDB StateDB, hookAddr common.Address, flag HookFlags, args ...any) error {
