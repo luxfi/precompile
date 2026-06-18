@@ -42,6 +42,7 @@ var (
 	hookRegistryPrefix  = []byte("hook")
 	pauseStatePrefix    = []byte("paus")
 	freezeStatePrefix   = []byte("frzn")
+	swapBindPrefix      = []byte("swpb")
 )
 
 // PoolState extends the basic Pool with V4 tick-level state for concentrated
@@ -83,26 +84,139 @@ func (pm *PoolManager) routePool(poolId [32]byte, ps *PoolState) {
 // txIdentified is the OPTIONAL capability a StateDB exposes when it can name the
 // executing EVM transaction. The production poolStateAdapter implements it
 // (sourced from contract.StateDB.TxHash); test StateDBs need not. PoolManager
-// uses it only to thread tx identity into an idempotencyBinder backend.
+// uses it to derive the DURABLE idempotency key for a marketable order (Swap).
 type txIdentified interface {
 	TxHash() common.Hash
 }
 
-// bindTx threads the executing tx hash into an idempotencyBinder backend (e.g.
-// ZAPEngine) so a marketable order is submitted to the d-chain at most once per
-// EVM tx — re-execution / reorg / retry returns the committed delta instead of
-// double-filling (RED H1). No-op when the engine is not a binder or the StateDB
-// cannot name the tx (the binder then disables its cache for that call).
-func (pm *PoolManager) bindTx(stateDB StateDB, ps *PoolState) {
-	binder, ok := pm.engine.(idempotencyBinder)
+// swapBindKey derives the storage slot that records whether THIS swap has already
+// settled against the d-chain book, and the committed BalanceDelta if so. The key
+// is the consensus-deterministic tuple (txHash, poolId, swapParams) — the same
+// value on every validator and across a restart — so the idempotency guard is
+// DURABLE and consensus-shared, not a per-node in-memory cache (RED H1).
+//
+// txHash is the EVM transaction identity the host sets via SetTxContext (read
+// through the txIdentified seam). It is folded together with the poolId and the
+// marketable-order parameters so that a single EVM tx which calls swap multiple
+// times (router / multicall) gets one slot per distinct (pool, order), while a
+// re-execution / reorg-redo / retry of the SAME tx hits the same slot.
+//
+// ok=false means the StateDB cannot name the tx (e.g. a non-EVM caller); the
+// caller then skips the durable guard for that call rather than colliding every
+// unbound swap onto the zero-hash slot.
+func swapBindKey(stateDB StateDB, poolId [32]byte, params SwapParams) (common.Hash, bool) {
+	idr, ok := stateDB.(txIdentified)
 	if !ok {
-		return
+		return common.Hash{}, false
 	}
-	var txHash common.Hash
-	if tx, ok := stateDB.(txIdentified); ok {
-		txHash = tx.TxHash()
+	txHash := idr.TxHash()
+	if txHash == (common.Hash{}) {
+		return common.Hash{}, false
 	}
-	binder.BindTx(ps, txHash)
+	h := blake3.New()
+	h.Write(txHash[:])
+	h.Write(poolId[:])
+	h.Write([]byte(swapParamsDigest(params)))
+	var id [32]byte
+	h.Digest().Read(id[:])
+	return makeStorageKey(swapBindPrefix, id[:]), true
+}
+
+// swapParamsDigest serializes the marketable-order parameters that distinguish
+// two swaps issued by the SAME tx against the SAME pool, so each gets its own
+// durable slot. Encodes direction, |amountSpecified| sign+magnitude, and the
+// price limit — the full input that determines the submit.
+func swapParamsDigest(params SwapParams) string {
+	var b [1 + 1 + 32 + 32]byte
+	if params.ZeroForOne {
+		b[0] = 1
+	}
+	if params.AmountSpecified != nil && params.AmountSpecified.Sign() < 0 {
+		b[1] = 1 // sign bit: exact-input
+	}
+	if params.AmountSpecified != nil {
+		new(big.Int).Abs(params.AmountSpecified).FillBytes(b[2:34])
+	}
+	if params.SqrtPriceLimitX96 != nil && params.SqrtPriceLimitX96.Sign() > 0 {
+		params.SqrtPriceLimitX96.FillBytes(b[34:66])
+	}
+	return string(b[:])
+}
+
+// swapBindLayout: the binding occupies three slots distinguished by field suffix
+// — a presence flag (so a genuine zero/zero delta still counts as settled), and
+// the two signed delta words.
+var (
+	swapBindFlagSuffix = []byte("f")
+	swapBindAmt0Suffix = []byte("0")
+	swapBindAmt1Suffix = []byte("1")
+)
+
+// loadSwapBinding returns the committed BalanceDelta for bindKey if this swap has
+// already settled (settled=true), reading straight from StateDB. A settled tx
+// found here means the d-chain already matched this exact swap, so the caller
+// MUST NOT submit again — it returns the recorded delta verbatim.
+func loadSwapBinding(stateDB StateDB, bindKey common.Hash) (delta BalanceDelta, settled bool) {
+	flag := stateDB.GetState(poolManagerAddr, deriveSlot(bindKey, swapBindFlagSuffix))
+	if flag[31] != 1 {
+		return ZeroBalanceDelta(), false
+	}
+	a0 := stateDB.GetState(poolManagerAddr, deriveSlot(bindKey, swapBindAmt0Suffix))
+	a1 := stateDB.GetState(poolManagerAddr, deriveSlot(bindKey, swapBindAmt1Suffix))
+	return NewBalanceDelta(slotToSigned(a0), slotToSigned(a1)), true
+}
+
+// storeSwapBinding durably records that bindKey's swap settled with delta, so a
+// later re-execution of the same tx is served from StateDB instead of issuing a
+// second clob_submit. The write reverts atomically with the tx if it later
+// reverts (StateDB snapshot semantics), so an aborted swap leaves no binding —
+// the same revert-safety the V6 pause/freeze move relies on.
+func storeSwapBinding(stateDB StateDB, bindKey common.Hash, delta BalanceDelta) {
+	stateDB.SetState(poolManagerAddr, deriveSlot(bindKey, swapBindAmt0Suffix), signedToSlot(delta.Amount0))
+	stateDB.SetState(poolManagerAddr, deriveSlot(bindKey, swapBindAmt1Suffix), signedToSlot(delta.Amount1))
+	var flag common.Hash
+	flag[31] = 1
+	stateDB.SetState(poolManagerAddr, deriveSlot(bindKey, swapBindFlagSuffix), flag)
+}
+
+// deriveSlot re-hashes a base key with a field suffix so the flag and the two
+// delta words occupy distinct, collision-free slots under the same binding.
+func deriveSlot(base common.Hash, suffix []byte) common.Hash {
+	return makeStorageKey(swapBindPrefix, append(base[:], suffix...))
+}
+
+// signedToSlot encodes a signed *big.Int as a 32-byte two's-complement word —
+// the int256 representation — so a NEGATIVE BalanceDelta leg (pool owes the user)
+// round-trips exactly. safeFillBytes is unusable here: it zeroes negatives.
+func signedToSlot(v *big.Int) common.Hash {
+	var h common.Hash
+	if v == nil || v.Sign() == 0 {
+		return h
+	}
+	if v.Sign() > 0 {
+		v.FillBytes(h[:])
+		return h
+	}
+	// two's complement: 2^256 + v (v negative).
+	mod := new(big.Int).Lsh(big.NewInt(1), 256)
+	enc := new(big.Int).Add(mod, v)
+	enc.FillBytes(h[:])
+	return h
+}
+
+// slotToSigned decodes a 32-byte two's-complement word back to a signed
+// *big.Int, inverting signedToSlot.
+func slotToSigned(h common.Hash) *big.Int {
+	v := new(big.Int).SetBytes(h[:])
+	if v.Sign() == 0 {
+		return v
+	}
+	// high bit set => negative: subtract 2^256.
+	if h[0]&0x80 != 0 {
+		mod := new(big.Int).Lsh(big.NewInt(1), 256)
+		v.Sub(v, mod)
+	}
+	return v
 }
 
 // getOrCreateTick returns the TickInfo for a tick, creating it if absent.
@@ -455,6 +569,22 @@ func (pm *PoolManager) Swap(
 		return ZeroBalanceDelta(), ErrPoolNotInitialized
 	}
 
+	// Replay-idempotency (RED H1): a marketable order is an IRREVERSIBLE submit to
+	// the d-chain book. Re-execution / reorg-redo / retry of the same EVM tx, OR a
+	// node restart that replays the block, MUST map to EXACTLY ONE match — never a
+	// double-fill. The guard lives in StateDB (durable on disk, identical on every
+	// validator replaying the same ordered block, and reverted atomically with the
+	// tx) rather than in process memory: an in-memory cache cannot survive a
+	// restart and each validator keeps its own copy, so it fixes neither the
+	// restart re-submit nor the N-fold per-validator fan-out. This mirrors the V6
+	// pause/freeze move from in-process flags to StateDB.
+	bindKey, bound := swapBindKey(stateDB, poolId, params)
+	if bound {
+		if prior, settled := loadSwapBinding(stateDB, bindKey); settled {
+			return prior, nil
+		}
+	}
+
 	if key.Hooks != (common.Address{}) {
 		if err := pm.callHook(stateDB, key.Hooks, HookBeforeSwap, key, params, hookData); err != nil {
 			return ZeroBalanceDelta(), err
@@ -462,10 +592,16 @@ func (pm *PoolManager) Swap(
 	}
 
 	pm.routePool(poolId, ps)
-	pm.bindTx(stateDB, ps)
 	delta, err := pm.engine.Swap(ps, params)
 	if err != nil {
 		return ZeroBalanceDelta(), err
+	}
+
+	// Persist the committed delta under the durable idempotency key BEFORE
+	// returning, so any later replay of this tx is served from StateDB instead of
+	// re-submitting to the book.
+	if bound {
+		storeSwapBinding(stateDB, bindKey, delta)
 	}
 
 	pm.setPoolState(stateDB, poolId, ps)
