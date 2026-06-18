@@ -73,7 +73,7 @@ func TestDefaultBackendIsInert(t *testing.T) {
 	if _, err := e.Initialize(big.NewInt(1)); !errors.Is(err, ErrDEXBackendNotConfigured) {
 		t.Fatalf("Initialize err = %v, want ErrDEXBackendNotConfigured", err)
 	}
-	if d, err := e.Swap(&PoolState{}, SwapParams{AmountSpecified: big.NewInt(-1)}); !errors.Is(err, ErrDEXBackendNotConfigured) || !d.IsZero() {
+	if d, err := e.Swap(&PoolState{}, common.Address{}, SwapParams{AmountSpecified: big.NewInt(-1)}); !errors.Is(err, ErrDEXBackendNotConfigured) || !d.IsZero() {
 		t.Fatalf("Swap = (%v,%v), want (zero, ErrDEXBackendNotConfigured)", d, err)
 	}
 	cd, fd, err := e.ModifyLiquidity(&PoolState{}, common.Address{}, ModifyLiquidityParams{LiquidityDelta: big.NewInt(1)})
