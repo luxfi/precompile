@@ -981,3 +981,174 @@ func TestZAPCancelAuthCannotCancelOthersOrder(t *testing.T) {
 		t.Fatalf("maker cancel did not remove order: resting = %d, want 0", got)
 	}
 }
+
+// TestZAPCancelSurvivesMultiExec is the regression for the EVM-path cancel revert
+// ("no resting order for caller"). A place and its later cancel are DIFFERENT EVM
+// txs, and the EVM runs each tx ~5x (gas-estimate / validate / build / verify /
+// canonical — only canonical commits). The owner<->order binding the place wrote
+// to the backend's PROCESS MEMORY (ZAPEngine.orderRef) did not survive to the
+// cancel's executions, so the cancel resolved nothing and reverted — even though
+// the order rested fine on the venue and the funds were locked.
+//
+// This models that hazard the same way TestSwapIdempotencySurvivesRestart does:
+// place through one PoolManager+ZAPEngine, then DISCARD both and cancel through a
+// FRESH PoolManager+ZAPEngine (ZERO in-memory carryover) against the SAME committed
+// StateDB and the SAME venue book. The cancel MUST now succeed by reading the
+// DURABLE cancel-authorization binding from StateDB and re-seeding the backend
+// cache — and the unfilled order must be removed from the book.
+//
+// Under the old in-memory-only orderRef this could not pass: the fresh engine
+// starts with an empty map and reverts "no resting order for caller".
+func TestZAPCancelSurvivesMultiExec(t *testing.T) {
+	f := newFakeCLOB()
+	withFakeCLOB(t, f)
+
+	key := conservationPoolKey()
+	lp := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	poolId := key.ID()
+	// One shared, committed StateDB — the chain state that survives across the
+	// EVM's separate executions / a node restart.
+	base := NewMockStateDB()
+	// The place tx and the cancel tx have DIFFERENT tx hashes (they are different
+	// transactions); the durable cancel-auth binding is keyed by the maker handle,
+	// not the txHash, so it bridges them.
+	placeDB := &txStateDB{MockStateDB: base, txHash: common.HexToHash("0x9001")}
+	cancelDB := &txStateDB{MockStateDB: base, txHash: common.HexToHash("0x9002")}
+
+	salt := [32]byte{0xAB}
+	placeParams := ModifyLiquidityParams{
+		TickLower:      tickForPriceLocal(t, 2.0),
+		TickUpper:      tickForPriceLocal(t, 2.0) + TickSpacing030,
+		LiquidityDelta: big.NewInt(100),
+		Salt:           salt,
+	}
+
+	// --- execution #1: init + place the resting order.
+	zap1 := NewZAPEngine("fake:0", 2*time.Second)
+	pm1 := NewPoolManager(zap1)
+	if _, err := pm1.Initialize(placeDB, key, new(big.Int).Set(Q96), nil); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, _, err := pm1.ModifyLiquidity(placeDB, lp, key, placeParams, nil); err != nil {
+		t.Fatalf("place: %v", err)
+	}
+	if got := len(f.markets[poolId]); got != 1 {
+		t.Fatalf("after place: resting = %d, want 1", got)
+	}
+	// The durable binding must exist in StateDB after the place.
+	if _, ok := loadCancelAuth(base, lp, poolId, salt); !ok {
+		t.Fatal("place did not record a durable cancel-auth binding")
+	}
+	zap1.Close()
+
+	// --- execution #2 (later tx / restart): brand-new engine + pool manager, ZERO
+	// in-memory carryover, reading the SAME committed StateDB + the SAME venue book.
+	// The cancel must succeed off the durable binding.
+	zap2 := NewZAPEngine("fake:0", 2*time.Second)
+	defer zap2.Close()
+	pm2 := NewPoolManager(zap2)
+
+	// Sanity: the fresh engine genuinely has NO in-memory binding — proving the
+	// authorization comes from durable StateDB, not process memory.
+	if _, ok := zap2.OrderHandle(lp, poolId, salt); ok {
+		t.Fatal("fresh engine unexpectedly has an in-memory order handle")
+	}
+
+	cancelParams := ModifyLiquidityParams{
+		TickLower:      placeParams.TickLower,
+		TickUpper:      placeParams.TickUpper,
+		LiquidityDelta: big.NewInt(-100),
+		Salt:           salt,
+	}
+	delta, _, err := pm2.ModifyLiquidity(cancelDB, lp, key, cancelParams, nil)
+	if err != nil {
+		t.Fatalf("cancel across multi-exec MUST succeed off the durable binding, got: %v", err)
+	}
+	// Removing liquidity returns funds to the LP: the delta must be non-zero (pool
+	// owes the maker the unfilled posted amount) — the funds are unlocked.
+	if delta.Amount0.Sign() == 0 && delta.Amount1.Sign() == 0 {
+		t.Fatalf("cancel returned a zero delta — the unfilled amount was not unlocked")
+	}
+	if got := len(f.markets[poolId]); got != 0 {
+		t.Fatalf("cancel did not remove the resting order: resting = %d, want 0", got)
+	}
+	// The durable binding must be cleared after a successful cancel so it cannot be
+	// replayed against a recycled orderID.
+	if _, ok := loadCancelAuth(base, lp, poolId, salt); ok {
+		t.Fatal("cancel did not clear the durable cancel-auth binding")
+	}
+}
+
+// TestZAPCancelAuthRejectsOthersAcrossMultiExec proves the IDOR stays closed even
+// with the DURABLE binding and across a fresh process. A maker places; then a
+// DIFFERENT caller (attacker), through a brand-new PoolManager+ZAPEngine reading
+// the same committed StateDB, tries to cancel with the maker's exact ticks+salt.
+// The attacker's authenticated handle is keyed by the ATTACKER's address, so it
+// has no durable binding — the cancel must reject WITHOUT touching the venue, the
+// maker's order must remain, and the maker (also from a fresh process) can still
+// cancel its own order off the durable binding (RED H4).
+func TestZAPCancelAuthRejectsOthersAcrossMultiExec(t *testing.T) {
+	f := newFakeCLOB()
+	withFakeCLOB(t, f)
+
+	key := conservationPoolKey()
+	poolId := key.ID()
+	lp := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	attacker := common.HexToAddress("0x3333333333333333333333333333333333333333")
+	base := NewMockStateDB()
+	stateDB := &txStateDB{MockStateDB: base, txHash: common.HexToHash("0xa001")}
+
+	salt := [32]byte{0x01}
+	placeParams := ModifyLiquidityParams{
+		TickLower:      tickForPriceLocal(t, 2.0),
+		TickUpper:      tickForPriceLocal(t, 2.0) + TickSpacing030,
+		LiquidityDelta: big.NewInt(100),
+		Salt:           salt,
+	}
+
+	// Maker places (process #1).
+	zap1 := NewZAPEngine("fake:0", 2*time.Second)
+	pm1 := NewPoolManager(zap1)
+	if _, err := pm1.Initialize(stateDB, key, new(big.Int).Set(Q96), nil); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, _, err := pm1.ModifyLiquidity(stateDB, lp, key, placeParams, nil); err != nil {
+		t.Fatalf("maker place: %v", err)
+	}
+	zap1.Close()
+
+	cancelParams := ModifyLiquidityParams{
+		TickLower:      placeParams.TickLower,
+		TickUpper:      placeParams.TickUpper,
+		LiquidityDelta: big.NewInt(-100),
+		Salt:           salt, // forged: a copy of the maker's salt
+	}
+
+	// Attacker tries to cancel from a FRESH process reading the durable state.
+	zapA := NewZAPEngine("fake:0", 2*time.Second)
+	pmA := NewPoolManager(zapA)
+	submitsBefore := f.submitCount()
+	if _, _, err := pmA.ModifyLiquidity(stateDB, attacker, key, cancelParams, nil); err == nil {
+		t.Fatal("attacker cancel must fail (IDOR) — no durable binding under the attacker's handle")
+	}
+	if got := len(f.markets[poolId]); got != 1 {
+		t.Fatalf("maker order vanished after attacker cancel: resting = %d, want 1", got)
+	}
+	// The rejection must be decided in the PoolManager from durable state, BEFORE
+	// any venue delegation — no ZAP traffic for the unauthorized cancel.
+	if f.submitCount() != submitsBefore {
+		t.Fatal("attacker cancel reached the venue — authorization must reject before delegation")
+	}
+	zapA.Close()
+
+	// The real maker, from yet another fresh process, CAN cancel off the binding.
+	zap2 := NewZAPEngine("fake:0", 2*time.Second)
+	defer zap2.Close()
+	pm2 := NewPoolManager(zap2)
+	if _, _, err := pm2.ModifyLiquidity(stateDB, lp, key, cancelParams, nil); err != nil {
+		t.Fatalf("maker self-cancel across multi-exec: %v", err)
+	}
+	if got := len(f.markets[poolId]); got != 0 {
+		t.Fatalf("maker cancel did not remove order: resting = %d, want 0", got)
+	}
+}
