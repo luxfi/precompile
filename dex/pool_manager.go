@@ -45,6 +45,7 @@ var (
 	modBindPrefix       = []byte("modb")
 	depBindPrefix       = []byte("depb") // deposit idempotency binding
 	wdrBindPrefix       = []byte("wdrb") // withdraw idempotency binding
+	cancelAuthPrefix    = []byte("cana") // durable cancel-authorization binding (RED H4)
 )
 
 // PoolState extends the basic Pool with V4 tick-level state for concentrated
@@ -370,6 +371,79 @@ func storeModifyBinding(stateDB StateDB, bindKey common.Hash, delta BalanceDelta
 
 func deriveModSlot(base common.Hash, suffix []byte) common.Hash {
 	return makeStorageKey(modBindPrefix, append(base[:], suffix...))
+}
+
+// ---- durable cancel-authorization binding (RED H4) ----
+//
+// Records, in DURABLE StateDB, that a (maker, poolId, salt) handle owns a specific
+// resting server orderID. This is the SAME seam as getPosition/setPosition: the
+// authoritative copy is StateDB, the engine's orderRef map is a read-through cache.
+//
+// Why durable (not the engine's in-memory orderRef): a place and its later cancel
+// are DIFFERENT EVM txs, and the EVM runs each tx ~5x (gas-estimate / validate /
+// build / verify / canonical — only canonical commits). The in-memory binding a
+// place writes does not survive to the cancel's executions (different tx, possibly
+// after a node restart), so cancel found nothing and reverted "no resting order
+// for caller". The binding belongs in StateDB — consensus-shared and restart-
+// durable — exactly like the swap/modify/custody idempotency bindings above.
+//
+// The key is (maker, poolId, salt): the maker's OWN authenticated handle (NOT a
+// txHash — the binding must outlive the placing tx and be addressable by a later
+// cancel tx). An attacker forging another maker's salt computes a handle bound to
+// the ATTACKER's address, which has no durable orderID → cancel still rejects
+// (the IDOR stays closed, RED H4). The value carries the server orderID + a
+// presence flag (so a genuine orderID 0 still reads as bound).
+
+// cancelAuthKey derives the durable binding slot for a (maker, poolId, salt)
+// resting-order handle. It mirrors makerOrderKey's authenticated tuple so the
+// PoolManager and the engine agree on the same handle without sharing the engine's
+// process memory.
+func cancelAuthKey(maker common.Address, poolId [32]byte, salt [32]byte) common.Hash {
+	h := blake3.New()
+	h.Write(maker.Bytes())
+	h.Write(poolId[:])
+	h.Write(salt[:])
+	var id [32]byte
+	h.Digest().Read(id[:])
+	return makeStorageKey(cancelAuthPrefix, id[:])
+}
+
+// loadCancelAuth returns the server orderID a (maker, poolId, salt) handle owns,
+// reading straight from StateDB. ok=false means no resting order is durably bound
+// to this caller's handle — the cancel must reject.
+func loadCancelAuth(stateDB StateDB, maker common.Address, poolId [32]byte, salt [32]byte) (uint64, bool) {
+	base := cancelAuthKey(maker, poolId, salt)
+	flag := stateDB.GetState(poolManagerAddr, deriveCancelAuthSlot(base, swapBindFlagSuffix))
+	if flag[31] != 1 {
+		return 0, false
+	}
+	idHash := stateDB.GetState(poolManagerAddr, deriveCancelAuthSlot(base, []byte("o")))
+	return new(big.Int).SetBytes(idHash[:]).Uint64(), true
+}
+
+// storeCancelAuth durably binds orderID to the (maker, poolId, salt) handle at
+// place time. Revert-safe via StateDB snapshot semantics: a place that later
+// reverts leaves no binding (same property the swap/modify bindings rely on).
+func storeCancelAuth(stateDB StateDB, maker common.Address, poolId [32]byte, salt [32]byte, orderID uint64) {
+	base := cancelAuthKey(maker, poolId, salt)
+	var idHash common.Hash
+	new(big.Int).SetUint64(orderID).FillBytes(idHash[:])
+	stateDB.SetState(poolManagerAddr, deriveCancelAuthSlot(base, []byte("o")), idHash)
+	var flag common.Hash
+	flag[31] = 1
+	stateDB.SetState(poolManagerAddr, deriveCancelAuthSlot(base, swapBindFlagSuffix), flag)
+}
+
+// clearCancelAuth removes the durable binding after a successful cancel so a stale
+// handle cannot be replayed against a recycled server orderID.
+func clearCancelAuth(stateDB StateDB, maker common.Address, poolId [32]byte, salt [32]byte) {
+	base := cancelAuthKey(maker, poolId, salt)
+	stateDB.SetState(poolManagerAddr, deriveCancelAuthSlot(base, []byte("o")), common.Hash{})
+	stateDB.SetState(poolManagerAddr, deriveCancelAuthSlot(base, swapBindFlagSuffix), common.Hash{})
+}
+
+func deriveCancelAuthSlot(base common.Hash, suffix []byte) common.Hash {
+	return makeStorageKey(cancelAuthPrefix, append(base[:], suffix...))
 }
 
 // getOrCreateTick returns the TickInfo for a tick, creating it if absent.
@@ -864,6 +938,29 @@ func (pm *PoolManager) ModifyLiquidity(
 		}
 	}
 
+	// Cancel-authorization (RED H4) is resolved from DURABLE StateDB, not the
+	// backend's process memory. A place and its later cancel are different EVM txs,
+	// each executed ~5x by the EVM, so the in-memory owner<->order binding the place
+	// wrote does not survive to the cancel — the cancel found nothing and reverted
+	// "no resting order for caller". The authoritative binding lives in StateDB
+	// (cancelAuthKey); the backend's orderRef map is a read-through cache.
+	//
+	// On a cancel (delta < 0): if no durable binding exists for THIS caller's
+	// handle, reject WITHOUT delegating — that both closes the IDOR (an attacker
+	// forging another maker's salt has no binding under its own address) and gives
+	// a deterministic, multi-exec-stable result. If a binding exists, prime the
+	// backend cache from it so the backend resolves the same order this execution.
+	isCancel := params.LiquidityDelta.Sign() < 0
+	auth, hasAuthSeam := pm.engine.(cancelAuthority)
+	if isCancel && hasAuthSeam {
+		orderID, ok := loadCancelAuth(stateDB, caller, poolId, params.Salt)
+		if !ok {
+			return ZeroBalanceDelta(), ZeroBalanceDelta(),
+				fmt.Errorf("ZAP cancel: no resting order for caller at this position")
+		}
+		auth.SeedOrderHandle(caller, poolId, params.Salt, orderID)
+	}
+
 	pm.routePool(poolId, ps)
 	callerDelta, feesAccrued, err := pm.engine.ModifyLiquidity(ps, caller, params)
 	if err != nil {
@@ -871,6 +968,21 @@ func (pm *PoolManager) ModifyLiquidity(
 	}
 	if bound {
 		storeModifyBinding(stateDB, bindKey, callerDelta)
+	}
+
+	// Persist / clear the durable cancel-authorization binding around the engine op.
+	// After a successful place (delta > 0): read the orderID the backend bound and
+	// store it durably so a future cancel tx (or this node after a restart) can
+	// authorize it. After a successful cancel (delta < 0): drop the binding so a
+	// stale handle cannot be replayed against a recycled orderID.
+	if hasAuthSeam {
+		if isCancel {
+			clearCancelAuth(stateDB, caller, poolId, params.Salt)
+		} else if params.LiquidityDelta.Sign() > 0 {
+			if orderID, ok := auth.OrderHandle(caller, poolId, params.Salt); ok {
+				storeCancelAuth(stateDB, caller, poolId, params.Salt, orderID)
+			}
+		}
 	}
 
 	posKey := PositionKey(caller, params.TickLower, params.TickUpper, params.Salt)
