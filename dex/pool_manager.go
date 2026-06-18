@@ -10,7 +10,6 @@ import (
 	"math/big"
 
 	"github.com/holiman/uint256"
-	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
 	ethtypes "github.com/luxfi/geth/core/types"
 	"github.com/zeebo/blake3"
@@ -1094,105 +1093,86 @@ func (pm *PoolManager) calculateFlashFee(amount *big.Int, fee uint24) *big.Int {
 	return feeAmount.Div(feeAmount, big.NewInt(1_000_000))
 }
 
-func (pm *PoolManager) transferERC20(stateDB StateDB, currency Currency, from, to common.Address, amount *big.Int) error {
-	return pm.transferToken(stateDB, currency, from, to, amount)
-}
-
-// erc20BalanceSlot0 is the canonical Solidity storage slot for a `balanceOf`
-// mapping declared as the FIRST state variable (slot 0):
-// keccak256(abi.encode(holder, uint256(0))). This is the layout emitted by
-// OpenZeppelin ERC20 and the Lux-canonical LUSD/LETH tokens. It is NOT a guess
-// for arbitrary third-party tokens — a token whose balance mapping is not at
-// slot 0 must settle through the d-chain atomic import/export, never a poke.
-func erc20BalanceSlot0(holder common.Address) common.Hash {
-	key := make([]byte, 64)
-	copy(key[12:32], holder.Bytes()) // mapping key: left-padded address
-	// slot 0: key[32:64] left as zero.
-	return common.BytesToHash(crypto.Keccak256(key))
-}
-
-// transferToken settles a single currency leg on the C-Chain.
+// transferToken moves a single NATIVE-LUX (address(0)) currency leg on C-Chain.
 //
-// Two — and only two — paths exist (decomplect: one home per asset class):
-//   - Native LUX (address(0)): move account balance directly.
-//   - C-resident ERC-20 using the canonical slot-0 balanceOf layout: adjust the
-//     two holders' balance slots with full sufficiency checks.
-//
-// The previous code poked a single HARDCODED slot for EVERY token, which
-// silently corrupted state for any token whose balanceOf was not at that magic
-// slot and bypassed allowances entirely (RED H3/C2). That magic constant is
-// removed: ERC-20 settlement is restricted to the documented standard layout,
-// and the maker/taker proceeds for D-chain-canonical or non-standard assets are
-// conserved by the d-chain atomic import/export + fill_attestation channel, not
-// by a C-Chain storage write.
+// It is NATIVE-ONLY by design (the CLOB custody model — see settleNativeLegs).
+// The former ERC-20 slot-0 poke is REMOVED: a non-native asset's value lives in
+// the D-Chain (deposited via the proxy's atomic import, settled in the D-Chain
+// ledger), never in a C-Chain storage write. A non-native currency reaching here
+// is a routing bug, not a settlement path — refused explicitly rather than
+// silently poking a storage slot (the RED H3/C2 hazard). Native LUX moves as
+// account balance with a full sufficiency check.
 func (pm *PoolManager) transferToken(stateDB StateDB, currency Currency, from, to common.Address, amount *big.Int) error {
 	if amount.Sign() <= 0 {
 		return nil
 	}
-	if currency.IsNative() {
-		fromBal := stateDB.GetBalance(from)
-		amountU256, overflow := uint256.FromBig(amount)
-		if overflow {
-			return fmt.Errorf("%w: amount overflows uint256", ErrInsufficientBalance)
-		}
-		if fromBal.Lt(amountU256) {
-			return fmt.Errorf("%w: native balance %s < transfer %s", ErrInsufficientBalance, fromBal, amountU256)
-		}
-		stateDB.SubBalance(from, amountU256)
-		stateDB.AddBalance(to, amountU256)
-		return nil
+	if !currency.IsNative() {
+		// A non-native leg must settle in the D-Chain (deposit/withdraw + ledger),
+		// never as a C-Chain ERC-20 storage poke.
+		return fmt.Errorf("%w: non-native currency %s settles in the D-Chain, not on C-Chain", ErrSettlementFailed, currency.Address.Hex())
 	}
-
-	// C-resident ERC-20, canonical slot-0 balanceOf layout.
-	token := currency.Address
-	fromSlot := erc20BalanceSlot0(from)
-	toSlot := erc20BalanceSlot0(to)
-	fromBal := new(big.Int).SetBytes(stateDB.GetState(token, fromSlot).Bytes())
-	if fromBal.Cmp(amount) < 0 {
-		return fmt.Errorf("%w: ERC20 %s balance %s < transfer %s", ErrInsufficientBalance, token.Hex(), fromBal, amount)
+	fromBal := stateDB.GetBalance(from)
+	amountU256, overflow := uint256.FromBig(amount)
+	if overflow {
+		return fmt.Errorf("%w: amount overflows uint256", ErrInsufficientBalance)
 	}
-	toBal := new(big.Int).SetBytes(stateDB.GetState(token, toSlot).Bytes())
-	newFrom := new(big.Int).Sub(fromBal, amount)
-	newTo := new(big.Int).Add(toBal, amount)
-
-	// Conservation guard: the two legs must net to zero. A credit that does not
-	// exactly match the debit (overflow, aliasing from==to) is refused rather
-	// than minting or burning token supply.
-	if from != to {
-		if new(big.Int).Add(newFrom, newTo).Cmp(new(big.Int).Add(fromBal, toBal)) != 0 {
-			return fmt.Errorf("%w: ERC20 %s settlement not conserving", ErrSettlementFailed, token.Hex())
-		}
+	if fromBal.Lt(amountU256) {
+		return fmt.Errorf("%w: native balance %s < transfer %s", ErrInsufficientBalance, fromBal, amountU256)
 	}
-
-	var fromHash common.Hash
-	safeFillBytes(newFrom, fromHash[:])
-	stateDB.SetState(token, fromSlot, fromHash)
-	var toHash common.Hash
-	safeFillBytes(newTo, toHash[:])
-	stateDB.SetState(token, toSlot, toHash)
+	stateDB.SubBalance(from, amountU256)
+	stateDB.AddBalance(to, amountU256)
 	return nil
 }
 
-func (pm *PoolManager) autoSettle(stateDB StateDB, caller common.Address, key PoolKey, delta BalanceDelta) error {
-	if delta.Amount0.Sign() > 0 {
-		if err := pm.transferToken(stateDB, key.Currency0, caller, poolManagerAddr, delta.Amount0); err != nil {
-			return fmt.Errorf("%w: currency0 settlement: %v", ErrSettlementFailed, err)
-		}
-	} else if delta.Amount0.Sign() < 0 {
-		if err := pm.transferToken(stateDB, key.Currency0, poolManagerAddr, caller, new(big.Int).Neg(delta.Amount0)); err != nil {
-			return fmt.Errorf("%w: currency0 settlement: %v", ErrSettlementFailed, err)
+// settleNativeLegs moves ONLY the native-LUX (address(0)) leg of a V4
+// BalanceDelta on C-Chain. It is the corrected replacement for the former
+// "autoSettle", which poked C-Chain ERC-20 balance slots for BOTH legs.
+//
+// WHY THIS IS RIGHT (the CLOB custody model): the D-Chain is a central-limit
+// order book where the money LIVES IN THE BOOK. A token's value is DEPOSITED into
+// the D-Chain (atomic shared-memory ImportTx via the chains/dexvm proxy), lives
+// as the account's available D-Chain balance the book draws from, and is settled
+// ENTIRELY inside D-Chain consensus when an order fills (the maker's locked base
+// moves to the taker and the taker's locked quote moves to the maker — see
+// dchain.settleFills). A swap therefore has NO two-leg C-Chain ERC-20 settlement:
+// the token leg is already on the D-Chain. The previous autoSettle tried to
+// transfer the token ON C-Chain (caller -> poolManager), which (a) required the
+// caller to hold the C-Chain ERC-20 it had actually deposited into the D-Chain
+// (the "ERC20 balance 0 < transfer N" e2e failure) and (b) poked a hardcoded
+// storage slot that corrupted any non-standard token (RED H3/C2).
+//
+// The ONLY asset that genuinely settles on C-Chain is NATIVE LUX (address(0)):
+// it is C-Chain account balance, and the V4 facade backs resting native
+// liquidity with real native value held by the PoolManager (the e2e proved the
+// PoolManager holding 17 wei behind 17 resting asks). A non-native leg is a
+// D-Chain-canonical asset and is intentionally NOT moved here — its value
+// conservation is the D-Chain ledger's job + the proxy's atomic import/export.
+func (pm *PoolManager) settleNativeLegs(stateDB StateDB, caller common.Address, key PoolKey, delta BalanceDelta) error {
+	if key.Currency0.IsNative() {
+		if err := pm.settleNativeLeg(stateDB, caller, delta.Amount0); err != nil {
+			return fmt.Errorf("%w: currency0 native settlement: %v", ErrSettlementFailed, err)
 		}
 	}
-	if delta.Amount1.Sign() > 0 {
-		if err := pm.transferToken(stateDB, key.Currency1, caller, poolManagerAddr, delta.Amount1); err != nil {
-			return fmt.Errorf("%w: currency1 settlement: %v", ErrSettlementFailed, err)
-		}
-	} else if delta.Amount1.Sign() < 0 {
-		if err := pm.transferToken(stateDB, key.Currency1, poolManagerAddr, caller, new(big.Int).Neg(delta.Amount1)); err != nil {
-			return fmt.Errorf("%w: currency1 settlement: %v", ErrSettlementFailed, err)
+	if key.Currency1.IsNative() {
+		if err := pm.settleNativeLeg(stateDB, caller, delta.Amount1); err != nil {
+			return fmt.Errorf("%w: currency1 native settlement: %v", ErrSettlementFailed, err)
 		}
 	}
 	return nil
+}
+
+// settleNativeLeg moves one native-LUX leg: a positive delta (caller owes the
+// pool) debits the caller and credits the PoolManager; a negative delta (pool
+// owes the caller) does the reverse. Zero is a no-op.
+func (pm *PoolManager) settleNativeLeg(stateDB StateDB, caller common.Address, amount *big.Int) error {
+	switch amount.Sign() {
+	case 1:
+		return pm.transferToken(stateDB, NativeCurrency, caller, poolManagerAddr, amount)
+	case -1:
+		return pm.transferToken(stateDB, NativeCurrency, poolManagerAddr, caller, new(big.Int).Neg(amount))
+	default:
+		return nil
+	}
 }
 
 func (pm *PoolManager) callHook(stateDB StateDB, hookAddr common.Address, flag HookFlags, args ...any) error {
