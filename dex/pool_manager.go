@@ -73,11 +73,12 @@ func NewPoolState(pool *Pool, tickSpacing int32, lpFee uint32) *PoolState {
 	}
 }
 
-// routePool tells a poolRouter backend (e.g. ZAPEngine) which canonical pool a
+// routePool tells a poolRouter backend (the ZAPEngine) which canonical pool a
 // PoolState maps to, so the next engine delegation forwards to the right
-// server-side pool. No-op for the embedded engine (not a poolRouter). Called on
-// every swap/modify/donate/quote because the cache PoolState may be rebuilt
-// from StateDB between calls, so the route must be (re)asserted each time.
+// D-Chain pool. No-op for the inert default (not a poolRouter — it has no
+// backend to route to and reverts every operation). Called on every
+// swap/modify/donate/quote because the cache PoolState may be rebuilt from
+// StateDB between calls, so the route must be (re)asserted each time.
 func (pm *PoolManager) routePool(poolId [32]byte, ps *PoolState) {
 	if router, ok := pm.engine.(poolRouter); ok {
 		router.SetPoolID(ps, poolId)
@@ -587,9 +588,10 @@ func (pm *PoolManager) Initialize(
 
 	// ZAP path: create the CANONICAL pool on the D-Chain server and route this
 	// (cache) PoolState to it. The server's copy is the source of truth; the
-	// local ps/pool above are a read-through view persisted to StateDB. The
-	// embedded path skips this (engine is not a poolRouter) and keeps ps as the
-	// authoritative state, unchanged.
+	// local ps/pool above are a read-through view persisted to StateDB. The inert
+	// default is not a poolRouter, so this is skipped — and Initialize already
+	// reverted ErrDEXBackendNotConfigured above, so an unconfigured precompile
+	// never reaches here with a half-built pool.
 	if router, ok := pm.engine.(poolRouter); ok {
 		serverTick, perr := router.InitializePool(ps, poolId, sqrtPriceX96, key.TickSpacing, uint32(key.Fee))
 		if perr != nil {
@@ -1528,21 +1530,13 @@ func (pm *PoolManager) GetPosition(
 	return pos, nil
 }
 
-// calculateSwapOutput estimates the output for a given input without mutating state.
-// Used by the router for best-path estimation. Delegates to engine.Quote.
-//
-// On the ZAP path the backend reads its own canonical pool, so the *Pool must
-// be routed to a canonical poolId first; callers with a poolId/key in hand
-// should use calculateSwapOutputRouted instead. This bare form is kept for the
-// embedded engine and tests where the *Pool itself carries the state.
-func (pm *PoolManager) calculateSwapOutput(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.Int {
-	return pm.engine.Quote(pool, amountIn, zeroForOne)
-}
-
-// calculateSwapOutputRouted is the router's quote path. It resolves the cache
-// PoolState for poolId (so the ZAP backend can be routed to its canonical pool)
-// and then quotes. Embedded engine ignores the routing and quotes locally.
-func (pm *PoolManager) calculateSwapOutputRouted(stateDB StateDB, key PoolKey, poolId [32]byte, amountIn *big.Int, zeroForOne bool) *big.Int {
+// calculateSwapOutput is the router's single quote path. It resolves the cache
+// PoolState for poolId, routes it to the backend's canonical pool (no-op for the
+// inert default, which has no backend to route to), and delegates to engine.Quote.
+// There is exactly one quote path: the ZAP backend reads its canonical D-Chain
+// pool, the inert backend returns zero (no book to price). No backend quotes
+// locally off precompile-held state.
+func (pm *PoolManager) calculateSwapOutput(stateDB StateDB, key PoolKey, poolId [32]byte, amountIn *big.Int, zeroForOne bool) *big.Int {
 	ps := pm.getPoolState(stateDB, poolId, key.TickSpacing, key.Fee)
 	pm.routePool(poolId, ps)
 	return pm.engine.Quote(ps.Pool, amountIn, zeroForOne)

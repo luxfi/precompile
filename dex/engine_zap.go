@@ -519,8 +519,8 @@ func (z *ZAPEngine) Quote(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.I
 	return roundToBig(out)
 }
 
-// poolIDForBase resolves a routing handle from a base *Pool by matching the
-// embedded *Pool of a routed PoolState.
+// poolIDForBase resolves a routing handle from a base *Pool by matching it
+// against the *Pool of a routed PoolState.
 func (z *ZAPEngine) poolIDForBase(pool *Pool) ([32]byte, bool) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
