@@ -100,7 +100,7 @@ func (m *mockEngine) Initialize(sqrtPriceX96 *big.Int) (int24, error) {
 	return 0, nil
 }
 
-func (m *mockEngine) Swap(pool *PoolState, params SwapParams) (BalanceDelta, error) {
+func (m *mockEngine) Swap(pool *PoolState, _ common.Address, params SwapParams) (BalanceDelta, error) {
 	if params.AmountSpecified.Sign() == 0 {
 		return ZeroBalanceDelta(), nil
 	}
