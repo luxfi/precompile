@@ -626,8 +626,7 @@ func TestRedTeam_Router_EmptyPoolQuoteReturnsZero(t *testing.T) {
 	// Pool exists but has zero liquidity.
 	// Verify Quote returns 0 for zero-liquidity pool (the critical guard).
 	poolId := key.ID()
-	pool := pm.getPool(stateDB, poolId)
-	quoted := pm.calculateSwapOutput(pool, big.NewInt(10_000), true)
+	quoted := pm.calculateSwapOutput(stateDB, key, poolId, big.NewInt(10_000), true)
 	if quoted.Sign() > 0 {
 		t.Errorf("VULN: Quote returned positive amount for zero-liquidity pool: %s (phantom quote)", quoted)
 	}
