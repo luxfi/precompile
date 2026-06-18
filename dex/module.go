@@ -51,18 +51,20 @@ var (
 //     EVM (Lux C-Chain, Hanzo, Zoo, SPC, and white-label deployments such as
 //     downstream EVM). The ABI is identical for every chain.
 //
-//   - The math/matching backend is parameterized. Default is the in-process
-//     EmbeddedEngine (Uniswap V4 math compiled into the precompile). A host
-//     binary (the EVM plugin main) may replace it before first use via
-//     SetBackend() — for example a downstream EVM build that points the precompile
-//     at a downstream-tenant DEX process over ZAP.
+//   - The math/matching backend is parameterized. The default is the INERT
+//     engine (engine_inert.go): it performs no matching and reverts every call
+//     with ErrDEXBackendNotConfigured. V4 = CLOB, so the matcher lives ONLY on
+//     the d-chain, reached over ZAP — never embedded in the precompile. The
+//     venue makes 0x9010 live by calling SetBackend(NewZAPEngine(endpoint))
+//     from the EVM plugin main when dex-zap-endpoint is set; chains that do not
+//     enable it run an inert precompile that cleanly reverts.
 //
 //   - Brand identity is a value the backend carries (Engine.Brand()). User-
 //     facing error strings produced by the precompile MUST come from the
 //     backend, never hard-coded here. This keeps a tenant surface free of
 //     the word "Lux" while still letting the OSS package be called "Lux DEX"
 //     on Lux-network deployments.
-var DEXPrecompile = newDEXContract(NewEmbeddedEngine())
+var DEXPrecompile = newDEXContract(newInertEngine())
 
 // SetBackend swaps the DEX engine backing the singleton precompile.
 //
@@ -923,6 +925,13 @@ func (a *poolStateAdapter) GetBlockNumber() uint64 {
 
 func (a *poolStateAdapter) AddLog(log *ethtypes.Log) {
 	a.stateDB.AddLog(log)
+}
+
+// TxHash exposes the executing transaction hash (txIdentified seam) so the
+// PoolManager can bind a marketable order to its EVM tx for replay-idempotency
+// (RED H1). Sourced from the underlying geth StateDB.
+func (a *poolStateAdapter) TxHash() common.Hash {
+	return a.stateDB.TxHash()
 }
 
 // Helper functions for encoding/decoding
