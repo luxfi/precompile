@@ -35,10 +35,11 @@ type Engine interface {
 	// Initialize computes the initial tick from sqrtPriceX96 and creates pool state.
 	Initialize(sqrtPriceX96 *big.Int) (int24, error)
 
-	// Swap executes the full V4 tick-crossing swap loop.
-	// All math happens in the engine (ComputeSwapStep, tick bitmap, fee growth).
-	// Returns balance delta (amount0, amount1).
-	Swap(pool *PoolState, params SwapParams) (BalanceDelta, error)
+	// Swap submits a marketable order to the CLOB and returns the fills' net
+	// BalanceDelta. The taker identity (caller) is bound so the order's spend is
+	// locked + settled against the caller's D-Chain ledger account (the funds the
+	// caller DEPOSITED via Deposit). Returns balance delta (amount0, amount1).
+	Swap(pool *PoolState, caller common.Address, params SwapParams) (BalanceDelta, error)
 
 	// ModifyLiquidity adds/removes concentrated liquidity.
 	// Engine handles tick updates, bitmap flips, position tracking, fee accrual.
@@ -57,6 +58,36 @@ type Engine interface {
 	// Implementations MUST return a non-empty constant; an empty value trips
 	// a sanity check at SetBackend() time.
 	Brand() string
+}
+
+// custodyEngine is the OPTIONAL seam a backend implements when it carries a
+// per-account balance ledger that funds and settles orders — i.e. the CLOB
+// custody model where "the money lives in the order book". The PoolManager calls
+// it to move value INTO the ledger (Deposit, after locking the asset in the 0x9010
+// vault) and OUT of it (Withdraw, before releasing the asset), and to bind a
+// market's assets (OpenMarket) so the ledger value-checks orders.
+//
+// The inertEngine does NOT implement this (no ledger to fund). The PoolManager
+// type-asserts for custodyEngine and a deposit/withdraw selector reverts cleanly
+// when the backend is not custody-capable. ZAPEngine implements it by relaying
+// clob_deposit / clob_withdraw / clob_open_market to the D-Chain.
+//
+// asset handles: a Currency's 20-byte address folds to the 8-byte D-Chain asset
+// handle (assetHandle in engine_zap.go); native LUX (address(0)) folds to 0.
+type custodyEngine interface {
+	// OpenMarket binds (base=currency0, quote=currency1) asset handles for poolID
+	// so the D-Chain custody gate value-checks orders. Idempotent.
+	OpenMarket(poolID [32]byte, base, quote Currency) error
+	// Deposit credits exactly amount of asset into account's available D-Chain
+	// balance. Called AFTER the vault lock leg. Refuses a short credit.
+	Deposit(account common.Address, asset Currency, amount uint64) error
+	// Withdraw debits up to want of asset from account's available balance and
+	// returns the realized amount (clamped). The caller releases exactly realized
+	// from the vault. realized > want is refused (mint guard).
+	Withdraw(account common.Address, asset Currency, want uint64) (uint64, error)
+	// Balance returns account's AVAILABLE balance for asset (read-only, no
+	// mutation). Used by the balanceOf view selector.
+	Balance(account common.Address, asset Currency) (uint64, error)
 }
 
 // poolRouter is the OPTIONAL seam a backend implements when its canonical pool

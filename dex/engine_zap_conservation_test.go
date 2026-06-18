@@ -56,10 +56,24 @@ type fakeCLOB struct {
 	submits  int // count of clob_submit calls actually matched (replay probe)
 	failNext bool
 	closed   bool
+	// ledger is a minimal available-balance ledger keyed by user[16]||asset[8] so
+	// the clob_deposit/withdraw/balance methods the precompile now drives have a
+	// deterministic test double. It is NOT the real D-Chain ledger (that lives in
+	// lx/dex/pkg/dchain and is exercised by the LIVE e2e); this only checks the
+	// precompile's adapter wire contract for the custody methods.
+	ledger map[string]uint64
 }
 
 func newFakeCLOB() *fakeCLOB {
-	return &fakeCLOB{markets: make(map[[32]byte][]*fakeOrder)}
+	return &fakeCLOB{markets: make(map[[32]byte][]*fakeOrder), ledger: make(map[string]uint64)}
+}
+
+// ledgerKey folds user[16]||asset[8] from a deposit/withdraw/balance payload.
+func ledgerKey(user []byte, asset uint64) string {
+	var b [24]byte
+	copy(b[0:16], user)
+	binary.BigEndian.PutUint64(b[16:24], asset)
+	return string(b[:])
 }
 
 // conn returns a zapConn bound to this book for the zapDialer seam.
@@ -94,9 +108,53 @@ func (f *fakeCLOB) dispatch(method string, payload []byte) ([]byte, error) {
 		return f.cancel(payload)
 	case ZAPMethodSubmit:
 		return f.submit(payload)
+	case ZAPMethodOpenMarket:
+		// poolId[32]+base[8]+quote[8]; bind is a no-op for this double — just ack.
+		var id [32]byte
+		copy(id[:], payload[0:32])
+		if _, ok := f.markets[id]; !ok {
+			f.markets[id] = nil
+		}
+		return ackBytes(0, clobStatusPlaced, 1), nil
+	case ZAPMethodDeposit:
+		// user[16]+asset[8]+amount[8]: credit available, echo credited == amount.
+		user := payload[0:16]
+		asset := binary.BigEndian.Uint64(payload[16:24])
+		amount := binary.BigEndian.Uint64(payload[24:32])
+		f.ledger[ledgerKey(user, asset)] += amount
+		return balanceRespBytes(clobStatusPlaced, amount), nil
+	case ZAPMethodWithdraw:
+		// user[16]+asset[8]+want[8]: debit min(want,avail), return realized.
+		user := payload[0:16]
+		asset := binary.BigEndian.Uint64(payload[16:24])
+		want := binary.BigEndian.Uint64(payload[24:32])
+		k := ledgerKey(user, asset)
+		avail := f.ledger[k]
+		realized := want
+		if realized > avail {
+			realized = avail
+		}
+		f.ledger[k] = avail - realized
+		return balanceRespBytes(clobStatusPlaced, realized), nil
+	case ZAPMethodBalance:
+		// user[16]+asset[8]: available[8]+locked[8] (locked unused in this double).
+		user := payload[0:16]
+		asset := binary.BigEndian.Uint64(payload[16:24])
+		out := make([]byte, 16)
+		binary.BigEndian.PutUint64(out[0:8], f.ledger[ledgerKey(user, asset)])
+		return out, nil
 	default:
 		return rejectBytes(0, "unknown method"), nil
 	}
+}
+
+// balanceRespBytes builds a clob_deposit/withdraw response: status[1]+amount[8],
+// byte-identical to zapwire.EncodeBalanceResp.
+func balanceRespBytes(status uint8, amount uint64) []byte {
+	out := make([]byte, 9)
+	out[0] = status
+	binary.BigEndian.PutUint64(out[1:9], amount)
+	return out
 }
 
 func (f *fakeCLOB) place(payload []byte) ([]byte, error) {
