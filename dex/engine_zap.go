@@ -132,8 +132,9 @@ type ZAPEngine struct {
 // Replay-idempotency is the PoolManager's StateDB concern, not the engine's, so
 // there is no binder seam here.
 var (
-	_ Engine     = (*ZAPEngine)(nil)
-	_ poolRouter = (*ZAPEngine)(nil)
+	_ Engine          = (*ZAPEngine)(nil)
+	_ poolRouter      = (*ZAPEngine)(nil)
+	_ cancelAuthority = (*ZAPEngine)(nil)
 )
 
 // NewZAPEngine creates a ZAP adapter targeting the DEX engine's ZAP endpoint
@@ -455,6 +456,32 @@ func (z *ZAPEngine) forgetOrder(refKey [32]byte, orderID uint64) {
 	z.mu.Lock()
 	delete(z.orderRef, refKey)
 	delete(z.orderMaker, orderID)
+	z.mu.Unlock()
+}
+
+// OrderHandle (cancelAuthority seam) returns the server orderID currently bound to
+// the (maker, poolId, salt) handle in the read-through cache, or ok=false if none.
+// The PoolManager reads it straight after a successful place and persists it to the
+// authoritative durable StateDB binding (cancelAuthKey). The cache itself is not
+// authoritative — it is rebuilt from StateDB via SeedOrderHandle on a later cancel.
+func (z *ZAPEngine) OrderHandle(maker common.Address, poolID [32]byte, salt [32]byte) (uint64, bool) {
+	refKey := makerOrderKey(maker, poolID, salt)
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	orderID, ok := z.orderRef[refKey]
+	return orderID, ok
+}
+
+// SeedOrderHandle (cancelAuthority seam) primes the read-through cache with the
+// durable (maker, poolId, salt) -> orderID binding the PoolManager loaded from
+// StateDB, so this process's lookupOrder resolves the order even though it never
+// saw the place (different tx / a node restart cleared the map). It also records
+// the maker for the cancel-time defense-in-depth re-check. Idempotent.
+func (z *ZAPEngine) SeedOrderHandle(maker common.Address, poolID [32]byte, salt [32]byte, orderID uint64) {
+	refKey := makerOrderKey(maker, poolID, salt)
+	z.mu.Lock()
+	z.orderRef[refKey] = orderID
+	z.orderMaker[orderID] = maker
 	z.mu.Unlock()
 }
 
