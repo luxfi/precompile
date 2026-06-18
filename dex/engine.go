@@ -114,3 +114,31 @@ type poolRouter interface {
 // on every validator replaying the same block), so it maps a re-executed / reorg
 // / retried tx to EXACTLY ONE d-chain match — properties an in-process backend
 // cache cannot provide (RED H1). See PoolManager.swapBindKey / loadSwapBinding.
+
+// cancelAuthority is the OPTIONAL seam a backend exposes when it resolves a maker's
+// resting order through an in-process handle map (e.g. ZAPEngine.orderRef). The
+// AUTHORITATIVE owner<->order binding lives in the PoolManager's durable StateDB
+// (cancelAuthKey / loadCancelAuth); the backend map is only a read-through cache,
+// exactly like the pool/positions caches. The PoolManager uses this seam to:
+//
+//   - OrderHandle: read the orderID the backend bound at place time, so the
+//     PoolManager can persist it to StateDB durably.
+//   - SeedOrderHandle: prime the backend cache from the durable orderID before a
+//     cancel, so the backend resolves the same order across the EVM's repeated
+//     executions of the cancel tx (the place's in-memory binding does not survive
+//     to a later tx / a node restart).
+//
+// The inertEngine does NOT implement this (no resting book). The PoolManager type-
+// asserts and only drives the durable binding when the backend is cancelAuthority-
+// capable, so a stateless backend needs no seam.
+type cancelAuthority interface {
+	// OrderHandle returns the server orderID the backend currently has bound to the
+	// (maker, poolId, salt) handle, or ok=false if none. Read straight after a
+	// successful place so the PoolManager can store it durably.
+	OrderHandle(maker common.Address, poolID [32]byte, salt [32]byte) (orderID uint64, ok bool)
+
+	// SeedOrderHandle primes the backend's read-through cache with the durable
+	// (maker, poolId, salt) -> orderID binding so a later cancel resolves it even
+	// when the backend's process memory never saw the place (different tx / restart).
+	SeedOrderHandle(maker common.Address, poolID [32]byte, salt [32]byte, orderID uint64)
+}
