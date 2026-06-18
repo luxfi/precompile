@@ -436,17 +436,10 @@ func (c *DEXContract) runSwap(
 		return nil, suppliedGas - GasSwap, err
 	}
 
-	// NO C-CHAIN SETTLEMENT. A marketable order settles ENTIRELY inside the D-Chain
-	// ledger (the taker's locked spend moves to the maker, the maker's locked asset
-	// moves to the taker — dchain.settleFills, value-conserving by construction).
-	// The taker's funds were DEPOSITED into the D-Chain (deposit selector ->
-	// clob_deposit -> available) before this swap; the swap locked + spent them in
-	// the book. 0x9010 is a pure ingress adapter — it holds NO reserve, is NEVER a
-	// counterparty, and does NOT move value here. The returned BalanceDelta is the
-	// fills' net for the V4 ABI's caller, NOT an instruction to settle on C-Chain.
-	// (The former settleNativeLegs did a caller<->0x9010 native transfer = an
-	// AMM-style C-Chain reserve settlement; it left native LUX sitting in 0x9010
-	// "backing resting asks" — the exact reserve hazard the CLOB model forbids.)
+	// No C-Chain settlement: the marketable order settles inside the D-Chain
+	// ledger (taker's locked spend -> maker, maker's locked asset -> taker).
+	// 0x9010 holds no reserve and is never a counterparty; the BalanceDelta is the
+	// fills' net for the V4 ABI's caller, not a C-Chain settle instruction.
 
 	// V4: Return BalanceDelta as single int256 (amount0 in upper 128 bits, amount1 in lower 128 bits)
 	result := PackBalanceDelta(delta.Amount0, delta.Amount1)
@@ -480,12 +473,9 @@ func (c *DEXContract) runModifyLiquidity(
 		return nil, suppliedGas - GasAddLiquidity, err
 	}
 
-	// NO C-CHAIN SETTLEMENT. Placing a resting order LOCKS the maker's already-
-	// DEPOSITED D-Chain balance (available -> locked, inside the book); cancelling
-	// UNLOCKS it. The maker's funds never touch C-Chain here and 0x9010 holds no
-	// reserve backing the order — the resting order's funds live in the D-Chain
-	// ledger's locked[maker][asset], not in 0x9010. (Was settleNativeLegs, which
-	// moved native LUX caller<->0x9010 to "back" the resting ask = a reserve.)
+	// No C-Chain settlement: placing a resting order locks the maker's deposited
+	// D-Chain balance (available -> locked, inside the book); cancelling unlocks
+	// it. 0x9010 holds no reserve backing the order.
 
 	// V4: Return two packed BalanceDeltas (callerDelta + feesAccrued), each 32 bytes
 	result := make([]byte, 64)
