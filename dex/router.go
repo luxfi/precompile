@@ -693,13 +693,13 @@ func (r *LXRouter) quoteV4(
 			continue
 		}
 
-		// Calculate expected output. Use the routed quote so the ZAP backend
-		// reads its canonical pool; the embedded engine quotes locally.
+		// Calculate expected output via the single routed quote path: the ZAP
+		// backend reads its canonical D-Chain pool; an inert backend returns zero.
 		var output *big.Int
 		if zeroForOne {
-			output = r.poolManager.calculateSwapOutputRouted(stateDB, key, poolID, amountIn, true)
+			output = r.poolManager.calculateSwapOutput(stateDB, key, poolID, amountIn, true)
 		} else {
-			output = r.poolManager.calculateSwapOutputRouted(stateDB, key, poolID, amountIn, false)
+			output = r.poolManager.calculateSwapOutput(stateDB, key, poolID, amountIn, false)
 		}
 
 		if output.Sign() > 0 && (bestAmount == nil || output.Cmp(bestAmount) > 0) {
