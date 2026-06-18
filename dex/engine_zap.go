@@ -96,23 +96,15 @@ type ZAPEngine struct {
 	// orderMaker records, per server orderID, the maker that placed it, so cancel
 	// re-verifies caller==maker as defense in depth even after a resolve.
 	orderMaker map[uint64]common.Address
-
-	// txBind binds a swap's (txHash) to the BalanceDelta the d-chain returned, so
-	// re-execution / reorg / retry of the same EVM tx maps to EXACTLY ONE submit
-	// against the book (idempotency — RED H1). Keyed by the EVM tx hash threaded
-	// in via the idempotencyBinder seam; empty key (no binder) disables caching.
-	txBind map[common.Hash]BalanceDelta
-	// pendingTx is the binding asserted by the PoolManager for the next Swap.
-	pendingTx common.Hash
 }
 
-// Compile-time assertions: ZAPEngine satisfies the Engine contract, the internal
-// poolRouter seam the PoolManager uses to thread the canonical poolId, and the
-// idempotencyBinder seam used to bind a submit to its EVM tx.
+// Compile-time assertions: ZAPEngine satisfies the Engine contract and the
+// internal poolRouter seam the PoolManager uses to thread the canonical poolId.
+// Replay-idempotency is the PoolManager's StateDB concern, not the engine's, so
+// there is no binder seam here.
 var (
-	_ Engine            = (*ZAPEngine)(nil)
-	_ poolRouter        = (*ZAPEngine)(nil)
-	_ idempotencyBinder = (*ZAPEngine)(nil)
+	_ Engine     = (*ZAPEngine)(nil)
+	_ poolRouter = (*ZAPEngine)(nil)
 )
 
 // NewZAPEngine creates a ZAP adapter targeting the DEX engine's ZAP endpoint
@@ -126,18 +118,7 @@ func NewZAPEngine(addr string, timeout time.Duration) *ZAPEngine {
 		initPrice:  make(map[[32]byte]float64),
 		orderRef:   make(map[[32]byte]uint64),
 		orderMaker: make(map[uint64]common.Address),
-		txBind:     make(map[common.Hash]BalanceDelta),
 	}
-}
-
-// BindTx records the EVM tx identity for the NEXT Swap so the submit is
-// idempotent across re-execution / reorg / retry. The PoolManager calls it
-// (idempotencyBinder seam) before delegating Swap; a zero hash means "no
-// binding available" and disables the idempotency cache for that call.
-func (z *ZAPEngine) BindTx(_ *PoolState, txHash common.Hash) {
-	z.mu.Lock()
-	z.pendingTx = txHash
-	z.mu.Unlock()
 }
 
 // makerOrderKey derives the authenticated order handle from the maker's own
@@ -260,16 +241,10 @@ func (z *ZAPEngine) InitializePool(ps *PoolState, poolID [32]byte, sqrtPriceX96 
 // of a sell / exact-output of a buy; for the cross-cases we still submit the
 // magnitude as base size, which is the faithful single-leg CLOB primitive.
 func (z *ZAPEngine) Swap(pool *PoolState, params SwapParams) (BalanceDelta, error) {
-	// Replay-idempotency (RED H1): consume the tx binding FIRST so pendingTx is
-	// always cleared (one binding per delegation, no leak across calls). If this
-	// swap is bound to an EVM tx we have already submitted, return the committed
-	// delta WITHOUT touching the book — re-execution / reorg / retry of the same
-	// tx maps to exactly one d-chain match.
-	txHash, cached, hit := z.consumeTxBinding()
-	if hit {
-		return cached, nil
-	}
-
+	// Replay-idempotency is enforced UPSTREAM by the PoolManager against StateDB
+	// (durable + consensus-shared), so by the time a Swap reaches this adapter it
+	// is the unique submit for its EVM tx. This method therefore stays a pure,
+	// stateless forward of one marketable order to the d-chain book.
 	id, err := z.poolID(pool)
 	if err != nil {
 		return ZeroBalanceDelta(), err
@@ -321,33 +296,7 @@ func (z *ZAPEngine) Swap(pool *PoolState, params SwapParams) (BalanceDelta, erro
 	if err != nil {
 		return ZeroBalanceDelta(), fmt.Errorf("ZAP Swap delta: %w", err)
 	}
-
-	// Record the committed delta under the tx hash so a later re-execution of
-	// the SAME tx is served from cache instead of double-submitting.
-	if txHash != (common.Hash{}) {
-		z.mu.Lock()
-		z.txBind[txHash] = delta
-		z.mu.Unlock()
-	}
 	return delta, nil
-}
-
-// consumeTxBinding atomically reads-and-clears the pending tx binding asserted
-// by BindTx. If that tx was already submitted, it returns the cached delta and
-// hit=true; otherwise it returns the (possibly zero) hash to record after a
-// successful submit.
-func (z *ZAPEngine) consumeTxBinding() (txHash common.Hash, cached BalanceDelta, hit bool) {
-	z.mu.Lock()
-	defer z.mu.Unlock()
-	txHash = z.pendingTx
-	z.pendingTx = common.Hash{}
-	if txHash == (common.Hash{}) {
-		return common.Hash{}, ZeroBalanceDelta(), false
-	}
-	if d, ok := z.txBind[txHash]; ok {
-		return txHash, d, true
-	}
-	return txHash, ZeroBalanceDelta(), false
 }
 
 // ModifyLiquidity maps to placing (+delta) or cancelling (-delta) a RESTING
@@ -505,7 +454,7 @@ func (z *ZAPEngine) Quote(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.I
 	} else {
 		out = in / price // buy base with quote
 	}
-	return floatToBig(out)
+	return roundToBig(out)
 }
 
 // poolIDForBase resolves a routing handle from a base *Pool by matching the
@@ -599,6 +548,21 @@ func decodeFills(data []byte) ([]fill, error) {
 // Sign convention (taker):
 //   - zeroForOne (sell base): Amount0 = +base (owes pool), Amount1 = -quote.
 //   - !zeroForOne (buy base): Amount0 = -base (pool owes), Amount1 = +quote.
+//
+// DIRECTIONAL ROUNDING — must match the cross-chain proxy leg EXACTLY (RED
+// debit!=credit). Fills cross the ZAP wire as float64; both the C-Chain taker
+// debit produced HERE and the proxy's cross-chain credit (chains/dexvm
+// settleFromFills via quantToCredit/quantToCharge) settle the SAME fill stream,
+// so they MUST round with the SAME asymmetric, conservation-safe rule or the two
+// legs diverge per fill (a 4.5 notional that this leg round-to-nearests to 5
+// while the proxy floors to 4 burns a unit; reverse the fraction and a unit is
+// minted). The invariant for BOTH legs: a quantity the taker OWES the pool
+// (positive delta) rounds UP (ceil); a quantity the pool OWES the taker
+// (negative delta) rounds DOWN in magnitude (floor). The taker is therefore
+// never credited a sub-unit it did not realize and never charged less than it
+// truly consumed — the EVM leg, like the proxy leg, never mints in the taker's
+// favor. Each leg's float aggregate is summed ONCE then rounded ONCE at the
+// asset boundary (per-fill rounding would accumulate a directional leak).
 func fillsToDelta(zeroForOne bool, fills []fill) (BalanceDelta, error) {
 	base := 0.0
 	quote := 0.0
@@ -610,29 +574,32 @@ func fillsToDelta(zeroForOne bool, fills []fill) (BalanceDelta, error) {
 		return ZeroBalanceDelta(), fmt.Errorf("non-conserving fills: base=%v quote=%v", base, quote)
 	}
 
-	baseInt := floatToBig(base)
-	quoteInt := floatToBig(quote)
-
 	var amount0, amount1 *big.Int
 	if zeroForOne {
-		amount0 = baseInt                    // taker pays base into book
-		amount1 = new(big.Int).Neg(quoteInt) // taker receives quote
+		// sell base: taker OWES base (ceil), RECEIVES quote (floor).
+		amount0 = ceilToBig(base)
+		amount1 = new(big.Int).Neg(floorToBig(quote))
 	} else {
-		amount0 = new(big.Int).Neg(baseInt) // taker receives base
-		amount1 = quoteInt                  // taker pays quote into book
+		// buy base: taker RECEIVES base (floor), OWES quote (ceil).
+		amount0 = new(big.Int).Neg(floorToBig(base))
+		amount1 = ceilToBig(quote)
 	}
 	return NewBalanceDelta(amount0, amount1), nil
 }
 
 // restingOrderDelta is the BalanceDelta an LP must post to back a resting order
 // of `size` base at `price`. A bid (side 0) funds quote (Amount1); an ask
-// (side 1) funds base (Amount0). Positive = LP owes the book.
+// (side 1) funds base (Amount0). Positive = LP owes the book. The funded amount
+// the LP OWES rounds UP (ceil) — the same conservation-safe direction as an
+// owed leg in fillsToDelta — so an LP can never back an order for more value
+// than it posted. (The mirror cancel returns this exact delta negated, so the
+// place/cancel pair is symmetric and nets to zero for an untaken order.)
 func restingOrderDelta(side uint8, price, size float64) BalanceDelta {
 	if side == 0 { // bid: post quote = price*size
-		return NewBalanceDelta(big.NewInt(0), floatToBig(price*size))
+		return NewBalanceDelta(big.NewInt(0), ceilToBig(price*size))
 	}
 	// ask: post base = size
-	return NewBalanceDelta(floatToBig(size), big.NewInt(0))
+	return NewBalanceDelta(ceilToBig(size), big.NewInt(0))
 }
 
 // =========================================================================
@@ -690,8 +657,54 @@ func bigToFloat(v *big.Int) float64 {
 	return f
 }
 
-// floatToBig converts a non-negative float64 to a big.Int, rounding to nearest.
-func floatToBig(f float64) *big.Int {
+// settlementRoundEpsilon is the relative tolerance for snapping a float aggregate
+// to a neighboring integer before directional floor/ceil. It mirrors the proxy's
+// constant of the same name (chains/dexvm atomic.go) so the two settlement legs
+// snap identically: ~1e-9 dwarfs the ~1e-13 double-rounding error of summing a
+// realistic fill stream yet is far below one asset unit, so it never moves a
+// genuinely fractional notional across an integer. Deterministic over
+// deterministic float inputs, so every node rounds the same.
+const settlementRoundEpsilon = 1e-9
+
+// snapNearInt returns the integer f is within settlementRoundEpsilon of, else f
+// unchanged — so a mathematically-integral aggregate (e.g. 1.5*3+2.5*3 == 12 but
+// evaluating to 12±1e-13) floors/ceils to that integer rather than to 11/13.
+func snapNearInt(f float64) float64 {
+	r := math.Round(f)
+	if math.Abs(f-r) <= settlementRoundEpsilon*math.Max(1, math.Abs(f)) {
+		return r
+	}
+	return f
+}
+
+// floorToBig converts a non-negative float64 to a big.Int rounding DOWN — for a
+// quantity the taker/LP RECEIVES (never credit a unit not realized). Mirrors the
+// proxy's quantToCredit so the two settlement legs agree to the unit.
+func floorToBig(f float64) *big.Int {
+	if f <= 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+		return big.NewInt(0)
+	}
+	bf := new(big.Float).SetFloat64(math.Floor(snapNearInt(f)))
+	i, _ := bf.Int(nil)
+	return i
+}
+
+// ceilToBig converts a non-negative float64 to a big.Int rounding UP — for a
+// quantity the taker/LP OWES the book (never understate what is owed). Mirrors
+// the proxy's quantToCharge so the two settlement legs agree to the unit.
+func ceilToBig(f float64) *big.Int {
+	if f <= 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+		return big.NewInt(0)
+	}
+	bf := new(big.Float).SetFloat64(math.Ceil(snapNearInt(f)))
+	i, _ := bf.Int(nil)
+	return i
+}
+
+// roundToBig converts a non-negative float64 to a big.Int rounding to nearest.
+// Used ONLY for non-settlement estimates (Quote), where neither over- nor
+// under-statement touches conservation — it never produces a settlement delta.
+func roundToBig(f float64) *big.Int {
 	if f <= 0 || math.IsNaN(f) || math.IsInf(f, 0) {
 		return big.NewInt(0)
 	}
