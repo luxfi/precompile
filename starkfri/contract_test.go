@@ -138,6 +138,40 @@ func TestStarkFRI_VerifierReturnsFalse(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidProof)
 }
 
+// TestStarkFRI_RegisterDefaultVerifier_DoesNotClobber pins the init-
+// order invariant: a real verifier registered FIRST (via the imported
+// precompile package's init) is NOT overwritten by a later
+// RegisterDefaultVerifier (the geth-side refuse stub, whose init runs
+// after the imported package's). This is what makes the build-tagged
+// cgo binding win regardless of init order.
+func TestStarkFRI_RegisterDefaultVerifier_DoesNotClobber(t *testing.T) {
+	defer RegisterVerifier(nil)
+	RegisterVerifier(nil) // start from an empty slot
+	realFn := func(byte, []byte, []byte) (bool, error) { return true, nil }
+	RegisterVerifier(realFn) // real binding claims the slot first
+	installed := RegisterDefaultVerifier(func(byte, []byte, []byte) (bool, error) {
+		return false, ErrVerifierNotRegistered // refuse stub, "runs later"
+	})
+	require.False(t, installed, "default must not install over an existing verifier")
+	ok, err := loadVerifier()(VersionV1, nil, nil)
+	require.True(t, ok)
+	require.NoError(t, err, "the real verifier must survive the default registration")
+}
+
+// TestStarkFRI_RegisterDefaultVerifier_EngagesWhenAbsent confirms the
+// safe-refuse default engages when (and only when) no verifier is
+// present — the no-tag / cgo-disabled build path.
+func TestStarkFRI_RegisterDefaultVerifier_EngagesWhenAbsent(t *testing.T) {
+	defer RegisterVerifier(nil)
+	RegisterVerifier(nil) // empty slot
+	installed := RegisterDefaultVerifier(func(byte, []byte, []byte) (bool, error) {
+		return false, ErrVerifierNotRegistered
+	})
+	require.True(t, installed, "default must install into an empty slot")
+	_, err := loadVerifier()(VersionV1, nil, nil)
+	require.ErrorIs(t, err, ErrVerifierNotRegistered)
+}
+
 // buildInput serialises [version][proof_len][proof][pub_len][pub] in
 // the wire format the precompile expects.
 func buildInput(version byte, proof, pub []byte) []byte {
