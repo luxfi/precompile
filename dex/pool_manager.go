@@ -42,6 +42,7 @@ var (
 	hookRegistryPrefix  = []byte("hook")
 	pauseStatePrefix    = []byte("paus")
 	freezeStatePrefix   = []byte("frzn")
+	swapBindPrefix      = []byte("swpb")
 )
 
 // PoolState extends the basic Pool with V4 tick-level state for concentrated
@@ -67,6 +68,155 @@ func NewPoolState(pool *Pool, tickSpacing int32, lpFee uint32) *PoolState {
 		TickSpacing: tickSpacing,
 		LPFee:       lpFee,
 	}
+}
+
+// routePool tells a poolRouter backend (e.g. ZAPEngine) which canonical pool a
+// PoolState maps to, so the next engine delegation forwards to the right
+// server-side pool. No-op for the embedded engine (not a poolRouter). Called on
+// every swap/modify/donate/quote because the cache PoolState may be rebuilt
+// from StateDB between calls, so the route must be (re)asserted each time.
+func (pm *PoolManager) routePool(poolId [32]byte, ps *PoolState) {
+	if router, ok := pm.engine.(poolRouter); ok {
+		router.SetPoolID(ps, poolId)
+	}
+}
+
+// txIdentified is the OPTIONAL capability a StateDB exposes when it can name the
+// executing EVM transaction. The production poolStateAdapter implements it
+// (sourced from contract.StateDB.TxHash); test StateDBs need not. PoolManager
+// uses it to derive the DURABLE idempotency key for a marketable order (Swap).
+type txIdentified interface {
+	TxHash() common.Hash
+}
+
+// swapBindKey derives the storage slot that records whether THIS swap has already
+// settled against the d-chain book, and the committed BalanceDelta if so. The key
+// is the consensus-deterministic tuple (txHash, poolId, swapParams) — the same
+// value on every validator and across a restart — so the idempotency guard is
+// DURABLE and consensus-shared, not a per-node in-memory cache (RED H1).
+//
+// txHash is the EVM transaction identity the host sets via SetTxContext (read
+// through the txIdentified seam). It is folded together with the poolId and the
+// marketable-order parameters so that a single EVM tx which calls swap multiple
+// times (router / multicall) gets one slot per distinct (pool, order), while a
+// re-execution / reorg-redo / retry of the SAME tx hits the same slot.
+//
+// ok=false means the StateDB cannot name the tx (e.g. a non-EVM caller); the
+// caller then skips the durable guard for that call rather than colliding every
+// unbound swap onto the zero-hash slot.
+func swapBindKey(stateDB StateDB, poolId [32]byte, params SwapParams) (common.Hash, bool) {
+	idr, ok := stateDB.(txIdentified)
+	if !ok {
+		return common.Hash{}, false
+	}
+	txHash := idr.TxHash()
+	if txHash == (common.Hash{}) {
+		return common.Hash{}, false
+	}
+	h := blake3.New()
+	h.Write(txHash[:])
+	h.Write(poolId[:])
+	h.Write([]byte(swapParamsDigest(params)))
+	var id [32]byte
+	h.Digest().Read(id[:])
+	return makeStorageKey(swapBindPrefix, id[:]), true
+}
+
+// swapParamsDigest serializes the marketable-order parameters that distinguish
+// two swaps issued by the SAME tx against the SAME pool, so each gets its own
+// durable slot. Encodes direction, |amountSpecified| sign+magnitude, and the
+// price limit — the full input that determines the submit.
+func swapParamsDigest(params SwapParams) string {
+	var b [1 + 1 + 32 + 32]byte
+	if params.ZeroForOne {
+		b[0] = 1
+	}
+	if params.AmountSpecified != nil && params.AmountSpecified.Sign() < 0 {
+		b[1] = 1 // sign bit: exact-input
+	}
+	if params.AmountSpecified != nil {
+		new(big.Int).Abs(params.AmountSpecified).FillBytes(b[2:34])
+	}
+	if params.SqrtPriceLimitX96 != nil && params.SqrtPriceLimitX96.Sign() > 0 {
+		params.SqrtPriceLimitX96.FillBytes(b[34:66])
+	}
+	return string(b[:])
+}
+
+// swapBindLayout: the binding occupies three slots distinguished by field suffix
+// — a presence flag (so a genuine zero/zero delta still counts as settled), and
+// the two signed delta words.
+var (
+	swapBindFlagSuffix = []byte("f")
+	swapBindAmt0Suffix = []byte("0")
+	swapBindAmt1Suffix = []byte("1")
+)
+
+// loadSwapBinding returns the committed BalanceDelta for bindKey if this swap has
+// already settled (settled=true), reading straight from StateDB. A settled tx
+// found here means the d-chain already matched this exact swap, so the caller
+// MUST NOT submit again — it returns the recorded delta verbatim.
+func loadSwapBinding(stateDB StateDB, bindKey common.Hash) (delta BalanceDelta, settled bool) {
+	flag := stateDB.GetState(poolManagerAddr, deriveSlot(bindKey, swapBindFlagSuffix))
+	if flag[31] != 1 {
+		return ZeroBalanceDelta(), false
+	}
+	a0 := stateDB.GetState(poolManagerAddr, deriveSlot(bindKey, swapBindAmt0Suffix))
+	a1 := stateDB.GetState(poolManagerAddr, deriveSlot(bindKey, swapBindAmt1Suffix))
+	return NewBalanceDelta(slotToSigned(a0), slotToSigned(a1)), true
+}
+
+// storeSwapBinding durably records that bindKey's swap settled with delta, so a
+// later re-execution of the same tx is served from StateDB instead of issuing a
+// second clob_submit. The write reverts atomically with the tx if it later
+// reverts (StateDB snapshot semantics), so an aborted swap leaves no binding —
+// the same revert-safety the V6 pause/freeze move relies on.
+func storeSwapBinding(stateDB StateDB, bindKey common.Hash, delta BalanceDelta) {
+	stateDB.SetState(poolManagerAddr, deriveSlot(bindKey, swapBindAmt0Suffix), signedToSlot(delta.Amount0))
+	stateDB.SetState(poolManagerAddr, deriveSlot(bindKey, swapBindAmt1Suffix), signedToSlot(delta.Amount1))
+	var flag common.Hash
+	flag[31] = 1
+	stateDB.SetState(poolManagerAddr, deriveSlot(bindKey, swapBindFlagSuffix), flag)
+}
+
+// deriveSlot re-hashes a base key with a field suffix so the flag and the two
+// delta words occupy distinct, collision-free slots under the same binding.
+func deriveSlot(base common.Hash, suffix []byte) common.Hash {
+	return makeStorageKey(swapBindPrefix, append(base[:], suffix...))
+}
+
+// signedToSlot encodes a signed *big.Int as a 32-byte two's-complement word —
+// the int256 representation — so a NEGATIVE BalanceDelta leg (pool owes the user)
+// round-trips exactly. safeFillBytes is unusable here: it zeroes negatives.
+func signedToSlot(v *big.Int) common.Hash {
+	var h common.Hash
+	if v == nil || v.Sign() == 0 {
+		return h
+	}
+	if v.Sign() > 0 {
+		v.FillBytes(h[:])
+		return h
+	}
+	// two's complement: 2^256 + v (v negative).
+	mod := new(big.Int).Lsh(big.NewInt(1), 256)
+	enc := new(big.Int).Add(mod, v)
+	enc.FillBytes(h[:])
+	return h
+}
+
+// slotToSigned decodes a 32-byte two's-complement word back to a signed
+// *big.Int, inverting signedToSlot.
+func slotToSigned(h common.Hash) *big.Int {
+	v := new(big.Int).SetBytes(h[:])
+	if v.Sign() == 0 {
+		return v
+	}
+	// high bit set => negative: subtract 2^256.
+	if h[0]&0x80 != 0 {
+		mod := new(big.Int).Lsh(big.NewInt(1), 256)
+		v.Sub(v, mod)
+	}
+	return v
 }
 
 // getOrCreateTick returns the TickInfo for a tick, creating it if absent.
@@ -197,6 +347,21 @@ func (pm *PoolManager) Initialize(
 
 	ps := NewPoolState(pool, key.TickSpacing, key.Fee)
 	pm.poolStates[poolId] = ps
+
+	// ZAP path: create the CANONICAL pool on the D-Chain server and route this
+	// (cache) PoolState to it. The server's copy is the source of truth; the
+	// local ps/pool above are a read-through view persisted to StateDB. The
+	// embedded path skips this (engine is not a poolRouter) and keeps ps as the
+	// authoritative state, unchanged.
+	if router, ok := pm.engine.(poolRouter); ok {
+		serverTick, perr := router.InitializePool(ps, poolId, sqrtPriceX96, key.TickSpacing, uint32(key.Fee))
+		if perr != nil {
+			return 0, perr
+		}
+		// The server's tick is authoritative; sync the cache to it.
+		tick = serverTick
+		pool.Tick = serverTick
+	}
 
 	pm.setPool(stateDB, poolId, pool)
 
@@ -404,15 +569,39 @@ func (pm *PoolManager) Swap(
 		return ZeroBalanceDelta(), ErrPoolNotInitialized
 	}
 
+	// Replay-idempotency (RED H1): a marketable order is an IRREVERSIBLE submit to
+	// the d-chain book. Re-execution / reorg-redo / retry of the same EVM tx, OR a
+	// node restart that replays the block, MUST map to EXACTLY ONE match — never a
+	// double-fill. The guard lives in StateDB (durable on disk, identical on every
+	// validator replaying the same ordered block, and reverted atomically with the
+	// tx) rather than in process memory: an in-memory cache cannot survive a
+	// restart and each validator keeps its own copy, so it fixes neither the
+	// restart re-submit nor the N-fold per-validator fan-out. This mirrors the V6
+	// pause/freeze move from in-process flags to StateDB.
+	bindKey, bound := swapBindKey(stateDB, poolId, params)
+	if bound {
+		if prior, settled := loadSwapBinding(stateDB, bindKey); settled {
+			return prior, nil
+		}
+	}
+
 	if key.Hooks != (common.Address{}) {
 		if err := pm.callHook(stateDB, key.Hooks, HookBeforeSwap, key, params, hookData); err != nil {
 			return ZeroBalanceDelta(), err
 		}
 	}
 
+	pm.routePool(poolId, ps)
 	delta, err := pm.engine.Swap(ps, params)
 	if err != nil {
 		return ZeroBalanceDelta(), err
+	}
+
+	// Persist the committed delta under the durable idempotency key BEFORE
+	// returning, so any later replay of this tx is served from StateDB instead of
+	// re-submitting to the book.
+	if bound {
+		storeSwapBinding(stateDB, bindKey, delta)
 	}
 
 	pm.setPoolState(stateDB, poolId, ps)
@@ -489,6 +678,7 @@ func (pm *PoolManager) ModifyLiquidity(
 		}
 	}
 
+	pm.routePool(poolId, ps)
 	callerDelta, feesAccrued, err := pm.engine.ModifyLiquidity(ps, caller, params)
 	if err != nil {
 		return ZeroBalanceDelta(), ZeroBalanceDelta(), err
@@ -552,6 +742,7 @@ func (pm *PoolManager) Donate(
 		}
 	}
 
+	pm.routePool(poolId, ps)
 	delta, err := pm.engine.Donate(ps, amount0, amount1)
 	if err != nil {
 		return ZeroBalanceDelta(), err
@@ -795,6 +986,33 @@ func (pm *PoolManager) transferERC20(stateDB StateDB, currency Currency, from, t
 	return pm.transferToken(stateDB, currency, from, to, amount)
 }
 
+// erc20BalanceSlot0 is the canonical Solidity storage slot for a `balanceOf`
+// mapping declared as the FIRST state variable (slot 0):
+// keccak256(abi.encode(holder, uint256(0))). This is the layout emitted by
+// OpenZeppelin ERC20 and the Lux-canonical LUSD/LETH tokens. It is NOT a guess
+// for arbitrary third-party tokens — a token whose balance mapping is not at
+// slot 0 must settle through the d-chain atomic import/export, never a poke.
+func erc20BalanceSlot0(holder common.Address) common.Hash {
+	key := make([]byte, 64)
+	copy(key[12:32], holder.Bytes()) // mapping key: left-padded address
+	// slot 0: key[32:64] left as zero.
+	return common.BytesToHash(crypto.Keccak256(key))
+}
+
+// transferToken settles a single currency leg on the C-Chain.
+//
+// Two — and only two — paths exist (decomplect: one home per asset class):
+//   - Native LUX (address(0)): move account balance directly.
+//   - C-resident ERC-20 using the canonical slot-0 balanceOf layout: adjust the
+//     two holders' balance slots with full sufficiency checks.
+//
+// The previous code poked a single HARDCODED slot for EVERY token, which
+// silently corrupted state for any token whose balanceOf was not at that magic
+// slot and bypassed allowances entirely (RED H3/C2). That magic constant is
+// removed: ERC-20 settlement is restricted to the documented standard layout,
+// and the maker/taker proceeds for D-chain-canonical or non-standard assets are
+// conserved by the d-chain atomic import/export + fill_attestation channel, not
+// by a C-Chain storage write.
 func (pm *PoolManager) transferToken(stateDB StateDB, currency Currency, from, to common.Address, amount *big.Int) error {
 	if amount.Sign() <= 0 {
 		return nil
@@ -813,31 +1031,34 @@ func (pm *PoolManager) transferToken(stateDB StateDB, currency Currency, from, t
 		return nil
 	}
 
+	// C-resident ERC-20, canonical slot-0 balanceOf layout.
 	token := currency.Address
-	erc20Base, _ := new(big.Int).SetString("52c63247e1f47db19d5ce0460030c497f067ca4cebf71ba98eeadabe20bace00", 16)
-	fromSlot := erc20BalanceSlot(erc20Base, from)
-	toSlot := erc20BalanceSlot(erc20Base, to)
+	fromSlot := erc20BalanceSlot0(from)
+	toSlot := erc20BalanceSlot0(to)
 	fromBal := new(big.Int).SetBytes(stateDB.GetState(token, fromSlot).Bytes())
 	if fromBal.Cmp(amount) < 0 {
 		return fmt.Errorf("%w: ERC20 %s balance %s < transfer %s", ErrInsufficientBalance, token.Hex(), fromBal, amount)
 	}
 	toBal := new(big.Int).SetBytes(stateDB.GetState(token, toSlot).Bytes())
-	fromBal.Sub(fromBal, amount)
+	newFrom := new(big.Int).Sub(fromBal, amount)
+	newTo := new(big.Int).Add(toBal, amount)
+
+	// Conservation guard: the two legs must net to zero. A credit that does not
+	// exactly match the debit (overflow, aliasing from==to) is refused rather
+	// than minting or burning token supply.
+	if from != to {
+		if new(big.Int).Add(newFrom, newTo).Cmp(new(big.Int).Add(fromBal, toBal)) != 0 {
+			return fmt.Errorf("%w: ERC20 %s settlement not conserving", ErrSettlementFailed, token.Hex())
+		}
+	}
+
 	var fromHash common.Hash
-	fromBal.FillBytes(fromHash[:])
+	safeFillBytes(newFrom, fromHash[:])
 	stateDB.SetState(token, fromSlot, fromHash)
-	toBal.Add(toBal, amount)
 	var toHash common.Hash
-	toBal.FillBytes(toHash[:])
+	safeFillBytes(newTo, toHash[:])
 	stateDB.SetState(token, toSlot, toHash)
 	return nil
-}
-
-func erc20BalanceSlot(base *big.Int, addr common.Address) common.Hash {
-	key := make([]byte, 64)
-	copy(key[12:32], addr.Bytes())
-	safeFillBytes(base, key[32:64])
-	return common.BytesToHash(crypto.Keccak256(key))
 }
 
 func (pm *PoolManager) autoSettle(stateDB StateDB, caller common.Address, key PoolKey, delta BalanceDelta) error {
@@ -899,6 +1120,20 @@ func (pm *PoolManager) GetPosition(
 
 // calculateSwapOutput estimates the output for a given input without mutating state.
 // Used by the router for best-path estimation. Delegates to engine.Quote.
+//
+// On the ZAP path the backend reads its own canonical pool, so the *Pool must
+// be routed to a canonical poolId first; callers with a poolId/key in hand
+// should use calculateSwapOutputRouted instead. This bare form is kept for the
+// embedded engine and tests where the *Pool itself carries the state.
 func (pm *PoolManager) calculateSwapOutput(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.Int {
 	return pm.engine.Quote(pool, amountIn, zeroForOne)
+}
+
+// calculateSwapOutputRouted is the router's quote path. It resolves the cache
+// PoolState for poolId (so the ZAP backend can be routed to its canonical pool)
+// and then quotes. Embedded engine ignores the routing and quotes locally.
+func (pm *PoolManager) calculateSwapOutputRouted(stateDB StateDB, key PoolKey, poolId [32]byte, amountIn *big.Int, zeroForOne bool) *big.Int {
+	ps := pm.getPoolState(stateDB, poolId, key.TickSpacing, key.Fee)
+	pm.routePool(poolId, ps)
+	return pm.engine.Quote(ps.Pool, amountIn, zeroForOne)
 }
