@@ -46,7 +46,17 @@ var (
 	depBindPrefix       = []byte("depb") // deposit idempotency binding
 	wdrBindPrefix       = []byte("wdrb") // withdraw idempotency binding
 	cancelAuthPrefix    = []byte("cana") // durable cancel-authorization binding (RED H4)
+	custodyGuardPrefix  = []byte("creg") // GLOBAL non-reentrant guard for the custody entrypoint
 )
+
+// custodyGuardKey is the SINGLE, fixed storage slot in 0x9010's own state that
+// holds the non-reentrant entry flag for the custody dispatch (Deposit/Withdraw).
+// It is GLOBAL — one slot for the whole entrypoint, NOT per-(account,asset,amount)
+// — because the reentrancy a malicious token mounts during its transferFrom
+// sub-call can re-enter Deposit/Withdraw with ANY arguments (a distinct-amount
+// variant defeats a per-bindKey flag). A single global flag set before any token
+// sub-call and cleared after makes ANY nested custody call revert.
+var custodyGuardKey = makeStorageKey(custodyGuardPrefix, []byte{0x01})
 
 // PoolState extends the basic Pool with V4 tick-level state for concentrated
 // liquidity. Each pool tracks per-tick info, a bitmap of initialized ticks,
@@ -256,6 +266,28 @@ func custodyBindKey(stateDB StateDB, prefix []byte, caller common.Address, asset
 	return makeStorageKey(prefix, id[:]), true
 }
 
+// custodyRef returns the 32-byte originating-tx idempotency reference threaded
+// into the clob_deposit/clob_withdraw frame and, through it, into the D-Chain's
+// content-addressed seen: dedup key. It is the EVM transaction hash (the same
+// identity custodyBindKey keys the EVM-side replay guard on), so "the same custody
+// operation" means ONE thing end to end: the EVM short-circuits a same-tx
+// re-execution on its binding before ever calling the backend, while a GENUINELY
+// distinct second deposit/withdraw (a different tx, hence a different ref) is
+// distinct on the D-Chain too — processed fresh against CURRENT balances rather
+// than replayed from seen:. This single, unified identity is the vault-drain fix.
+//
+// A non-EVM caller (test StateDB that cannot name the tx) yields the zero ref; the
+// D-Chain then dedups on (zero-ref‖user‖asset‖amount) exactly as before the fix —
+// acceptable for those non-production paths. The EVM custody ingress
+// (runDeposit/runWithdraw) ALWAYS supplies a real, per-tx-distinct txHash.
+func custodyRef(stateDB StateDB) [32]byte {
+	idr, ok := stateDB.(txIdentified)
+	if !ok {
+		return [32]byte{}
+	}
+	return idr.TxHash()
+}
+
 func depositBindKey(stateDB StateDB, caller common.Address, asset Currency, amount *big.Int) (common.Hash, bool) {
 	return custodyBindKey(stateDB, depBindPrefix, caller, asset, amount)
 }
@@ -300,6 +332,37 @@ func storeWithdrawBinding(stateDB StateDB, bindKey common.Hash, realized *big.In
 	var flag common.Hash
 	flag[31] = 1
 	stateDB.SetState(poolManagerAddr, makeStorageKey(wdrBindPrefix, append(bindKey[:], 'f')), flag)
+}
+
+// enterCustody acquires the GLOBAL non-reentrant guard for the custody dispatch.
+// It returns false if the guard is already held (a reentrant Deposit/Withdraw —
+// the caller MUST refuse with ErrCustodyReentrant without moving value); otherwise
+// it SETS the guard flag in 0x9010's own state and returns true. The flag is set
+// BEFORE any token sub-call (transferFrom/transfer), so a malicious token that
+// re-enters the custody entrypoint during its transfer hits the set flag and is
+// refused — the double-mint window the post-interaction binding alone cannot close.
+//
+// The guard lives in the precompile's OWN state (poolManagerAddr), so it is
+// visible to a nested call through the SAME StateDB within one EVM execution. It
+// is per-execution: enterCustody/exitCustody bracket one top-level Deposit/Withdraw
+// call; a fresh execution (the EVM re-runs a tx ~5×) sees a CLEARED flag (exit ran
+// at the end of the prior execution), so the guard never interferes with the
+// (txHash,asset,amount) replay-idempotency — it only stops NESTED reentry.
+func enterCustody(stateDB StateDB) bool {
+	if stateDB.GetState(poolManagerAddr, custodyGuardKey)[31] == 1 {
+		return false
+	}
+	var on common.Hash
+	on[31] = 1
+	stateDB.SetState(poolManagerAddr, custodyGuardKey, on)
+	return true
+}
+
+// exitCustody clears the custody guard. It is deferred immediately after a
+// successful enterCustody so the flag is released on EVERY exit path (success or
+// any error return), leaving the entrypoint clean for the next genuine custody op.
+func exitCustody(stateDB StateDB) {
+	stateDB.SetState(poolManagerAddr, custodyGuardKey, common.Hash{})
 }
 
 // modifyBindKey is the ModifyLiquidity analog of swapBindKey (RED H1, same
@@ -1375,9 +1438,12 @@ func (pm *PoolManager) releaseNativeFromVault(stateDB StateDB, caller common.Add
 //	  this precompile ran; lockNativeIntoVault verifies the vault holds it. The LUX
 //	  stays locked in the vault; the matching D-Chain available balance is the
 //	  caller's claim against it.
-//	ERC-20: not yet a real lock/mint (no on-chain token transferFrom path wired) —
-//	  refused explicitly (ErrERC20DepositUnsupported) rather than minting an
-//	  unbacked D-Chain credit. See the deposit handler.
+//	ERC-20: there is no msg.value pre-transfer, so lockTokenIntoVault performs the
+//	  transferFrom (the caller granted 0x9010 an allowance) and credits the OBSERVED
+//	  balance delta the vault actually received — never the requested amount, so a
+//	  fee-on-transfer / rebasing token cannot mint an unbacked D-Chain claim. The
+//	  same vault-lock-then-mint shape as native; only the asset-movement primitive
+//	  differs (token balance vs native balance). See erc20_vault.go.
 //
 // IDEMPOTENCY (RED H1): the EVM executes one tx ~5× (estimate/validate/build/
 // verify) and only the canonical exec commits StateDB; a clob_deposit is an
@@ -1392,36 +1458,75 @@ func (pm *PoolManager) Deposit(stateDB StateDB, caller common.Address, asset Cur
 	if !amount.IsUint64() {
 		return fmt.Errorf("%w: deposit amount exceeds uint64 ledger range", ErrInvalidAmount)
 	}
+	// GLOBAL non-reentrant guard (RED CRIT #1): set BEFORE any token sub-call so a
+	// malicious ERC-20 reentering Deposit/Withdraw during its transferFrom is
+	// refused — without it, the reentrant pull lands inside the observed-delta
+	// window and BOTH calls mint (minted > vault). Cleared on every exit path.
+	if !enterCustody(stateDB) {
+		return ErrCustodyReentrant
+	}
+	defer exitCustody(stateDB)
+
 	custody, ok := pm.engine.(custodyEngine)
 	if !ok {
 		return ErrDEXBackendNotConfigured
 	}
 
+	// Bind identity is the originating EVM txHash (the idempotency ref). bound==false
+	// means no valid EVM tx context (non-txIdentified StateDB or a zero txHash) —
+	// refuse rather than lock+mint with a zero ref. A zero ref is a full-length 64B
+	// frame (length checks don't catch it) that would collide on the D-Chain seen:
+	// key and reopen the replay/drain door; a committed EVM tx always has a unique
+	// non-zero hash, so this only refuses the non-production zero-hash path (R3).
+	bindKey, bound := depositBindKey(stateDB, caller, asset, amount)
+	if !bound {
+		return ErrCustodyUnbound
+	}
+
 	// Replay-idempotency: a committed deposit for this (txHash, asset, amount) is
 	// served from StateDB without a second vault lock or D-Chain mint.
-	bindKey, bound := depositBindKey(stateDB, caller, asset, amount)
-	if bound && loadCustodyBinding(stateDB, bindKey) {
+	if loadCustodyBinding(stateDB, bindKey) {
 		return nil
 	}
 
-	// 1) LOCK leg (C-Chain). Native: verify msg.value is in the vault. ERC-20:
-	//    refused upstream in the handler before reaching here.
-	if asset.IsNative() {
+	// 1) LOCK leg (C-Chain). Native: the EVM pre-moved msg.value into 0x9010; verify
+	//    the vault holds it. ERC-20: there is no pre-transfer, so pull the token into
+	//    the vault via transferFrom and MEASURE the OBSERVED delta the vault actually
+	//    received (fee-on-transfer / rebasing tokens deliver less than requested). The
+	//    credited amount is the OBSERVED delta, never the requested amount — crediting
+	//    the requested amount on a short-delivering token would mint an unbacked claim.
+	credit := amount
+	if !asset.IsNative() {
+		vault, ok := stateDB.(erc20Vault)
+		if !ok {
+			return ErrERC20VaultUnavailable
+		}
+		delta, err := pm.lockTokenIntoVault(stateDB, vault, caller, asset.Address, amount)
+		if err != nil {
+			return err
+		}
+		credit = delta
+	} else {
 		if err := pm.lockNativeIntoVault(stateDB, amount); err != nil {
 			return err
 		}
-	} else {
-		return ErrERC20DepositUnsupported
 	}
 
-	// 2) MINT leg (D-Chain): credit exactly the locked amount into available.
-	if err := custody.Deposit(caller, asset, amount.Uint64()); err != nil {
+	// 2) MINT leg (D-Chain): credit exactly the LOCKED amount (native: the verified
+	//    msg.value; ERC-20: the observed transfer delta) into available. The EVM
+	//    txHash is threaded as the idempotency ref so this credit is identified
+	//    identically on the D-Chain seen: index — a genuine second deposit (distinct
+	//    tx) credits separately and matches its own vault lock (no strand). asset maps
+	//    INJECTIVELY to its full 32-byte D-Chain id (native -> all-zero, ERC-20 ->
+	//    left-padded token address), so distinct assets are DISTINCT on the ledger
+	//    (cross-asset isolation; no truncation collision).
+	if err := custody.Deposit(caller, asset, credit.Uint64(), custodyRef(stateDB)); err != nil {
 		return fmt.Errorf("%w: clob_deposit: %v", ErrSettlementFailed, err)
 	}
 
-	if bound {
-		storeCustodyBinding(stateDB, bindKey)
-	}
+	// bound is guaranteed true here (the !bound case returned ErrCustodyUnbound
+	// above), so the replay binding is always recorded against the real txHash.
+	storeCustodyBinding(stateDB, bindKey)
 	return nil
 }
 
@@ -1432,7 +1537,9 @@ func (pm *PoolManager) Deposit(stateDB StateDB, caller common.Address, asset Cur
 // the ledger burned, so 0x9010 cannot mint native value.
 //
 //	NATIVE LUX: releaseNativeFromVault pays the realized amount from the vault.
-//	ERC-20: refused (no real release path) — the withdraw never burns the ledger.
+//	ERC-20: releaseTokenFromVault transfers the realized token units from the vault
+//	  to the caller, after a vault-underflow guard (vault holds < realized) — the
+//	  token analog of releaseNativeFromVault's check. See erc20_vault.go.
 //
 // Returns the realized amount released (0 = nothing available). Idempotency mirrors
 // Deposit: bound on (txHash, asset, want) so a replay does not double-burn/release.
@@ -1443,40 +1550,81 @@ func (pm *PoolManager) Withdraw(stateDB StateDB, caller common.Address, asset Cu
 	if !want.IsUint64() {
 		return big.NewInt(0), fmt.Errorf("%w: withdraw amount exceeds uint64 ledger range", ErrInvalidAmount)
 	}
-	if !asset.IsNative() {
-		return big.NewInt(0), ErrERC20DepositUnsupported
+	// GLOBAL non-reentrant guard (RED CRIT #1): set BEFORE the vault release sub-call
+	// so a malicious ERC-20 reentering Deposit/Withdraw during its transfer is
+	// refused (a reentrant withdraw could otherwise double-release the vault inside
+	// the burn/release window). Cleared on every exit path.
+	if !enterCustody(stateDB) {
+		return big.NewInt(0), ErrCustodyReentrant
 	}
+	defer exitCustody(stateDB)
+
 	custody, ok := pm.engine.(custodyEngine)
 	if !ok {
 		return big.NewInt(0), ErrDEXBackendNotConfigured
 	}
+	// ERC-20 withdraws release the token from the vault; resolve the vault capability
+	// up front so a StateDB without it refuses BEFORE burning the D-Chain ledger (a
+	// burn with no possible release would strand the caller's claim).
+	var vault erc20Vault
+	if !asset.IsNative() {
+		v, ok := stateDB.(erc20Vault)
+		if !ok {
+			return big.NewInt(0), ErrERC20VaultUnavailable
+		}
+		vault = v
+	}
+
+	// Bind identity is the originating EVM txHash (the idempotency ref). bound==false
+	// means no valid EVM tx context (non-txIdentified StateDB or a zero txHash) —
+	// refuse rather than burn the ledger and release the vault against a zero ref
+	// that would collide on the D-Chain seen: key (the drain class). A committed EVM
+	// tx always has a unique non-zero hash, so only the non-production zero-hash path
+	// is refused (R3); no value is burned and nothing is released from the vault.
+	bindKey, bound := withdrawBindKey(stateDB, caller, asset, want)
+	if !bound {
+		return big.NewInt(0), ErrCustodyUnbound
+	}
 
 	// Replay-idempotency: a committed withdraw for this (txHash, asset, want)
 	// returns its realized amount without a second burn or release.
-	bindKey, bound := withdrawBindKey(stateDB, caller, asset, want)
-	if bound {
-		if realized, settled := loadWithdrawBinding(stateDB, bindKey); settled {
-			return realized, nil
-		}
+	if realized, settled := loadWithdrawBinding(stateDB, bindKey); settled {
+		return realized, nil
 	}
 
-	// 1) BURN leg (D-Chain): debit realized (clamped) from available.
-	realizedU64, err := custody.Withdraw(caller, asset, want.Uint64())
+	// 1) BURN leg (D-Chain): debit realized (clamped) from available. The EVM
+	//    txHash is threaded as the idempotency ref so this burn is identified
+	//    identically on the D-Chain seen: index. THE FIX: a genuine second withdraw
+	//    (distinct tx -> distinct ref) is distinct on the D-Chain, so it re-clamps to
+	//    CURRENT available (0 after the first) and returns realized 0 -> the release
+	//    leg below pays nothing. A content-identical replay no longer collides on
+	//    seen: to return the first realized amount against an already-paid vault.
+	realizedU64, err := custody.Withdraw(caller, asset, want.Uint64(), custodyRef(stateDB))
 	if err != nil {
 		return big.NewInt(0), fmt.Errorf("%w: clob_withdraw: %v", ErrSettlementFailed, err)
 	}
 	realized := new(big.Int).SetUint64(realizedU64)
 
 	// 2) RELEASE leg (C-Chain): pay exactly the realized amount from the vault.
+	//    Native: move realized wei from 0x9010 back to the caller. ERC-20: transfer
+	//    realized token units from the vault to the caller, after a vault-underflow
+	//    guard (the token analog of releaseNativeFromVault's check). Both refuse to
+	//    release more than the vault holds — the vault can never mint value.
 	if realizedU64 > 0 {
-		if rerr := pm.releaseNativeFromVault(stateDB, caller, realized); rerr != nil {
-			return big.NewInt(0), rerr
+		if asset.IsNative() {
+			if rerr := pm.releaseNativeFromVault(stateDB, caller, realized); rerr != nil {
+				return big.NewInt(0), rerr
+			}
+		} else {
+			if rerr := pm.releaseTokenFromVault(stateDB, vault, caller, asset.Address, realized); rerr != nil {
+				return big.NewInt(0), rerr
+			}
 		}
 	}
 
-	if bound {
-		storeWithdrawBinding(stateDB, bindKey, realized)
-	}
+	// bound is guaranteed true here (the !bound case returned ErrCustodyUnbound
+	// above), so the realized amount is always recorded against the real txHash.
+	storeWithdrawBinding(stateDB, bindKey, realized)
 	return realized, nil
 }
 
