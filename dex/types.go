@@ -389,6 +389,27 @@ var (
 	// embedded in the precompile — an unconfigured venue must revert cleanly
 	// rather than run a wrong, second matcher. See engine_inert.go.
 	ErrDEXBackendNotConfigured = errors.New("dex: backend not configured (set dex-zap-endpoint to enable LP-9010)")
+
+	// ErrCustodyUnbound is returned by Deposit/Withdraw when the StateDB carries no
+	// originating-tx identity (not txIdentified, or a zero txHash). The txHash is the
+	// idempotency ref threaded into the clob_deposit/clob_withdraw frame and the
+	// D-Chain seen: dedup key; with a zero ref two genuinely-distinct custody ops
+	// collide on (zero-ref‖user‖asset‖amount) and a replay can mint or double-release
+	// (the vault-drain class). A committed EVM tx ALWAYS has a unique non-zero hash,
+	// so refusing here closes the zero-ref door (defense-in-depth; prerequisite for
+	// the ERC-20 rail) without touching any real on-chain custody op. Only the
+	// non-EVM / zero-hash test path is refused — the production poolStateAdapter
+	// supplies a real per-tx txHash.
+	ErrCustodyUnbound = errors.New("dex: custody refused — no originating-tx context (zero idempotency ref)")
+
+	// ErrCustodyReentrant is returned when a custody op (Deposit/Withdraw) is
+	// re-entered while another custody op is already in progress on the same call
+	// stack — the classic reentrancy a malicious ERC-20 mounts from inside its
+	// transferFrom/transfer sub-call to double-mint (land a second pull inside the
+	// observed-delta window). The GLOBAL non-reentrant guard on the custody
+	// entrypoint reverts the nested call before it can move value, so the vault and
+	// the D-Chain ledger stay in lockstep (minted == vault).
+	ErrCustodyReentrant = errors.New("dex: custody reentrancy refused — a deposit/withdraw is already in progress")
 )
 
 // Errors - Pause/Freeze Controls (ATS regulatory compliance)
@@ -422,12 +443,6 @@ var (
 	ErrLiquidationTooSmall      = errors.New("liquidation amount too small")
 	ErrFlashLiquidationDisabled = errors.New("flash liquidation disabled")
 	ErrInvalidParameter         = errors.New("invalid parameter")
-	// ErrERC20DepositUnsupported is returned by deposit/withdraw for a non-native
-	// (ERC-20) asset until the real C-Chain lock/mint bridge (transferFrom on
-	// deposit, transfer on release) is wired. The CLOB still settles ONLY inside
-	// the D-Chain ledger; this refusal prevents minting an UNBACKED D-Chain credit
-	// (or releasing an unbacked C-Chain token) rather than faking a reserve.
-	ErrERC20DepositUnsupported = errors.New("dex: ERC-20 deposit/withdraw not yet supported (native LUX only); use the atomic proxy import/export for canonical D-Chain assets")
 )
 
 // Errors - Perpetuals
