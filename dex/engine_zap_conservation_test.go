@@ -56,24 +56,57 @@ type fakeCLOB struct {
 	submits  int // count of clob_submit calls actually matched (replay probe)
 	failNext bool
 	closed   bool
-	// ledger is a minimal available-balance ledger keyed by user[16]||asset[8] so
-	// the clob_deposit/withdraw/balance methods the precompile now drives have a
-	// deterministic test double. It is NOT the real D-Chain ledger (that lives in
-	// lx/dex/pkg/dchain and is exercised by the LIVE e2e); this only checks the
-	// precompile's adapter wire contract for the custody methods.
+	// ledger is a minimal available-balance ledger keyed by user[16]||asset[32]
+	// (the FULL injective asset id) so the clob_deposit/withdraw/balance methods the
+	// precompile now drives have a deterministic test double. It is NOT the real
+	// D-Chain ledger (that lives in lx/dex/pkg/dchain and is exercised by the LIVE
+	// e2e); this only checks the precompile's adapter wire contract for the custody
+	// methods. The key width mirrors the d-chain balance:<user:8><asset:32>
+	// keyspace — distinct assets never collide.
 	ledger map[string]uint64
+
+	// custodySeen models the D-Chain's content-addressed idempotency index
+	// (seen:<txID>, dchain/state.go). The REAL D-Chain computes txID =
+	// Checksum256(type‖user‖asset‖amount‖ref) over the WHOLE custody frame and, on a
+	// frame whose txID was already applied, returns the FIRST realized amount
+	// VERBATIM via getSeenOutcome — WITHOUT touching the ledger again. This double
+	// MUST reproduce that, because the vault-drain bug lives in exactly that replay:
+	// a withdraw whose content was already seen returns the prior realized even
+	// though available is now 0. Keyed on the full frame bytes (which include the
+	// 32-byte ref) so two frames identical in (user,asset,amount) but distinct in
+	// ref are DISTINCT here, exactly as on-chain.
+	//
+	// (The PRE-fix double live-debited on every call, so a second content-identical
+	// withdraw saw avail=0 and returned 0 — which MASKED the bug. Modeling seen:
+	// faithfully is what lets the regression test expose it.)
+	custodySeen map[string]uint64
 }
 
 func newFakeCLOB() *fakeCLOB {
-	return &fakeCLOB{markets: make(map[[32]byte][]*fakeOrder), ledger: make(map[string]uint64)}
+	return &fakeCLOB{
+		markets:     make(map[[32]byte][]*fakeOrder),
+		ledger:      make(map[string]uint64),
+		custodySeen: make(map[string]uint64),
+	}
 }
 
-// ledgerKey folds user[16]||asset[8] from a deposit/withdraw/balance payload.
-func ledgerKey(user []byte, asset uint64) string {
-	var b [24]byte
-	copy(b[0:16], user)
-	binary.BigEndian.PutUint64(b[16:24], asset)
+// ledgerKey keys the fake ledger by user[16]||asset[32] — the FULL 32-byte
+// injective asset id (native == all-zero), byte-faithful to the d-chain
+// balance:<user:8><asset:32> keyspace so distinct assets never collide.
+func ledgerKey(user []byte, asset [32]byte) string {
+	var b [zapUserSize + zapAssetIDSize]byte
+	copy(b[0:zapUserSize], user)
+	copy(b[zapUserSize:], asset[:])
 	return string(b[:])
+}
+
+// custodyTxID models the D-Chain content-addressed tx identity for a custody
+// frame: the FULL frame bytes (type-agnostic here; the method already separates
+// deposit vs withdraw). The d-chain hashes [type]‖body with Checksum256; the
+// distinguishing input that matters for dedup is the body (which now carries the
+// ref), so keying on method‖payload is byte-faithful to "same op?" on-chain.
+func custodyTxID(method string, payload []byte) string {
+	return method + string(payload)
 }
 
 // conn returns a zapConn bound to this book for the zapDialer seam.
@@ -109,7 +142,7 @@ func (f *fakeCLOB) dispatch(method string, payload []byte) ([]byte, error) {
 	case ZAPMethodSubmit:
 		return f.submit(payload)
 	case ZAPMethodOpenMarket:
-		// poolId[32]+base[8]+quote[8]; bind is a no-op for this double — just ack.
+		// poolId[32]+base[32]+quote[32]; bind is a no-op for this double — just ack.
 		var id [32]byte
 		copy(id[:], payload[0:32])
 		if _, ok := f.markets[id]; !ok {
@@ -117,17 +150,36 @@ func (f *fakeCLOB) dispatch(method string, payload []byte) ([]byte, error) {
 		}
 		return ackBytes(0, clobStatusPlaced, 1), nil
 	case ZAPMethodDeposit:
-		// user[16]+asset[8]+amount[8]: credit available, echo credited == amount.
+		// user[16]+asset[32]+amount[8]+ref[32]: credit available, echo credited.
+		// seen:-replay (same content/ref already applied) -> return the FIRST
+		// realized VERBATIM, crediting NOTHING again (models getSeenOutcome).
+		txID := custodyTxID(method, payload)
+		if prior, seen := f.custodySeen[txID]; seen {
+			return balanceRespBytes(clobStatusPlaced, prior), nil
+		}
 		user := payload[0:16]
-		asset := binary.BigEndian.Uint64(payload[16:24])
-		amount := binary.BigEndian.Uint64(payload[24:32])
+		var asset [32]byte
+		copy(asset[:], payload[16:custodyAmountOff])
+		amount := binary.BigEndian.Uint64(payload[custodyAmountOff:custodyRefOff])
 		f.ledger[ledgerKey(user, asset)] += amount
+		f.custodySeen[txID] = amount
 		return balanceRespBytes(clobStatusPlaced, amount), nil
 	case ZAPMethodWithdraw:
-		// user[16]+asset[8]+want[8]: debit min(want,avail), return realized.
+		// user[16]+asset[32]+want[8]+ref[32]: debit min(want,avail), return realized.
+		// seen:-replay (same content/ref already applied) -> return the FIRST
+		// realized VERBATIM, debiting NOTHING again (models getSeenOutcome). THIS is
+		// the faithful model that exposes the vault-drain: a content-identical
+		// withdraw returns the prior realized even though available is now 0. With
+		// the fix, a GENUINE second withdraw carries a DISTINCT ref -> distinct txID
+		// -> falls through to a fresh debit that clamps to the CURRENT (0) available.
+		txID := custodyTxID(method, payload)
+		if prior, seen := f.custodySeen[txID]; seen {
+			return balanceRespBytes(clobStatusPlaced, prior), nil
+		}
 		user := payload[0:16]
-		asset := binary.BigEndian.Uint64(payload[16:24])
-		want := binary.BigEndian.Uint64(payload[24:32])
+		var asset [32]byte
+		copy(asset[:], payload[16:custodyAmountOff])
+		want := binary.BigEndian.Uint64(payload[custodyAmountOff:custodyRefOff])
 		k := ledgerKey(user, asset)
 		avail := f.ledger[k]
 		realized := want
@@ -135,11 +187,13 @@ func (f *fakeCLOB) dispatch(method string, payload []byte) ([]byte, error) {
 			realized = avail
 		}
 		f.ledger[k] = avail - realized
+		f.custodySeen[txID] = realized
 		return balanceRespBytes(clobStatusPlaced, realized), nil
 	case ZAPMethodBalance:
-		// user[16]+asset[8]: available[8]+locked[8] (locked unused in this double).
+		// user[16]+asset[32]: available[8]+locked[8] (locked unused in this double).
 		user := payload[0:16]
-		asset := binary.BigEndian.Uint64(payload[16:24])
+		var asset [32]byte
+		copy(asset[:], payload[16:zapUserSize+zapAssetIDSize])
 		out := make([]byte, 16)
 		binary.BigEndian.PutUint64(out[0:8], f.ledger[ledgerKey(user, asset)])
 		return out, nil
