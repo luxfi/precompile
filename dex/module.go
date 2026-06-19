@@ -396,7 +396,7 @@ func (c *DEXContract) runInitialize(
 	}
 
 	// Initialize pool
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 	tick, err := c.poolManager.Initialize(stateAdapter, key, sqrtPriceX96, hookData)
 	if err != nil {
 		return nil, suppliedGas - GasPoolCreate, err
@@ -429,7 +429,7 @@ func (c *DEXContract) runSwap(
 		return nil, suppliedGas - GasSwap, err
 	}
 
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 
 	delta, err := c.poolManager.Swap(stateAdapter, caller, key, params, hookData)
 	if err != nil {
@@ -466,7 +466,7 @@ func (c *DEXContract) runModifyLiquidity(
 		return nil, suppliedGas - GasAddLiquidity, err
 	}
 
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 
 	delta, feeDelta, err := c.poolManager.ModifyLiquidity(stateAdapter, caller, key, params, hookData)
 	if err != nil {
@@ -511,7 +511,7 @@ func (c *DEXContract) runDeposit(
 	asset := Currency{Address: common.BytesToAddress(input[12:32])}
 	amount := new(big.Int).SetBytes(input[32:64])
 
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 	if err := c.poolManager.Deposit(stateAdapter, caller, asset, amount); err != nil {
 		return nil, suppliedGas - GasSettlement, err
 	}
@@ -545,7 +545,7 @@ func (c *DEXContract) runWithdraw(
 	asset := Currency{Address: common.BytesToAddress(input[12:32])}
 	want := new(big.Int).SetBytes(input[32:64])
 
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 	realized, err := c.poolManager.Withdraw(stateAdapter, caller, asset, want)
 	if err != nil {
 		return nil, suppliedGas - GasSettlement, err
@@ -646,7 +646,7 @@ func (c *DEXContract) runDonate(
 	amount0 := new(big.Int).SetBytes(input[160:192])
 	amount1 := new(big.Int).SetBytes(input[192:224])
 
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 
 	var hookData []byte
 	if len(input) > 224 {
@@ -690,7 +690,7 @@ func (c *DEXContract) runGetPool(
 	}
 
 	poolId := key.ID()
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 	pool := c.poolManager.getPool(stateAdapter, poolId)
 	if !pool.IsInitialized() {
 		return nil, suppliedGas - GasPoolLookup, fmt.Errorf("pool not found")
@@ -822,7 +822,7 @@ func (c *DEXContract) runPauseDEX(
 	if suppliedGas < GasAdmin {
 		return nil, 0, fmt.Errorf("out of gas")
 	}
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 	if err := c.poolManager.PauseDEX(stateAdapter, caller); err != nil {
 		return nil, suppliedGas - GasAdmin, err
 	}
@@ -841,7 +841,7 @@ func (c *DEXContract) runResumeDEX(
 	if suppliedGas < GasAdmin {
 		return nil, 0, fmt.Errorf("out of gas")
 	}
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 	if err := c.poolManager.ResumeDEX(stateAdapter, caller); err != nil {
 		return nil, suppliedGas - GasAdmin, err
 	}
@@ -866,7 +866,7 @@ func (c *DEXContract) runPausePool(
 	}
 	var poolId [32]byte
 	copy(poolId[:], input[:32])
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 	if err := c.poolManager.PausePool(stateAdapter, caller, poolId); err != nil {
 		return nil, suppliedGas - GasAdmin, err
 	}
@@ -891,7 +891,7 @@ func (c *DEXContract) runResumePool(
 	}
 	var poolId [32]byte
 	copy(poolId[:], input[:32])
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 	if err := c.poolManager.ResumePool(stateAdapter, caller, poolId); err != nil {
 		return nil, suppliedGas - GasAdmin, err
 	}
@@ -916,7 +916,7 @@ func (c *DEXContract) runFreezePool(
 	}
 	var poolId [32]byte
 	copy(poolId[:], input[:32])
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
+	stateAdapter := newPoolStateAdapter(state)
 	if err := c.poolManager.FreezePool(stateAdapter, caller, poolId); err != nil {
 		return nil, suppliedGas - GasAdmin, err
 	}
@@ -1008,9 +1008,26 @@ func extsloadArrayGas(data []byte) uint64 {
 // poolStateAdapter adapts contract.StateDB to dex.StateDB.
 // blockNumber must be set from the execution context (AccessibleState.GetBlockContext().Number())
 // since contract.StateDB does not expose block number.
+//
+// accessibleState is retained so the adapter can reach the EVM execution
+// environment (GetPrecompileEnv) for the ERC-20 custody legs, which must sub-call
+// the token contract (transferFrom / transfer / balanceOf). See module_erc20.go
+// for the erc20Vault binding and the optional-Call seam.
 type poolStateAdapter struct {
-	stateDB     contract.StateDB
-	blockNumber uint64
+	stateDB         contract.StateDB
+	blockNumber     uint64
+	accessibleState contract.AccessibleState
+}
+
+// newPoolStateAdapter builds the dex.StateDB adapter from the precompile execution
+// context. The single construction point so every selector handler wires the same
+// state, block number, and EVM environment (the ERC-20 vault seam needs the env).
+func newPoolStateAdapter(state contract.AccessibleState) *poolStateAdapter {
+	return &poolStateAdapter{
+		stateDB:         state.GetStateDB(),
+		blockNumber:     state.GetBlockContext().Number().Uint64(),
+		accessibleState: state,
+	}
 }
 
 func (a *poolStateAdapter) GetState(addr common.Address, key common.Hash) common.Hash {
