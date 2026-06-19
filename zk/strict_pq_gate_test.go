@@ -131,13 +131,17 @@ func TestZK_ClassicalOpsAllowedWhenNotStrictPQ(t *testing.T) {
 	}
 }
 
-// TestZK_HashBasedOpsOpenUnderStrictPQ confirms the hash-based ops
-// (Nullifier, Commitment) are NOT gated by strict-PQ — they are
-// quantum-safe and must stay available on a strict-PQ chain.
+// TestZK_HashBasedOpsOpenUnderStrictPQ confirms the genuinely hash-based
+// op (Nullifier 0x21) is NOT gated by strict-PQ — it is quantum-safe and
+// must stay available on a strict-PQ chain.
+//
+// Commitment (0x22) is deliberately NOT in this list: it is dual-mode and
+// only its Merkle sub-mode is hash-based. The Pedersen sub-mode is bn254
+// DLOG and is covered (refused) by TestZK_PedersenCommitmentRefusedUnderStrictPQ.
 func TestZK_HashBasedOpsOpenUnderStrictPQ(t *testing.T) {
 	state := strictPQState(true)
 	gas := uint64(10_000_000)
-	for _, op := range []byte{OpVerifyNullifier, OpVerifyCommitment} {
+	for _, op := range []byte{OpVerifyNullifier} {
 		input := []byte{op, 0x00, 0x00, 0x00, 0x00}
 		_, _, err := ZKVerifyPrecompile.Run(
 			state, common.Address{}, ZKVerifyContractAddress, input, gas, true,
@@ -145,4 +149,88 @@ func TestZK_HashBasedOpsOpenUnderStrictPQ(t *testing.T) {
 		require.NotErrorIsf(t, err, contract.ErrClassicalForbiddenInPQ,
 			"hash-based op 0x%02x must remain open under strict-PQ", op)
 	}
+}
+
+// pedersenCommitmentInput builds a 0x22 payload that selects the DEFAULT
+// (Pedersen-opening) sub-mode: [op=0x22][96 bytes commitment‖value‖blinding]
+// whose first byte is NOT 0x01, so verifyCommitment routes to the bn254
+// globalPedersen.Verify path.
+func pedersenCommitmentInput() []byte {
+	body := make([]byte, 96) // commitment(32)+value(32)+blinding(32), all zero
+	body[0] = 0x02           // anything != 0x01 ⇒ not the Merkle sub-mode
+	return append([]byte{OpVerifyCommitment}, body...)
+}
+
+// merkleCommitmentInput builds a 0x22 payload that selects the Merkle
+// sub-mode: [op=0x22][0x01][≥76 more bytes]. verifyCommitment routes this
+// to the hash-based verifyCommitmentMerkle path, which stays open under
+// strict-PQ.
+func merkleCommitmentInput() []byte {
+	// post-selector payload must be ≥77 bytes with data[0]==0x01.
+	body := make([]byte, 96)
+	body[0] = 0x01
+	return append([]byte{OpVerifyCommitment}, body...)
+}
+
+// TestZK_PedersenCommitmentRefusedUnderStrictPQ is the NEW HIGH (Red): the
+// DEFAULT 0x22 sub-path is verifyCommitmentPedersen -> globalPedersen.Verify
+// = bn254 G1 DLOG, which a CRQC breaks. Under strict-PQ it MUST be refused
+// with ErrClassicalForbiddenInPQ, BEFORE reaching the Pedersen verifier.
+func TestZK_PedersenCommitmentRefusedUnderStrictPQ(t *testing.T) {
+	state := strictPQState(true)
+	gas := uint64(10_000_000)
+	_, _, err := ZKVerifyPrecompile.Run(
+		state, common.Address{}, ZKVerifyContractAddress, pedersenCommitmentInput(), gas, true,
+	)
+	require.ErrorIs(t, err, contract.ErrClassicalForbiddenInPQ,
+		"the Pedersen (bn254 DLOG) 0x22 sub-path must be refused under strict-PQ")
+}
+
+// TestZK_PedersenCommitmentOpenWhenNotStrictPQ confirms the Pedersen 0x22
+// sub-path is NOT refused on a non-strict chain — it remains available as
+// a (quantum-breakable) building block. It may still fail on its own
+// merits (no cached point), but never with the strict-PQ refusal.
+func TestZK_PedersenCommitmentOpenWhenNotStrictPQ(t *testing.T) {
+	state := strictPQState(false)
+	gas := uint64(10_000_000)
+	_, _, err := ZKVerifyPrecompile.Run(
+		state, common.Address{}, ZKVerifyContractAddress, pedersenCommitmentInput(), gas, true,
+	)
+	require.NotErrorIs(t, err, contract.ErrClassicalForbiddenInPQ,
+		"Pedersen 0x22 must NOT be refused on a non-strict chain")
+}
+
+// TestZK_MerkleCommitmentOpenUnderStrictPQ confirms the Merkle-inclusion
+// sub-mode of 0x22 (hash-based, quantum-safe) stays OPEN on a strict-PQ
+// chain. The gate must distinguish the sub-modes by data[0], not refuse
+// all of 0x22.
+func TestZK_MerkleCommitmentOpenUnderStrictPQ(t *testing.T) {
+	state := strictPQState(true)
+	gas := uint64(10_000_000)
+	_, _, err := ZKVerifyPrecompile.Run(
+		state, common.Address{}, ZKVerifyContractAddress, merkleCommitmentInput(), gas, true,
+	)
+	require.NotErrorIs(t, err, contract.ErrClassicalForbiddenInPQ,
+		"the Merkle 0x22 sub-mode must remain open under strict-PQ")
+}
+
+// TestZK_CommitmentSubmodeDiscriminator is a unit check on the SINGLE
+// source of truth that the gate and verifyCommitment's dispatch share, so
+// they can never disagree about which 0x22 bytes are the hash-based path.
+func TestZK_CommitmentSubmodeDiscriminator(t *testing.T) {
+	// Merkle: data[0]==0x01 and len>=77.
+	merkle := merkleCommitmentInput()[1:]
+	require.True(t, isMerkleCommitment(merkle))
+	require.False(t, isPedersenCommitment(merkle))
+
+	// Pedersen: first byte != 0x01.
+	ped := pedersenCommitmentInput()[1:]
+	require.False(t, isMerkleCommitment(ped))
+	require.True(t, isPedersenCommitment(ped))
+
+	// data[0]==0x01 but too short (<77) is NOT Merkle ⇒ Pedersen (fail-closed).
+	short := make([]byte, 40)
+	short[0] = 0x01
+	require.False(t, isMerkleCommitment(short))
+	require.True(t, isPedersenCommitment(short))
 }
