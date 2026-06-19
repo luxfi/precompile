@@ -72,19 +72,38 @@ type Engine interface {
 // when the backend is not custody-capable. ZAPEngine implements it by relaying
 // clob_deposit / clob_withdraw / clob_open_market to the D-Chain.
 //
-// asset handles: a Currency's 20-byte address folds to the 8-byte D-Chain asset
-// handle (assetHandle in engine_zap.go); native LUX (address(0)) folds to 0.
+// asset ids: a Currency's 20-byte address maps INJECTIVELY to its full 32-byte
+// D-Chain asset id (assetID in engine_zap.go — left-padded address); native LUX
+// (address(0)) maps to the all-zero id. The full id (not a truncated handle) is
+// what keys the ledger, so distinct assets never collide.
 type custodyEngine interface {
-	// OpenMarket binds (base=currency0, quote=currency1) asset handles for poolID
+	// OpenMarket binds (base=currency0, quote=currency1) asset ids for poolID
 	// so the D-Chain custody gate value-checks orders. Idempotent.
 	OpenMarket(poolID [32]byte, base, quote Currency) error
 	// Deposit credits exactly amount of asset into account's available D-Chain
 	// balance. Called AFTER the vault lock leg. Refuses a short credit.
-	Deposit(account common.Address, asset Currency, amount uint64) error
+	//
+	// ref is the 32-byte originating-tx idempotency reference (the EVM txHash) the
+	// D-Chain folds into its content-addressed seen: dedup key, so the EVM-side
+	// idempotency identity and the D-Chain-side dedup identity are ONE thing. Two
+	// GENUINELY distinct deposits (distinct txHash, hence distinct ref) are distinct
+	// on the D-Chain too — each credited separately, matching each EVM vault lock
+	// (closes the deposit-strand). A byte-identical retry of one deposit (same ref)
+	// dedups to exactly-once. The ref is asset-generic (same field for native and
+	// ERC-20). See PoolManager.custodyRef.
+	Deposit(account common.Address, asset Currency, amount uint64, ref [32]byte) error
 	// Withdraw debits up to want of asset from account's available balance and
 	// returns the realized amount (clamped). The caller releases exactly realized
 	// from the vault. realized > want is refused (mint guard).
-	Withdraw(account common.Address, asset Currency, want uint64) (uint64, error)
+	//
+	// ref is the originating-tx idempotency reference (see Deposit). It is the FIX
+	// for the vault-drain: a second GENUINE withdraw (distinct txHash -> distinct
+	// ref) is now distinct on the D-Chain seen: index, so it re-clamps to CURRENT
+	// available (0 after the first drained it) and returns realized 0 -> the caller
+	// releases NOTHING from the vault. Previously a content-identical second
+	// withdraw collided on seen:, replayed the FIRST realized amount, and the vault
+	// paid twice for one burn.
+	Withdraw(account common.Address, asset Currency, want uint64, ref [32]byte) (uint64, error)
 	// Balance returns account's AVAILABLE balance for asset (read-only, no
 	// mutation). Used by the balanceOf view selector.
 	Balance(account common.Address, asset Currency) (uint64, error)
