@@ -9,18 +9,18 @@ require (
 	github.com/consensys/gnark-crypto v0.20.1
 	github.com/crate-crypto/go-kzg-4844 v1.1.0
 	github.com/holiman/uint256 v1.3.2
-	github.com/luxfi/accel v1.1.9
+	github.com/luxfi/accel v1.2.2
 	github.com/luxfi/ai v0.1.0
 	github.com/luxfi/corona v0.7.6
 	github.com/luxfi/crypto v1.19.17
 	github.com/luxfi/database v1.19.0
 	github.com/luxfi/fhe v1.8.2
-	github.com/luxfi/geth v1.16.98
+	github.com/luxfi/geth v1.17.11
 	github.com/luxfi/lattice/v7 v7.1.4
 	github.com/luxfi/magnetar v1.2.0
 	github.com/luxfi/runtime v1.1.1
 	github.com/luxfi/threshold v1.9.4
-	github.com/luxfi/warp v1.18.6
+	github.com/luxfi/warp v1.19.3
 	github.com/stretchr/testify v1.11.1
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.52.0
@@ -28,13 +28,13 @@ require (
 
 require (
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
-	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/luxfi/mdns v0.1.1 // indirect
 	github.com/luxfi/zap v0.7.2 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
-	github.com/shopspring/decimal v1.4.0 // indirect
+	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/tools v0.45.0 // indirect
 )
 
 require (
@@ -56,14 +56,13 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/luxfi/atomic v1.0.0 // indirect
 	github.com/luxfi/cache v1.2.1 // indirect
-	github.com/luxfi/codec v1.1.4 // indirect
 	github.com/luxfi/compress v0.0.5 // indirect
 	github.com/luxfi/concurrent v0.0.3 // indirect
-	github.com/luxfi/consensus v1.25.15 // indirect
+	github.com/luxfi/consensus v1.25.18 // indirect
 	github.com/luxfi/constants v1.5.8 // indirect
 	github.com/luxfi/container v0.0.4 // indirect
 	github.com/luxfi/crypto/ipa v1.2.4 // indirect
-	github.com/luxfi/ids v1.2.13 // indirect
+	github.com/luxfi/ids v1.2.15 // indirect
 	github.com/luxfi/log v1.4.3 // indirect
 	github.com/luxfi/math v1.4.1 // indirect
 	github.com/luxfi/math/big v0.1.0 // indirect
