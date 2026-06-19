@@ -155,13 +155,26 @@ func (p *zkVerifyPrecompile) Run(
 	data := input[1:]
 
 	// Classical pairing/DLOG opcodes are gated by the chain's strict-PQ
-	// profile. The hash-based opcodes (Nullifier 0x21, Commitment 0x22)
-	// remain open on every chain.
+	// profile. The genuinely hash-based opcodes (Nullifier 0x21 and the
+	// Merkle-inclusion sub-mode of Commitment 0x22) remain open on every
+	// chain.
+	//
+	// Commitment (0x22) is NOT uniformly hash-based: only the Merkle
+	// sub-mode (data[0]==0x01) is. The DEFAULT sub-mode is a Pedersen
+	// opening (verifyCommitmentPedersen -> globalPedersen.Verify), which
+	// is bn254 G1 DLOG — quantum-breakable. Refuse the Pedersen sub-path
+	// under strict-PQ, keep the Merkle sub-path open. See isPedersenCommitment.
 	switch op {
 	case OpVerifyGroth16, OpVerifyPLONK, OpVerifyFflonk, OpVerifyHalo2,
 		OpVerifyKZG, OpVerifyIPA, OpVerifyRangeProof, OpVerifyBatch:
 		if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
 			return nil, remainingGas, err
+		}
+	case OpVerifyCommitment:
+		if isPedersenCommitment(data) {
+			if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
+				return nil, remainingGas, err
+			}
 		}
 	}
 
@@ -1472,12 +1485,40 @@ func (p *zkVerifyPrecompile) verifyCommitment(data []byte) (bool, error) {
 	}
 
 	// Check if this is Merkle mode (first byte is 0x01)
-	if data[0] == 0x01 && len(data) >= 77 {
+	if isMerkleCommitment(data) {
 		return p.verifyCommitmentMerkle(data[1:])
 	}
 
 	// Default: Pedersen commitment opening verification
 	return p.verifyCommitmentPedersen(data)
+}
+
+// isMerkleCommitment reports whether a 0x22 (OpVerifyCommitment) payload
+// selects the Merkle-inclusion sub-mode (hash-based, quantum-safe). This
+// is the SINGLE source of truth for the sub-mode discriminator: both the
+// strict-PQ gate in Run() and verifyCommitment's dispatch consult it, so
+// the gate and the dispatch can never disagree about which bytes are the
+// hash-based path. The condition is exactly the one verifyCommitment uses
+// to route to verifyCommitmentMerkle.
+//
+// `data` is the post-selector payload (input[1:]), matching what
+// verifyCommitment receives.
+func isMerkleCommitment(data []byte) bool {
+	return len(data) >= 77 && data[0] == 0x01
+}
+
+// isPedersenCommitment reports whether a 0x22 payload selects the DEFAULT
+// Pedersen-opening sub-mode (verifyCommitmentPedersen -> globalPedersen.
+// Verify, bn254 G1 DLOG — quantum-breakable). It is the logical negation
+// of isMerkleCommitment: anything that is not the Merkle sub-mode falls
+// through to the Pedersen verifier and so must be refused under strict-PQ.
+//
+// A too-short payload (len < 96) is treated as Pedersen: it would reach
+// verifyCommitmentPedersen and fail ErrInvalidInput, but classifying it as
+// Pedersen means strict-PQ refuses it at the gate (fail-closed) rather
+// than letting a malformed classical-path call slip past the PQ boundary.
+func isPedersenCommitment(data []byte) bool {
+	return !isMerkleCommitment(data)
 }
 
 // verifyCommitmentPedersen verifies a Pedersen commitment opening.
