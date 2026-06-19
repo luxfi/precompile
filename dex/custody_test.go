@@ -63,7 +63,7 @@ func walletBal(sdb *txStateDB, a common.Address) uint64 {
 func fakeAvail(f *fakeCLOB, a common.Address, asset Currency) uint64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.ledger[ledgerKey(a.Bytes()[:16], assetHandle(asset))]
+	return f.ledger[ledgerKey(a.Bytes()[:16], assetID(asset))]
 }
 
 // --- HARD GATE: DEPOSIT ---
@@ -298,25 +298,27 @@ func TestCustody_PlaceDoesNotTouchVault(t *testing.T) {
 	}
 }
 
-// --- ERC-20 DISABLED-WITH-HONEST-FLAG (this pass) ---
+// --- ERC-20 ON A VAULT-LESS StateDB: FAIL-SECURE ---
 //
-// A non-native deposit/withdraw is REFUSED explicitly (no fake reserve). It does
-// NOT mint a D-Chain credit and does NOT touch any C-Chain balance.
-func TestCustody_ERC20Deposit_RefusedNotFaked(t *testing.T) {
-	pm, f, sdb, caller := custodyPM(t, 1000)
+// A non-native deposit/withdraw against a StateDB that does NOT implement the
+// erc20Vault capability is REFUSED (ErrERC20VaultUnavailable) — it never mints a
+// D-Chain credit and never touches any balance. (The real ERC-20 rail, exercised
+// against a token-capable StateDB, lives in erc20_custody_test.go.)
+func TestCustody_ERC20Deposit_RefusedWithoutVaultCapability(t *testing.T) {
+	pm, f, sdb, caller := custodyPM(t, 1000) // txStateDB does NOT implement erc20Vault
 	erc20 := Currency{Address: common.HexToAddress("0x00000000000000000000000000000000000000A0")}
 
 	err := pm.Deposit(sdb, caller, erc20, big.NewInt(100))
-	if !errors.Is(err, ErrERC20DepositUnsupported) {
-		t.Fatalf("ERC-20 deposit err = %v, want ErrERC20DepositUnsupported", err)
+	if !errors.Is(err, ErrERC20VaultUnavailable) {
+		t.Fatalf("ERC-20 deposit err = %v, want ErrERC20VaultUnavailable", err)
 	}
 	if got := fakeAvail(f, caller, erc20); got != 0 {
 		t.Fatalf("ERC-20 D-Chain available = %d, want 0 (no mint)", got)
 	}
 
 	_, werr := pm.Withdraw(sdb, caller, erc20, big.NewInt(100))
-	if !errors.Is(werr, ErrERC20DepositUnsupported) {
-		t.Fatalf("ERC-20 withdraw err = %v, want ErrERC20DepositUnsupported", werr)
+	if !errors.Is(werr, ErrERC20VaultUnavailable) {
+		t.Fatalf("ERC-20 withdraw err = %v, want ErrERC20VaultUnavailable", werr)
 	}
 }
 
