@@ -88,17 +88,39 @@ func (s *SettleContract) runSettleDeposit(
 		return nil, gasLeft, ErrAssetHalted
 	}
 
+	// GLOBAL non-reentrant guard for the 0x9999 custody entrypoint set (deposit /
+	// withdraw / modifyLiquidity share ONE slot). Set BEFORE any ERC-20 sub-call so a
+	// malicious token cannot re-enter ANY custody op from inside its transferFrom
+	// callback (the observed-delta + CEI ordering already mitigates double-spend; this
+	// is uniform defense-in-depth across the whole custody surface).
+	if !enterCustodyKV(stateDB) {
+		return nil, gasLeft, ErrCustodyReentrant
+	}
+	defer exitCustodyKV(stateDB)
+
 	if isNativeAsset(aid) {
-		amt, of := uint256.FromBig(amount)
-		if of {
+		if _, of := uint256.FromBig(amount); of {
 			return nil, gasLeft, ErrSettleAmountRange
 		}
-		// The EVM moved msg.value into 0x9999 before this precompile ran; the
-		// self-balance must now cover the asserted amount (it would be short if the
-		// call did not carry msg.value == amount). We do NOT re-credit; we record the
-		// claim against what the vault already received.
-		if stateDB.GetBalance(poolManagerAddr9999).Cmp(amt) < 0 {
-			return nil, gasLeft, ErrSettleDepositShort
+		// NATIVE DEPOSIT — OBSERVED DELTA, not an absolute balance test.
+		//
+		// The precompile cannot read msg.value (contract.AccessibleState exposes no
+		// CallValue), so we measure the native this CALL actually delivered: the EVM
+		// already moved msg.value into 0x9999 before Run (geth Transfer precedes the
+		// precompile), and every native-moving path keeps settleVault[native] in
+		// lock-step with the vault's real native balance. Therefore
+		//   delivered = GetBalance(0x9999) - settleVault[native]
+		// is exactly the value this call carried. An ABSOLUTE check (the old
+		// GetBalance >= amount) was structurally broken: 0x9999 is a SHARED vault
+		// holding every prior depositor's native + every swap's native tokenIn, so a
+		// value==0 call trivially passed it and minted an unbacked claim against
+		// OTHERS' funds. The delta check makes value==0 deliver 0 (reverts), closing
+		// the drain. Symmetric with the ERC-20 observed-delta path above.
+		realBal := stateDB.GetBalance(poolManagerAddr9999).ToBig()
+		tracked := loadSettleVault(stateDB, aid)
+		delivered := new(big.Int).Sub(realBal, tracked)
+		if delivered.Sign() < 0 || delivered.Cmp(amount) < 0 {
+			return nil, gasLeft, ErrSettleDepositShort // value not delivered this call.
 		}
 	} else {
 		vault, ok := stateDBERC20(stateDB)
@@ -143,6 +165,15 @@ func (s *SettleContract) runSettleWithdraw(
 	aid := assetID(asset)
 	stateDB := newPoolStateAdapter(state)
 
+	// GLOBAL non-reentrant guard (shared 0x9999 custody slot). Set BEFORE the vault
+	// release sub-call so a malicious token cannot re-enter withdraw (or any custody
+	// op) and double-release inside the transfer callback. CEI below is the primary
+	// guarantee; this is uniform defense across the custody surface.
+	if !enterCustodyKV(stateDB) {
+		return nil, gasLeft, ErrCustodyReentrant
+	}
+	defer exitCustodyKV(stateDB)
+
 	claim := loadDepositorClaim(stateDB, caller, aid)
 	realized := new(big.Int).Set(want)
 	if realized.Cmp(claim) > 0 {
@@ -164,6 +195,13 @@ func (s *SettleContract) runSettleWithdraw(
 		amt, of := uint256.FromBig(realized)
 		if of {
 			return nil, gasLeft, ErrSettleAmountRange
+		}
+		// UNDERFLOW GUARD (defense in depth): SubBalance is uint256-modular and does
+		// not revert on underflow from a precompile. realized is already clamped to
+		// the tracked vault total (<= real balance by invariant), so this only fires
+		// on a regression — fail loud rather than wrap 0x9999's native balance.
+		if stateDB.GetBalance(poolManagerAddr9999).Cmp(amt) < 0 {
+			return nil, gasLeft, ErrSettleClaimShort
 		}
 		stateDB.SubBalance(poolManagerAddr9999, amt)
 		stateDB.AddBalance(caller, amt)

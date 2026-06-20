@@ -44,31 +44,36 @@ func PredictAccesses(r *DFillReceiptV1, epochHint uint64) AccessSet {
 	var as AccessSet
 
 	// --- READS (mostly read-only hot slots; never cause serialization) ---
+	// The market-halt scope keys on r.PoolKeyHash (the validated pool identity), the
+	// SAME id checkHalt reads — NOT the free-form r.MarketID. (See halt9999.go.)
 	as.Reads = append(as.Reads,
 		haltGlobalKey,
-		makeStorageKey(haltMarketPrefix, r.MarketID[:]),
+		makeStorageKey(haltMarketPrefix, r.PoolKeyHash[:]),
 		makeStorageKey(haltAssetPrefix, r.TokenInAssetID[:]),
 		makeStorageKey(haltAssetPrefix, r.TokenOutAssetID[:]),
 		makeStorageKey(haltReceiptTypePrefix, []byte{byte(r.CertType)}),
+		makeStorageKey(haltValidatorSetPrefix, r.DChainID[:]), // checkHalt reads the vset halt
 		cfgNetworkIDKey,
 		cfgCChainIDKey,
 		consumedReceiptKey(r.ReceiptID),
 		settleVaultKey(r.TokenInAssetID),
 		settleVaultKey(r.TokenOutAssetID),
 	)
-	// Verifier registry meta + per-validator slots are reads too, but their count
-	// depends on the set size; the meta slot is the conflict-relevant one (the set
-	// is only ever WRITTEN by governance, never by a swap), so a swap's registry
-	// reads never serialize against another swap. Include the meta slot for
-	// completeness so the scheduler sees the dependency on a governance rotation.
+	// Verifier registry meta slot is a read too (per-validator slots depend on set
+	// size; the meta slot is the conflict-relevant one — the set is only ever WRITTEN
+	// by governance, never by a swap, so a swap's registry reads never serialize
+	// against another swap). Surfacing it lets the scheduler see the dependency on a
+	// governance rotation. The verify path resolves the set under cert.ValidatorSetID,
+	// but PredictAccesses sees only the receipt; the receipt's DChainID scopes the
+	// registry namespace, which is the conflict-relevant axis for a rotation.
 
 	// --- WRITES (each keyed by receipt / asset / account — NO global slot) ---
 	as.Writes = append(as.Writes,
-		consumedReceiptKey(r.ReceiptID),          // replay map, unique per fill
-		settleVaultKey(r.TokenInAssetID),         // vault holdings of tokenIn
-		settleVaultKey(r.TokenOutAssetID),        // vault holdings of tokenOut
-		feeBucketKey(r.FeeAssetID, epochHint),    // SHARDED fee bucket
-		volBucketKey(r.PoolKeyHash, epochHint),   // SHARDED volume bucket
+		consumedReceiptKey(r.ReceiptID),        // replay map, unique per fill
+		settleVaultKey(r.TokenInAssetID),       // vault holdings of tokenIn
+		settleVaultKey(r.TokenOutAssetID),      // vault holdings of tokenOut
+		feeBucketKey(r.FeeAssetID, epochHint),  // SHARDED fee bucket
+		volBucketKey(r.PoolKeyHash, epochHint), // SHARDED volume bucket
 	)
 	// Native balance moves are EVM account balances (sender, recipient, 0x9999),
 	// which Block-STM tracks as account-state accesses outside the precompile's
@@ -78,6 +83,69 @@ func PredictAccesses(r *DFillReceiptV1, epochHint uint64) AccessSet {
 		balanceSlot(r.Sender, r.TokenInAssetID),
 		balanceSlot(r.Recipient, r.TokenOutAssetID),
 	)
+	return as
+}
+
+// PredictModifyLiquidityAccesses returns the storage slots a maker modifyLiquidity
+// (ADD or REMOVE) reads and writes — its OWN fine-grained access set, distinct from
+// the swap's. The conflict-relevant keys are exactly (owner+asset reserve, the
+// orderID record, the ownerOrders index, the locked reserve), all keyed by the
+// maker account / asset / order — NO global hot WRITE. Two makers operating on
+// different accounts (or the same account on different assets/orders) never
+// serialize. The scheduler calls this before execution; the keys MUST be derived by
+// the same helpers the maker path uses so the prediction is exact.
+//
+// orderID = MakerOrderID(owner, poolID, salt, tickLower, tickUpper); lockedAsset is
+// a pure function of (key, side) — both known to the scheduler from the calldata.
+func PredictModifyLiquidityAccesses(
+	owner common.Address, poolID [32]byte, salt [32]byte, tickLower, tickUpper int24, lockedAsset [32]byte,
+) AccessSet {
+	var as AccessSet
+	orderID := MakerOrderID(owner, poolID, salt, tickLower, tickUpper)
+
+	// READS: the market record (status), the asset-halt slot, the current reserve, the
+	// per-asset vault slots (the ADD/REMOVE moves between settleVault and
+	// makerLockedVault), the order record + count, and the reentrancy guard.
+	as.Reads = append(as.Reads,
+		marketSlot(poolID, marketMetaSuffix),
+		makeStorageKey(haltAssetPrefix, lockedAsset[:]),
+		depositorClaimKey(owner, lockedAsset),
+		lockedReserveKey(owner, lockedAsset),
+		settleVaultKey(lockedAsset),
+		makerLockedVaultKey(lockedAsset),
+		orderSlot(orderID, orderMetaSuffix),
+		orderSlot(orderID, orderAmtSuffix),
+		ownerOrdersCountKey(owner),
+		custodyGuardKey9999,
+	)
+	// WRITES: reserve split (available/locked), the per-asset vault reclassification
+	// (settleVault <-> makerLockedVault), the FULL order record (storeRestingOrder
+	// writes all 6 slots), the index slot + count, and the reentrancy guard (set+clear
+	// within the call). Each keyed by owner / asset / order — NO global hot WRITE
+	// (settleVault/makerLockedVault are per-ASSET, so two makers contend only on the
+	// same asset, which is a genuine conflict, not a global counter).
+	as.Writes = append(as.Writes,
+		depositorClaimKey(owner, lockedAsset),
+		lockedReserveKey(owner, lockedAsset),
+		settleVaultKey(lockedAsset),
+		makerLockedVaultKey(lockedAsset),
+		orderSlot(orderID, orderMetaSuffix),
+		orderSlot(orderID, orderOwnerSuffix),
+		orderSlot(orderID, orderPoolSuffix),
+		orderSlot(orderID, orderAssetSuffix),
+		orderSlot(orderID, orderAmtSuffix),
+		orderSlot(orderID, orderSaltSuffix),
+		ownerOrdersCountKey(owner),
+		custodyGuardKey9999,
+	)
+	// NOTE: appendOwnerOrder also writes ownerOrdersAtKey(owner, count) — a NEW slot
+	// at the live count, which this pure (StateDB-free) predictor cannot derive. The
+	// ownerOrdersCountKey write above already serializes two ADDs by the SAME owner
+	// (both bump the count), which is the conflict-relevant axis; the per-index slot
+	// is owner-scoped and never collides across owners, so omitting the unknowable
+	// index does not cause a cross-owner under-prediction. A scheduler that needs the
+	// exact index must pass a stateKV (see the file-level note: a static predictor is
+	// inherently limited here, which is why no production scheduler consumes it yet).
 	return as
 }
 
