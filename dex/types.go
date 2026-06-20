@@ -19,15 +19,57 @@ import (
 // LP-aligned format: 0x0000000000000000000000000000000000LPNUM
 // See LP-9015 for canonical specification
 const (
-	// Core DEX (LP-901x) — maps to Uniswap v4 PoolManager architecture
-	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // LP-9010 LXPool (v4 PoolManager — singleton pool state)
-	LXOracleAddress = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (price aggregation)
-	LXRouterAddress = "0x0000000000000000000000000000000000009012" // LP-9012 LXRouter (v4 SwapRouter — external swap entry)
-	LXHooksAddress  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (v4 hook registry)
-	LXFlashAddress  = "0x0000000000000000000000000000000000009014" // LP-9014 LXFlash (flash accounting)
+	// ─────────────────────────────────────────────────────────────────────────
+	// CANONICAL V4 DEX PRECOMPILE SURFACE (LP-9999 family, receipt-settlement).
+	//
+	// ONE money path, three read views, one position adapter. Each is its OWN
+	// modules.Module at its OWN address (orthogonal: a new primitive per slot,
+	// never bolted onto another). The split is by CONCERN, not by token:
+	//
+	//   0x9999 PoolManager   — the SOLE value-moving module. swap settles a
+	//                          certified D-Chain fill receipt; initialize registers
+	//                          a market (C-authoritative); modifyLiquidity locks/
+	//                          unlocks maker reserves; deposit/withdraw fund/drain
+	//                          the vault; halt + governance live here.
+	//   0x9998 Quoter        — read-only swap-quote VIEW (advisory, NON-authoritative;
+	//                          a real swap still needs a receipt). Reads the local D
+	//                          book off-consensus or the C-side registry projection.
+	//                          STRUCTURALLY INCAPABLE OF WRITING (see quoter_module.go).
+	//   0x9997 StateView     — read-only pool/book/market/position/account VIEW.
+	//   0x9996 PositionManager— CLOB order-POSITION adapter (NOT an ERC-721 NFT). Holds
+	//                          NO custody of its own: every lifecycle op routes into
+	//                          0x9999 modifyLiquidity (+/- delta). Reads enumerate the
+	//                          0x9999 ownerOrders index.
+	//
+	// Reserved-only (constants, deliberately NOT implemented this pass):
+	//   0x9995 Permit / 0x9994 FHE / 0x9993 Admin.
+	//
+	// Invariant: only 0x9999 moves value; 9998/9997 never write; 9996 composes
+	// 0x9999. No duplicate money paths; one consumedReceipt + one halt namespace
+	// (dex.precompile.v1.9999.*). DEXPoolManagerAddress == LXSettleAddress.
+	// ─────────────────────────────────────────────────────────────────────────
+	DEXPoolManagerAddress     = "0x0000000000000000000000000000000000009999" // LP-9999 V4 PoolManager — THE money path (== LXSettleAddress)
+	DEXQuoterAddress          = "0x0000000000000000000000000000000000009998" // LP-9998 Quoter — read-only swap-quote VIEW (advisory)
+	DEXStateViewAddress       = "0x0000000000000000000000000000000000009997" // LP-9997 StateView — read-only pool/book/position VIEW
+	DEXPositionManagerAddress = "0x0000000000000000000000000000000000009996" // LP-9996 PositionManager — CLOB order-position adapter (composes 0x9999)
+
+	DEXPermitAddress = "0x0000000000000000000000000000000000009995" // LP-9995 Permit (RESERVED — constant only, not implemented)
+	DEXFHEAddress    = "0x0000000000000000000000000000000000009994" // LP-9994 FHE (RESERVED — constant only, not implemented)
+	DEXAdminAddress  = "0x0000000000000000000000000000000000009993" // LP-9993 Admin (RESERVED — constant only, not implemented)
+
+	// Core DEX (LP-901x) — DEPRECATED legacy V4 PoolManager. 0x9010 now reverts
+	// PRECOMPILE_MOVED for ALL value-moving selectors (incl swap); apps call 0x9999.
+	// Only read-only views (balanceOf/extsload/extsloadArray) stay live. The
+	// LXOracle/LXRouter/LXHooks/LXFlash/LXBook slots below are LEGACY (the canonical
+	// surface is the LP-9999 family above); kept as constants, not churned.
+	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // LP-9010 LXPool (DEPRECATED v4 PoolManager — read-only views only)
+	LXOracleAddress = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (legacy)
+	LXRouterAddress = "0x0000000000000000000000000000000000009012" // LP-9012 LXRouter (legacy)
+	LXHooksAddress  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (legacy)
+	LXFlashAddress  = "0x0000000000000000000000000000000000009014" // LP-9014 LXFlash (legacy)
 
 	// Orderbook (LP-902x)
-	LXBookAddress = "0x0000000000000000000000000000000000009020" // LP-9020 LXBook (CLOB orderbook engine)
+	LXBookAddress = "0x0000000000000000000000000000000000009020" // LP-9020 LXBook (legacy CLOB orderbook engine)
 
 	// Custody (LP-903x)
 	LXVaultAddress = "0x0000000000000000000000000000000000009030" // LP-9030 LXVault (custody + margin)

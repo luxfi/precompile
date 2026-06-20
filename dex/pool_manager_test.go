@@ -23,6 +23,10 @@ type MockStateDB struct {
 	// an in-memory per-token (token -> holder -> balance) ledger so the 0x9999
 	// settlement tests can exercise the native-in / token-out direction.
 	tokenBalances map[common.Address]map[common.Address]*big.Int
+	// feeOnTransferBps, when > 0, makes TransferTokenFrom deliver amount*(1-bps/1e4)
+	// to the recipient, modelling a fee-on-transfer token so the observed-delta short
+	// branches (ErrSettleObservedShort / ErrSettleDepositShort) can be exercised.
+	feeOnTransferBps uint64
 }
 
 func NewMockStateDB() *MockStateDB {
