@@ -107,11 +107,33 @@ func storeSettleVault(stateDB StateDB, assetID [32]byte, amount *big.Int) {
 }
 
 var (
-	ErrSettleUnbacked     = errors.New("dex: vault cannot back the credited amountOut (no mint)")
-	ErrSettleNativeFunds  = errors.New("dex: sender has insufficient native balance for amountIn")
-	ErrSettleAmountRange  = errors.New("dex: settle amount exceeds uint256")
-	ErrSettleERC20Vault   = errors.New("dex: ERC-20 settlement requires an erc20Vault-capable StateDB")
+	ErrSettleUnbacked      = errors.New("dex: vault cannot back the credited amountOut (no mint)")
+	ErrSettleNativeFunds   = errors.New("dex: sender has insufficient native balance for amountIn")
+	ErrSettleAmountRange   = errors.New("dex: settle amount exceeds uint256")
+	ErrSettleERC20Vault    = errors.New("dex: ERC-20 settlement requires an erc20Vault-capable StateDB")
 	ErrSettleObservedShort = errors.New("dex: ERC-20 amountIn transfer delivered less than required (no partial settle)")
+	ErrSettleDeltaOverflow = errors.New("dex: settle amountIn/amountOut exceeds int128 BalanceDelta range")
+)
+
+// --- Swap gas model: O(N) in the validator-set size and O(S) in the signer count.
+//
+// The cert verify is NOT constant work: ResolveValidatorSet does 1+3N StateDB reads
+// + N compressed-G1 decompressions (each an isRTorsion subgroup check), then
+// AggregatePublicKeys re-decodes the S signer points, then one BLS pairing. A flat
+// GasSwap badly under-prices a large set (maxValidatorsPerSet is 65536), letting a
+// block of such settlements force every validator to execute far more crypto wall-
+// time than the gas budget models. We charge the actual shape:
+//
+//	gas(swap) = GasSwapBase + N*GasResolvePerValidator + S*GasAggPerSigner + GasBLSPairing
+//
+// calibrated so the common small set lands near the platform's PQ-verify gas tier.
+// The per-validator term covers the cold-SLOAD x3 + the decompress/subgroup check
+// (so a forged cert over a real set still pays the full resolve cost it induces).
+const (
+	GasSwapBase            uint64 = 20_000 // decode + bind + halt + replay + analytics.
+	GasResolvePerValidator uint64 = 2_500  // 3 cold SLOADs + 1 G1 decompress/subgroup check.
+	GasAggPerSigner        uint64 = 3_000  // re-decode + on-curve check + point add per signer.
+	GasBLSPairing          uint64 = 60_000 // the final aggregate pairing (2 Miller loops + final exp).
 )
 
 // isNativeAsset reports whether an injective AssetID is native LUX (all-zero).
@@ -204,6 +226,14 @@ func settle(stateDB StateDB, r *DFillReceiptV1) error {
 		amt, of := uint256.FromBig(r.AmountOut)
 		if of {
 			return ErrSettleAmountRange
+		}
+		// UNDERFLOW GUARD (defense in depth): StateDB.SubBalance is uint256-modular
+		// and does NOT revert on underflow when a precompile calls it directly, so a
+		// vault-accounting bug could otherwise wrap 0x9999's native balance to ~2^256.
+		// The vault's tracked holdings (settleVault, checked above) should never exceed
+		// its real balance, so this can only fire on a regression — fail loud, never wrap.
+		if stateDB.GetBalance(poolManagerAddr9999).Cmp(amt) < 0 {
+			return ErrSettleUnbacked
 		}
 		// The vault holds this native (tracked above); pay out from the self-address.
 		stateDB.SubBalance(poolManagerAddr9999, amt)
@@ -326,10 +356,12 @@ func SettleSwap(
 	if readOnly {
 		return nil, suppliedGas, errors.New("dex: cannot settle in read-only mode")
 	}
-	if suppliedGas < GasSwap {
+	// Charge the flat BASE first (decode/bind/halt/replay); the O(N)/O(S) crypto
+	// terms are charged below once the validator-set size and signer count are known.
+	if suppliedGas < GasSwapBase {
 		return nil, 0, errors.New("dex: out of gas")
 	}
-	gasLeft := suppliedGas - GasSwap
+	gasLeft := suppliedGas - GasSwapBase
 
 	key, params, hookData, err := DecodeSwapInput(input)
 	if err != nil {
@@ -369,6 +401,18 @@ func SettleSwap(
 		return nil, gasLeft, errors.New("dex: receipt already consumed")
 	}
 
+	// (3b) GAS for the O(N)/O(S) crypto BEFORE the expensive verify. N = the resolved
+	// set size (one cheap meta SLOAD), S = popcount(SignerBitmap). Charging here means
+	// a forged cert over a large registered set still pays the resolve+decompress cost
+	// it forces every validator to perform — it cannot under-pay by failing late.
+	n := uint64(validatorSetSize(stateDB, receipt.DChainID, cert.ValidatorSetID))
+	s := uint64(bitmapPopcount(cert.SignerBitmap))
+	verifyGas := n*GasResolvePerValidator + s*GasAggPerSigner + GasBLSPairing
+	if gasLeft < verifyGas {
+		return nil, 0, errors.New("dex: out of gas")
+	}
+	gasLeft -= verifyGas
+
 	// (4) CERTIFICATE verify — DETERMINISTIC quorum-aggregate over the active set.
 	// Day-1 one-cert-per-receipt: receiptRoot == receiptID (P3 makes it a fill
 	// Merkle root + inclusion proof). Dispatch by certType through the registry.
@@ -377,18 +421,35 @@ func SettleSwap(
 		return nil, gasLeft, err
 	}
 
-	// (5) SETTLE value — all-or-nothing, no mint, conservation-checked.
+	// (4b) RETURN-FIDELITY guard: the V4 BalanceDelta legs are signed int128. A fill
+	// whose amountIn/amountOut cannot be faithfully reported as int128 must REVERT
+	// (matching V4 toBalanceDelta, which reverts on int128 overflow) rather than
+	// settle and return a truncated/sign-flipped delta. Pure deterministic check on
+	// the certified amounts. Placed BEFORE the consume mark so an over-range fill
+	// leaves the receipt unconsumed even absent EVM revert.
+	if !FitsSignedInt128(receipt.AmountIn) || !FitsSignedInt128(receipt.AmountOut) {
+		return nil, gasLeft, ErrSettleDeltaOverflow
+	}
+
+	// (5) MARK consumed — BEFORE value movement (CEI for the replay slot). This makes
+	// exactly-once STRUCTURAL rather than contingent on sender==caller + no live Call:
+	// the ERC-20 legs in settle() are real EVM sub-calls into attacker-listable token
+	// contracts, and an operator-delegated re-entry (callerAuthorized=true, a P4 seam)
+	// could otherwise re-enter swap with the SAME receipt and double-settle before the
+	// mark. With the mark set first, a re-entrant frame for the same receipt hits the
+	// consumed slot at step (3) and reverts. A failed settle still leaves the receipt
+	// UNCONSUMED because the EVM revert rolls back this SetState too (all-or-nothing).
+	markReceiptConsumed(stateDB, receipt.ReceiptID, blockNumber)
+
+	// (6) SETTLE value — all-or-nothing, no mint, conservation-checked.
 	if err := settle(stateDB, receipt); err != nil {
 		return nil, gasLeft, err
 	}
 
-	// (6) Analytics — SHARDED, no global hot write.
+	// (7) Analytics — SHARDED, no global hot write.
 	epoch := blockNumber
 	accrueFee(stateDB, receipt.FeeAssetID, receipt.FeeAmount, epoch)
 	accrueVolume(stateDB, receipt.PoolKeyHash, receipt.AmountIn, epoch)
-
-	// (7) MARK consumed — after settlement so a reverted settle leaves it unconsumed.
-	markReceiptConsumed(stateDB, receipt.ReceiptID, blockNumber)
 
 	// V4 return: BalanceDelta packs (amount0, amount1). Map to the swap direction:
 	// the taker spends amountIn (negative for the spent side) and receives amountOut.
