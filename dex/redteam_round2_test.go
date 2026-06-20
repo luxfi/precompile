@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -465,7 +466,11 @@ func TestRedTeam_Initialize_NoHookData(t *testing.T) {
 		t.Fatal("test setup error: input should be exactly 192 bytes")
 	}
 
-	// Verify via the actual precompile entry point
+	// The ABI decode robustness (192-byte input, nil hookData) is still exercised
+	// by DecodePoolKey / the dexvm-side pm.Initialize. Via the 0x9010 entry point,
+	// initialize is now DEPRECATED — market creation happens on the D-Chain and the
+	// 0x9010 value/state-creating selectors revert PRECOMPILE_MOVED (one money path
+	// at 0x9999). Assert the deprecation, not the old live behavior.
 	pm := NewPoolManager(&mockEngine{})
 	c := &DEXContract{poolManager: pm}
 	mockState := &mockAccessibleState{stateDB: NewMockStateDB()}
@@ -475,14 +480,18 @@ func TestRedTeam_Initialize_NoHookData(t *testing.T) {
 	binary.BigEndian.PutUint32(calldata[0:4], SelectorInitialize)
 	copy(calldata[4:], input)
 
-	result, _, err := c.Run(mockState, common.Address{}, lxPoolAddr, calldata, 1_000_000, false)
-	if err != nil {
-		t.Fatalf("Initialize with no hookData failed: %v", err)
+	_, _, err := c.Run(mockState, common.Address{}, lxPoolAddr, calldata, 1_000_000, false)
+	if !errors.Is(err, ErrPrecompileMoved) {
+		t.Fatalf("initialize at 0x9010 must revert PRECOMPILE_MOVED, got: %v", err)
 	}
-	// Should return a 32-byte tick value
-	if len(result) != 32 {
-		t.Errorf("expected 32-byte result, got %d bytes", len(result))
+
+	// The DIRECT dexvm-side path still creates a pool with nil hookData (the build
+	// path the precompile forwards markets to). This is the behavior that matters.
+	tick, derr := pm.Initialize(NewMockStateDB(), key, new(big.Int).Set(Q96), nil)
+	if derr != nil {
+		t.Fatalf("dexvm-side Initialize with nil hookData failed: %v", derr)
 	}
+	_ = tick
 }
 
 // =========================================================================
