@@ -45,70 +45,74 @@ var (
 
 // DEXPrecompile is the singleton instance.
 //
-// Backend strategy (decomplected — values, not places):
+// The model (decomplected — one concern, one name):
 //
 //   - The precompile lives at ONE address (LP-9010) across every Lux-derived
 //     EVM (Lux C-Chain, Hanzo, Zoo, SPC, and white-label deployments such as
 //     downstream EVM). The ABI is identical for every chain.
 //
-//   - The math/matching backend is parameterized. The default is the INERT
-//     engine (engine_inert.go): it performs no matching and reverts every call
-//     with ErrDEXBackendNotConfigured. V4 = CLOB, so the matcher lives ONLY on
-//     the d-chain, reached over ZAP — never embedded in the precompile. The
-//     venue makes 0x9010 live by calling SetBackend(NewZAPEngine(endpoint))
-//     from the EVM plugin main when dex-zap-endpoint is set; chains that do not
-//     enable it run an inert precompile that cleanly reverts.
+//   - 0x9010 is an ON-RAMP to the node-LOCAL D-Chain (dexvm), NOT a matcher and
+//     NOT a backend selector. The matcher is the dexvm the validators run; D is
+//     a normal Lux chain validated by an authorized subset (the --dex-validator
+//     opt-in + NFT authz, decided at the chain-create/validate level in the node
+//     chain manager — never as a precompile-side "mode"). 0x9010 SUBMITS DEX
+//     operations to that local D-Chain or VERIFIES committed D receipts.
 //
-//   - Brand identity is a value the backend carries (Engine.Brand()). User-
-//     facing error strings produced by the precompile MUST come from the
-//     backend, never hard-coded here. This keeps a tenant surface free of
-//     the word "Lux" while still letting the OSS package be called "Lux DEX"
-//     on Lux-network deployments.
-var DEXPrecompile = newDEXContract(newInertEngine())
+//   - The DEFAULT client is dchainUnavailable (dchain_client.go): it performs no
+//     matching and reverts every call with ErrDChainUnavailable. A node that
+//     serves the LP-9010 path makes it live by resolving its LOCAL D-Chain over
+//     loopback via InstallDChainClient from the EVM plugin; a node that is not
+//     running its local dexvm cleanly reverts (the on-ramp is closed) — it never
+//     fabricates a fill nor masks the absent chain as a missing pool.
+//
+//   - Brand identity is a value the client carries (Engine.Brand()). User-facing
+//     error strings produced by the precompile MUST come from the client, never
+//     hard-coded here, so a tenant surface stays free of the word "Lux" while the
+//     OSS package is still "Lux DEX" on Lux-network deployments.
+var DEXPrecompile = newDEXContract(newDChainUnavailable())
 
-// SetBackend swaps the DEX engine backing the singleton precompile.
+// InstallDChainClient resolves the singleton precompile against the node-LOCAL
+// D-Chain (dexvm) client.
 //
-// MUST be called from package main of the EVM plugin BEFORE the VM starts
-// initializing precompiles (i.e. before any genesis Configure() call). Calling
-// it after ANY pool-manager state has accumulated returns an error — backend
-// swaps must not race with live state. The guard covers every per-pool map
-// the precompile maintains (pools, poolStates, positions) so a future map
-// added without updating the guard doesn't silently re-open the race.
+// THIS IS NOT A BACKEND SWAP. There is exactly ONE valid target: the co-located
+// D-Chain this node runs, reached over loopback (the dexvm is RPC-served; the
+// precompile is a leaf library that must not reach up into the node chain
+// manager). The EVM plugin calls this exactly once at boot when this node serves
+// the DEX path and its local D-Chain endpoint is configured. A node without its
+// local D-Chain leaves the default dchainUnavailable client in place.
 //
-// Logs the backend brand to stderr on success so operators see in the boot
-// log which engine is wired (e.g. "Hanzo DEX" vs upstream OSS). RED V1.
+// MUST be called BEFORE the VM starts initializing precompiles (before any
+// genesis Configure()). Calling it after ANY pool-manager state has accumulated
+// returns an error — the resolution must not race with live state. The guard
+// covers every per-pool map the precompile maintains (pools, poolStates,
+// positions) so a future map added without updating the guard does not silently
+// re-open the race.
 //
-// Threading: not safe for concurrent use. The host binary is the single caller
-// during process startup.
-func SetBackend(e Engine) error {
+// Logs the client brand to stderr on success so operators see in the boot log
+// that the local D-Chain on-ramp is open. Threading: not safe for concurrent
+// use. The host binary is the single caller during process startup.
+func InstallDChainClient(e Engine) error {
 	if e == nil {
-		return fmt.Errorf("dex: backend engine must not be nil")
+		return fmt.Errorf("dex: local D-Chain client must not be nil")
 	}
 	pm := DEXPrecompile.poolManager
 	if len(pm.pools) != 0 || len(pm.poolStates) != 0 || len(pm.positions) != 0 {
-		return fmt.Errorf("dex: cannot swap backend after pool initialization")
+		return fmt.Errorf("dex: cannot install local D-Chain client after pool initialization")
 	}
 	pm.engine = e
-	// Surface the installed brand on the boot log. Stderr is the right sink
-	// for a process-lifecycle event that operators need to see even when
-	// structured logging hasn't been wired yet.
-	fmt.Fprintf(os.Stderr, "dex: precompile backend installed brand=%q\n", e.Brand())
+	// Surface the open on-ramp on the boot log. Stderr is the right sink for a
+	// process-lifecycle event operators need even before structured logging.
+	fmt.Fprintf(os.Stderr, "dex: LP-9010 on-ramp open to local D-Chain client brand=%q\n", e.Brand())
 	return nil
 }
 
-// Backend returns the active engine. Useful for diagnostics and tests; do not
-// use this to mutate engine state from outside the package.
-func Backend() Engine {
-	return DEXPrecompile.poolManager.engine
-}
-
-// newDEXContract constructs the singleton with a non-nil engine. Separated
-// from the var declaration so the construction path is testable and so
-// reviewers can see the engine MUST be non-nil at init.
+// newDEXContract constructs the singleton with a non-nil local D-Chain client.
+// Separated from the var declaration so the construction path is testable and so
+// reviewers can see the client MUST be non-nil at init.
 func newDEXContract(e Engine) *DEXContract {
 	if e == nil {
-		// Bug in caller — panic at init time, not at first swap.
-		panic("dex: DEXContract requires a non-nil engine")
+		// Bug in caller — panic at init time, not at first resolution.
+		panic("dex: DEXContract requires a non-nil local D-Chain client")
 	}
 	return &DEXContract{
 		poolManager: NewPoolManager(e),
@@ -323,42 +327,41 @@ func (c *DEXContract) Run(
 	data := input[4:]
 
 	switch selector {
-	case SelectorInitialize:
-		return c.runInitialize(accessibleState, caller, data, suppliedGas, readOnly)
+	// swap FORWARDS to the 0x9999 receipt-settlement money path (same impl, same
+	// replay/halt namespace). This is the ONE value-moving selector 0x9010 keeps,
+	// so deployed contracts that call swap at 0x9010 keep working.
 	case SelectorSwap:
 		return c.runSwap(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorModifyLiquidity:
-		return c.runModifyLiquidity(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorDeposit:
-		return c.runDeposit(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorWithdraw:
-		return c.runWithdraw(accessibleState, caller, data, suppliedGas, readOnly)
+
+	// All OTHER value-moving / state-creating 0x9010 selectors are DEPRECATED:
+	// they drove the live ZAP engine (the fork hazard) or a custody ledger that
+	// now lives at 0x9999. They revert PRECOMPILE_MOVED — never two money paths.
+	// Market creation (initialize) happens on the D-Chain; liquidity/donate/custody
+	// move value, which is 0x9999-only.
+	case SelectorInitialize,
+		SelectorModifyLiquidity,
+		SelectorDeposit,
+		SelectorWithdraw,
+		SelectorDonate,
+		SelectorUnlock,
+		SelectorTake,
+		SelectorSettle, SelectorSettleFor,
+		SelectorSync,
+		SelectorPauseDEX,
+		SelectorResumeDEX,
+		SelectorPausePool,
+		SelectorResumePool,
+		SelectorFreezePool:
+		return nil, suppliedGas, ErrPrecompileMoved
+
+	// Read-only views stay live at 0x9010 (no value movement, harmless): a stale
+	// integration reading state does not break, and these never touch the money path.
 	case SelectorBalanceOf:
 		return c.runBalanceOf(accessibleState, data, suppliedGas)
-	case SelectorDonate:
-		return c.runDonate(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorUnlock:
-		return c.runUnlock(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorTake:
-		return c.runTake(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorSettle, SelectorSettleFor:
-		return c.runSettle(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorSync:
-		return c.runSync(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorExtsload:
 		return c.runExtsload(accessibleState, data, suppliedGas)
 	case SelectorExtsloadArray:
 		return c.runExtsloadArray(accessibleState, data, suppliedGas)
-	case SelectorPauseDEX:
-		return c.runPauseDEX(accessibleState, caller, suppliedGas, readOnly)
-	case SelectorResumeDEX:
-		return c.runResumeDEX(accessibleState, caller, suppliedGas, readOnly)
-	case SelectorPausePool:
-		return c.runPausePool(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorResumePool:
-		return c.runResumePool(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorFreezePool:
-		return c.runFreezePool(accessibleState, caller, data, suppliedGas, readOnly)
 	default:
 		return nil, suppliedGas, fmt.Errorf("unknown method selector: 0x%08x", selector)
 	}
@@ -408,6 +411,16 @@ func (c *DEXContract) runInitialize(
 	return result, suppliedGas - GasPoolCreate, nil
 }
 
+// runSwap on 0x9010 is now a FORWARDER to the 0x9999 receipt-settlement money
+// path. The deprecated live-matcher swap (the C-Chain consensus FORK hazard:
+// runSwap -> poolManager.Swap -> engine.Swap -> live ZAP query against a moving
+// book, proven to split StateRoot by chains/dexvm TestRED_PerValidatorRelay_
+// SplitsConsensus) is REMOVED. A swap hitting 0x9010 is settled by the EXACT same
+// implementation, sharing the SAME consumedReceipt / halt / verifier storage
+// namespace (dex.precompile.v1.9999.*) — never two money paths, never two replay
+// maps. The receipt always binds to 0x9999 (DFillReceiptV1.PrecompileAddr), so a
+// forwarded call settles identically to a direct 0x9999 call. Deployed contracts
+// that still target 0x9010 keep working; new integrations point at 0x9999.
 func (c *DEXContract) runSwap(
 	state contract.AccessibleState,
 	caller common.Address,
@@ -415,36 +428,14 @@ func (c *DEXContract) runSwap(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
-	}
-
-	if suppliedGas < GasSwap {
-		return nil, 0, fmt.Errorf("out of gas")
-	}
-
-	// Parse PoolKey and SwapParams from input
-	key, params, hookData, err := DecodeSwapInput(input)
-	if err != nil {
-		return nil, suppliedGas - GasSwap, err
-	}
-
-	stateAdapter := newPoolStateAdapter(state)
-
-	delta, err := c.poolManager.Swap(stateAdapter, caller, key, params, hookData)
-	if err != nil {
-		return nil, suppliedGas - GasSwap, err
-	}
-
-	// No C-Chain settlement: the marketable order settles inside the D-Chain
-	// ledger (taker's locked spend -> maker, maker's locked asset -> taker).
-	// 0x9010 holds no reserve and is never a counterparty; the BalanceDelta is the
-	// fills' net for the V4 ABI's caller, not a C-Chain settle instruction.
-
-	// V4: Return BalanceDelta as single int256 (amount0 in upper 128 bits, amount1 in lower 128 bits)
-	result := PackBalanceDelta(delta.Amount0, delta.Amount1)
-	return result, suppliedGas - GasSwap, nil
+	return SettleSwap(state, caller, input, suppliedGas, readOnly)
 }
+
+// ErrPrecompileMoved is the clean revert for a value-moving 0x9010 call that is
+// NOT the forwarded swap. The deprecated custody/liquidity/donate paths drove the
+// live ZAP engine; value movement now lives ONLY at 0x9999. Callers migrate to
+// 0x9999 deposit/withdraw and the receipt-settlement swap.
+var ErrPrecompileMoved = fmt.Errorf("dex: PRECOMPILE_MOVED — value-moving DEX calls live at 0x9999; only swap forwards from 0x9010")
 
 func (c *DEXContract) runModifyLiquidity(
 	state contract.AccessibleState,
@@ -1029,6 +1020,11 @@ func newPoolStateAdapter(state contract.AccessibleState) *poolStateAdapter {
 		accessibleState: state,
 	}
 }
+
+// underlyingStateDB exposes the wrapped contract.StateDB so the settle path can
+// prefer a StateDB that DIRECTLY implements erc20Vault (the authoritative ledger)
+// over the adapter's EVM sub-call bridge. Used by stateDBERC20.
+func (a *poolStateAdapter) underlyingStateDB() contract.StateDB { return a.stateDB }
 
 func (a *poolStateAdapter) GetState(addr common.Address, key common.Hash) common.Hash {
 	return a.stateDB.GetState(addr, key)
