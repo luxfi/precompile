@@ -327,18 +327,15 @@ func (c *DEXContract) Run(
 	data := input[4:]
 
 	switch selector {
-	// swap FORWARDS to the 0x9999 receipt-settlement money path (same impl, same
-	// replay/halt namespace). This is the ONE value-moving selector 0x9010 keeps,
-	// so deployed contracts that call swap at 0x9010 keep working.
-	case SelectorSwap:
-		return c.runSwap(accessibleState, caller, data, suppliedGas, readOnly)
-
-	// All OTHER value-moving / state-creating 0x9010 selectors are DEPRECATED:
-	// they drove the live ZAP engine (the fork hazard) or a custody ledger that
-	// now lives at 0x9999. They revert PRECOMPILE_MOVED — never two money paths.
-	// Market creation (initialize) happens on the D-Chain; liquidity/donate/custody
-	// move value, which is 0x9999-only.
-	case SelectorInitialize,
+	// ALL value-moving / state-creating 0x9010 selectors are DEPRECATED — INCLUDING
+	// swap. The canonical V4 surface is the LP-9999 family (0x9999 PoolManager is THE
+	// money path; apps call it directly). 0x9010 keeps ONE money path = none: every
+	// value-moving selector reverts PRECOMPILE_MOVED so there are never two money
+	// paths, never two consumedReceipt/halt namespaces. swap is now in this group
+	// (apps migrate the config address to 0x9999); the live-ZAP fork hazard is gone
+	// with it. Market creation, liquidity, donate, custody all live at 0x9999.
+	case SelectorSwap,
+		SelectorInitialize,
 		SelectorModifyLiquidity,
 		SelectorDeposit,
 		SelectorWithdraw,
@@ -435,7 +432,7 @@ func (c *DEXContract) runSwap(
 // NOT the forwarded swap. The deprecated custody/liquidity/donate paths drove the
 // live ZAP engine; value movement now lives ONLY at 0x9999. Callers migrate to
 // 0x9999 deposit/withdraw and the receipt-settlement swap.
-var ErrPrecompileMoved = fmt.Errorf("dex: PRECOMPILE_MOVED — value-moving DEX calls live at 0x9999; only swap forwards from 0x9010")
+var ErrPrecompileMoved = fmt.Errorf("dex: PRECOMPILE_MOVED — all value-moving DEX calls (incl swap) live at 0x9999; 0x9010 keeps only read-only views")
 
 func (c *DEXContract) runModifyLiquidity(
 	state contract.AccessibleState,
@@ -1242,6 +1239,11 @@ func decodeInt24(b []byte) int24 {
 // PackBalanceDelta packs amount0 and amount1 into V4 BalanceDelta format.
 // V4 BalanceDelta is a single int256: amount0 in upper 128 bits, amount1 in lower 128 bits.
 // This matches: toBalanceDelta(int128 _amount0, int128 _amount1) in BalanceDelta.sol
+//
+// NOTE: this is the lenient packer (legacy callers). Each leg is masked to its low
+// 16 bytes if it exceeds int128. The consensus money path (SettleSwap) must instead
+// REJECT out-of-range deltas via FitsSignedInt128 before packing — toBalanceDelta
+// reverts on int128 overflow in V4 and must never silently wrap/sign-flip a value.
 func PackBalanceDelta(amount0, amount1 *big.Int) []byte {
 	result := make([]byte, 32)
 	a0 := bigIntTo16Bytes(amount0) // signed int128
@@ -1249,6 +1251,23 @@ func PackBalanceDelta(amount0, amount1 *big.Int) []byte {
 	copy(result[0:16], a0)
 	copy(result[16:32], a1)
 	return result
+}
+
+// minInt128 = -(2^127); maxInt128 = 2^127 - 1. Computed once (package-level) so the
+// range guard allocates nothing on the hot path.
+var (
+	maxInt128 = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 127), big.NewInt(1))
+	minInt128 = new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 127))
+)
+
+// FitsSignedInt128 reports whether v is representable as a signed int128
+// (-2^127 <= v <= 2^127-1), i.e. it can be packed into one BalanceDelta leg WITHOUT
+// truncation or sign-flip. A nil value fits (it encodes as zero).
+func FitsSignedInt128(v *big.Int) bool {
+	if v == nil {
+		return true
+	}
+	return v.Cmp(maxInt128) <= 0 && v.Cmp(minInt128) >= 0
 }
 
 // UnpackBalanceDelta unpacks a V4 BalanceDelta (single int256) into amount0 and amount1.
