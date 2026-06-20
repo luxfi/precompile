@@ -24,7 +24,7 @@ type testValidator struct {
 	weight uint64
 }
 
-func newTestValidators(t *testing.T, weights ...uint64) []testValidator {
+func newTestValidators(t testing.TB, weights ...uint64) []testValidator {
 	t.Helper()
 	vs := make([]testValidator, len(weights))
 	for i, w := range weights {
@@ -37,6 +37,25 @@ func newTestValidators(t *testing.T, weights ...uint64) []testValidator {
 	return vs
 }
 
+// makePoP builds a valid proof-of-possession for a test validator over its own
+// public key (the same message PutValidatorSet verifies against). Centralized here
+// so every test set that registers validators carries well-formed PoPs.
+func makePoP(t testing.TB, v testValidator) []byte {
+	t.Helper()
+	sig, err := v.sk.SignProofOfPossession(PoPMessage(v.pk))
+	if err != nil {
+		t.Fatalf("SignProofOfPossession: %v", err)
+	}
+	return bls.SignatureToBytes(sig)
+}
+
+// makePubkeyBytes returns a validator's 48-byte compressed BLS public key (the wire
+// form the registerValidatorSet payload carries).
+func makePubkeyBytes(t testing.TB, v testValidator) []byte {
+	t.Helper()
+	return bls.PublicKeyToCompressedBytes(v.pk)
+}
+
 func validatorSetFrom(dChainID, vsID [32]byte, vals []testValidator) *ValidatorSet {
 	vs := &ValidatorSet{
 		DChainID:         dChainID,
@@ -44,9 +63,18 @@ func validatorSetFrom(dChainID, vsID [32]byte, vals []testValidator) *ValidatorS
 		CertType:         CertTypeBLSFastPath,
 		ActivationHeight: 0,
 		Status:           VerifierActive,
+		QuorumNum:        2, // 2/3 registry-pinned quorum (matches the BFT floor).
+		QuorumDen:        3,
 	}
 	for _, v := range vals {
-		vs.Validators = append(vs.Validators, Validator{PublicKey: v.pk, Weight: v.weight})
+		var pop []byte
+		if v.sk != nil {
+			s, err := v.sk.SignProofOfPossession(PoPMessage(v.pk))
+			if err == nil {
+				pop = bls.SignatureToBytes(s)
+			}
+		}
+		vs.Validators = append(vs.Validators, Validator{PublicKey: v.pk, Weight: v.weight, PoP: pop})
 		vs.TotalWeight += v.weight
 	}
 	return vs
@@ -63,7 +91,7 @@ func bitmapForSigners(n int, signers ...int) []byte {
 
 // buildCert aggregates signatures from the given signer indices over the message
 // implied by (receipt, receiptRoot) and packs a BLSCert with a 2/3 quorum.
-func buildCert(t *testing.T, vsID [32]byte, vals []testValidator, receipt *DFillReceiptV1, receiptRoot [32]byte, signers ...int) *BLSCert {
+func buildCert(t testing.TB, vsID [32]byte, vals []testValidator, receipt *DFillReceiptV1, receiptRoot [32]byte, signers ...int) *BLSCert {
 	t.Helper()
 	m := signedMessage(receipt, receiptRoot)
 	sigs := make([]*bls.Signature, 0, len(signers))
@@ -84,12 +112,21 @@ func buildCert(t *testing.T, vsID [32]byte, vals []testValidator, receipt *DFill
 		Version:            blsCertVersion,
 		CertType:           CertTypeBLSFastPath,
 		ValidatorSetID:     vsID,
-		QuorumNumerator:    2,
-		QuorumDenominator:  3,
 		SignerBitmap:       bitmapForSigners(len(vals), signers...),
 		SignedMessageHash:  m,
 		AggregateSignature: aggBytes,
 	}
+}
+
+// fundClaim seeds a depositor's claim AND the backing settleVault for an asset,
+// faithfully modelling what a real deposit does (a claim is always backed by the
+// swap-payable vault). Tests use this instead of storeDepositorClaim-alone so the
+// conservation invariant settleVault[a] >= Σ unlocked claims[a] holds going in —
+// otherwise the maker-lock vault accounting (which moves delta from settleVault to
+// makerLockedVault on ADD) would underflow against an unbacked claim.
+func fundClaim(stateDB StateDB, account common.Address, assetID [32]byte, amount *big.Int) {
+	storeDepositorClaim(stateDB, account, assetID, new(big.Int).Add(loadDepositorClaim(stateDB, account, assetID), amount))
+	storeSettleVault(stateDB, assetID, new(big.Int).Add(loadSettleVault(stateDB, assetID), amount))
 }
 
 func sampleReceipt() *DFillReceiptV1 {
@@ -216,8 +253,6 @@ func TestBLSCert_WrongKeyDoesNotVerify(t *testing.T) {
 		Version:            blsCertVersion,
 		CertType:           CertTypeBLSFastPath,
 		ValidatorSetID:     vsID,
-		QuorumNumerator:    2,
-		QuorumDenominator:  3,
 		SignerBitmap:       bitmapForSigners(3, 0, 1),
 		SignedMessageHash:  m,
 		AggregateSignature: aggBytes,
@@ -318,7 +353,8 @@ func TestCertWireRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode cert: %v", err)
 	}
-	if got.QuorumNumerator != 2 || got.QuorumDenominator != 3 ||
+	if got.Version != cert.Version || got.CertType != cert.CertType ||
+		got.ValidatorSetID != cert.ValidatorSetID ||
 		got.SignedMessageHash != cert.SignedMessageHash ||
 		got.AggregateSignature != cert.AggregateSignature ||
 		string(got.SignerBitmap) != string(cert.SignerBitmap) {
