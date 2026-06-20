@@ -1,7 +1,7 @@
 // Copyright (C) 2025-2026, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-package p3q
+package starkfri
 
 import (
 	"bytes"
@@ -15,18 +15,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestP3Q_E2E_VerifiesNRealishProofs registers a counting verifier
-// that emulates the structure of the real backend (cross-validates
-// the (version, proof, pub) triple), runs N round trips through the
-// precompile, and asserts each call lands at the backend with the
-// correct parsed triple.
+// TestStarkFRI_E2E_VerifiesNRealishProofs registers a counting
+// verifier that emulates the structure of the real backend
+// (cross-validates the (version, proof, pub) triple), runs N round
+// trips through the precompile, and asserts each call lands at the
+// backend with the correct parsed triple.
 //
-// This is the e2e equivalent of "verify N real Pulsar signatures
+// This is the e2e equivalent of "verify N real STARK-FRI proofs
 // through the EVM precompile dispatch": the backend is a counting
 // stand-in here because the real Rust verifier is brought in via
 // cgo at startup outside the Go unit-test build, but the byte path
 // from EVM calldata to (version, proof, pub) is exercised in full.
-func TestP3Q_E2E_VerifiesNRealishProofs(t *testing.T) {
+func TestStarkFRI_E2E_VerifiesNRealishProofs(t *testing.T) {
 	const N = 64
 
 	var (
@@ -76,9 +76,9 @@ func TestP3Q_E2E_VerifiesNRealishProofs(t *testing.T) {
 		proof := append([]byte(MagicHeader), body...)
 		input := buildInput(VersionV1, proof, pub)
 
-		gas := P3QVerifyPrecompile.RequiredGas(input) * 2
-		_, gasLeft, err := P3QVerifyPrecompile.Run(
-			nil, common.Address{}, ContractP3QVerifyAddress,
+		gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
+		_, gasLeft, err := StarkFRIVerifyPrecompile.Run(
+			nil, common.Address{}, ContractStarkFRIVerifyAddress,
 			input, gas, true,
 		)
 		require.NoError(t, err, "round %d", i)
@@ -94,7 +94,7 @@ func TestP3Q_E2E_VerifiesNRealishProofs(t *testing.T) {
 // TestP3Q_E2E_RejectsBeforeBackendOnBadMagic confirms the structural
 // pre-filter rejects bad magic BEFORE the backend is invoked, even
 // when calldata is otherwise well-formed.
-func TestP3Q_E2E_RejectsBeforeBackendOnBadMagic(t *testing.T) {
+func TestStarkFRI_E2E_RejectsBeforeBackendOnBadMagic(t *testing.T) {
 	called := 0
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) {
 		called++
@@ -109,9 +109,9 @@ func TestP3Q_E2E_RejectsBeforeBackendOnBadMagic(t *testing.T) {
 		proof := append([]byte(prefix), body...)
 		pub := []byte{0xde, 0xad, 0xbe, 0xef}
 		input := buildInput(VersionV1, proof, pub)
-		gas := P3QVerifyPrecompile.RequiredGas(input) * 2
-		_, _, err = P3QVerifyPrecompile.Run(
-			nil, common.Address{}, ContractP3QVerifyAddress,
+		gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
+		_, _, err = StarkFRIVerifyPrecompile.Run(
+			nil, common.Address{}, ContractStarkFRIVerifyAddress,
 			input, gas, true,
 		)
 		require.ErrorIs(t, err, ErrInvalidProof, "prefix=%q", prefix)
@@ -122,7 +122,7 @@ func TestP3Q_E2E_RejectsBeforeBackendOnBadMagic(t *testing.T) {
 // TestP3Q_E2E_VerifierFailureSurfacesAsInvalidProof confirms that a
 // backend error or rejected verification surfaces as ErrInvalidProof
 // at the precompile boundary.
-func TestP3Q_E2E_VerifierFailureSurfacesAsInvalidProof(t *testing.T) {
+func TestStarkFRI_E2E_VerifierFailureSurfacesAsInvalidProof(t *testing.T) {
 	cases := []struct {
 		name string
 		fn   VerifierFn
@@ -150,9 +150,9 @@ func TestP3Q_E2E_VerifierFailureSurfacesAsInvalidProof(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			RegisterVerifier(tc.fn)
 			defer RegisterVerifier(nil)
-			gas := P3QVerifyPrecompile.RequiredGas(input) * 2
-			_, _, err := P3QVerifyPrecompile.Run(
-				nil, common.Address{}, ContractP3QVerifyAddress,
+			gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
+			_, _, err := StarkFRIVerifyPrecompile.Run(
+				nil, common.Address{}, ContractStarkFRIVerifyAddress,
 				input, gas, true,
 			)
 			if tc.want != nil {
@@ -169,11 +169,11 @@ func TestP3Q_E2E_VerifierFailureSurfacesAsInvalidProof(t *testing.T) {
 // TestP3Q_E2E_GasMonotonic confirms that required_gas is monotonic in
 // input length — the EC lemma `P3Q_Gas_Model.ec::gas_monotonic` is
 // stated formally; this is its empirical realisation.
-func TestP3Q_E2E_GasMonotonic(t *testing.T) {
+func TestStarkFRI_E2E_GasMonotonic(t *testing.T) {
 	prev := uint64(0)
 	for _, n := range []int{0, 1, 13, 100, 1024, 10240, 102400} {
 		input := make([]byte, n)
-		gas := P3QVerifyPrecompile.RequiredGas(input)
+		gas := StarkFRIVerifyPrecompile.RequiredGas(input)
 		require.GreaterOrEqual(t, gas, prev, "n=%d", n)
 		prev = gas
 	}
@@ -182,7 +182,7 @@ func TestP3Q_E2E_GasMonotonic(t *testing.T) {
 // TestP3Q_E2E_GasUniformAcrossErrors confirms that all non-OOG error
 // paths return the same `remaining` value as the success path. The EC
 // lemma `P3Q_Gas_Model.ec::uniform_billing` is its formal counterpart.
-func TestP3Q_E2E_GasUniformAcrossErrors(t *testing.T) {
+func TestStarkFRI_E2E_GasUniformAcrossErrors(t *testing.T) {
 	// Build five inputs each producing one of the five error modes,
 	// AND a success input. All MUST land on the same `remaining`
 	// when given identical-length calldata at identical supplied_gas.
@@ -193,18 +193,18 @@ func TestP3Q_E2E_GasUniformAcrossErrors(t *testing.T) {
 	// for inputs of identical length, regardless of content.
 	const inputLen = 256
 	probe := make([]byte, inputLen)
-	wantGas := P3QVerifyPrecompile.RequiredGas(probe)
+	wantGas := StarkFRIVerifyPrecompile.RequiredGas(probe)
 	for i := 0; i < 16; i++ {
 		_, err := rand.Read(probe)
 		require.NoError(t, err)
-		gotGas := P3QVerifyPrecompile.RequiredGas(probe)
+		gotGas := StarkFRIVerifyPrecompile.RequiredGas(probe)
 		require.Equal(t, wantGas, gotGas, "iteration %d", i)
 	}
 }
 
 // TestP3Q_E2E_OOGShortCircuit confirms that supplied_gas <
 // required_gas yields ErrOutOfGas and never reaches the backend.
-func TestP3Q_E2E_OOGShortCircuit(t *testing.T) {
+func TestStarkFRI_E2E_OOGShortCircuit(t *testing.T) {
 	called := false
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) {
 		called = true
@@ -215,10 +215,10 @@ func TestP3Q_E2E_OOGShortCircuit(t *testing.T) {
 	proof := append([]byte(MagicHeader), make([]byte, 64)...)
 	pub := []byte{0x01}
 	input := buildInput(VersionV1, proof, pub)
-	gas := P3QVerifyPrecompile.RequiredGas(input) - 1 // one wei short
+	gas := StarkFRIVerifyPrecompile.RequiredGas(input) - 1 // one wei short
 
-	_, _, err := P3QVerifyPrecompile.Run(
-		nil, common.Address{}, ContractP3QVerifyAddress,
+	_, _, err := StarkFRIVerifyPrecompile.Run(
+		nil, common.Address{}, ContractStarkFRIVerifyAddress,
 		input, gas, true,
 	)
 	require.Error(t, err)
@@ -229,7 +229,7 @@ func TestP3Q_E2E_OOGShortCircuit(t *testing.T) {
 // (version, proof, pub) via the same wire format that buildInput uses,
 // dispatch through Run(), and assert that the backend observes exactly
 // the same (version, proof, pub) triple.
-func TestP3Q_E2E_RoundTripParser(t *testing.T) {
+func TestStarkFRI_E2E_RoundTripParser(t *testing.T) {
 	wantVersion := VersionV1
 	wantProof := append([]byte(MagicHeader), []byte("P3Q-STARK-payload-bytes-N-rounds")...)
 	wantPub := []byte{0xab, 0xcd, 0xef, 0x12, 0x34}
@@ -248,10 +248,10 @@ func TestP3Q_E2E_RoundTripParser(t *testing.T) {
 	defer RegisterVerifier(nil)
 
 	input := buildInput(wantVersion, wantProof, wantPub)
-	gas := P3QVerifyPrecompile.RequiredGas(input) * 2
+	gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
 
-	_, _, err := P3QVerifyPrecompile.Run(
-		nil, common.Address{}, ContractP3QVerifyAddress,
+	_, _, err := StarkFRIVerifyPrecompile.Run(
+		nil, common.Address{}, ContractStarkFRIVerifyAddress,
 		input, gas, true,
 	)
 	require.NoError(t, err)
@@ -283,7 +283,7 @@ func helperBuildBadLenInput(declaredProofLen uint32) []byte {
 // TestP3Q_Fuzz_TruncatedInput exercises the structural pre-filter
 // against truncated calldata. Every truncation MUST fail with
 // ErrInvalidInputLength; backend MUST NOT be invoked.
-func TestP3Q_Fuzz_TruncatedInput(t *testing.T) {
+func TestStarkFRI_Fuzz_TruncatedInput(t *testing.T) {
 	called := false
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) {
 		called = true
@@ -294,9 +294,9 @@ func TestP3Q_Fuzz_TruncatedInput(t *testing.T) {
 	full := buildInput(VersionV1, append([]byte(MagicHeader), make([]byte, 64)...), []byte{0xaa, 0xbb})
 	for k := 0; k < len(full); k++ {
 		input := full[:k]
-		gas := P3QVerifyPrecompile.RequiredGas(input) * 2
-		_, _, err := P3QVerifyPrecompile.Run(
-			nil, common.Address{}, ContractP3QVerifyAddress,
+		gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
+		_, _, err := StarkFRIVerifyPrecompile.Run(
+			nil, common.Address{}, ContractStarkFRIVerifyAddress,
 			input, gas, true,
 		)
 		// Anything shorter than the full input must error. The two
@@ -312,7 +312,7 @@ func TestP3Q_Fuzz_TruncatedInput(t *testing.T) {
 // AFTER the declared pub_len ARE accepted by contract.go (the
 // precompile decodes exactly proof_len + pub_len + length-prefixes
 // and ignores trailing bytes). This test pins that semantic.
-func TestP3Q_Fuzz_PaddedInput(t *testing.T) {
+func TestStarkFRI_Fuzz_PaddedInput(t *testing.T) {
 	called := false
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) {
 		called = true
@@ -322,9 +322,9 @@ func TestP3Q_Fuzz_PaddedInput(t *testing.T) {
 
 	canonical := buildInput(VersionV1, append([]byte(MagicHeader), make([]byte, 16)...), []byte{0xaa})
 	padded := append(bytes.Clone(canonical), make([]byte, 64)...)
-	gas := P3QVerifyPrecompile.RequiredGas(padded) * 2
-	_, _, err := P3QVerifyPrecompile.Run(
-		nil, common.Address{}, ContractP3QVerifyAddress,
+	gas := StarkFRIVerifyPrecompile.RequiredGas(padded) * 2
+	_, _, err := StarkFRIVerifyPrecompile.Run(
+		nil, common.Address{}, ContractStarkFRIVerifyAddress,
 		padded, gas, true,
 	)
 	// Padding is accepted; the precompile decodes exactly the declared
@@ -337,7 +337,7 @@ func TestP3Q_Fuzz_PaddedInput(t *testing.T) {
 // canonical input. The structural pre-filter must catch any flip that
 // touches the version byte, length fields, or magic header; flips in
 // the proof body or pub body propagate to the backend.
-func TestP3Q_Fuzz_BitFlipped(t *testing.T) {
+func TestStarkFRI_Fuzz_BitFlipped(t *testing.T) {
 	const iterations = 256
 
 	backendInvoked := 0
@@ -359,9 +359,9 @@ func TestP3Q_Fuzz_BitFlipped(t *testing.T) {
 		off := binary.BigEndian.Uint64(idx[:]) % uint64(len(canonical))
 		mutant := bytes.Clone(canonical)
 		mutant[off] ^= 0x55
-		gas := P3QVerifyPrecompile.RequiredGas(mutant) * 2
-		_, _, err = P3QVerifyPrecompile.Run(
-			nil, common.Address{}, ContractP3QVerifyAddress,
+		gas := StarkFRIVerifyPrecompile.RequiredGas(mutant) * 2
+		_, _, err = StarkFRIVerifyPrecompile.Run(
+			nil, common.Address{}, ContractStarkFRIVerifyAddress,
 			mutant, gas, true,
 		)
 		// A flip at offset 0 hits the version byte → InvalidVersion.
@@ -394,7 +394,7 @@ func TestP3Q_Fuzz_BitFlipped(t *testing.T) {
 // TestP3Q_Fuzz_BadLengthField crafts inputs whose declared proof_len
 // is wildly inconsistent with the buffer length. All MUST fail with
 // ErrInvalidInputLength; backend MUST NOT be invoked.
-func TestP3Q_Fuzz_BadLengthField(t *testing.T) {
+func TestStarkFRI_Fuzz_BadLengthField(t *testing.T) {
 	called := false
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) {
 		called = true
@@ -404,9 +404,9 @@ func TestP3Q_Fuzz_BadLengthField(t *testing.T) {
 
 	for _, declared := range []uint32{0xFFFFFFFF, 0x80000000, 0x40000000, 0x10000000} {
 		input := helperBuildBadLenInput(declared)
-		gas := P3QVerifyPrecompile.RequiredGas(input) * 2
-		_, _, err := P3QVerifyPrecompile.Run(
-			nil, common.Address{}, ContractP3QVerifyAddress,
+		gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
+		_, _, err := StarkFRIVerifyPrecompile.Run(
+			nil, common.Address{}, ContractStarkFRIVerifyAddress,
 			input, gas, true,
 		)
 		require.ErrorIs(t, err, ErrInvalidInputLength,
@@ -417,7 +417,7 @@ func TestP3Q_Fuzz_BadLengthField(t *testing.T) {
 
 // TestP3Q_Fuzz_WrongVersion exercises versions other than 0x01.
 // All MUST be rejected with ErrInvalidVersion BEFORE backend dispatch.
-func TestP3Q_Fuzz_WrongVersion(t *testing.T) {
+func TestStarkFRI_Fuzz_WrongVersion(t *testing.T) {
 	called := false
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) {
 		called = true
@@ -432,9 +432,9 @@ func TestP3Q_Fuzz_WrongVersion(t *testing.T) {
 		proof := append([]byte(MagicHeader), make([]byte, 64)...)
 		pub := []byte{0xaa}
 		input := buildInput(byte(v), proof, pub)
-		gas := P3QVerifyPrecompile.RequiredGas(input) * 2
-		_, _, err := P3QVerifyPrecompile.Run(
-			nil, common.Address{}, ContractP3QVerifyAddress,
+		gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
+		_, _, err := StarkFRIVerifyPrecompile.Run(
+			nil, common.Address{}, ContractStarkFRIVerifyAddress,
 			input, gas, true,
 		)
 		require.ErrorIs(t, err, ErrInvalidVersion, "v=0x%x", v)
@@ -446,7 +446,7 @@ func TestP3Q_Fuzz_WrongVersion(t *testing.T) {
 // never panic on arbitrary calldata; the backend (registered to
 // always accept) must never see a triple that fails its own
 // preconditions.
-func FuzzP3Q_Dispatch(f *testing.F) {
+func FuzzStarkFRI_Dispatch(f *testing.F) {
 	// Seed corpus: canonical, truncated, padded.
 	f.Add([]byte{0x01, 0x00, 0x00, 0x00, 0x04, 0x50, 0x33, 0x51, 0x31, 0x00, 0x00, 0x00, 0x00})
 	f.Add([]byte("short"))
@@ -474,9 +474,9 @@ func FuzzP3Q_Dispatch(f *testing.F) {
 				t.Fatalf("precompile panicked on input: %v", r)
 			}
 		}()
-		gas := P3QVerifyPrecompile.RequiredGas(input) * 2
-		_, _, _ = P3QVerifyPrecompile.Run(
-			nil, common.Address{}, ContractP3QVerifyAddress,
+		gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
+		_, _, _ = StarkFRIVerifyPrecompile.Run(
+			nil, common.Address{}, ContractStarkFRIVerifyAddress,
 			input, gas, true,
 		)
 	})
