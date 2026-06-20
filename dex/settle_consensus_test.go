@@ -55,24 +55,35 @@ func buildSwapCalldata(key PoolKey, params SwapParams, hookData []byte) []byte {
 // settleHarness wires a 0x9999 contract, a mock state, a validator set in the
 // registry, the configured chain identity, and a funded vault for the output asset.
 type settleHarness struct {
-	c          *SettleContract
-	state      *mockAccessibleState
-	vals       []testValidator
-	vsID       [32]byte
-	dChainID   [32]byte
-	cChainID   [32]byte
-	networkID  uint32
-	key        PoolKey
-	params     SwapParams
-	caller     common.Address
+	c         *SettleContract
+	state     *mockAccessibleState
+	vals      []testValidator
+	vsID      [32]byte
+	dChainID  [32]byte
+	cChainID  [32]byte
+	networkID uint32
+	key       PoolKey
+	params    SwapParams
+	caller    common.Address
 }
 
-func newSettleHarness(t *testing.T) *settleHarness {
+func newSettleHarness(t testing.TB) *settleHarness {
+	return newSettleHarnessN(t, 3)
+}
+
+// newSettleHarnessN builds a harness with n equal-weight validators (each weight 1).
+// Used by gas-scaling tests; the default newSettleHarness uses n=3. Signing with all
+// n clears the 2/3 BFT floor.
+func newSettleHarnessN(t testing.TB, n int) *settleHarness {
 	t.Helper()
+	weights := make([]uint64, n)
+	for i := range weights {
+		weights[i] = 1
+	}
 	h := &settleHarness{
 		c:         &SettleContract{protocolFeeController: common.HexToAddress("0xFEE0000000000000000000000000000000000001")},
 		state:     &mockAccessibleState{stateDB: NewMockStateDB()},
-		vals:      newTestValidators(t, 1, 1, 1),
+		vals:      newTestValidators(t, weights...),
 		vsID:      [32]byte{0x01},
 		dChainID:  [32]byte{0xDD},
 		cChainID:  [32]byte{0xCC},
@@ -114,7 +125,7 @@ func (h *settleHarness) wrapper() *contractStateDBWrapper {
 // fund seeds: sender native (for amountIn), and the 0x9999 vault's OUTPUT token
 // (for amountOut credit) + its tracked vault holdings. Native in, token out — the
 // real V4 direction.
-func (h *settleHarness) fund(t *testing.T, senderNative, vaultOutTokens int64) {
+func (h *settleHarness) fund(t testing.TB, senderNative, vaultOutTokens int64) {
 	t.Helper()
 	db := h.state.stateDB
 	db.AddBalance(h.caller, uint256.NewInt(uint64(senderNative)))
@@ -125,7 +136,7 @@ func (h *settleHarness) fund(t *testing.T, senderNative, vaultOutTokens int64) {
 
 // receiptFor builds a receipt bound to the harness's swap, with the given in/out
 // asset IDs and amounts, then a valid 2-of-3 cert.
-func (h *settleHarness) receiptFor(t *testing.T, inAsset, outAsset [32]byte, amountIn, amountOut int64, signers ...int) []byte {
+func (h *settleHarness) receiptFor(t testing.TB, inAsset, outAsset [32]byte, amountIn, amountOut int64, signers ...int) []byte {
 	t.Helper()
 	r := &DFillReceiptV1{
 		Version:         1,
@@ -399,10 +410,11 @@ func TestSettle_BindingRejectsWrongChain(t *testing.T) {
 	}
 }
 
-// TestSettle_0x9010_Forwarder: a swap hitting the deprecated 0x9010 forwards to
-// the SAME 0x9999 settlement (one money path), and 0x9010 value-moving non-swap
-// selectors revert PRECOMPILE_MOVED.
-func TestSettle_0x9010_Forwarder(t *testing.T) {
+// TestSettle_0x9010_Deprecated: the deprecated 0x9010 reverts PRECOMPILE_MOVED for
+// ALL value-moving selectors INCLUDING swap (the canonical money path is 0x9999;
+// apps call it directly). No swap settles at 0x9010, so no receipt is consumed
+// there — one money path, one replay namespace. Read-only views stay live.
+func TestSettle_0x9010_Deprecated(t *testing.T) {
 	h := newSettleHarness(t)
 	h.fund(t, 10_000, 10_000)
 
@@ -410,22 +422,37 @@ func TestSettle_0x9010_Forwarder(t *testing.T) {
 	hookData := h.receiptFor(t, nativeID, h.outAssetID(), 1000, 990, 0, 1)
 	calldata := prependSelector(SelectorSwap, buildSwapCalldata(h.key, h.params, hookData))
 
-	// Route through the 0x9010 DEXContract.runSwap forwarder.
 	dc := &DEXContract{poolManager: NewPoolManager(&mockEngine{})}
-	if _, _, err := dc.Run(h.state, h.caller, lxPoolAddr, calldata, 5_000_000, false); err != nil {
-		t.Fatalf("0x9010 swap forwarder must settle, got: %v", err)
+
+	// swap at 0x9010 now reverts PRECOMPILE_MOVED (no forwarding — apps use 0x9999).
+	if _, _, err := dc.Run(h.state, h.caller, lxPoolAddr, calldata, 5_000_000, false); err != ErrPrecompileMoved {
+		t.Fatalf("0x9010 swap must revert PRECOMPILE_MOVED, got: %v", err)
 	}
-	// The receipt is now consumed in the SHARED 0x9999 namespace.
+	// The receipt is NOT consumed: 0x9010 has no money path, so nothing settled.
 	r, _ := DecodeFillReceipt(mustReceiptBytes(t, hookData))
-	if !isReceiptConsumed(newPoolStateAdapter(h.state), r.ReceiptID) {
-		t.Fatal("forwarded swap must consume the receipt in the 0x9999 namespace")
+	if isReceiptConsumed(newPoolStateAdapter(h.state), r.ReceiptID) {
+		t.Fatal("0x9010 swap must not consume the receipt (no money path at 0x9010)")
 	}
 
-	// A non-swap value-moving 0x9010 selector reverts PRECOMPILE_MOVED.
+	// A value-moving non-swap 0x9010 selector also reverts PRECOMPILE_MOVED.
 	depCalldata := prependSelector(SelectorDeposit, encodeDepositCalldata(common.Address{}, 100))
 	if _, _, err := dc.Run(h.state, h.caller, lxPoolAddr, depCalldata, 5_000_000, false); err != ErrPrecompileMoved {
 		t.Fatalf("0x9010 deposit must revert PRECOMPILE_MOVED, got: %v", err)
 	}
+
+	// Read-only views stay live at 0x9010 (harmless, no value movement). balanceOf
+	// returns a (zero) balance rather than reverting PRECOMPILE_MOVED.
+	balCalldata := prependSelector(SelectorBalanceOf, append(leftPad32(h.caller.Bytes()), leftPad32(common.Address{}.Bytes())...))
+	if _, _, err := dc.Run(h.state, h.caller, lxPoolAddr, balCalldata, 5_000_000, true); err == ErrPrecompileMoved {
+		t.Fatal("0x9010 balanceOf (read-only view) must stay live, not revert PRECOMPILE_MOVED")
+	}
+}
+
+// leftPad32 left-pads b into a 32-byte ABI word.
+func leftPad32(b []byte) []byte {
+	out := make([]byte, 32)
+	copy(out[32-len(b):], b)
+	return out
 }
 
 // TestPredictAccesses_NoGlobalHotWrites: the access set has ZERO global write
