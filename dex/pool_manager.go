@@ -653,7 +653,7 @@ func (pm *PoolManager) Initialize(
 	// (cache) PoolState to it. The server's copy is the source of truth; the
 	// local ps/pool above are a read-through view persisted to StateDB. The inert
 	// default is not a poolRouter, so this is skipped — and Initialize already
-	// reverted ErrDEXBackendNotConfigured above, so an unconfigured precompile
+	// reverted ErrDChainUnavailable above, so a node without its local D-Chain
 	// never reaches here with a half-built pool.
 	if router, ok := pm.engine.(poolRouter); ok {
 		serverTick, perr := router.InitializePool(ps, poolId, sqrtPriceX96, key.TickSpacing, uint32(key.Fee))
@@ -1469,7 +1469,7 @@ func (pm *PoolManager) Deposit(stateDB StateDB, caller common.Address, asset Cur
 
 	custody, ok := pm.engine.(custodyEngine)
 	if !ok {
-		return ErrDEXBackendNotConfigured
+		return ErrDChainUnavailable
 	}
 
 	// Bind identity is the originating EVM txHash (the idempotency ref). bound==false
@@ -1561,7 +1561,7 @@ func (pm *PoolManager) Withdraw(stateDB StateDB, caller common.Address, asset Cu
 
 	custody, ok := pm.engine.(custodyEngine)
 	if !ok {
-		return big.NewInt(0), ErrDEXBackendNotConfigured
+		return big.NewInt(0), ErrDChainUnavailable
 	}
 	// ERC-20 withdraws release the token from the vault; resolve the vault capability
 	// up front so a StateDB without it refuses BEFORE burning the D-Chain ledger (a

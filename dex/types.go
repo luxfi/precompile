@@ -382,13 +382,16 @@ var (
 	ErrTickOutOfRange           = errors.New("tick out of range")
 	ErrNoLiquidity              = errors.New("no liquidity in pool")
 
-	// ErrDEXBackendNotConfigured is returned by every operation of the inert
-	// default engine. The LP-9010 precompile ships in the public EVM but is
-	// INERT until the venue wires a real backend via SetBackend(NewZAPEngine).
-	// V4 = CLOB, so the matcher lives on the d-chain (reached over ZAP), never
-	// embedded in the precompile — an unconfigured venue must revert cleanly
-	// rather than run a wrong, second matcher. See engine_inert.go.
-	ErrDEXBackendNotConfigured = errors.New("dex: backend not configured (set dex-zap-endpoint to enable LP-9010)")
+	// ErrDChainUnavailable is returned by every operation of the precompile when
+	// the node-LOCAL D-Chain (dexvm) is not reachable. The LP-9010 precompile is
+	// a thin C-Chain ON-RAMP to the D-Chain the validators run — it is NOT a
+	// matcher and NOT a backend selector. V4 = CLOB, so the matcher lives ONLY on
+	// the D-Chain; 0x9010 SUBMITS to / VERIFIES receipts from it over the local
+	// loopback. When this node serves the 0x9010 DEX path the local D-Chain MUST
+	// be running; if it is absent the precompile reverts cleanly with this error
+	// rather than fabricating a fill or masking the absent chain as a missing
+	// pool. See dchain_client.go (the dchainUnavailable client).
+	ErrDChainUnavailable = errors.New("dex: local D-Chain unavailable (node must run the dexvm D-Chain to serve LP-9010)")
 
 	// ErrCustodyUnbound is returned by Deposit/Withdraw when the StateDB carries no
 	// originating-tx identity (not txIdentified, or a zero txHash). The txHash is the
