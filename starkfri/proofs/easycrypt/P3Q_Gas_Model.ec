@@ -47,7 +47,7 @@ lemma gas_monotonic (a b : bytes_t) :
 proof.
   move=> h.
   rewrite /required_gas.
-  smt(ge0_size).
+  smt(size_ge0).
 qed.
 
 (* -------------------------------------------------------------------- *)
@@ -89,7 +89,10 @@ lemma gas_charged_upfront (input : bytes_t) (supplied_gas : int) :
             arg = (input, supplied_gas)
           ==> res = RErr EOutOfGas 0 ].
 proof.
-  exact (oog_dominates B input supplied_gas).
+  move=> h_oog.
+  proc.
+  rcondt 3; first by auto; smt().
+  by auto.
 qed.
 
 (* -------------------------------------------------------------------- *)
@@ -121,7 +124,7 @@ qed.
 
 lemma uniform_billing
         (input : bytes_t) (supplied_gas : int) :
-  supplied_gas >= required_gas input =>
+  required_gas input <= supplied_gas =>
   hoare [ PrecompileRun(B).run :
             arg = (input, supplied_gas)
           ==>
@@ -131,18 +134,15 @@ lemma uniform_billing
 proof.
   move=> h_gas.
   proc.
-  seq 1 : (gas = required_gas input); first by auto.
-  rcondf 2; first by auto; smt().
+  rcondf 3; first by auto; smt().
+  seq 4 : (remaining = supplied_gas - required_gas input); first by auto; smt().
+  if; first by auto=> />; smt().
   seq 1 : (remaining = supplied_gas - required_gas input); first by auto.
-  seq 1 : (#pre); first by auto.
-  if; first by auto; smt().
-  seq 1 : (#pre); first by auto.
-  if; first by auto; smt().
-  seq 1 : (#pre).
-    call (_: true); first by auto.
-  if; first by auto; smt().
-  if; first by auto; smt().
-  by auto; smt().
+  if; first by auto=> />; smt().
+  seq 1 : (remaining = supplied_gas - required_gas input).
+    by call (_: true); auto.
+  if; first by auto=> />; smt().
+  if; auto=> />; smt().
 qed.
 
 end section GasUpfront.

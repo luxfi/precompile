@@ -98,12 +98,15 @@ type precompile_result_t = [
    Concretely the Go decoder is `binary.BigEndian.Uint32`. *)
 op be_uint32 : bytes_t -> word4_t.
 
-(* slice_at(b, off, len) — abstract slice. Concretely Go's
-   `input[off:off+len]`. *)
-op slice_at : bytes_t -> int -> int -> bytes_t.
+(* slice_at(b, off, len) — the byte slice `b[off : off+len]`. This is the
+   faithful EC model of Go's slice expression `input[off:off+len]`:
+   drop the first `off` bytes, then keep the next `len`. Making it a
+   definition (rather than an abstract op) lets the wire-format lemmas
+   reason about slices of a concatenation. *)
+op slice_at (b : bytes_t) (off len : int) : bytes_t = take len (drop off b).
 
 (* Length axiom for be_uint32: only the first 4 bytes matter. *)
-axiom be_uint32_len : forall b, size b >= 4 => be_uint32 b = be_uint32 (take 4 b).
+axiom be_uint32_len : forall b, 4 <= size b => be_uint32 b = be_uint32 (take 4 b).
 
 (* Parsed wire form. *)
 type parsed_t = {
@@ -127,18 +130,18 @@ op parse : bytes_t -> parsed_t option.
      - proof[:4] == magicHeader                (line 174)
    *)
 axiom parse_spec_ok : forall (input : bytes_t),
-  size input >= minInputLength =>
+  minInputLength <= size input =>
   forall (proof_len pub_len : int),
     proof_len = be_uint32 (slice_at input 1 4) =>
     pub_len   = be_uint32 (slice_at input (1 + 4 + proof_len) 4) =>
-    size input - (1 + 4) >= proof_len + 4 =>
-    size input - (1 + 4 + proof_len + 4) >= pub_len =>
-    let proof = slice_at input (1 + 4) proof_len in
+    proof_len + 4 <= size input - (1 + 4) =>
+    pub_len <= size input - (1 + 4 + proof_len + 4) =>
+    let prf = slice_at input (1 + 4) proof_len in
     let pub   = slice_at input (1 + 4 + proof_len + 4) pub_len in
-    take 4 proof = magicHeader =>
+    take 4 prf = magicHeader =>
     parse input =
       Some {| p_version = nth 0 input 0;
-              p_proof   = proof;
+              p_proof   = prf;
               p_pub     = pub; |}.
 
 axiom parse_spec_fail : forall (input : bytes_t),
@@ -170,7 +173,7 @@ lemma required_gas_monotonic : forall (a b : bytes_t),
 proof.
   move=> a b /= h_le.
   rewrite /required_gas.
-  smt(ge0_size).
+  smt(size_ge0).
 qed.
 
 (* -------------------------------------------------------------------- *)
@@ -179,7 +182,7 @@ qed.
 
 (* Backend verifier as an EC module so we can apply it in proofs. *)
 module type Backend = {
-  proc verify(version : byte_t, proof : bytes_t, pub : bytes_t)
+  proc verify(version : byte_t, prf : bytes_t, pub : bytes_t)
     : verifier_result_t
 }.
 
@@ -190,38 +193,43 @@ module PrecompileRun (B : Backend) = {
     var p_opt : parsed_t option;
     var p     : parsed_t;
     var v_res : verifier_result_t;
+    var r     : precompile_result_t;
 
+    r   <- RErr EOutOfGas 0;
     gas <- required_gas input;
     if (supplied_gas < gas) {
       (* No gas refund on OOG: matches Go (return 0 for gas_left). *)
-      return RErr EOutOfGas 0;
+      r <- RErr EOutOfGas 0;
+    } else {
+      remaining <- supplied_gas - gas;
+      p_opt <- parse input;
+      if (p_opt = None) {
+        r <- RErr EInvalidInputLength remaining;
+      } else {
+        p <- oget p_opt;
+        if (p.`p_version <> versionV1) {
+          r <- RErr EInvalidVersion remaining;
+        } else {
+          v_res <@ B.verify(p.`p_version, p.`p_proof, p.`p_pub);
+          if (v_res = VFailed) {
+            (* Backend reported an internal failure; surface InvalidProof
+               to the caller (matches contract.go: any non-nil err from the
+               backend is propagated as-is, but the EC model collapses it
+               to InvalidProof because the wire-level effect at the EVM
+               boundary is identical). *)
+            r <- RErr EInvalidProof remaining;
+          } else {
+            if (v_res = VRejected) {
+              r <- RErr EInvalidProof remaining;
+            } else {
+              (* v_res = VOK *)
+              r <- ROK remaining;
+            }
+          }
+        }
+      }
     }
-    remaining <- supplied_gas - gas;
-
-    p_opt <- parse input;
-    if (p_opt = None) {
-      return RErr EInvalidInputLength remaining;
-    }
-    p <- oget p_opt;
-
-    if (p.`p_version <> versionV1) {
-      return RErr EInvalidVersion remaining;
-    }
-
-    v_res <@ B.verify(p.`p_version, p.`p_proof, p.`p_pub);
-    if (v_res = VFailed) {
-      (* Backend reported an internal failure; surface InvalidProof
-         to the caller (matches contract.go: any non-nil err from the
-         backend is propagated as-is, but the EC model collapses it
-         to InvalidProof because the wire-level effect at the EVM
-         boundary is identical). *)
-      return RErr EInvalidProof remaining;
-    }
-    if (v_res = VRejected) {
-      return RErr EInvalidProof remaining;
-    }
-    (* v_res = VOK *)
-    return ROK remaining;
+    return r;
   }
 }.
 
@@ -238,14 +246,14 @@ section Soundness.
 declare module B <: Backend.
 
 declare axiom backend_verifier_axiom
-      (version : byte_t) (proof pub : bytes_t) :
+      (version : byte_t) (prf pub : bytes_t) :
     hoare [ B.verify :
-              arg = (version, proof, pub)
+              arg = (version, prf, pub)
             ==> (res = VOK \/ res = VRejected \/ res = VFailed) ].
 
 declare axiom backend_verifier_terminates
-      (version : byte_t) (proof pub : bytes_t) :
-    phoare [ B.verify : arg = (version, proof, pub) ==> true ] = 1%r.
+      (version : byte_t) (prf pub : bytes_t) :
+    phoare [ B.verify : arg = (version, prf, pub) ==> true ] = 1%r.
 
 (* ------------------------------------------------------------------ *)
 (* Theorem 1 — precompile dispatches to backend on the accept path.    *)
@@ -259,7 +267,7 @@ lemma precompile_dispatches_to_verifier
         (input : bytes_t) (supplied_gas : int) (p : parsed_t) :
   parse input = Some p =>
   p.`p_version = versionV1 =>
-  supplied_gas >= required_gas input =>
+  required_gas input <= supplied_gas =>
   hoare [ PrecompileRun(B).run :
             arg = (input, supplied_gas)
           ==>
@@ -269,20 +277,11 @@ lemma precompile_dispatches_to_verifier
 proof.
   move=> h_parse h_ver h_gas.
   proc.
-  seq 1 : (gas = required_gas input); first by auto.
-  rcondf 2; first by auto; smt().
-  seq 1 : (remaining = supplied_gas - required_gas input); first by auto.
-  seq 1 : (p_opt = Some p /\ remaining = supplied_gas - required_gas input).
-    auto=> />; smt().
-  rcondf 1.
-    auto=> />; smt().
-  seq 1 : (p0 = p /\ remaining = supplied_gas - required_gas input).
-    auto=> />; smt().
-  rcondf 1.
-    auto=> />; smt().
-  seq 1 : (true).
-    by call (backend_verifier_axiom p.`p_version p.`p_proof p.`p_pub).
-  auto=> /> *; case (v_res = VFailed); smt().
+  rcondf 3; first by auto; smt().
+  rcondf 5; first by auto; smt().
+  rcondf 6; first by auto; smt().
+  wp; call (backend_verifier_axiom p.`p_version p.`p_proof p.`p_pub).
+  auto=> /> *; smt().
 qed.
 
 (* ------------------------------------------------------------------ *)
@@ -298,7 +297,7 @@ lemma accept_iff_backend_accept
         (input : bytes_t) (supplied_gas : int) (p : parsed_t) :
   parse input = Some p =>
   p.`p_version = versionV1 =>
-  supplied_gas >= required_gas input =>
+  required_gas input <= supplied_gas =>
   hoare [ B.verify :
             arg = (p.`p_version, p.`p_proof, p.`p_pub) ==> res = VOK ]
   =>
@@ -309,19 +308,11 @@ lemma accept_iff_backend_accept
 proof.
   move=> h_parse h_ver h_gas h_backend.
   proc.
-  seq 1 : (gas = required_gas input); first by auto.
-  rcondf 2; first by auto; smt().
-  seq 1 : (remaining = supplied_gas - required_gas input); first by auto.
-  seq 1 : (p_opt = Some p /\ remaining = supplied_gas - required_gas input).
-    auto=> />; smt().
-  rcondf 1.
-    auto=> />; smt().
-  seq 1 : (p0 = p /\ remaining = supplied_gas - required_gas input).
-    auto=> />; smt().
-  rcondf 1.
-    auto=> />; smt().
-  seq 1 : (v_res = VOK /\ remaining = supplied_gas - required_gas input).
-    by call h_backend.
+  rcondf 3; first by auto; smt().
+  rcondf 5; first by auto; smt().
+  rcondf 6; first by auto; smt().
+  seq 6 : (v_res = VOK /\ remaining = supplied_gas - required_gas input).
+    by wp; call h_backend; auto=> />; smt().
   rcondf 1; first by auto; smt().
   rcondf 1; first by auto; smt().
   by auto.
@@ -338,7 +329,7 @@ lemma reject_iff_backend_reject
         (input : bytes_t) (supplied_gas : int) (p : parsed_t) :
   parse input = Some p =>
   p.`p_version = versionV1 =>
-  supplied_gas >= required_gas input =>
+  required_gas input <= supplied_gas =>
   hoare [ B.verify :
             arg = (p.`p_version, p.`p_proof, p.`p_pub)
           ==> res = VRejected ]
@@ -350,19 +341,12 @@ lemma reject_iff_backend_reject
 proof.
   move=> h_parse h_ver h_gas h_backend.
   proc.
-  seq 1 : (gas = required_gas input); first by auto.
-  rcondf 2; first by auto; smt().
-  seq 1 : (remaining = supplied_gas - required_gas input); first by auto.
-  seq 1 : (p_opt = Some p /\ remaining = supplied_gas - required_gas input).
-    auto=> />; smt().
-  rcondf 1.
-    auto=> />; smt().
-  seq 1 : (p0 = p /\ remaining = supplied_gas - required_gas input).
-    auto=> />; smt().
-  rcondf 1.
-    auto=> />; smt().
-  seq 1 : (v_res = VRejected /\ remaining = supplied_gas - required_gas input).
-    by call h_backend.
+  rcondf 3; first by auto; smt().
+  rcondf 5; first by auto; smt().
+  rcondf 6; first by auto; smt().
+  seq 6 : (v_res = VRejected /\ remaining = supplied_gas - required_gas input).
+    by wp; call h_backend; auto=> />; smt().
+  rcondf 1; first by auto; smt().
   rcondt 1; first by auto; smt().
   by auto.
 qed.
@@ -384,8 +368,7 @@ lemma oog_dominates
 proof.
   move=> h_oog.
   proc.
-  seq 1 : (gas = required_gas input); first by auto.
-  rcondt 1; first by auto; smt().
+  rcondt 3; first by auto; smt().
   by auto.
 qed.
 

@@ -90,18 +90,26 @@ inline
 fn read_be_uint32(reg u64 input_ptr, reg u64 off) -> reg u32
 {
     reg u8 b0, b1, b2, b3;
-    reg u32 r;
+    reg u32 r, t;
 
     b0 = [:u8 input_ptr + off + 0];
     b1 = [:u8 input_ptr + off + 1];
     b2 = [:u8 input_ptr + off + 2];
     b3 = [:u8 input_ptr + off + 3];
 
+    // r = (b0<<24) | (b1<<16) | (b2<<8) | b3, big-endian. Each byte is
+    // widened into a register and shifted before the OR so every step
+    // lowers to a plain reg op (a `r |= (widen) << n` compound does not).
     r = (32u) b0;
     r <<= 24;
-    r |= ((32u) b1) << 16;
-    r |= ((32u) b2) << 8;
-    r |= (32u) b3;
+    t = (32u) b1;
+    t <<= 16;
+    r |= t;
+    t = (32u) b2;
+    t <<= 8;
+    r |= t;
+    t = (32u) b3;
+    r |= t;
 
     return r;
 }
@@ -184,14 +192,38 @@ fn p3q_precompile_gate(
 {
     reg u64 status;
     reg u64 off;
-    reg u32 proof_len32, pub_len32;
-    reg u64 proof_len64, pub_len64;
-    reg u64 proof_off, pub_off;
-    reg u8  version_byte;
+    // Values that are produced in one length/version check block and
+    // consumed in a later (`done`-guarded) block must survive across the
+    // control-flow joins, so they live on the stack rather than in
+    // registers. (Pure registers would force the allocator to merge
+    // conflicting live ranges across the guards.) Stack slots are public —
+    // this is wire-format calldata, see the CT note at the top of the gate.
+    stack u32 proof_len32, pub_len32;
+    stack u64 proof_len64;
+    reg   u64 pub_len64;
+    stack u64 proof_off, pub_off;
+    stack u8  version_byte;
     reg u8  too_short, bad_version, bad_magic;
     reg u8  magic_diff;
     reg u64 i;
     reg u8  c;
+
+    // Single-exit control flow.
+    //
+    // Jasmin requires `return` to be the final statement of a function, so
+    // the per-check early returns this gate logically performs are encoded
+    // with a sticky `done` flag instead: the FIRST failing check sets
+    // `status` and `done = 1`, and every subsequent check / the success
+    // write is guarded by `if (!done)`. This is behaviourally identical to
+    // the early-return form (first failing check wins; on any failure
+    // parsed_out is all-zero and the status byte is written; on success
+    // parsed_out is populated and status = 0) and preserves the CT shape:
+    // every branch is still taken only on PUBLIC lengths/flags, never on a
+    // secret-dependent value. `done` also gates the calldata reads so we
+    // never load past the length-validated region.
+    reg u64 done;
+    ?{}, done = #set0_64();
+    ?{}, status = #set0_64();
 
     // ---- 1. Length pre-filter ----
     // too_short = (input_len < MinInputLength) ? 1 : 0.
@@ -201,135 +233,131 @@ fn p3q_precompile_gate(
     if (input_len < P3Q_MIN_INPUT_LEN) {
         too_short = 1;
         status = 1;
-        c = (8u) status;
-        [:u8 status_out_ptr] = c;
-        ?{}, i = #set0_64();
-        while (i < 24) {
-            [:u8 parsed_out_ptr + i] = 0;
-            i += 1;
-        }
-        return status;
+        done = 1;
     }
 
     // ---- 2. Read version byte ----
-    version_byte = [:u8 input_ptr];
-    bad_version = version_byte;
-    bad_version ^= P3Q_VERSION_V1;
-    if (bad_version != 0) {
-        status = 2;
-        c = (8u) status;
-        [:u8 status_out_ptr] = c;
-        ?{}, i = #set0_64();
-        while (i < 24) {
-            [:u8 parsed_out_ptr + i] = 0;
-            i += 1;
+    if (done == 0) {
+        version_byte = [:u8 input_ptr];
+        bad_version = version_byte;
+        bad_version ^= P3Q_VERSION_V1;
+        if (bad_version != 0) {
+            status = 2;
+            done = 1;
         }
-        return status;
     }
 
     // ---- 3. Read proof_len ----
-    off = 1;
-    proof_len32 = read_be_uint32(input_ptr, off);
-    proof_len64 = (64u) proof_len32;
-    proof_off = off + (64u) P3Q_PROOFLEN_BYTES;
-
     // ---- 4. Bounds check: proof + pub_len_bytes fits ----
     // input_len - proof_off >= proof_len64 + PUBLEN_BYTES
     reg u64 needed;
-    needed = proof_len64;
-    needed += P3Q_PUBLEN_BYTES;
     reg u64 remaining_after_off;
-    remaining_after_off = input_len;
-    remaining_after_off -= proof_off;
-    if (remaining_after_off < needed) {
-        status = 1;
-        c = (8u) status;
-        [:u8 status_out_ptr] = c;
-        ?{}, i = #set0_64();
-        while (i < 24) {
-            [:u8 parsed_out_ptr + i] = 0;
-            i += 1;
+    reg u32 rd;       // register staging for the read-back uint32
+    reg u64 t64;      // register staging for u64 arithmetic -> stack slot
+    reg u64 plen64;   // register copy of proof_len64 (stack slot needs a
+                      // register source for MOVZX / arithmetic)
+    if (done == 0) {
+        off = 1;
+        rd = read_be_uint32(input_ptr, off);
+        proof_len32 = rd;                 // stash to stack slot for step 8
+        plen64 = (64u) rd;
+        proof_len64 = plen64;             // stash to stack slot
+        t64 = off + (64u) P3Q_PROOFLEN_BYTES;
+        proof_off = t64;                  // stash to stack slot
+
+        needed = plen64;
+        needed += P3Q_PUBLEN_BYTES;
+        remaining_after_off = input_len;
+        remaining_after_off -= t64;
+        if (remaining_after_off < needed) {
+            status = 1;
+            done = 1;
         }
-        return status;
     }
 
     // ---- 5. Read pub_len ----
-    off = proof_off + proof_len64;
-    pub_len32 = read_be_uint32(input_ptr, off);
-    pub_len64 = (64u) pub_len32;
-    pub_off = off + (64u) P3Q_PUBLEN_BYTES;
-
     // ---- 6. Bounds check: pub fits ----
     reg u64 remaining_after_pub_off;
-    remaining_after_pub_off = input_len;
-    remaining_after_pub_off -= pub_off;
-    if (remaining_after_pub_off < pub_len64) {
-        status = 1;
-        c = (8u) status;
-        [:u8 status_out_ptr] = c;
-        ?{}, i = #set0_64();
-        while (i < 24) {
-            [:u8 parsed_out_ptr + i] = 0;
-            i += 1;
+    if (done == 0) {
+        t64 = proof_off;
+        t64 += proof_len64;
+        off = t64;
+        rd = read_be_uint32(input_ptr, off);
+        pub_len32 = rd;                   // stash to stack slot for step 8
+        pub_len64 = (64u) rd;
+        t64 = off + (64u) P3Q_PUBLEN_BYTES;
+        pub_off = t64;                    // stash to stack slot
+
+        remaining_after_pub_off = input_len;
+        remaining_after_pub_off -= t64;
+        if (remaining_after_pub_off < pub_len64) {
+            status = 1;
+            done = 1;
         }
-        return status;
     }
 
     // ---- 7. Constant-time magic header check ----
-    if (proof_len64 < P3Q_MAGIC_LEN) {
-        // Proof shorter than the magic header — reject as InvalidProof
-        // (matches contract.go line 174: len(proof) < len(MagicHeader)).
-        status = 3;
-        c = (8u) status;
-        [:u8 status_out_ptr] = c;
-        ?{}, i = #set0_64();
-        while (i < 24) {
-            [:u8 parsed_out_ptr + i] = 0;
-            i += 1;
+    if (done == 0) {
+        if (proof_len64 < P3Q_MAGIC_LEN) {
+            // Proof shorter than the magic header — reject as InvalidProof
+            // (matches contract.go line 174: len(proof) < len(MagicHeader)).
+            status = 3;
+            done = 1;
         }
-        return status;
     }
-    magic_diff = ct_check_magic(input_ptr, proof_off);
-    if (magic_diff != 0) {
-        status = 3;
-        c = (8u) status;
-        [:u8 status_out_ptr] = c;
-        ?{}, i = #set0_64();
-        while (i < 24) {
-            [:u8 parsed_out_ptr + i] = 0;
-            i += 1;
+    if (done == 0) {
+        magic_diff = ct_check_magic(input_ptr, proof_off);
+        if (magic_diff != 0) {
+            status = 3;
+            done = 1;
         }
-        return status;
     }
 
+    if (done != 0) {
+        // Failure path: emit the error status and zero the whole parsed_out
+        // (24 bytes). Identical to every per-check early return above.
+        c = (8u) status;
+        [:u8 status_out_ptr] = c;
+        ?{}, i = #set0_64();
+        while (i < 24) {
+            [:u8 parsed_out_ptr + i] = 0;
+            i += 1;
+        }
+    } else {
+
     // ---- 8. Write parsed_out ----
+    // Each big-endian byte is extracted into a register (`w` holds the
+    // shifted word, `c` the resulting byte) before the memory store, so
+    // every write lowers to a plain `[mem] = reg8`. `(8u) w` already keeps
+    // only the low 8 bits, so the previous `& 0xff` masks were redundant.
+    reg u32 w;
     // [0]       version
     [:u8 parsed_out_ptr + 0] = version_byte;
     // [1..5)    proof_len (BE)
-    [:u8 parsed_out_ptr + 1] = (8u)((proof_len32 >> 24) & 0xff);
-    [:u8 parsed_out_ptr + 2] = (8u)((proof_len32 >> 16) & 0xff);
-    [:u8 parsed_out_ptr + 3] = (8u)((proof_len32 >>  8) & 0xff);
-    [:u8 parsed_out_ptr + 4] = (8u)( proof_len32        & 0xff);
+    w = proof_len32; w >>= 24; c = (8u) w; [:u8 parsed_out_ptr + 1] = c;
+    w = proof_len32; w >>= 16; c = (8u) w; [:u8 parsed_out_ptr + 2] = c;
+    w = proof_len32; w >>=  8; c = (8u) w; [:u8 parsed_out_ptr + 3] = c;
+    w = proof_len32;           c = (8u) w; [:u8 parsed_out_ptr + 4] = c;
     // [5..9)    proof_off (BE; truncated to low 32 bits — proofs
     //           larger than 4 GiB exceed EVM calldata budget anyway).
     reg u32 proof_off32;
     proof_off32 = (32u) proof_off;
-    [:u8 parsed_out_ptr + 5] = (8u)((proof_off32 >> 24) & 0xff);
-    [:u8 parsed_out_ptr + 6] = (8u)((proof_off32 >> 16) & 0xff);
-    [:u8 parsed_out_ptr + 7] = (8u)((proof_off32 >>  8) & 0xff);
-    [:u8 parsed_out_ptr + 8] = (8u)( proof_off32        & 0xff);
+    w = proof_off32; w >>= 24; c = (8u) w; [:u8 parsed_out_ptr + 5] = c;
+    w = proof_off32; w >>= 16; c = (8u) w; [:u8 parsed_out_ptr + 6] = c;
+    w = proof_off32; w >>=  8; c = (8u) w; [:u8 parsed_out_ptr + 7] = c;
+    w = proof_off32;           c = (8u) w; [:u8 parsed_out_ptr + 8] = c;
     // [9..13)   pub_len (BE)
-    [:u8 parsed_out_ptr +  9] = (8u)((pub_len32 >> 24) & 0xff);
-    [:u8 parsed_out_ptr + 10] = (8u)((pub_len32 >> 16) & 0xff);
-    [:u8 parsed_out_ptr + 11] = (8u)((pub_len32 >>  8) & 0xff);
-    [:u8 parsed_out_ptr + 12] = (8u)( pub_len32        & 0xff);
+    w = pub_len32; w >>= 24; c = (8u) w; [:u8 parsed_out_ptr +  9] = c;
+    w = pub_len32; w >>= 16; c = (8u) w; [:u8 parsed_out_ptr + 10] = c;
+    w = pub_len32; w >>=  8; c = (8u) w; [:u8 parsed_out_ptr + 11] = c;
+    w = pub_len32;           c = (8u) w; [:u8 parsed_out_ptr + 12] = c;
     // [13..17)  pub_off (BE)
     reg u32 pub_off32;
     pub_off32 = (32u) pub_off;
-    [:u8 parsed_out_ptr + 13] = (8u)((pub_off32 >> 24) & 0xff);
-    [:u8 parsed_out_ptr + 14] = (8u)((pub_off32 >> 16) & 0xff);
-    [:u8 parsed_out_ptr + 15] = (8u)((pub_off32 >>  8) & 0xff);
-    [:u8 parsed_out_ptr + 16] = (8u)( pub_off32        & 0xff);
+    w = pub_off32; w >>= 24; c = (8u) w; [:u8 parsed_out_ptr + 13] = c;
+    w = pub_off32; w >>= 16; c = (8u) w; [:u8 parsed_out_ptr + 14] = c;
+    w = pub_off32; w >>=  8; c = (8u) w; [:u8 parsed_out_ptr + 15] = c;
+    w = pub_off32;           c = (8u) w; [:u8 parsed_out_ptr + 16] = c;
     // [17..24)  reserved zero
     ?{}, i = #set0_64();
     while (i < 7) {
@@ -340,5 +368,7 @@ fn p3q_precompile_gate(
     status = 0;
     c = (8u) status;
     [:u8 status_out_ptr] = c;
+    }
+
     return status;
 }
