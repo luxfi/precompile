@@ -27,10 +27,10 @@ import (
 
 // Halt layers (each an independent key; checked in order, cheapest scope first).
 var (
-	haltGlobalKey         = makeStorageKey([]byte(settleStateNamespace+"h.glb"), []byte{})
-	haltMarketPrefix      = []byte(settleStateNamespace + "h.mkt")
-	haltAssetPrefix       = []byte(settleStateNamespace + "h.ast")
-	haltReceiptTypePrefix = []byte(settleStateNamespace + "h.crt")
+	haltGlobalKey          = makeStorageKey([]byte(settleStateNamespace+"h.glb"), []byte{})
+	haltMarketPrefix       = []byte(settleStateNamespace + "h.mkt")
+	haltAssetPrefix        = []byte(settleStateNamespace + "h.ast")
+	haltReceiptTypePrefix  = []byte(settleStateNamespace + "h.crt")
 	haltValidatorSetPrefix = []byte(settleStateNamespace + "h.vst")
 )
 
@@ -57,7 +57,13 @@ func checkHalt(stateDB stateKV, r *DFillReceiptV1, cert *BLSCert) error {
 	if isHalted(stateDB, haltGlobalKey) {
 		return ErrDEXHalted
 	}
-	if isHalted(stateDB, makeStorageKey(haltMarketPrefix, r.MarketID[:])) {
+	// MARKET halt keys on the POOL identity (r.PoolKeyHash), NOT the free-form
+	// r.MarketID. PoolKeyHash is validated == key.ID() in BindToSwap and is the SAME
+	// id SetHaltMarket callers, the registry, analytics, and StateView all use — so
+	// the kill switch addresses exactly the market operators halt. Keying on the
+	// attacker-supplied MarketID would let a compromised market dodge the halt by
+	// emitting receipts whose MarketID != its pool id (it controls that field).
+	if isHalted(stateDB, makeStorageKey(haltMarketPrefix, r.PoolKeyHash[:])) {
 		return ErrMarketHalted
 	}
 	if isHalted(stateDB, makeStorageKey(haltAssetPrefix, r.TokenInAssetID[:])) ||

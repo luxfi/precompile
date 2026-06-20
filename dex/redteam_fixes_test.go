@@ -741,7 +741,14 @@ func (w *contractStateDBWrapper) TransferTokenFrom(token, from, to common.Addres
 		return ErrERC20TransferFailed
 	}
 	w.inner.tokenBalances[token][from] = new(big.Int).Sub(bal, amount)
-	w.inner.tokenBalances[token][to] = new(big.Int).Add(w.ercBal(token, to), amount)
+	// Optional fee-on-transfer: the recipient receives amount - fee, modelling a
+	// non-standard token so tests can exercise the observed-delta short branches.
+	received := amount
+	if w.inner.feeOnTransferBps > 0 {
+		fee := new(big.Int).Div(new(big.Int).Mul(amount, big.NewInt(int64(w.inner.feeOnTransferBps))), big.NewInt(10000))
+		received = new(big.Int).Sub(amount, fee)
+	}
+	w.inner.tokenBalances[token][to] = new(big.Int).Add(w.ercBal(token, to), received)
 	return nil
 }
 
