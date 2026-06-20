@@ -119,9 +119,9 @@ type SettleConfig struct {
 	ValidatorSets []ValidatorSet `json:"-"`
 }
 
-func (c *SettleConfig) Key() string            { return settleConfigKey }
-func (c *SettleConfig) Timestamp() *uint64      { return c.Upgrade.Timestamp() }
-func (c *SettleConfig) IsDisabled() bool        { return c.Upgrade.Disable }
+func (c *SettleConfig) Key() string        { return settleConfigKey }
+func (c *SettleConfig) Timestamp() *uint64 { return c.Upgrade.Timestamp() }
+func (c *SettleConfig) IsDisabled() bool   { return c.Upgrade.Disable }
 func (c *SettleConfig) Verify(_ precompileconfig.ChainConfig) error {
 	if c.ProtocolFeeController == (common.Address{}) {
 		return ErrDEXNoProtocolFeeController
@@ -164,6 +164,27 @@ func (s *SettleContract) Run(
 		// THE money path: receipt-settlement (deterministic BLS verify, no matcher).
 		return SettleSwap(accessibleState, caller, data, suppliedGas, readOnly)
 
+	// Market creation — C-AUTHORITATIVE registry (settle_market.go). Computes the
+	// tick deterministically ON C; any D OpenMarket is best-effort + discarded.
+	case SelectorInitialize:
+		return s.runSettleInitialize(accessibleState, caller, data, suppliedGas, readOnly)
+
+	// Maker / resting-order path — pure reserve lock/unlock, NO matching
+	// (settle_maker.go). 0x9996 PositionManager routes its lifecycle ops here.
+	case SelectorModifyLiquidity:
+		return s.runSettleModifyLiquidity(accessibleState, caller, data, suppliedGas, readOnly)
+
+	// donate is explicitly UNSUPPORTED in the receipt model (settle_views9999.go):
+	// LP fee growth is D-authoritative, so a safe C-only donate cannot exist.
+	case SelectorDonate:
+		return s.runSettleDonate(accessibleState, caller, data, suppliedGas, readOnly)
+
+	// Raw slot reads of 0x9999's own storage (read-only; harmless).
+	case SelectorExtsload:
+		return s.runSettleExtsload(accessibleState, data, suppliedGas)
+	case SelectorExtsloadArray:
+		return s.runSettleExtsloadArray(accessibleState, data, suppliedGas)
+
 	// Vault funds-in / funds-out / balance — the 0x9999 receipt-settlement RESERVE
 	// (settle_custody.go), NOT the deprecated 0x9010 ZAP-custody ledger. These are
 	// NOT gated by the swap halt so funds can always exit even when new swaps are
@@ -174,6 +195,11 @@ func (s *SettleContract) Run(
 		return s.runSettleWithdraw(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorBalanceOf:
 		return s.runSettleBalanceOf(accessibleState, data, suppliedGas)
+
+	// Validator-set rotation (protocolFeeController-gated, PoP-verified). The SAME
+	// trusted authority as halt governance; replaces the genesis-only seam.
+	case SelectorRegisterValidatorSet:
+		return s.runRegisterValidatorSet(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// Settlement governance (protocolFeeController-gated).
 	case SelectorSetHaltGlobal:
@@ -259,4 +285,50 @@ func (s *SettleContract) runSetHaltReceiptType(
 	on := data[63] != 0
 	SetHaltReceiptType(newPoolStateAdapter(state), ct, on)
 	return nil, gas - gasHaltAdmin, nil
+}
+
+// gasRegisterValidatorSet is the base admin cost of a rotation; the per-validator
+// PoP verify dominates, so charge proportionally to the decoded set size.
+const (
+	gasRegisterValidatorSetBase uint64 = 25_000
+	gasRegisterValidatorSetPerV uint64 = 5_000 // 1 G1 decompress + 1 PoP pairing per member.
+)
+
+// runRegisterValidatorSet rotates the BLS D-validator set (governance only). It is
+// the runtime twin of the genesis Configure seam, gated on the SAME
+// protocolFeeController authority as halt. CRITICALLY it routes through the
+// PoP-checked PutValidatorSet — so a rotation can NEVER register a rogue/aggregated
+// key (the rogue-key forge the EUF-CMA reduction relies on being closed). This is
+// where wiring carelessly would turn a non-bug into a real bug; PutValidatorSet
+// verifies every member's proof-of-possession before any slot is written.
+func (s *SettleContract) runRegisterValidatorSet(
+	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, gas, errors.New("dex: cannot register a validator set in read-only mode")
+	}
+	if gas < gasRegisterValidatorSetBase {
+		return nil, 0, errors.New("dex: out of gas")
+	}
+	gasLeft := gas - gasRegisterValidatorSetBase
+	if caller != s.protocolFeeController {
+		return nil, gasLeft, ErrUnauthorized
+	}
+	vs, err := DecodeValidatorSet(data)
+	if err != nil {
+		return nil, gasLeft, err
+	}
+	// Charge per-validator (the PoP pairing dominates) before verifying possession.
+	cost := uint64(len(vs.Validators)) * gasRegisterValidatorSetPerV
+	if gasLeft < cost {
+		return nil, 0, errors.New("dex: out of gas")
+	}
+	gasLeft -= cost
+	// PutValidatorSet enforces per-key PoP + zero-total-weight rejection; a malformed
+	// or rogue set reverts here with nothing written (EVM revert rolls back any
+	// partial slot writes regardless).
+	if err := PutValidatorSet(newPoolStateAdapter(state), vs); err != nil {
+		return nil, gasLeft, err
+	}
+	return nil, gasLeft, nil
 }
