@@ -713,3 +713,45 @@ func (w *contractStateDBWrapper) TxHash() common.Hash {
 
 func (w *contractStateDBWrapper) Snapshot() int        { return 0 }
 func (w *contractStateDBWrapper) RevertToSnapshot(int) {}
+
+// --- erc20Vault (additive test capability; lets the 0x9999 settlement tests
+// exercise the real native-in / token-out direction). An in-memory per-token
+// balance ledger keyed (token, holder), stored on MockStateDB. Honest ERC-20
+// semantics (no fee-on-transfer) so observed-delta == amount.
+func (w *contractStateDBWrapper) ercBal(token, holder common.Address) *big.Int {
+	if w.inner.tokenBalances == nil {
+		w.inner.tokenBalances = make(map[common.Address]map[common.Address]*big.Int)
+	}
+	if w.inner.tokenBalances[token] == nil {
+		w.inner.tokenBalances[token] = make(map[common.Address]*big.Int)
+	}
+	if w.inner.tokenBalances[token][holder] == nil {
+		w.inner.tokenBalances[token][holder] = big.NewInt(0)
+	}
+	return w.inner.tokenBalances[token][holder]
+}
+
+func (w *contractStateDBWrapper) TokenBalanceOf(token, owner common.Address) *big.Int {
+	return new(big.Int).Set(w.ercBal(token, owner))
+}
+
+func (w *contractStateDBWrapper) TransferTokenFrom(token, from, to common.Address, amount *big.Int) error {
+	bal := w.ercBal(token, from)
+	if bal.Cmp(amount) < 0 {
+		return ErrERC20TransferFailed
+	}
+	w.inner.tokenBalances[token][from] = new(big.Int).Sub(bal, amount)
+	w.inner.tokenBalances[token][to] = new(big.Int).Add(w.ercBal(token, to), amount)
+	return nil
+}
+
+func (w *contractStateDBWrapper) TransferTokenTo(token, to common.Address, amount *big.Int) error {
+	// Vault (0x9999) is the implicit `from`.
+	return w.TransferTokenFrom(token, poolManagerAddr9999, to, amount)
+}
+
+// mintTestToken seeds a token balance for a holder (test setup only).
+func (w *contractStateDBWrapper) mintTestToken(token, holder common.Address, amount *big.Int) {
+	cur := w.ercBal(token, holder)
+	w.inner.tokenBalances[token][holder] = new(big.Int).Add(cur, amount)
+}
