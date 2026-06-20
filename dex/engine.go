@@ -9,28 +9,36 @@ import (
 	"github.com/luxfi/geth/common"
 )
 
-// Engine abstracts the DEX computation backend.
-// The precompile is a thin ABI shim — it holds NO canonical DEX state and runs
-// NO matching itself. Matching, the resting book, fills, and value conservation
-// all live on the d-chain, reached over ZAP. The precompile only translates the
-// V4 PoolManager (CLOB facade) ABI into engine operations and commits the
-// server-returned BalanceDelta.
+// Engine is the precompile's TRANSITIONAL live surface onto the node-LOCAL
+// D-Chain (dexvm). It is NOT a pluggable matcher backend and NOT a backend
+// selector: the precompile is a thin ABI shim that holds NO canonical DEX state
+// and runs NO matching. Matching, the resting book, fills, and value
+// conservation all live on the D-Chain — a normal Lux chain the validators run.
+// The precompile only translates the V4 PoolManager (CLOB facade) ABI into
+// operations against that local chain.
+//
+// MIGRATION (see DChainClient in dchain_client.go): this surface is being moved
+// onto DChainClient (SubmitOrder / SubmitSwapIntent / GetMarket / GetReceipt),
+// the consensus-safe on-ramp model. The synchronous Swap below is the one method
+// that CANNOT be preserved consensus-safely — a live query to a separate chain's
+// moving book inside C-Chain block execution forks (each validator observes
+// independently-timed fills => divergent StateRoot). It is therefore STAGED for
+// replacement by SubmitSwapIntent (intent + async D->C settlement), not removed
+// in this pass; see the package design.
 //
 // Two implementations live in-tree:
 //
-//   - inertEngine (engine_inert.go) — the package DEFAULT. No backend wired:
-//     every call reverts ErrDEXBackendNotConfigured. The public EVM ships this
-//     so an unconfigured chain's LP-9010 cleanly reverts instead of running a
-//     wrong, second matcher.
+//   - dchainUnavailable (dchain_client.go) — the package DEFAULT. No local
+//     D-Chain reachable: every call reverts ErrDChainUnavailable. The public EVM
+//     ships this so a node not running its local dexvm cleanly reverts (the
+//     on-ramp is closed) instead of fabricating a fill.
 //   - ZAPEngine (engine_zap.go) — the stateless V4->CLOB adapter that forwards
-//     every operation to the d-chain CLOB gateway over ZAP. The venue installs
-//     it via dex.SetBackend(NewZAPEngine(...)) when dex-zap-endpoint is set.
+//     every operation to the node-LOCAL D-Chain over loopback ZAP. The EVM
+//     plugin resolves it via dex.InstallDChainClient(...) when this node serves
+//     the DEX path and its local D-Chain endpoint is configured.
 //
-// Adding a new backend is purely additive: implement Engine, ship it in
-// its own package, and have the host EVM call dex.SetBackend() before the
-// chain bootstraps. The on-chain ABI (selectors at LP-9010) is invariant
-// across backends — a contract compiled against the precompile address
-// runs unchanged on every chain.
+// The on-chain ABI (selectors at LP-9010) is invariant — a contract compiled
+// against the precompile address runs unchanged on every chain.
 type Engine interface {
 	// Initialize computes the initial tick from sqrtPriceX96 and creates pool state.
 	Initialize(sqrtPriceX96 *big.Int) (int24, error)
@@ -52,11 +60,11 @@ type Engine interface {
 	// Quote estimates swap output without mutating state. Used by router.
 	Quote(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.Int
 
-	// Brand returns the human-readable identity of the backend. The precompile
+	// Brand returns the human-readable identity of the client. The precompile
 	// uses this in log lines and error wrapping so user-facing strings on a
 	// downstream L1 chain say e.g. "Hanzo DEX", on Lux say "Lux DEX", etc.
 	// Implementations MUST return a non-empty constant; an empty value trips
-	// a sanity check at SetBackend() time.
+	// a sanity check at InstallDChainClient() time.
 	Brand() string
 }
 
