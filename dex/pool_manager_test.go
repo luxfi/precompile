@@ -19,6 +19,10 @@ type MockStateDB struct {
 	exists      map[common.Address]bool
 	blockNumber uint64
 	logs        []*ethtypes.Log
+	// tokenBalances backs the erc20Vault test capability on contractStateDBWrapper:
+	// an in-memory per-token (token -> holder -> balance) ledger so the 0x9999
+	// settlement tests can exercise the native-in / token-out direction.
+	tokenBalances map[common.Address]map[common.Address]*big.Int
 }
 
 func NewMockStateDB() *MockStateDB {
