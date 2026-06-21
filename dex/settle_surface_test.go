@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/ids"
 )
 
 // settle_surface_test.go — one focused test per NEW V4 surface:
@@ -372,7 +373,7 @@ func TestQuoter_QuoteAndNoMutation(t *testing.T) {
 	// must be unchanged — the Quoter is write-incapable by construction.
 	db := newPoolStateAdapter(h.state)
 	recBefore := loadMarket(db, h.key.ID())
-	consumedSlotBefore := db.GetState(poolManagerAddr9999, consumedReceiptKey([32]byte{0xAB}))
+	consumedSlotBefore := db.GetState(poolManagerAddr9999, settlementConsumedKey(ids.ID{0xAB}))
 	if _, _, err := q.Run(h.state, h.caller, quoterAddr, quoteCalldata(SelQExactInput, h.key, amount, true), 5_000_000, false /*NOT read-only*/); err != nil {
 		t.Fatalf("quote (readOnly=false) must still succeed: %v", err)
 	}
@@ -380,7 +381,7 @@ func TestQuoter_QuoteAndNoMutation(t *testing.T) {
 	if recAfter.Status != recBefore.Status || recAfter.SqrtPriceX96.Cmp(recBefore.SqrtPriceX96) != 0 || recAfter.Tick != recBefore.Tick {
 		t.Fatal("Quoter must NOT mutate the market record even with readOnly=false")
 	}
-	if db.GetState(poolManagerAddr9999, consumedReceiptKey([32]byte{0xAB})) != consumedSlotBefore {
+	if db.GetState(poolManagerAddr9999, settlementConsumedKey(ids.ID{0xAB})) != consumedSlotBefore {
 		t.Fatal("Quoter must NOT write any 0x9999 slot")
 	}
 
