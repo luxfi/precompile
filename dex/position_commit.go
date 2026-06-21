@@ -46,8 +46,10 @@ import (
 
 // OrderStatusClosing marks a position whose withdraw/collect was REQUESTED: a D->C
 // object is expected and the recorded owner is still a legitimate collector (so
-// ImportPositionCollect's rail gate accepts it) until the position is fully drained.
-// It extends the OrderStatus lifecycle (None=0, Open=1=Committed, Cancelled=2=Closed).
+// ImportPositionCollect's per-object gate accepts a collect naming THIS record) until
+// the position is fully drained, at which point collectPositionRecord flips it to
+// Closed. It extends the OrderStatus lifecycle (None=0, Open=1=Committed,
+// Cancelled=2=Closed, Closing=3).
 const OrderStatusClosing OrderStatus = 3
 
 var (
@@ -62,6 +64,11 @@ var (
 	// ErrLPBadCollectInput / ErrLPCollectBadAmount guard the collectPosition calldata.
 	ErrLPBadCollectInput  = errors.New("dex: collectPosition input too short")
 	ErrLPCollectBadAmount = errors.New("dex: collectPosition claim amount out of range")
+	// ErrLPCommitWhileClosing forbids topping up a position whose withdraw is in flight
+	// (Closing). The LP must let the D->C collect settle, or commit to a fresh
+	// salt/range — re-arming a Closing record back to Open is the lifecycle hole FIX-3
+	// closes.
+	ErrLPCommitWhileClosing = errors.New("dex: cannot commit to a position with a withdraw in flight (closing); use a fresh range or collect first")
 )
 
 // orderCommitObjSuffix stores the C->D commit OBJECT id of a position record, so an
@@ -70,21 +77,6 @@ var (
 // two purposes: the record id is re-derivable from (owner,pool,salt,range) for
 // lifecycle ops; the object id is injective over the tx identity for replay safety.
 var orderCommitObjSuffix = []byte("c") // commit object id (bytes32)
-
-// ownerHasOpenPosition reports whether owner holds ANY position in Open (Committed)
-// or Closing status — the rail gate ImportPositionCollect uses to refuse a D->C
-// object that names no LP position (so a swap-settlement object cannot be consumed on
-// the LP rail to drain committedPositions). It walks the owner's order index (O(k)
-// in the owner's position count) and stops at the first live position.
-func ownerHasOpenPosition(stateDB stateKV, owner common.Address) bool {
-	for _, id := range OwnerOrderIDs(stateDB, owner) {
-		switch loadRestingOrder(stateDB, id).Status {
-		case OrderStatusOpen, OrderStatusClosing:
-			return true
-		}
-	}
-	return false
-}
 
 // runSettleModifyLiquidity is the 0x9999 LP-COMMIT kernel — the CTO-locked
 // committed-liquidity path. ADD (delta>0) COMMITS the LP's funds to a D position via
@@ -199,11 +191,18 @@ func (s *SettleContract) commitPosition(
 		new(big.Int).Add(loadLockedReserve(stateDB, caller, lockedAsset), new(big.Int).SetUint64(committed)))
 
 	// Record / top-up the position. A re-commit to the same (owner,pool,salt,range)
-	// accumulates the committed amount (the increase-position semantic). Status Open
-	// == Committed (live on D).
+	// accumulates the committed amount (the increase-position semantic) ONLY while the
+	// position is Open. A CLOSING position is mid-withdraw (a D->C collect object is
+	// expected); re-committing to it would flip it back to Open and let new principal
+	// share an in-flight withdraw's record — so re-commit while Closing is FORBIDDEN
+	// (FIX-3): the LP must let the withdraw settle, or use a fresh salt/range. A fully
+	// collected (Closed) or never-used (None) slot starts a brand-new position.
 	existing := loadRestingOrder(stateDB, orderID)
+	if existing.Status == OrderStatusClosing {
+		return nil, gasLeft, ErrLPCommitWhileClosing
+	}
 	newAmt := new(big.Int).SetUint64(committed)
-	if existing.Status == OrderStatusOpen || existing.Status == OrderStatusClosing {
+	if existing.Status == OrderStatusOpen {
 		newAmt = new(big.Int).Add(existing.LockedAmt, newAmt)
 	}
 	storeRestingOrder(stateDB, orderID, RestingOrder{
@@ -263,11 +262,15 @@ func (s *SettleContract) requestPositionWithdraw(
 //	asset[32]      // the claimed asset (address left-padded; native all-zero) —
 //	               // EQUALITY-checked against the recorded object's asset
 //	amount[32]     // the claimed amount (uint256; must fit uint64 + == recorded)
+//	positionID[32] // the position RECORD id (MakerOrderID) the collect draws against
+//	               // — the recorded owner must hold THIS position (Open/Closing) and
+//	               // the credit is bounded by its remaining committed backing
 //
-// The recipient is the CALLER (day-1, no delegation). ImportPositionCollect binds all
-// three against the RECORDED object AND requires the recorded owner to hold a live
-// position (the rail gate), so a claim cannot invent value, consume a victim's
-// object, re-denominate it, or consume a swap-rail object on the LP pot.
+// The recipient is the CALLER (day-1, no delegation). ImportPositionCollect binds the
+// recorded object's RAIL (must be railLP — a swap-fill object is refused), its
+// owner/asset/amount, AND the named position record, so a claim cannot invent value,
+// consume a victim's object, re-denominate it, consume a swap-rail object on the LP
+// pot, or draw beyond the recorded owner's OWN committed backing.
 func (s *SettleContract) runSettleCollectPosition(
 	state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool,
 ) ([]byte, uint64, error) {
@@ -283,7 +286,7 @@ func (s *SettleContract) runSettleCollectPosition(
 	if !ok || atomicState.AtomicMemory() == nil {
 		return nil, gasLeft, ErrLPNoAtomicState
 	}
-	if len(input) < 96 {
+	if len(input) < 128 {
 		return nil, gasLeft, ErrLPBadCollectInput
 	}
 	var outputID ids.ID
@@ -294,6 +297,8 @@ func (s *SettleContract) runSettleCollectPosition(
 	if !amount.IsUint64() || amount.Sign() <= 0 {
 		return nil, gasLeft, ErrLPCollectBadAmount
 	}
+	var positionID [32]byte
+	copy(positionID[:], input[96:128])
 
 	stateDB := newPoolStateAdapter(state)
 
@@ -306,11 +311,12 @@ func (s *SettleContract) runSettleCollectPosition(
 	defer exitCustodyKV(stateDB)
 
 	claim := SettlementClaim{
-		OutputID:  outputID,
-		Asset:     asset,
-		AssetAddr: assetAddress(asset),
-		Amount:    amount.Uint64(),
-		Recipient: caller, // day-1: no delegation; recipient is the caller.
+		OutputID:   outputID,
+		Asset:      asset,
+		AssetAddr:  assetAddress(asset), // routing only; the transfer token is derived from the recorded asset (FIX-5).
+		Amount:     amount.Uint64(),
+		Recipient:  caller, // day-1: no delegation; recipient is the caller.
+		PositionID: positionID,
 	}
 	credited, ierr := nativeClient.ImportPositionCollect(state, atomicState, claim)
 	if ierr != nil {
@@ -322,12 +328,13 @@ func (s *SettleContract) runSettleCollectPosition(
 }
 
 // EncodeCollectPositionInput builds collectPosition calldata (outputID, asset,
-// amount) for the keeper's collect-tx builder and tests. The inverse of the decode in
-// runSettleCollectPosition.
-func EncodeCollectPositionInput(outputID ids.ID, asset [32]byte, amount uint64) []byte {
-	out := make([]byte, 96)
+// amount, positionID) for the keeper's collect-tx builder and tests. The inverse of
+// the decode in runSettleCollectPosition.
+func EncodeCollectPositionInput(outputID ids.ID, asset [32]byte, amount uint64, positionID [32]byte) []byte {
+	out := make([]byte, 128)
 	copy(out[0:32], outputID[:])
 	copy(out[32:64], asset[:])
 	new(big.Int).SetUint64(amount).FillBytes(out[64:96])
+	copy(out[96:128], positionID[:])
 	return out
 }

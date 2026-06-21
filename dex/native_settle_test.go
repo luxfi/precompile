@@ -74,9 +74,12 @@ func Test9999Swap_CreatesCToDAtomicIntent(t *testing.T) {
 	if !ok {
 		t.Fatal("C->D atomic object not found in shared memory after intent")
 	}
-	owner, asset, amount, decOK := decodeAtomicObject(raw)
+	rail, owner, asset, amount, decOK := decodeAtomicObject(raw)
 	if !decOK {
 		t.Fatal("C->D object malformed")
+	}
+	if rail != railSwap {
+		t.Fatalf("a swap intent C->D object must be stamped railSwap, got rail=%d", rail)
 	}
 	if owner != h.caller {
 		t.Fatalf("C->D object owner = %s, want caller %s", owner.Hex(), h.caller.Hex())
@@ -283,9 +286,9 @@ func Test9999ModifyLiquidity_CommitsCToDAtomicFunds(t *testing.T) {
 	if !ok {
 		t.Fatal("C->D position-funding object not found in shared memory")
 	}
-	owner, asset, amount, _ := decodeAtomicObject(raw)
-	if owner != h.caller || asset != h.inAssetID() || amount != 500 {
-		t.Fatalf("C->D position object mismatch: owner=%s asset=%x amount=%d", owner.Hex(), asset, amount)
+	rail, owner, asset, amount, _ := decodeAtomicObject(raw)
+	if rail != railLP || owner != h.caller || asset != h.inAssetID() || amount != 500 {
+		t.Fatalf("C->D position object mismatch: rail=%d owner=%s asset=%x amount=%d", rail, owner.Hex(), asset, amount)
 	}
 }
 
@@ -381,9 +384,9 @@ func Test9999RoundTrip_CToDMatchDToC(t *testing.T) {
 	if !ok {
 		t.Fatal("round-trip: D could not read the C->D object")
 	}
-	dOwner, dAsset, dAmount, _ := decodeAtomicObject(raw)
-	if dOwner != h.caller || dAsset != h.inAssetID() || dAmount != 100 {
-		t.Fatalf("round-trip: C->D object mismatch on the D side")
+	dRail, dOwner, dAsset, dAmount, _ := decodeAtomicObject(raw)
+	if dRail != railSwap || dOwner != h.caller || dAsset != h.inAssetID() || dAmount != 100 {
+		t.Fatalf("round-trip: C->D object mismatch on the D side (rail=%d)", dRail)
 	}
 
 	// --- D: "match" 100 native-in for 90 token-out, EXPORT a D->C object. The dexvm
