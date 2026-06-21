@@ -62,7 +62,7 @@ require (
 	github.com/luxfi/constants v1.5.8 // indirect
 	github.com/luxfi/container v0.0.4 // indirect
 	github.com/luxfi/crypto/ipa v1.2.4 // indirect
-	github.com/luxfi/ids v1.2.15 // indirect
+	github.com/luxfi/ids v1.2.15
 	github.com/luxfi/log v1.4.3 // indirect
 	github.com/luxfi/math v1.4.1 // indirect
 	github.com/luxfi/math/big v0.1.0 // indirect
@@ -75,7 +75,7 @@ require (
 	github.com/luxfi/utils v1.2.0 // indirect
 	github.com/luxfi/validators v1.2.0 // indirect
 	github.com/luxfi/version v1.0.1 // indirect
-	github.com/luxfi/vm v1.2.3 // indirect
+	github.com/luxfi/vm v1.2.3
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mimoo/StrobeGo v0.0.0-20220103164710-9a04d6ca976b // indirect
