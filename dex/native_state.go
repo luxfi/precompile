@@ -19,25 +19,12 @@ import (
 // reorged block replays identically on every validator (consensus-shared,
 // durable, reverted atomically with the tx).
 
-// --- D-Chain target id: the peer chain the C->D objects are PUT under and the
-// D->C objects are read from. Written at Configure (durable, consensus-shared),
-// the same discipline as the (networkID, cChainID) chain identity.
-var cfgDChainIDKey = makeStorageKey([]byte(settleStateNamespace+"cfg.did"), []byte{})
-
-// SetSettleDChainTarget records the D-Chain (dexvm) id the native seam routes
-// atomic objects to/from. A zero id means atomic settlement is not wired (the
-// on-ramp is closed); the client refuses to move value rather than guess a peer.
-func SetSettleDChainTarget(stateDB stateKV, dChainID [32]byte) {
-	var c common.Hash
-	copy(c[:], dChainID[:])
-	stateDB.SetState(poolManagerAddr9999, cfgDChainIDKey, c)
-}
-
-// loadDChainTarget reads the configured D-Chain id (ids.Empty when unset).
-func loadDChainTarget(stateDB stateKV) ids.ID {
-	c := stateDB.GetState(poolManagerAddr9999, cfgDChainIDKey)
-	return ids.ID(c)
-}
+// --- D-Chain target id: the peer chain the C->D objects are PUT under and the D->C
+// objects are read from. It is NOT configured and NOT persisted — 0x9999 is always-on
+// with zero per-net config. The host resolves the D-Chain (dexvm) id at RUNTIME from
+// the chain topology (the consensus context's blockchain-alias lookup of "D"), surfaced
+// to the precompile via contract.AtomicState.DChainID(). ids.Empty (no dexvm on this
+// network) closes the on-ramp; the client refuses to move value rather than guess a peer.
 
 // --- C->D intent replay set: an intent id is submitted at most once. Keyed by the
 // intent id (== the object's shared-memory key), value = blockNumber+1 sentinel.
