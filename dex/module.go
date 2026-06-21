@@ -413,9 +413,8 @@ func (c *DEXContract) runInitialize(
 // runSwap -> poolManager.Swap -> engine.Swap -> live ZAP query against a moving
 // book, proven to split StateRoot by chains/dexvm TestRED_PerValidatorRelay_
 // SplitsConsensus) is REMOVED. A swap hitting 0x9010 is settled by the EXACT same
-// implementation, sharing the SAME consumedReceipt / halt / verifier storage
-// namespace (dex.precompile.v1.9999.*) — never two money paths, never two replay
-// maps. The receipt always binds to 0x9999 (DFillReceiptV1.PrecompileAddr), so a
+// implementation, sharing the SAME settlement-consumed / halt storage namespace
+// (dex.precompile.v1.9999.*) — never two money paths, never two replay maps. A
 // forwarded call settles identically to a direct 0x9999 call. Deployed contracts
 // that still target 0x9010 keep working; new integrations point at 0x9999.
 func (c *DEXContract) runSwap(
