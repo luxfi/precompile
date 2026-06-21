@@ -11,12 +11,55 @@ import (
 	ethtypes "github.com/luxfi/geth/core/types"
 )
 
+// DexSettleActivationTime is the layer-local mirror of the canonical 0x9999 DEX
+// settlement activation boundary — unix 1766704800, i.e. 2025-12-25T23:20:00Z.
+//
+// DO NOT "round" this to midnight: the value (not the prose date) is the protocol
+// constant. It is ALREADY LIVE — it gates 0x9999 dispatch on a settling devnet — so
+// changing the number would move an activation boundary that historical receipts were
+// already built against and FORK every chain that crossed it. Only the human-readable
+// instant is annotated here; the number is authoritative.
+//
+// The CANONICAL definition lives in luxfi/evm params/extras.DexSettleActivationTime;
+// that is the single source of truth the EVM dispatch gate and marker-installing
+// state transition reference. This package (luxfi/precompile) sits BELOW evm in the
+// import graph (evm imports precompile, never the reverse), so it cannot import the
+// extras constant — it mirrors the value here. Drift between the two copies is a
+// consensus bug, so an equality guard test in the evm layer (which imports BOTH)
+// asserts dex.DexSettleActivationTime == extras.DexSettleActivationTime and fails CI
+// if either moves. The value is a protocol constant (one decision), not config.
+//
+// Why the precompile gates on this AT ALL, given the EVM overrider already withholds
+// 0x9999 from the enabled set pre-activation: defense in depth. The dispatch gate is
+// in the high (evm) layer; a new consensus-visible log (one that changes the receipt
+// root + bloom) is emitted in this low (precompile) layer. If any host dispatches
+// SettleSwap at a pre-activation timestamp — a buggy overrider, a non-Lux EVM that
+// integrates the precompile without the dated-fork gate, a future direct-call path —
+// an ungated log would split the chain (a re-syncing node that did NOT emit the log
+// would compute a different receipt root). Gating the log on the SAME timestamp the
+// dispatch uses means: on every chain, every settlement that ever executes also emits
+// the log, and no execution before the boundary ever can. No settlement-without-log
+// window, no log-without-settlement window.
+const DexSettleActivationTime uint64 = 1766704800 // 2025-12-25T23:20:00Z; canonical: evm extras.DexSettleActivationTime
+
+// dexLogsActive reports whether 0x9999's new consensus-visible logs (DEXFill, and the
+// V4 Initialize the native registry emits) may be written at blockTimestamp. It is the
+// ONE policy predicate gating those logs; the emit functions stay pure log-builders.
+func dexLogsActive(blockTimestamp uint64) bool { return blockTimestamp >= DexSettleActivationTime }
+
 // Event signature hashes (topic0) matching standard Uniswap V4 events.
 // Computed as keccak256 of the canonical event signature string.
 var (
 	initializeEventSig      = common.BytesToHash(crypto.Keccak256([]byte("Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)")))
 	swapEventSig            = common.BytesToHash(crypto.Keccak256([]byte("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")))
 	modifyLiquidityEventSig = common.BytesToHash(crypto.Keccak256([]byte("ModifyLiquidity(bytes32,address,int24,int24,int256,bytes32)")))
+
+	// DEXFill is THE indexable native-CLOB settlement signal, emitted by the
+	// 0x9999 settlement precompile on a Phase-B credit. Unlike the V4 Swap event
+	// (read-only views at the deprecated 0x9010 pool manager), this fires on the
+	// money path so the explorer's DEX graph and lux.exchange can index settled
+	// fills via eth_getLogs. poolId + taker indexed; amountOut + blockNumber data.
+	dexFillEventSig = common.BytesToHash(crypto.Keccak256([]byte("DEXFill(bytes32,address,uint256,uint256)")))
 
 	// Pause/Freeze event signatures (ATS regulatory compliance)
 	dexPausedEventSig   = common.BytesToHash(crypto.Keccak256([]byte("DEXPaused(address)")))
@@ -92,9 +135,15 @@ func abiEncodeBytes32(v [32]byte) []byte {
 	return word
 }
 
-// emitInitializeEvent emits a standard Uniswap V4 Initialize event.
+// emitInitializeEvent emits a standard Uniswap V4 Initialize event from `manager`.
+// The emitting address is a property of WHICH manager fired the init, not of the
+// event shape, so it is a parameter: the in-process V4 PoolManager passes its own
+// (0x9010 read-only-view) address; the native 0x9999 registry passes 0x9999 so the
+// graph's isPoolManager check creates the DEX Market for native pools. One builder,
+// address-parameterized — no second copy of the V4-Initialize encoding.
 func emitInitializeEvent(
 	stateDB StateDB,
+	manager common.Address,
 	poolId [32]byte,
 	key PoolKey,
 	sqrtPriceX96 *big.Int,
@@ -109,7 +158,7 @@ func emitInitializeEvent(
 	data = append(data, abiEncodeInt24(tick)...)
 
 	stateDB.AddLog(&ethtypes.Log{
-		Address: lxPoolAddr,
+		Address: manager,
 		Topics: []common.Hash{
 			initializeEventSig,
 			common.BytesToHash(poolId[:]),
@@ -172,6 +221,34 @@ func emitModifyLiquidityEvent(
 			modifyLiquidityEventSig,
 			common.BytesToHash(poolId[:]),
 			common.BytesToHash(sender.Bytes()),
+		},
+		Data: data,
+	})
+}
+
+// emitDEXFillEvent emits DEXFill(bytes32 indexed poolId, address indexed taker,
+// uint256 amountOut, uint256 blockNumber) from the 0x9999 settlement precompile.
+// This is the authoritative on-chain record of a settled native-CLOB fill — the
+// signal the graph indexer ingests into the DEX (CLOB) schema. It is emitted at
+// poolManagerAddr9999 (the money path), NOT lxPoolAddr (the deprecated 0x9010
+// read-only views), so an indexer can scope CLOB fills to the settlement vault.
+func emitDEXFillEvent(
+	stateDB StateDB,
+	poolId [32]byte,
+	taker common.Address,
+	amountOut *big.Int,
+	blockNumber uint64,
+) {
+	data := make([]byte, 0, 64)
+	data = append(data, abiEncodeBigInt(amountOut)...)
+	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(blockNumber))...)
+
+	stateDB.AddLog(&ethtypes.Log{
+		Address: poolManagerAddr9999,
+		Topics: []common.Hash{
+			dexFillEventSig,
+			common.BytesToHash(poolId[:]),
+			common.BytesToHash(taker.Bytes()),
 		},
 		Data: data,
 	})
