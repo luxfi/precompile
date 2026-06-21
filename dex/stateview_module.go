@@ -8,6 +8,7 @@ import (
 	"math/big"
 
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/ids"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
 	"github.com/luxfi/precompile/precompileconfig"
@@ -47,18 +48,17 @@ type stateViewConfigurator struct{}
 
 // StateView selectors (keccak4 of the view signatures).
 var (
-	SelectorGetPool           uint32
-	SelectorGetPoolId         uint32
-	SelectorGetSlot0          uint32
-	SelectorGetLiquidity      uint32
-	SelectorGetPosition       uint32
-	SelectorGetMarket         uint32
-	SelectorGetBestBidAsk     uint32
-	SelectorGetDepth          uint32
-	SelectorGetOpenOrders     uint32
-	SelectorGetReceiptStatus  uint32
-	SelectorGetHaltStatus     uint32
-	SelectorGetVerifierStatus uint32
+	SelectorGetPool          uint32
+	SelectorGetPoolId        uint32
+	SelectorGetSlot0         uint32
+	SelectorGetLiquidity     uint32
+	SelectorGetPosition      uint32
+	SelectorGetMarket        uint32
+	SelectorGetBestBidAsk    uint32
+	SelectorGetDepth         uint32
+	SelectorGetOpenOrders    uint32
+	SelectorGetReceiptStatus uint32
+	SelectorGetHaltStatus    uint32
 )
 
 func init() {
@@ -73,7 +73,6 @@ func init() {
 	SelectorGetOpenOrders = keccak4("getOpenOrders(address)")
 	SelectorGetReceiptStatus = keccak4("getReceiptStatus(bytes32)")
 	SelectorGetHaltStatus = keccak4("getHaltStatus(bytes32)")
-	SelectorGetVerifierStatus = keccak4("getVerifierStatus(bytes32,bytes32)")
 
 	if err := modules.RegisterModule(StateViewModule); err != nil {
 		panic(err)
@@ -264,23 +263,26 @@ func (v *StateViewContract) Run(
 		return encodeBytes32Array(open), suppliedGas - GasStateView - extra, nil
 
 	case SelectorGetReceiptStatus:
-		// getReceiptStatus(receiptID) -> bool consumed.
+		// getReceiptStatus(objectID) -> bool consumed. In the native seam this reports
+		// whether a D->C atomic settlement object id has already been consumed (the
+		// one-time settlement guard), the native analog of the prior receipt-consumed
+		// view.
 		if len(data) < 32 {
 			return nil, gasLeft, ErrViewBadInput
 		}
-		var rid [32]byte
+		var rid ids.ID
 		copy(rid[:], data[:32])
 		out := make([]byte, 32)
-		if isReceiptConsumed(rv, rid) {
+		if isSettlementConsumed(rv, rid) {
 			out[31] = 1
 		}
 		return out, gasLeft, nil
 
 	case SelectorGetHaltStatus:
 		// getHaltStatus(scopeID) -> (globalHalted, scopeHalted). scopeID is checked
-		// against market/asset/validatorSet halt slots (the scope kind is whichever
-		// the caller passes; we report whether the global halt is on AND whether the
-		// given id is halted as a market/asset).
+		// against the market/asset halt slots (the BLS-era validatorSet halt is gone);
+		// reports whether the global halt is on AND whether the given id is halted as a
+		// market or asset.
 		if len(data) < 32 {
 			return nil, gasLeft, ErrViewBadInput
 		}
@@ -291,23 +293,10 @@ func (v *StateViewContract) Run(
 			out[31] = 1
 		}
 		if isHalted(rv, makeStorageKey(haltMarketPrefix, id[:])) ||
-			isHalted(rv, makeStorageKey(haltAssetPrefix, id[:])) ||
-			isHalted(rv, makeStorageKey(haltValidatorSetPrefix, id[:])) {
+			isHalted(rv, makeStorageKey(haltAssetPrefix, id[:])) {
 			out[63] = 1
 		}
 		return out, gasLeft, nil
-
-	case SelectorGetVerifierStatus:
-		// getVerifierStatus(dChainID, validatorSetID) -> (active, certType, count,
-		// totalWeight, activationHeight). Reads the verifier registry META slot the
-		// swap path verifies against (no pubkey reconstruction — a status view).
-		if len(data) < 64 {
-			return nil, gasLeft, ErrViewBadInput
-		}
-		var dChainID, vsID [32]byte
-		copy(dChainID[:], data[:32])
-		copy(vsID[:], data[32:64])
-		return encodeVerifierStatus(rv, dChainID, vsID), gasLeft, nil
 
 	default:
 		return nil, gasLeft, errors.New("dex: unknown 0x9997 stateview selector")
@@ -369,37 +358,6 @@ func encodeBytes32Array(ids [][32]byte) []byte {
 	for i, id := range ids {
 		copy(out[64+i*32:64+i*32+32], id[:])
 	}
-	return out
-}
-
-// encodeVerifierStatus reads the verifier registry META slot directly (status,
-// certType, count, totalWeight, activationHeight) and ABI-packs
-// (active, certType, count, totalWeight, activationHeight) — 5 words. It reconstructs
-// NO pubkeys (a status view, not a verification), via the read-only view (no write).
-func encodeVerifierStatus(rv readOnlyView, dChainID, vsID [32]byte) []byte {
-	out := make([]byte, 32*5)
-	meta := rv.GetState(poolManagerAddr9999, vrMetaKey(dChainID, vsID))
-	if (meta == common.Hash{}) {
-		return out // active=false, all zero.
-	}
-	status := VerifierStatus(meta[0])
-	if status == VerifierActive {
-		out[31] = 1
-	}
-	out[63] = meta[1] // certType
-	// count (uint32 at meta[10:14]) and totalWeight (uint64 at meta[14:22]).
-	count := uint64(meta[10])<<24 | uint64(meta[11])<<16 | uint64(meta[12])<<8 | uint64(meta[13])
-	new(big.Int).SetUint64(count).FillBytes(out[64:96])
-	var tw uint64
-	for i := 14; i < 22; i++ {
-		tw = tw<<8 | uint64(meta[i])
-	}
-	new(big.Int).SetUint64(tw).FillBytes(out[96:128])
-	var ah uint64
-	for i := 2; i < 10; i++ {
-		ah = ah<<8 | uint64(meta[i])
-	}
-	new(big.Int).SetUint64(ah).FillBytes(out[128:160])
 	return out
 }
 
