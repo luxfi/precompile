@@ -289,151 +289,16 @@ func storeRestingOrder(stateDB stateKV, orderID [32]byte, o RestingOrder) {
 var (
 	ErrMakerZeroDelta     = errors.New("dex: modifyLiquidity delta must be non-zero")
 	ErrMakerNoMarket      = errors.New("dex: modifyLiquidity on an unregistered market (initialize first)")
-	ErrMakerInsufficient  = errors.New("dex: modifyLiquidity ADD exceeds available reserve (deposit first)")
 	ErrMakerBadTickRange  = errors.New("dex: modifyLiquidity tickLower must be < tickUpper, both in tick range")
 	ErrMakerNotOwner      = errors.New("dex: modifyLiquidity cancel/remove: caller is not the order owner")
 	ErrMakerAlreadyClosed = errors.New("dex: modifyLiquidity cancel: order already cancelled")
 	ErrMakerAmountRange   = errors.New("dex: modifyLiquidity delta exceeds uint256")
 )
 
-// runSettleModifyLiquidity handles 0x9999 `modifyLiquidity(PoolKey, params, hookData)`.
-// ADD locks reserve + records a resting order; REMOVE unlocks + cancels. PURE
-// arithmetic, no matching, full AccountID/AssetID. This is the kernel 0x9996 routes
-// every position lifecycle op into.
-func (s *SettleContract) runSettleModifyLiquidity(
-	state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, gas, errors.New("dex: cannot modifyLiquidity in read-only mode")
-	}
-	if gas < GasAddLiquidity {
-		return nil, 0, errors.New("dex: out of gas")
-	}
-	gasLeft := gas - GasAddLiquidity
-
-	key, params, hookData, err := DecodeModifyLiquidityInput(input)
-	if err != nil {
-		return nil, gasLeft, err
-	}
-	if params.LiquidityDelta == nil || params.LiquidityDelta.Sign() == 0 {
-		return nil, gasLeft, ErrMakerZeroDelta
-	}
-	if !isWord(new(big.Int).Abs(params.LiquidityDelta)) {
-		return nil, gasLeft, ErrMakerAmountRange
-	}
-	if params.TickLower >= params.TickUpper || params.TickLower < MinTick || params.TickUpper > MaxTick {
-		return nil, gasLeft, ErrMakerBadTickRange
-	}
-
-	stateDB := newPoolStateAdapter(state)
-
-	// The market must exist (initialize first). Reading the registry is deterministic.
-	poolID := key.ID()
-	if loadMarket(stateDB, poolID).Status != MarketStatusActive {
-		return nil, gasLeft, ErrMakerNoMarket
-	}
-
-	// Asset-halt gate on the locked asset (a halted asset cannot rest new orders;
-	// cancel/unlock is still allowed — funds must always be releasable).
-	side := decodeMakerSide(hookData)
-	lockedAsset := lockedAssetForSide(key, side)
-
-	// GLOBAL non-reentrant guard (same discipline as deposit/withdraw). A nested
-	// modifyLiquidity from inside any sub-call reverts before moving reserve.
-	if !enterCustodyKV(stateDB) {
-		return nil, gasLeft, ErrCustodyReentrant
-	}
-	defer exitCustodyKV(stateDB)
-
-	orderID := MakerOrderID(caller, poolID, params.Salt, params.TickLower, params.TickUpper)
-
-	if params.LiquidityDelta.Sign() > 0 {
-		// --- ADD: lock reserve, record order.
-		if isHalted(stateDB, makeStorageKey(haltAssetPrefix, lockedAsset[:])) {
-			return nil, gasLeft, ErrAssetHalted
-		}
-		delta := params.LiquidityDelta // already validated >0 and isWord; read-only here.
-		available := loadDepositorClaim(stateDB, caller, lockedAsset)
-		if available.Cmp(delta) < 0 {
-			return nil, gasLeft, ErrMakerInsufficient
-		}
-		// available -= delta ; locked += delta  (CONSERVATION: sum unchanged).
-		storeDepositorClaim(stateDB, caller, lockedAsset, new(big.Int).Sub(available, delta))
-		storeLockedReserve(stateDB, caller, lockedAsset,
-			new(big.Int).Add(loadLockedReserve(stateDB, caller, lockedAsset), delta))
-		// MOVE the locked asset OUT of the swap-payable settleVault and INTO the maker-
-		// locked sub-ledger. This is the conservation fix: a swap settle() draws only on
-		// settleVault, so it can no longer pay a taker (or let a withdraw double-spend)
-		// out of this maker's now-locked funds. The asset stays in the 0x9999 vault
-		// account; only its CLASSIFICATION changes (swap-payable -> maker-locked).
-		storeSettleVault(stateDB, lockedAsset, new(big.Int).Sub(loadSettleVault(stateDB, lockedAsset), delta))
-		storeMakerLockedVault(stateDB, lockedAsset, new(big.Int).Add(loadMakerLockedVault(stateDB, lockedAsset), delta))
-
-		// Record / top-up the resting order. A re-add to the same (owner,pool,salt,
-		// range) accumulates the locked amount (the orderID is identical), which is
-		// the natural "increase position" semantic 0x9996 increaseLiquidity wants.
-		existing := loadRestingOrder(stateDB, orderID)
-		newAmt := delta
-		if existing.Status == OrderStatusOpen {
-			newAmt = new(big.Int).Add(existing.LockedAmt, delta)
-		}
-		storeRestingOrder(stateDB, orderID, RestingOrder{
-			Owner:       caller,
-			PoolID:      poolID,
-			Side:        side,
-			LockedAsset: lockedAsset,
-			LockedAmt:   newAmt,
-			TickLower:   params.TickLower,
-			TickUpper:   params.TickUpper,
-			Salt:        params.Salt,
-			Status:      OrderStatusOpen,
-		})
-		appendOwnerOrder(stateDB, caller, orderID)
-		return encodeOrderResult(orderID, newAmt), gasLeft, nil
-	}
-
-	// --- REMOVE / cancel: unlock |delta| (clamped to locked), mark cancelled.
-	order := loadRestingOrder(stateDB, orderID)
-	if order.Status == OrderStatusNone {
-		return nil, gasLeft, ErrMakerNotOwner // no such order for this caller's (pool,salt,range)
-	}
-	// Ownership: the orderID already binds owner, but defense-in-depth — refuse if
-	// the stored owner is not the caller (full AccountID compare).
-	if order.Owner != caller {
-		return nil, gasLeft, ErrMakerNotOwner
-	}
-	if order.Status == OrderStatusCancelled {
-		return nil, gasLeft, ErrMakerAlreadyClosed
-	}
-
-	want := new(big.Int).Abs(params.LiquidityDelta)
-	locked := loadLockedReserve(stateDB, caller, order.LockedAsset)
-	release := want
-	if release.Cmp(locked) > 0 {
-		release = new(big.Int).Set(locked) // clamp to locked (cannot release more than held).
-	}
-	if release.Cmp(order.LockedAmt) > 0 {
-		release = new(big.Int).Set(order.LockedAmt) // also clamp to THIS order's locked amount.
-	}
-	// locked -= release ; available += release  (CONSERVATION: sum unchanged).
-	storeLockedReserve(stateDB, caller, order.LockedAsset, new(big.Int).Sub(locked, release))
-	storeDepositorClaim(stateDB, caller, order.LockedAsset,
-		new(big.Int).Add(loadDepositorClaim(stateDB, caller, order.LockedAsset), release))
-	// MOVE the released asset back from the maker-locked sub-ledger INTO the swap-
-	// payable settleVault (the inverse of the ADD move) so the now-available claim is
-	// once again backed by a withdrawable/swap-payable vault balance. Invariant
-	// preserved: settleVault[a] + makerLockedVault[a] == the vault's real holdings.
-	storeMakerLockedVault(stateDB, order.LockedAsset, new(big.Int).Sub(loadMakerLockedVault(stateDB, order.LockedAsset), release))
-	storeSettleVault(stateDB, order.LockedAsset, new(big.Int).Add(loadSettleVault(stateDB, order.LockedAsset), release))
-
-	remaining := new(big.Int).Sub(order.LockedAmt, release)
-	order.LockedAmt = remaining
-	if remaining.Sign() <= 0 {
-		order.Status = OrderStatusCancelled // fully removed.
-	}
-	storeRestingOrder(stateDB, orderID, order)
-	return encodeOrderResult(orderID, remaining), gasLeft, nil
-}
+// runSettleModifyLiquidity MOVED to position_commit.go — the LP D-committed rail
+// (ADD commits to D via a C->D object; REMOVE requests a D->C withdraw). The storage
+// helpers below (RestingOrder + the owner index + the per-owner reserve accumulator)
+// are the POSITION RECORD that rail composes, kept here as the single record store.
 
 // encodeOrderResult returns (orderID bytes32, remainingLocked uint256) ABI-packed.
 func encodeOrderResult(orderID [32]byte, remaining *big.Int) []byte {
