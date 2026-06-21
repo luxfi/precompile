@@ -9,10 +9,10 @@ import (
 )
 
 // LXSettleAddress is THE production DEX settlement precompile (LP-9999). It is
-// the SOLE money path: every value-moving DEX call settles here by verifying a
-// D-Chain fill receipt + certificate. The deprecated 0x9010 V4 PoolManager
-// forwards value-moving calls to this exact implementation sharing this exact
-// storage namespace (never two replay maps, never two money paths).
+// the SOLE money path and the SOLE DEX precompile: every value-moving DEX call
+// settles here via the native C<->D two-phase atomic seam. 0x9010 was removed;
+// 0x9999 is the sole DEX precompile — there is exactly one money path and one
+// replay namespace (dex.precompile.v1.9999.*), never two.
 const LXSettleAddress = "0x0000000000000000000000000000000000009999"
 
 // poolManagerAddr9999 is the 0x9999 settlement address as a common.Address. All
