@@ -81,9 +81,9 @@ func TestLP_ModifyLiquidityCommitsCToD(t *testing.T) {
 	if !ok {
 		t.Fatal("C->D commit object not found in shared memory after commit")
 	}
-	owner, asset, amount, decOK := decodeAtomicObject(raw)
-	if !decOK || owner != h.caller || asset != native || amount != 400 {
-		t.Fatalf("C->D commit object mismatch: ok=%v owner=%s asset=%x amount=%d", decOK, owner.Hex(), asset, amount)
+	rail, owner, asset, amount, decOK := decodeAtomicObject(raw)
+	if !decOK || rail != railLP || owner != h.caller || asset != native || amount != 400 {
+		t.Fatalf("C->D commit object mismatch: ok=%v rail=%d owner=%s asset=%x amount=%d", decOK, rail, owner.Hex(), asset, amount)
 	}
 }
 
@@ -97,17 +97,17 @@ func TestLP_CollectImportsDToCCredit(t *testing.T) {
 	db := newPoolStateAdapter(h.state)
 
 	// Commit 400 (committedPositions = 400, the C-side backing of the live position).
-	h.commitNativePosition(t, -60, 60, 400, lpSalt(0x02))
+	recordID, _ := h.commitNativePosition(t, -60, 60, 400, lpSalt(0x02))
 	if loadCommittedPositions(db, native).Int64() != 400 {
 		t.Fatalf("committedPositions must be 400 after commit, got %s", loadCommittedPositions(db, native))
 	}
 
-	// D exported a D->C collect object for the LP (principal withdraw of 250).
+	// D exported a railLP D->C collect object for the LP (principal withdraw of 250).
 	outputID := ids.ID{0xC0, 0x11}
-	h.putDtoCObject(t, h.caller, outputID, native, 250)
+	h.putDtoCLPObject(t, h.caller, outputID, native, 250)
 
 	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
-	out, err := h.collectNative(outputID, 250)
+	out, err := h.collectNative(outputID, 250, recordID)
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
@@ -121,10 +121,14 @@ func TestLP_CollectImportsDToCCredit(t *testing.T) {
 	if loadCommittedPositions(db, native).Int64() != 150 {
 		t.Fatalf("committedPositions must be 150 after collecting 250, got %s", loadCommittedPositions(db, native))
 	}
+	// The position record's backing fell to 150 too (still Open).
+	if loadRestingOrder(db, recordID).LockedAmt.Int64() != 150 {
+		t.Fatalf("position record LockedAmt must be 150 after collecting 250, got %s", loadRestingOrder(db, recordID).LockedAmt)
+	}
 	h.vaultInvariantNative(t, "after collect")
 
 	// Replay: consuming the SAME object again reverts (one-time D->C).
-	if _, err := h.collectNative(outputID, 250); err != ErrNativeSettleReplay {
+	if _, err := h.collectNative(outputID, 250, recordID); err != ErrNativeSettleReplay {
 		t.Fatalf("re-collecting the same D->C object must revert ErrNativeSettleReplay, got: %v", err)
 	}
 }
@@ -155,11 +159,11 @@ func TestLP_DecreaseLiquidityReturnsFundsToC(t *testing.T) {
 		t.Fatal("the withdraw request alone must NOT change committedPositions")
 	}
 
-	// D exports the D->C object for the 200 principal; the LP collects it.
+	// D exports the railLP D->C object for the 200 principal; the LP collects it.
 	outputID := ids.ID{0xDE, 0xC0}
-	h.putDtoCObject(t, h.caller, outputID, native, 200)
+	h.putDtoCLPObject(t, h.caller, outputID, native, 200)
 	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
-	if _, err := h.collectNative(outputID, 200); err != nil {
+	if _, err := h.collectNative(outputID, 200, recordID); err != nil {
 		t.Fatalf("collect of decreased principal: %v", err)
 	}
 	if new(big.Int).Sub(h.state.stateDB.GetBalance(h.caller).ToBig(), callerBefore).Int64() != 200 {
@@ -200,9 +204,9 @@ func TestLP_BurnClosesPositionAndWithdraws(t *testing.T) {
 
 	// D exports the full principal; the LP collects it.
 	outputID := ids.ID{0xB0, 0x12}
-	h.putDtoCObject(t, h.caller, outputID, native, 500)
+	h.putDtoCLPObject(t, h.caller, outputID, native, 500)
 	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
-	if _, err := h.collectNative(outputID, 500); err != nil {
+	if _, err := h.collectNative(outputID, 500, recordID); err != nil {
 		t.Fatalf("collect of burned principal: %v", err)
 	}
 	if new(big.Int).Sub(h.state.stateDB.GetBalance(h.caller).ToBig(), callerBefore).Int64() != 500 {
@@ -210,6 +214,10 @@ func TestLP_BurnClosesPositionAndWithdraws(t *testing.T) {
 	}
 	if loadCommittedPositions(db, native).Sign() != 0 {
 		t.Fatalf("committedPositions must be 0 after the full withdraw, got %s", loadCommittedPositions(db, native))
+	}
+	// FIX-3: a fully-collected position is Closed (terminal).
+	if loadRestingOrder(db, recordID).Status != OrderStatusCancelled {
+		t.Fatalf("burn->full-collect must leave the position Closed, got status %d", loadRestingOrder(db, recordID).Status)
 	}
 	h.vaultInvariantNative(t, "after burn->collect")
 }
@@ -223,7 +231,7 @@ func TestLP_CancelRefundsViaDToC(t *testing.T) {
 	db := newPoolStateAdapter(h.state)
 	salt := lpSalt(0x05)
 
-	h.commitNativePosition(t, -120, 120, 300, salt)
+	recordID, _ := h.commitNativePosition(t, -120, 120, 300, salt)
 	callerAfterCommit := h.state.stateDB.GetBalance(h.caller).ToBig()
 
 	// CANCEL via 0x9996 cancelLimit (REMOVE). No C credit here.
@@ -238,10 +246,10 @@ func TestLP_CancelRefundsViaDToC(t *testing.T) {
 		t.Fatal("cancel alone must NOT change committedPositions")
 	}
 
-	// The refund returns ONLY by consuming the D->C object.
+	// The refund returns ONLY by consuming the railLP D->C object.
 	outputID := ids.ID{0xCA, 0x11}
-	h.putDtoCObject(t, h.caller, outputID, native, 300)
-	if _, err := h.collectNative(outputID, 300); err != nil {
+	h.putDtoCLPObject(t, h.caller, outputID, native, 300)
+	if _, err := h.collectNative(outputID, 300, recordID); err != nil {
 		t.Fatalf("cancel refund collect: %v", err)
 	}
 	if new(big.Int).Sub(h.state.stateDB.GetBalance(h.caller).ToBig(), callerAfterCommit).Int64() != 300 {
@@ -276,7 +284,7 @@ func TestLP_NeverCSpendableAndDCommitted(t *testing.T) {
 	assertNeverBoth := func(where string, prevCaller, prevCommitted *big.Int) (*big.Int, *big.Int) {
 		caller := h.state.stateDB.GetBalance(h.caller).ToBig()
 		committed := loadCommittedPositions(db, native)
-		dCaller := new(big.Int).Sub(caller, prevCaller)         // change in CSpendable
+		dCaller := new(big.Int).Sub(caller, prevCaller)          // change in CSpendable
 		dCommitted := new(big.Int).Sub(committed, prevCommitted) // change in DCommitted
 		// Every unit that left CSpendable entered DCommitted (and vice-versa): the two
 		// deltas are exact negatives — a unit is never created in both nor lost from both.
@@ -292,6 +300,7 @@ func TestLP_NeverCSpendableAndDCommitted(t *testing.T) {
 
 	c, cm := h.state.stateDB.GetBalance(h.caller).ToBig(), loadCommittedPositions(db, native)
 	salt := lpSalt(0x06)
+	recordID := MakerOrderID(h.caller, h.key.ID(), salt, -60, 60)
 
 	// COMMIT 400: 400 units move CSpendable -> DCommitted.
 	hookData := []byte{makerEnvelopeTag[0], makerEnvelopeTag[1], makerEnvelopeTag[2], makerEnvelopeTag[3], byte(MakerSideBid)}
@@ -319,8 +328,8 @@ func TestLP_NeverCSpendableAndDCommitted(t *testing.T) {
 
 	// COLLECT 300: 300 units move DCommitted -> CSpendable.
 	outputID := ids.ID{0x6A, 0x33}
-	h.putDtoCObject(t, h.caller, outputID, native, 300)
-	if _, err := h.collectNative(outputID, 300); err != nil {
+	h.putDtoCLPObject(t, h.caller, outputID, native, 300)
+	if _, err := h.collectNative(outputID, 300, recordID); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
 	_, cm = assertNeverBoth("after collect 300", c, cm)
@@ -330,11 +339,12 @@ func TestLP_NeverCSpendableAndDCommitted(t *testing.T) {
 }
 
 // TestLP_FeeAccrualCollectableOnlyViaDToCObject — fees (value earned on D beyond the
-// LP's principal) are collectable ONLY by consuming a D->C object, and only up to the
-// LP rail's backing. With the committedPositions pot operator-seeded for fee backing
-// (the symmetric analog of the swap rail's seam seeding), a fee collect succeeds via a
-// real object; with NO backing it reverts ErrLPCollectUnbacked (never minted, never
-// raided from another pot).
+// LP's principal) are collectable ONLY by consuming a railLP D->C object, and only up
+// to the LP's OWN recorded backing. The keeper reflects the D-Chain maker-fee credit
+// onto the LP's position via creditPositionFee (raising THAT record's withdrawable +
+// the pot together), so a principal+fees collect succeeds against a real object; once
+// the record is fully collected (Closed) a further collect reverts (no mint, no raid,
+// no per-object backing).
 func TestLP_FeeAccrualCollectableOnlyViaDToCObject(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
@@ -342,19 +352,23 @@ func TestLP_FeeAccrualCollectableOnlyViaDToCObject(t *testing.T) {
 	db := newPoolStateAdapter(h.state)
 	salt := lpSalt(0x07)
 
-	// LP commits 1000 principal; operator seeds 50 of fee backing into the LP pot.
-	h.commitNativePosition(t, -60, 60, 1000, salt)
-	h.seedCommittedNative(50)
+	// LP commits 1000 principal; the keeper credits 50 of earned fees to THIS position
+	// (raises the record's withdrawable to 1050 AND the LP pot to 1050).
+	recordID, _ := h.commitNativePosition(t, -60, 60, 1000, salt)
+	h.creditPositionFeeNative(t, recordID, 50)
 	if loadCommittedPositions(db, native).Int64() != 1050 {
 		t.Fatalf("committedPositions must be 1000 principal + 50 fee backing, got %s", loadCommittedPositions(db, native))
 	}
-	h.vaultInvariantNative(t, "after commit + fee seed")
+	if loadRestingOrder(db, recordID).LockedAmt.Int64() != 1050 {
+		t.Fatalf("the position's withdrawable must rise to 1050 with the fee credit, got %s", loadRestingOrder(db, recordID).LockedAmt)
+	}
+	h.vaultInvariantNative(t, "after commit + fee credit")
 
-	// D exports a D->C collect object for principal+fees = 1050. The LP collects it.
+	// D exports a railLP D->C collect object for principal+fees = 1050. The LP collects.
 	outputID := ids.ID{0xFE, 0xE5}
-	h.putDtoCObject(t, h.caller, outputID, native, 1050)
+	h.putDtoCLPObject(t, h.caller, outputID, native, 1050)
 	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
-	if _, err := h.collectNative(outputID, 1050); err != nil {
+	if _, err := h.collectNative(outputID, 1050, recordID); err != nil {
 		t.Fatalf("fee+principal collect via D->C object: %v", err)
 	}
 	if new(big.Int).Sub(h.state.stateDB.GetBalance(h.caller).ToBig(), callerBefore).Int64() != 1050 {
@@ -364,12 +378,13 @@ func TestLP_FeeAccrualCollectableOnlyViaDToCObject(t *testing.T) {
 		t.Fatalf("committedPositions must be 0 after collecting 1050, got %s", loadCommittedPositions(db, native))
 	}
 
-	// A SECOND fee collect with NO remaining backing reverts (no mint, no raid). The
-	// position is still open (Committed) so the rail gate passes; the POT is empty.
+	// A SECOND collect now reverts: the record is fully collected (Closed, LockedAmt=0),
+	// so the per-object gate refuses it (no mint, no raid). The position no longer
+	// satisfies the Open/Closing gate.
 	outputID2 := ids.ID{0xFE, 0xE6}
-	h.putDtoCObject(t, h.caller, outputID2, native, 10)
-	if _, err := h.collectNative(outputID2, 10); err != ErrLPCollectUnbacked {
-		t.Fatalf("a fee collect beyond the LP pot backing must revert ErrLPCollectUnbacked, got: %v", err)
+	h.putDtoCLPObject(t, h.caller, outputID2, native, 10)
+	if _, err := h.collectNative(outputID2, 10, recordID); err != ErrLPCollectNoPosition {
+		t.Fatalf("a collect against a fully-collected (Closed) position must revert ErrLPCollectNoPosition, got: %v", err)
 	}
 }
 
@@ -418,7 +433,10 @@ func TestRED_LP_PositionFundableOnlyByConsumingCToDObject(t *testing.T) {
 	if !ok {
 		t.Fatal("a backed commit must stage a C->D object D can consume")
 	}
-	_, _, amount, _ := decodeAtomicObject(raw)
+	rail, _, _, amount, _ := decodeAtomicObject(raw)
+	if rail != railLP {
+		t.Fatalf("the C->D commit object must be stamped railLP, got rail=%d", rail)
+	}
 	if amount != 400 {
 		t.Fatalf("the C->D object amount must equal the C debit (400), got %d", amount)
 	}
@@ -435,30 +453,31 @@ func TestRED_LP_CollectCannotCreditWithoutDToCObject(t *testing.T) {
 	native := h.inAssetID()
 	db := newPoolStateAdapter(h.state)
 
-	// Give the LP a live position (so the rail gate passes) and a fat committed pot.
-	h.commitNativePosition(t, -60, 60, 1000, lpSalt(0x09))
+	// Give the LP a live position (so the per-object gate has a record to name) and a
+	// fat committed pot.
+	recordID, _ := h.commitNativePosition(t, -60, 60, 1000, lpSalt(0x09))
 	committedBefore := loadCommittedPositions(db, native)
 
 	// (a) collect with NO object in shared memory => revert, NO credit.
 	phantom := ids.ID{0x00, 0xDE, 0xAD}
-	if _, err := h.collectNative(phantom, 500); err != ErrNativeNoSettlement {
+	if _, err := h.collectNative(phantom, 500, recordID); err != ErrNativeNoSettlement {
 		t.Fatalf("collect with no D->C object must revert ErrNativeNoSettlement, got: %v", err)
 	}
 
-	// (b) a real object exists for 250, but the claim DECLARES 500 => amount-bind
+	// (b) a real railLP object exists for 250, but the claim DECLARES 500 => amount-bind
 	// failure, NO credit (the credit is the RECORDED amount, not the declared one).
 	realObj := ids.ID{0x00, 0xC0, 0x01}
-	h.putDtoCObject(t, h.caller, realObj, native, 250)
-	if _, err := h.collectNative(realObj, 500); err != ErrNativeSettleAmount {
+	h.putDtoCLPObject(t, h.caller, realObj, native, 250)
+	if _, err := h.collectNative(realObj, 500, recordID); err != ErrNativeSettleAmount {
 		t.Fatalf("collect declaring 500 against a 250 object must revert ErrNativeSettleAmount, got: %v", err)
 	}
 
-	// (c) an object owned by a DIFFERENT account => owner-bind failure when this caller
-	// claims it (recipient=caller != recorded owner).
+	// (c) a railLP object owned by a DIFFERENT account => owner-bind failure when this
+	// caller claims it (recipient=caller != recorded owner).
 	other := common.HexToAddress("0x0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a")
 	victimObj := ids.ID{0x00, 0x71, 0x71}
-	h.putDtoCObject(t, other, victimObj, native, 250)
-	if _, err := h.collectNative(victimObj, 250); err != ErrNativeSettleOwner {
+	h.putDtoCLPObject(t, other, victimObj, native, 250)
+	if _, err := h.collectNative(victimObj, 250, recordID); err != ErrNativeSettleOwner {
 		t.Fatalf("collect of another account's object must revert ErrNativeSettleOwner, got: %v", err)
 	}
 
@@ -501,15 +520,15 @@ func TestLP_ConservationAcrossCommitMatchCollect(t *testing.T) {
 	h.vaultInvariantNative(t, "after commit")
 
 	// 2) D imports the C->D object and matches (modeled): the LP earns 80 fees. The
-	// operator-managed LP reserve gains the 80 fee backing on C (the cross-rail
-	// settlement of taker flow into the maker's collectable balance).
-	h.seedCommittedNative(80)
+	// keeper reflects the 80 onto THIS position (raises its withdrawable + the LP pot),
+	// the cross-rail settlement of taker flow into the maker's collectable balance.
+	h.creditPositionFeeNative(t, recordID, 80)
 	h.vaultInvariantNative(t, "after match (fee backing)")
 
-	// 3) COLLECT the full withdrawable: principal 1200 + fees 80 = 1280, via a D->C object.
+	// 3) COLLECT the full withdrawable: principal 1200 + fees 80 = 1280, via a railLP object.
 	outputID := ids.ID{0x0A, 0xCC}
-	h.putDtoCObject(t, h.caller, outputID, native, 1280)
-	if _, err := h.collectNative(outputID, 1280); err != nil {
+	h.putDtoCLPObject(t, h.caller, outputID, native, 1280)
+	if _, err := h.collectNative(outputID, 1280, recordID); err != nil {
 		t.Fatalf("collect principal+fees: %v", err)
 	}
 	h.vaultInvariantNative(t, "after collect")
