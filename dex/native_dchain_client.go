@@ -150,14 +150,14 @@ func (c *NativeDChainClient) SubmitSwapIntent(
 
 	// Derive the injective intent id (the shared-memory key) over the FULL identity.
 	cChainID := atomicState.CChainID()
-	dChainID := atomicState.ChainID() // resolved by the host to the D-Chain peer below
-	// NOTE: ChainID() is THIS chain (C). The D peer is the configured target chain;
-	// for the native seam the dexvm runs as the primary network's D-Chain. The
-	// object is keyed by intentID and PUT under the D chain's partition; the dexvm
-	// imports it via Get(cChainID). We resolve the D chain id from the settle config.
-	dID := loadDChainTarget(stateDB)
-	if dID != ids.Empty {
-		dChainID = dID
+	// The D peer is the dexvm running as the primary network's D-Chain. The object is
+	// keyed by intentID and PUT under the D chain's partition; the dexvm imports it
+	// via Get(cChainID). The host resolves the D-Chain id at runtime from the chain
+	// topology (consensus-context "D" alias) — always-on, zero per-net config; a
+	// network with no dexvm yields ids.Empty and the seam stays closed (no mint).
+	dChainID := atomicState.DChainID()
+	if dChainID == ids.Empty {
+		return ids.Empty, ErrNativeNoAtomicMemory
 	}
 	intentID = DeriveIntentID(
 		atomicState.NetworkID(), cChainID, dChainID,
@@ -234,9 +234,9 @@ func (c *NativeDChainClient) SubmitPositionCommit(
 	// Derive the injective position-commit id (the shared-memory key) over the FULL
 	// identity, in the position-commit domain (disjoint from swap-intent ids).
 	cChainID := atomicState.CChainID()
-	dChainID := atomicState.ChainID()
-	if dID := loadDChainTarget(stateDB); dID != ids.Empty {
-		dChainID = dID
+	dChainID := atomicState.DChainID()
+	if dChainID == ids.Empty {
+		return ids.Empty, 0, ErrNativeNoAtomicMemory
 	}
 	positionID = DerivePositionCommitID(
 		atomicState.NetworkID(), cChainID, dChainID,
@@ -323,7 +323,7 @@ func (c *NativeDChainClient) ImportPositionCollect(
 	}
 	stateDB := newPoolStateAdapter(state)
 
-	dChainID := loadDChainTarget(stateDB)
+	dChainID := atomicState.DChainID()
 	if dChainID == ids.Empty {
 		return 0, ErrNativeNoAtomicMemory
 	}
@@ -516,11 +516,11 @@ func (c *NativeDChainClient) ImportSettlement(
 
 	// The D->C objects are written by the dexvm under the D chain's export, keyed by
 	// the C chain partition; C reads them via Get(dChainID, key). Resolve the D
-	// source chain (the object's origin).
-	dChainID := loadDChainTarget(stateDB)
+	// source chain (the object's origin) from the runtime chain topology.
+	dChainID := atomicState.DChainID()
 	if dChainID == ids.Empty {
-		// Without a configured D target there is no source chain to read from — the
-		// on-ramp is not wired for atomic settlement.
+		// No dexvm on this network => no source chain to read from — the on-ramp is
+		// not wired for atomic settlement.
 		return 0, ErrNativeNoAtomicMemory
 	}
 
