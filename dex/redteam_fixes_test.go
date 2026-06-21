@@ -169,13 +169,13 @@ func TestDecodeABIBytesZeroLengthHookData(t *testing.T) {
 func TestExtsloadReadsSingleSlot(t *testing.T) {
 	stateDB := NewMockStateDB()
 
-	// Write a known value to a slot at the pool manager address
+	// Write a known value to a slot at the 0x9999 money-path address (extsload on the
+	// sole DEX precompile reads its own slots — see runSettleExtsloadArray).
 	slot := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000042")
 	expected := common.HexToHash("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
-	stateDB.SetState(lxPoolAddr, slot, expected)
+	stateDB.SetState(poolManagerAddr9999, slot, expected)
 
-	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
+	c := &SettleContract{}
 
 	// Build extsload(bytes32) call: 4-byte selector + 32-byte slot
 	input := make([]byte, 36)
@@ -185,7 +185,7 @@ func TestExtsloadReadsSingleSlot(t *testing.T) {
 	// Use a minimal mock accessible state
 	mockState := &mockAccessibleState{stateDB: stateDB}
 
-	result, gas, err := c.Run(mockState, common.Address{}, lxPoolAddr, input, 100000, true)
+	result, gas, err := c.Run(mockState, common.Address{}, poolManagerAddr9999, input, 100000, true)
 	if err != nil {
 		t.Fatalf("extsload failed: %v", err)
 	}
@@ -208,11 +208,10 @@ func TestExtsloadArrayReadsMultipleSlots(t *testing.T) {
 	slot1 := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000002")
 	val1 := common.HexToHash("0x00000000000000000000000000000000000000000000000000000000000000BB")
 
-	stateDB.SetState(lxPoolAddr, slot0, val0)
-	stateDB.SetState(lxPoolAddr, slot1, val1)
+	stateDB.SetState(poolManagerAddr9999, slot0, val0)
+	stateDB.SetState(poolManagerAddr9999, slot1, val1)
 
-	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
+	c := &SettleContract{}
 
 	// Build extsload(bytes32[]) call
 	// ABI: selector(4) + offset(32) + length(32) + slot0(32) + slot1(32)
@@ -228,7 +227,7 @@ func TestExtsloadArrayReadsMultipleSlots(t *testing.T) {
 	copy(input[4+96:4+128], slot1.Bytes())
 
 	mockState := &mockAccessibleState{stateDB: stateDB}
-	result, _, err := c.Run(mockState, common.Address{}, lxPoolAddr, input, 100000, true)
+	result, _, err := c.Run(mockState, common.Address{}, poolManagerAddr9999, input, 100000, true)
 	if err != nil {
 		t.Fatalf("extsload array failed: %v", err)
 	}
@@ -250,15 +249,14 @@ func TestExtsloadArrayReadsMultipleSlots(t *testing.T) {
 }
 
 func TestExtsloadShortInputRejected(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
+	c := &SettleContract{}
 
 	// Only 20 bytes of slot data (need 32)
 	input := make([]byte, 24)
 	binary.BigEndian.PutUint32(input[0:4], SelectorExtsload)
 
 	mockState := &mockAccessibleState{stateDB: NewMockStateDB()}
-	_, _, err := c.Run(mockState, common.Address{}, lxPoolAddr, input, 100000, true)
+	_, _, err := c.Run(mockState, common.Address{}, poolManagerAddr9999, input, 100000, true)
 	if err == nil {
 		t.Error("expected error for short extsload input")
 	}
