@@ -34,54 +34,49 @@ type AccessSet struct {
 	Writes []common.Hash
 }
 
-// PredictAccesses returns the storage slots a settle of r will read and write. It
-// is a PURE function of the receipt (and caller for the allowance slot) — the
-// scheduler calls it before execution. epochHint is the block number used for the
-// sharded analytics slots; if the scheduler does not know it, any value in the
-// epoch yields a slot in the same shard family, which is conservative (it may
-// over-predict a shared analytics slot, never under-predict a real conflict).
-func PredictAccesses(r *DFillReceiptV1, epochHint uint64) AccessSet {
+// PredictAccesses returns the storage slots a native settle of (key, params,
+// caller) will read and write. It is a PURE function of the swap inputs — the
+// scheduler calls it before execution. The native seam settles a D->C atomic
+// object, so the conflict-relevant write is the settlement-consumed slot (keyed by
+// the object id, which PredictAccesses cannot know statically) plus the per-asset
+// vault and the caller's balance; we surface the conflict-relevant axes the
+// scheduler CAN derive (pool, assets, caller). epochHint is the block number for
+// the sharded analytics slot.
+//
+// objectID is the D->C settlement object id when the scheduler knows it (Phase B);
+// ids.Empty for a Phase-A intent (which writes an intent slot keyed by a derived
+// intent id the scheduler also cannot know statically — the per-asset vault and
+// caller-balance writes are the derivable conflict axes either way).
+func PredictAccesses(key PoolKey, params SwapParams, caller common.Address, epochHint uint64) AccessSet {
 	var as AccessSet
+	poolID := key.ID()
+	in, out := swapAssetDirection(key, params)
 
-	// --- READS (mostly read-only hot slots; never cause serialization) ---
-	// The market-halt scope keys on r.PoolKeyHash (the validated pool identity), the
-	// SAME id checkHalt reads — NOT the free-form r.MarketID. (See halt9999.go.)
+	// --- READS (read-only hot slots; never cause serialization) ---
 	as.Reads = append(as.Reads,
 		haltGlobalKey,
-		makeStorageKey(haltMarketPrefix, r.PoolKeyHash[:]),
-		makeStorageKey(haltAssetPrefix, r.TokenInAssetID[:]),
-		makeStorageKey(haltAssetPrefix, r.TokenOutAssetID[:]),
-		makeStorageKey(haltReceiptTypePrefix, []byte{byte(r.CertType)}),
-		makeStorageKey(haltValidatorSetPrefix, r.DChainID[:]), // checkHalt reads the vset halt
+		makeStorageKey(haltMarketPrefix, poolID[:]),
+		makeStorageKey(haltAssetPrefix, in[:]),
+		makeStorageKey(haltAssetPrefix, out[:]),
 		cfgNetworkIDKey,
 		cfgCChainIDKey,
-		consumedReceiptKey(r.ReceiptID),
-		settleVaultKey(r.TokenInAssetID),
-		settleVaultKey(r.TokenOutAssetID),
+		cfgDChainIDKey,
+		settleVaultKey(in),
+		settleVaultKey(out),
 	)
-	// Verifier registry meta slot is a read too (per-validator slots depend on set
-	// size; the meta slot is the conflict-relevant one — the set is only ever WRITTEN
-	// by governance, never by a swap, so a swap's registry reads never serialize
-	// against another swap). Surfacing it lets the scheduler see the dependency on a
-	// governance rotation. The verify path resolves the set under cert.ValidatorSetID,
-	// but PredictAccesses sees only the receipt; the receipt's DChainID scopes the
-	// registry namespace, which is the conflict-relevant axis for a rotation.
 
-	// --- WRITES (each keyed by receipt / asset / account — NO global slot) ---
+	// --- WRITES (each keyed by asset / pool / account — NO global slot) ---
 	as.Writes = append(as.Writes,
-		consumedReceiptKey(r.ReceiptID),        // replay map, unique per fill
-		settleVaultKey(r.TokenInAssetID),       // vault holdings of tokenIn
-		settleVaultKey(r.TokenOutAssetID),      // vault holdings of tokenOut
-		feeBucketKey(r.FeeAssetID, epochHint),  // SHARDED fee bucket
-		volBucketKey(r.PoolKeyHash, epochHint), // SHARDED volume bucket
+		settleVaultKey(in),              // vault holdings of tokenIn (Phase A lock)
+		settleVaultKey(out),             // vault holdings of tokenOut (Phase B credit)
+		volBucketKey(poolID, epochHint), // SHARDED volume bucket
 	)
-	// Native balance moves are EVM account balances (sender, recipient, 0x9999),
-	// which Block-STM tracks as account-state accesses outside the precompile's
-	// storage slots; we surface them as derived "balance" keys so the scheduler
-	// also serializes two swaps that touch the same account's balance.
+	// Native balance moves are EVM account balances (caller, 0x9999), which Block-STM
+	// tracks as account-state accesses; we surface them as derived "balance" keys so
+	// the scheduler serializes two swaps that touch the same account's asset balance.
 	as.Writes = append(as.Writes,
-		balanceSlot(r.Sender, r.TokenInAssetID),
-		balanceSlot(r.Recipient, r.TokenOutAssetID),
+		balanceSlot(caller, in),
+		balanceSlot(caller, out),
 	)
 	return as
 }

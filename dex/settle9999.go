@@ -7,65 +7,51 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/holiman/uint256"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/ids"
 	"github.com/luxfi/precompile/contract"
 )
 
-// settle9999.go is THE production DEX money path (LP-9999). It composes the
-// single-concern pieces — receipt decode (receipt.go), halt gate (halt9999.go),
-// context binding (receipt.go BindToSwap), replay protection (consumedReceipt
-// below), certificate verification (verifier_registry.go -> bls_cert.go), and
-// value settlement (below) — into the V4 swap handler. C SETTLES; C never matches.
+// settle9999.go is THE production DEX money path (LP-9999) — the NATIVE C<->D
+// ATOMIC seam. C SETTLES; C never matches. The matcher is the dexvm (D-Chain),
+// whose OWN consensus is the matching authority; C consumes committed D output
+// through the primary-network atomic shared-memory import/export primitive (the
+// SAME one platformvm and the dexvm use). There is NO BLS certificate, NO
+// VerifierRegistry, NO DFillReceipt, NO certType in the value path. Value crosses
+// ONLY as an atomic shared-memory object.
 //
-// The handler is a PURE DETERMINISTIC function of (input, caller, StateDB, block):
-// the only "external" thing it touches is the cert, which it VERIFIES rather than
-// queries. There is no live matcher call, no remote backend, no embedded order
-// book, and no inert mode — settlement is exactly "verify a committed+certified
-// D-Chain fill, then move value". Any failure reverts with no partial state.
-
-// --- Replay protection: consumedReceipt[receiptID] -> block number (non-zero).
+// THE V4 swap selector is two-phase, keyed on hookData (the V4 ABI is UNCHANGED —
+// web/mobile already pass `bytes hookData`; only its CONTENTS select the phase):
 //
-// Durable (survives restart), consensus-shared (identical on every validator
-// replaying the block), and content-addressed by the D-Chain receiptID. A
-// re-executed / reorged / retried C tx carrying the same receipt finds it already
-// consumed and reverts — exactly-once settlement. This is the RED H1 property the
-// deprecated path also required: the replay map lives in StateDB, never a process
-// cache.
-var consumedReceiptPrefix = []byte(settleStateNamespace + "consumed")
-
-func consumedReceiptKey(receiptID [32]byte) common.Hash {
-	return makeStorageKey(consumedReceiptPrefix, receiptID[:])
-}
-
-func isReceiptConsumed(stateDB stateKV, receiptID [32]byte) bool {
-	return stateDB.GetState(poolManagerAddr9999, consumedReceiptKey(receiptID)) != (common.Hash{})
-}
-
-func markReceiptConsumed(stateDB stateKV, receiptID [32]byte, blockNumber uint64) {
-	var v common.Hash
-	// Store blockNumber+1 so the slot is non-zero even at genesis height 0 (a zero
-	// slot reads as "not consumed"); the +1 is a presence sentinel, not a height
-	// the caller reads back.
-	uint256.NewInt(blockNumber + 1).WriteToSlice(v[:])
-	stateDB.SetState(poolManagerAddr9999, consumedReceiptKey(receiptID), v)
-}
+//   - PHASE A — INTENT (hookData empty, or tagged INTENT): lock the taker's input
+//     on C and write a C->D atomic intent object. Returns the intent id (NOT a
+//     fill). D imports the object and matches under its own consensus.
+//   - PHASE B — SETTLEMENT (hookData tagged SETTLE, carrying a D->C object ref):
+//     consume the D->C atomic settlement object ONCE and credit the output. This
+//     is the ONLY path that credits C.
+//
+// THE SHIP RULE (enforced structurally, not by trust): a C balance can be credited
+// by 0x9999 ONLY by consuming a D->C atomic object (Phase B / ImportSettlement); a
+// D order/position can be funded ONLY by consuming a C->D atomic object (Phase A /
+// SubmitSwapIntent -> dexvm executeImport). No fill VALUE returned by any live
+// matcher can credit C — Phase B has no fill-amount parameter; the credit is the
+// RECORDED atomic object's amount, and absent a real object in shared memory it
+// reverts.
 
 // --- 0x9999 config (networkID, cChainID): the precompile's CONFIGURED chain
-// identity, written to StateDB at Configure (durable, consensus-shared, identical
-// on every validator since it comes from genesis). The receipt must name THIS
-// chain; without a configured identity a malicious receipt could claim any chain.
+// identity, written to StateDB at Configure (durable, consensus-shared). Retained
+// from the prior design: the native intent id binds the chain identity so an object
+// minted on one chain/network can never be consumed on another.
 var (
 	cfgNetworkIDKey = makeStorageKey([]byte(settleStateNamespace+"cfg.net"), []byte{})
 	cfgCChainIDKey  = makeStorageKey([]byte(settleStateNamespace+"cfg.cid"), []byte{})
 )
 
-// SetSettleChainIdentity records the (networkID, cChainID) the 0x9999 receipts
-// must bind to. Called once at Configure from genesis config. A zero cChainID is
-// allowed (single-chain dev) but then receipts must also carry the zero cChainID.
+// SetSettleChainIdentity records the (networkID, cChainID) the 0x9999 native seam
+// binds to. Called once at Configure from genesis config.
 func SetSettleChainIdentity(stateDB stateKV, networkID uint32, cChainID [32]byte) {
 	var n common.Hash
-	uint256.NewInt(uint64(networkID)).WriteToSlice(n[:])
+	new(big.Int).SetUint64(uint64(networkID)).FillBytes(n[:])
 	stateDB.SetState(poolManagerAddr9999, cfgNetworkIDKey, n)
 	var c common.Hash
 	copy(c[:], cChainID[:])
@@ -81,11 +67,10 @@ func loadSettleChainIdentity(stateDB stateKV) (uint32, [32]byte) {
 	return networkID, cChainID
 }
 
-// --- Settlement value movement. The 0x9999 vault (the precompile self-address)
-// is the counterparty reserve: a deposit locks tokenIn into the vault, a credit
-// releases tokenOut from the vault. NO MINT — a credit that the vault cannot back
-// reverts (conservation). This keeps 0x9999 pure receipt-settlement with no
-// embedded balance ledger of its own beyond the per-asset vault holdings.
+// --- Settlement value movement vault. The 0x9999 vault (the precompile self-
+// address) is the counterparty reserve: a Phase-A intent locks tokenIn into the
+// vault, a Phase-B settlement releases tokenOut from the vault. NO MINT — a credit
+// the vault cannot back reverts (conservation).
 
 var settleVaultPrefix = []byte(settleStateNamespace + "vlt") // per-asset vault holdings
 
@@ -107,165 +92,38 @@ func storeSettleVault(stateDB StateDB, assetID [32]byte, amount *big.Int) {
 }
 
 var (
-	ErrSettleUnbacked      = errors.New("dex: vault cannot back the credited amountOut (no mint)")
-	ErrSettleNativeFunds   = errors.New("dex: sender has insufficient native balance for amountIn")
 	ErrSettleAmountRange   = errors.New("dex: settle amount exceeds uint256")
 	ErrSettleERC20Vault    = errors.New("dex: ERC-20 settlement requires an erc20Vault-capable StateDB")
-	ErrSettleObservedShort = errors.New("dex: ERC-20 amountIn transfer delivered less than required (no partial settle)")
-	ErrSettleDeltaOverflow = errors.New("dex: settle amountIn/amountOut exceeds int128 BalanceDelta range")
+	ErrSettleNoAtomicState = errors.New("dex: 0x9999 native settle requires the cross-chain atomic capability")
 )
 
-// --- Swap gas model: O(N) in the validator-set size and O(S) in the signer count.
-//
-// The cert verify is NOT constant work: ResolveValidatorSet does 1+3N StateDB reads
-// + N compressed-G1 decompressions (each an isRTorsion subgroup check), then
-// AggregatePublicKeys re-decodes the S signer points, then one BLS pairing. A flat
-// GasSwap badly under-prices a large set (maxValidatorsPerSet is 65536), letting a
-// block of such settlements force every validator to execute far more crypto wall-
-// time than the gas budget models. We charge the actual shape:
-//
-//	gas(swap) = GasSwapBase + N*GasResolvePerValidator + S*GasAggPerSigner + GasBLSPairing
-//
-// calibrated so the common small set lands near the platform's PQ-verify gas tier.
-// The per-validator term covers the cold-SLOAD x3 + the decompress/subgroup check
-// (so a forged cert over a real set still pays the full resolve cost it induces).
+// --- Gas model for the native seam. The C->D / D->C work is bounded: a small
+// fixed shared-memory write/read + one StateDB replay slot + the value move. No
+// per-validator crypto (the BLS pairing model is gone), so a flat tier suffices.
 const (
-	GasSwapBase            uint64 = 20_000 // decode + bind + halt + replay + analytics.
-	GasResolvePerValidator uint64 = 2_500  // 3 cold SLOADs + 1 G1 decompress/subgroup check.
-	GasAggPerSigner        uint64 = 3_000  // re-decode + on-curve check + point add per signer.
-	GasBLSPairing          uint64 = 60_000 // the final aggregate pairing (2 Miller loops + final exp).
+	GasNativeIntent     uint64 = 40_000 // decode + lock + SM put + replay slot + event.
+	GasNativeSettlement uint64 = 50_000 // decode + SM get/bind + replay slot + credit + SM remove.
 )
 
 // isNativeAsset reports whether an injective AssetID is native LUX (all-zero).
 func isNativeAsset(id [32]byte) bool { return id == ([32]byte{}) }
 
-// assetAddress recovers the 20-byte token address from an injective AssetID. The
-// AssetID is the left-padded address (assetID(Currency)); the low 20 bytes are the
-// address. Native (all-zero) recovers address(0).
+// assetAddress recovers the 20-byte token address from an injective AssetID (the
+// left-padded address; native all-zero recovers address(0)).
 func assetAddress(id [32]byte) common.Address {
 	var a common.Address
 	copy(a[:], id[12:32])
 	return a
 }
 
-// settle moves value for a verified receipt: debit amountIn of tokenIn from the
-// sender into the vault, then credit amountOut of tokenOut from the vault to the
-// recipient. All-or-nothing: a failure at any leg returns an error and the EVM
-// reverts the whole call (no partial state). NO MINT, conservation-checked.
-//
-// FAIL-FAST CONSERVATION (defense in depth): the two preconditions that can fail
-// — sender lacks amountIn, vault cannot back amountOut — are checked BEFORE any
-// value moves. So even if EVM revert were somehow bypassed, an under-funded or
-// unbacked settle moves NOTHING. The EVM snapshot/revert is still the primary
-// all-or-nothing guarantee; this ordering makes the invariant hold without it.
-func settle(stateDB StateDB, r *DFillReceiptV1) error {
-	if !r.AmountIn.IsUint64() && !isWord(r.AmountIn) {
-		return ErrSettleAmountRange
-	}
-	// --- Precheck conservation before moving any value (fail-fast).
-	if isNativeAsset(r.TokenInAssetID) {
-		amt, of := uint256.FromBig(r.AmountIn)
-		if of {
-			return ErrSettleAmountRange
-		}
-		if stateDB.GetBalance(r.Sender).Cmp(amt) < 0 {
-			return ErrSettleNativeFunds
-		}
-	}
-	if r.AmountOut.Sign() > 0 {
-		if loadSettleVault(stateDB, r.TokenOutAssetID).Cmp(r.AmountOut) < 0 {
-			return ErrSettleUnbacked // NO MINT: the vault must already hold the output.
-		}
-	}
-
-	// --- Debit amountIn of tokenIn from sender INTO the vault.
-	if isNativeAsset(r.TokenInAssetID) {
-		amt, of := uint256.FromBig(r.AmountIn)
-		if of {
-			return ErrSettleAmountRange
-		}
-		if stateDB.GetBalance(r.Sender).Cmp(amt) < 0 {
-			return ErrSettleNativeFunds
-		}
-		stateDB.SubBalance(r.Sender, amt)
-		stateDB.AddBalance(poolManagerAddr9999, amt)
-		// Track vault holdings of native so the credit side can underflow-guard.
-		cur := loadSettleVault(stateDB, r.TokenInAssetID)
-		storeSettleVault(stateDB, r.TokenInAssetID, new(big.Int).Add(cur, r.AmountIn))
-	} else {
-		vault, ok := stateDBERC20(stateDB)
-		if !ok {
-			return ErrSettleERC20Vault
-		}
-		token := assetAddress(r.TokenInAssetID)
-		delta, err := safeTransferTokenFrom(vault, token, r.Sender, poolManagerAddr9999, r.AmountIn)
-		if err != nil {
-			return err
-		}
-		// Observed-delta: a fee-on-transfer token may deliver less. For settlement
-		// we require the FULL amountIn arrived (the receipt obligates exactly that);
-		// a short delivery is refused so the vault never credits tokenOut against an
-		// underfunded tokenIn (conservation).
-		if delta.Cmp(r.AmountIn) < 0 {
-			return ErrSettleObservedShort
-		}
-		cur := loadSettleVault(stateDB, r.TokenInAssetID)
-		storeSettleVault(stateDB, r.TokenInAssetID, new(big.Int).Add(cur, delta))
-	}
-
-	// --- Credit amountOut of tokenOut from the vault TO the recipient.
-	if r.AmountOut.Sign() == 0 {
-		return nil // a zero-output fill is settled by the debit alone.
-	}
-	held := loadSettleVault(stateDB, r.TokenOutAssetID)
-	if held.Cmp(r.AmountOut) < 0 {
-		return ErrSettleUnbacked // NO MINT: the vault must already hold the output.
-	}
-	storeSettleVault(stateDB, r.TokenOutAssetID, new(big.Int).Sub(held, r.AmountOut))
-	if isNativeAsset(r.TokenOutAssetID) {
-		amt, of := uint256.FromBig(r.AmountOut)
-		if of {
-			return ErrSettleAmountRange
-		}
-		// UNDERFLOW GUARD (defense in depth): StateDB.SubBalance is uint256-modular
-		// and does NOT revert on underflow when a precompile calls it directly, so a
-		// vault-accounting bug could otherwise wrap 0x9999's native balance to ~2^256.
-		// The vault's tracked holdings (settleVault, checked above) should never exceed
-		// its real balance, so this can only fire on a regression — fail loud, never wrap.
-		if stateDB.GetBalance(poolManagerAddr9999).Cmp(amt) < 0 {
-			return ErrSettleUnbacked
-		}
-		// The vault holds this native (tracked above); pay out from the self-address.
-		stateDB.SubBalance(poolManagerAddr9999, amt)
-		stateDB.AddBalance(r.Recipient, amt)
-	} else {
-		vault, ok := stateDBERC20(stateDB)
-		if !ok {
-			return ErrSettleERC20Vault
-		}
-		token := assetAddress(r.TokenOutAssetID)
-		if err := safeTransferTokenTo(vault, token, r.Recipient, r.AmountOut); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// isWord reports whether v fits in 32 bytes (a uint256). amountIn/out are uint256
-// on the wire; this guards the uint256 conversions.
+// isWord reports whether v fits in 32 bytes (a uint256).
 func isWord(v *big.Int) bool {
 	return v != nil && v.Sign() >= 0 && v.BitLen() <= 256
 }
 
-// stateDBERC20 resolves the erc20Vault capability for the settle path. It prefers
-// a StateDB that DIRECTLY implements erc20Vault (e.g. a host StateDB with native
-// token access, or a test in-memory vault) and otherwise falls back to the
-// poolStateAdapter's own erc20Vault (the production EVM sub-call bridge into the
-// token contract). This single point keeps "where token value moves" in one place
-// without complecting the production sub-call path with the direct-capability path.
+// stateDBERC20 resolves the erc20Vault capability for the settle path (prefers a
+// StateDB that directly implements erc20Vault, else the poolStateAdapter bridge).
 func stateDBERC20(stateDB StateDB) (erc20Vault, bool) {
-	// A pool-state adapter exposes its underlying StateDB; if that underlying
-	// directly implements erc20Vault, prefer it (it is the authoritative ledger).
 	if a, ok := stateDB.(*poolStateAdapter); ok {
 		if under, ok := a.underlyingStateDB().(erc20Vault); ok {
 			return under, true
@@ -275,11 +133,168 @@ func stateDBERC20(stateDB StateDB) (erc20Vault, bool) {
 	return v, ok
 }
 
-// --- Fee/volume analytics: SHARDED, no global hot write slot (Block-STM rule).
-// feeBucket[asset][epoch % feeShards] accumulates fees; volume[pool][epoch % volShards]
-// accumulates notional. Two concurrent swaps touching different assets/pools (or
-// the same in different epoch shards) never serialize on a single global counter.
+// nativeClient is the C<->D atomic client the 0x9999 handler routes value through.
+// Single instance (stateless); brand is the OSS default (a tenant surface installs
+// its own via the pool manager engine brand).
+var nativeClient = NewNativeDChainClient("Lux DEX")
 
+// SettleSwap is THE 0x9999 swap handler — the native C<->D two-phase money path.
+// It decodes the V4 swap call (key, params, hookData) and dispatches on the
+// hookData phase. The V4 ABI is UNCHANGED. Returns the V4 BalanceDelta on a
+// Phase-B credit, or a packed intent-id marker on a Phase-A intent.
+func SettleSwap(
+	state contract.AccessibleState,
+	caller common.Address,
+	input []byte,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, suppliedGas, errors.New("dex: cannot settle in read-only mode")
+	}
+
+	key, params, hookData, err := DecodeSwapInput(input)
+	if err != nil {
+		return nil, suppliedGas, err
+	}
+
+	// The cross-chain atomic capability is REQUIRED — value crosses only as an
+	// atomic object. A host that did not wire it (single-chain dev) reverts cleanly.
+	atomicState, ok := state.(contract.AtomicState)
+	if !ok || atomicState.AtomicMemory() == nil {
+		return nil, suppliedGas, ErrSettleNoAtomicState
+	}
+
+	stateDB := newPoolStateAdapter(state)
+
+	// GLOBAL non-reentrant guard for the 0x9999 custody+settle surface (the SAME single
+	// slot deposit / withdraw / modifyLiquidity take). Both phases move value through
+	// the seam reserve (Phase A locks tokenIn, Phase B credits tokenOut), and a phase's
+	// ERC-20 transferFrom/transfer can hand control to a malicious token that re-enters
+	// any 0x9999 entrypoint. Per-call CEI already orders each ledger write, but a uniform
+	// mutex makes the whole money surface single-in-flight so two interleaved settles
+	// can never clobber the seam-reserve read-modify-write. Set BEFORE any value movement.
+	if !enterCustodyKV(stateDB) {
+		return nil, suppliedGas, ErrCustodyReentrant
+	}
+	defer exitCustodyKV(stateDB)
+
+	blockNumber := state.GetBlockContext().Number().Uint64()
+
+	phase, body := decodeSwapPhase(hookData)
+	switch phase {
+	case swapPhaseSettlement:
+		// PHASE B — consume a D->C atomic settlement object and credit C.
+		if suppliedGas < GasNativeSettlement {
+			return nil, 0, errors.New("dex: out of gas")
+		}
+		gasLeft := suppliedGas - GasNativeSettlement
+
+		// Halt gate (global/market/asset) — cheapest scope first.
+		if herr := checkHalt(stateDB, key, params); herr != nil {
+			return nil, gasLeft, herr
+		}
+		claim, derr := decodeSettlementBody(body, key, params, caller)
+		if derr != nil {
+			return nil, gasLeft, derr
+		}
+		credited, ierr := nativeClient.ImportSettlement(state, atomicState, claim)
+		if ierr != nil {
+			return nil, gasLeft, ierr
+		}
+		// Analytics — sharded, no global hot write.
+		accrueVolume(stateDB, key.ID(), new(big.Int).SetUint64(credited), blockNumber)
+		// V4 return: the taker received `credited` of the output asset. Map to the
+		// BalanceDelta direction (output paid out to taker = negative to pool).
+		delta := balanceDeltaForOutput(params, new(big.Int).SetUint64(credited))
+		return PackBalanceDelta(delta.Amount0, delta.Amount1), gasLeft, nil
+
+	default:
+		// PHASE A — lock input on C and create a C->D atomic intent.
+		if suppliedGas < GasNativeIntent {
+			return nil, 0, errors.New("dex: out of gas")
+		}
+		gasLeft := suppliedGas - GasNativeIntent
+
+		if herr := checkHalt(stateDB, key, params); herr != nil {
+			return nil, gasLeft, herr
+		}
+		req, berr := buildIntentRequest(key, params, caller)
+		if berr != nil {
+			return nil, gasLeft, berr
+		}
+		intentID, serr := nativeClient.SubmitSwapIntent(state, atomicState, req)
+		if serr != nil {
+			return nil, gasLeft, serr
+		}
+		// Return the intent id (32 bytes) so the caller / keeper can track the
+		// async D->C settlement. NOT a fill — Phase A returns no output value.
+		out := make([]byte, 32)
+		copy(out, intentID[:])
+		return out, gasLeft, nil
+	}
+}
+
+// buildIntentRequest derives the C->D intent from the V4 swap: the taker is the
+// caller, the input asset/amount come from the swap direction + amountSpecified
+// (exact-input magnitude), the market is the pool id, and the recipient defaults
+// to the caller.
+func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address) (IntentRequest, error) {
+	in, _ := swapAssetDirection(key, params)
+	// Exact-input: AmountSpecified < 0, magnitude is the input. Exact-output is a P4
+	// router concern; the native intent locks the exact input the taker commits.
+	if params.AmountSpecified == nil || params.AmountSpecified.Sign() == 0 {
+		return IntentRequest{}, ErrInvalidAmount
+	}
+	mag := new(big.Int).Abs(params.AmountSpecified)
+	if !mag.IsUint64() || mag.Sign() <= 0 {
+		return IntentRequest{}, ErrInvalidAmount
+	}
+	return IntentRequest{
+		Account:      caller,
+		AssetIn:      in,
+		AmountIn:     mag.Uint64(),
+		AssetInAddr:  assetAddress(in),
+		MarketID:     key.ID(),
+		MinAmountOut: minAmountOut(params),
+		Recipient:    caller,
+		Deadline:     0,
+	}, nil
+}
+
+// balanceDeltaForOutput maps a credited output amount to the V4 BalanceDelta
+// convention (output paid out to taker = negative on the output side; the input
+// side already moved at Phase A so it is zero on the settlement leg).
+func balanceDeltaForOutput(params SwapParams, amountOut *big.Int) BalanceDelta {
+	out := new(big.Int).Neg(amountOut)
+	if params.ZeroForOne {
+		// token1 is the output for zeroForOne.
+		return BalanceDelta{Amount0: big.NewInt(0), Amount1: out}
+	}
+	return BalanceDelta{Amount0: out, Amount1: big.NewInt(0)}
+}
+
+// minAmountOut derives the swap's slippage floor from V4 SwapParams (exact-output
+// names the floor; exact-input leaves it to the D price limit). Routing only.
+func minAmountOut(params SwapParams) *big.Int {
+	if params.AmountSpecified != nil && params.AmountSpecified.Sign() > 0 {
+		return new(big.Int).Set(params.AmountSpecified)
+	}
+	return big.NewInt(0)
+}
+
+// swapAssetDirection returns the (tokenIn, tokenOut) injective AssetIDs implied by
+// the pool key and swap direction. ZeroForOne true => in=currency0, out=currency1.
+func swapAssetDirection(key PoolKey, params SwapParams) (in, out [32]byte) {
+	c0 := assetID(key.Currency0)
+	c1 := assetID(key.Currency1)
+	if params.ZeroForOne {
+		return c0, c1
+	}
+	return c1, c0
+}
+
+// --- Fee/volume analytics: SHARDED, no global hot write slot (Block-STM rule).
 const (
 	feeShards = 64
 	volShards = 64
@@ -308,17 +323,6 @@ func volBucketKey(poolID [32]byte, epoch uint64) common.Hash {
 	return makeStorageKey(volBucketPrefix, id)
 }
 
-func accrueFee(stateDB StateDB, feeAssetID [32]byte, amount *big.Int, epoch uint64) {
-	if amount == nil || amount.Sign() <= 0 {
-		return
-	}
-	k := feeBucketKey(feeAssetID, epoch)
-	cur := new(big.Int).SetBytes(stateDB.GetState(poolManagerAddr9999, k).Bytes())
-	var w common.Hash
-	new(big.Int).Add(cur, amount).FillBytes(w[:])
-	stateDB.SetState(poolManagerAddr9999, k, w)
-}
-
 func accrueVolume(stateDB StateDB, poolID [32]byte, amount *big.Int, epoch uint64) {
 	if amount == nil || amount.Sign() <= 0 {
 		return
@@ -337,135 +341,5 @@ func putU64(b []byte, v uint64) {
 	}
 }
 
-// SettleSwap is THE 0x9999 swap handler. It decodes the V4 swap call (key, params,
-// hookData), extracts the certified D-Chain fill receipt from hookData, and
-// settles it. The V4 ABI is UNCHANGED — web/mobile already pass `bytes hookData`;
-// only its CONTENTS now carry the receipt + cert. Returns the V4 BalanceDelta
-// (amountOut, amountIn) on success, or reverts.
-//
-// settleAddr is the address the call hit (0x9999 directly, or 0x9010 forwarding).
-// The receipt always binds to 0x9999 regardless, so a forwarded call settles under
-// the same money path and replay namespace.
-func SettleSwap(
-	state contract.AccessibleState,
-	caller common.Address,
-	input []byte,
-	suppliedGas uint64,
-	readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, errors.New("dex: cannot settle in read-only mode")
-	}
-	// Charge the flat BASE first (decode/bind/halt/replay); the O(N)/O(S) crypto
-	// terms are charged below once the validator-set size and signer count are known.
-	if suppliedGas < GasSwapBase {
-		return nil, 0, errors.New("dex: out of gas")
-	}
-	gasLeft := suppliedGas - GasSwapBase
-
-	key, params, hookData, err := DecodeSwapInput(input)
-	if err != nil {
-		return nil, gasLeft, err
-	}
-
-	receipt, cert, _, err := DecodeSettlementHookData(hookData)
-	if err != nil {
-		return nil, gasLeft, err
-	}
-
-	// The pool-state adapter bridges contract.StateDB to the package StateDB (and
-	// forwards the erc20Vault capability) — the same adapter the 0x9010 handlers
-	// use, so the settle path and the rest of the package agree on state access.
-	stateDB := newPoolStateAdapter(state)
-	blockTime := state.GetBlockContext().Timestamp()
-	blockNumber := state.GetBlockContext().Number().Uint64()
-
-	// (1) HALT gate — cheapest scope first; revert-safe StateDB read.
-	if err := checkHalt(stateDB, receipt, cert); err != nil {
-		return nil, gasLeft, err
-	}
-
-	// (2) CONTEXT binding — receipt names THIS swap on THIS chain at 0x9999.
-	// In the receipt model the V4 swap's recipient is the CALLER's EVM account
-	// (the account invoking swap receives amountOut); the receipt binds Recipient
-	// to it. A distinct recipient is a P4 router concern carried explicitly.
-	// Day-1: no operator delegation; sender MUST equal caller.
-	networkID, cChainID := loadSettleChainIdentity(stateDB)
-	recipient := caller
-	if err := receipt.BindToSwap(key, params, caller, recipient, networkID, cChainID, blockTime, false); err != nil {
-		return nil, gasLeft, err
-	}
-
-	// (3) REPLAY gate — exactly-once settlement, durable + consensus-shared.
-	if isReceiptConsumed(stateDB, receipt.ReceiptID) {
-		return nil, gasLeft, errors.New("dex: receipt already consumed")
-	}
-
-	// (3b) GAS for the O(N)/O(S) crypto BEFORE the expensive verify. N = the resolved
-	// set size (one cheap meta SLOAD), S = popcount(SignerBitmap). Charging here means
-	// a forged cert over a large registered set still pays the resolve+decompress cost
-	// it forces every validator to perform — it cannot under-pay by failing late.
-	n := uint64(validatorSetSize(stateDB, receipt.DChainID, cert.ValidatorSetID))
-	s := uint64(bitmapPopcount(cert.SignerBitmap))
-	verifyGas := n*GasResolvePerValidator + s*GasAggPerSigner + GasBLSPairing
-	if gasLeft < verifyGas {
-		return nil, 0, errors.New("dex: out of gas")
-	}
-	gasLeft -= verifyGas
-
-	// (4) CERTIFICATE verify — DETERMINISTIC quorum-aggregate over the active set.
-	// Day-1 one-cert-per-receipt: receiptRoot == receiptID (P3 makes it a fill
-	// Merkle root + inclusion proof). Dispatch by certType through the registry.
-	receiptRoot := receipt.ReceiptID
-	if err := verifyCert(stateDB, receipt, receiptRoot, cert); err != nil {
-		return nil, gasLeft, err
-	}
-
-	// (4b) RETURN-FIDELITY guard: the V4 BalanceDelta legs are signed int128. A fill
-	// whose amountIn/amountOut cannot be faithfully reported as int128 must REVERT
-	// (matching V4 toBalanceDelta, which reverts on int128 overflow) rather than
-	// settle and return a truncated/sign-flipped delta. Pure deterministic check on
-	// the certified amounts. Placed BEFORE the consume mark so an over-range fill
-	// leaves the receipt unconsumed even absent EVM revert.
-	if !FitsSignedInt128(receipt.AmountIn) || !FitsSignedInt128(receipt.AmountOut) {
-		return nil, gasLeft, ErrSettleDeltaOverflow
-	}
-
-	// (5) MARK consumed — BEFORE value movement (CEI for the replay slot). This makes
-	// exactly-once STRUCTURAL rather than contingent on sender==caller + no live Call:
-	// the ERC-20 legs in settle() are real EVM sub-calls into attacker-listable token
-	// contracts, and an operator-delegated re-entry (callerAuthorized=true, a P4 seam)
-	// could otherwise re-enter swap with the SAME receipt and double-settle before the
-	// mark. With the mark set first, a re-entrant frame for the same receipt hits the
-	// consumed slot at step (3) and reverts. A failed settle still leaves the receipt
-	// UNCONSUMED because the EVM revert rolls back this SetState too (all-or-nothing).
-	markReceiptConsumed(stateDB, receipt.ReceiptID, blockNumber)
-
-	// (6) SETTLE value — all-or-nothing, no mint, conservation-checked.
-	if err := settle(stateDB, receipt); err != nil {
-		return nil, gasLeft, err
-	}
-
-	// (7) Analytics — SHARDED, no global hot write.
-	epoch := blockNumber
-	accrueFee(stateDB, receipt.FeeAssetID, receipt.FeeAmount, epoch)
-	accrueVolume(stateDB, receipt.PoolKeyHash, receipt.AmountIn, epoch)
-
-	// V4 return: BalanceDelta packs (amount0, amount1). Map to the swap direction:
-	// the taker spends amountIn (negative for the spent side) and receives amountOut.
-	delta := balanceDeltaForSwap(params, receipt.AmountIn, receipt.AmountOut)
-	return PackBalanceDelta(delta.Amount0, delta.Amount1), gasLeft, nil
-}
-
-// balanceDeltaForSwap maps (amountIn, amountOut) to the V4 BalanceDelta convention
-// (amount0/amount1 from the pool's perspective; negative = paid out to taker,
-// positive = paid in by taker — we mirror the existing PackBalanceDelta usage).
-// ZeroForOne: token0 in (positive to pool), token1 out (negative to pool/taker).
-func balanceDeltaForSwap(params SwapParams, amountIn, amountOut *big.Int) BalanceDelta {
-	in := new(big.Int).Set(amountIn)
-	out := new(big.Int).Neg(amountOut)
-	if params.ZeroForOne {
-		return BalanceDelta{Amount0: in, Amount1: out}
-	}
-	return BalanceDelta{Amount0: out, Amount1: in}
-}
+// _ keeps ids imported for the settlement-id types used across the file set.
+var _ = ids.Empty
