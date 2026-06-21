@@ -26,21 +26,20 @@ import (
 // is intentionally NOT gated by the swap halt.
 
 // Halt layers (each an independent key; checked in order, cheapest scope first).
+// The BLS-era certType / validatorSet halt layers are GONE with the cert value
+// path — the native seam has no cert scheme and no validator set to halt. The
+// real kill switches (global / market / asset) remain.
 var (
-	haltGlobalKey          = makeStorageKey([]byte(settleStateNamespace+"h.glb"), []byte{})
-	haltMarketPrefix       = []byte(settleStateNamespace + "h.mkt")
-	haltAssetPrefix        = []byte(settleStateNamespace + "h.ast")
-	haltReceiptTypePrefix  = []byte(settleStateNamespace + "h.crt")
-	haltValidatorSetPrefix = []byte(settleStateNamespace + "h.vst")
+	haltGlobalKey    = makeStorageKey([]byte(settleStateNamespace+"h.glb"), []byte{})
+	haltMarketPrefix = []byte(settleStateNamespace + "h.mkt")
+	haltAssetPrefix  = []byte(settleStateNamespace + "h.ast")
 )
 
 // Halt errors (each a clean revert reason).
 var (
-	ErrDEXHalted        = errors.New("dex: settlement halted (global)")
-	ErrMarketHalted     = errors.New("dex: settlement halted for this market")
-	ErrAssetHalted      = errors.New("dex: settlement halted for this asset")
-	ErrCertTypeDisabled = errors.New("dex: settlement disabled for this certificate type")
-	ErrVSetHalted       = errors.New("dex: settlement halted for this validator set")
+	ErrDEXHalted    = errors.New("dex: settlement halted (global)")
+	ErrMarketHalted = errors.New("dex: settlement halted for this market")
+	ErrAssetHalted  = errors.New("dex: settlement halted for this asset")
 )
 
 // haltSet is the non-zero sentinel a halt slot holds when active. Any non-zero
@@ -51,30 +50,24 @@ func isHalted(stateDB stateKV, key common.Hash) bool {
 	return stateDB.GetState(poolManagerAddr9999, key) != (common.Hash{})
 }
 
-// checkHalt is the single, ordered halt gate the settle handler calls before any
-// crypto or value movement. Returns the FIRST applicable halt error, or nil.
-func checkHalt(stateDB stateKV, r *DFillReceiptV1, cert *BLSCert) error {
+// checkHalt is the single, ordered halt gate the native settle handler calls
+// before any value movement, for BOTH phases (intent and settlement). It keys on
+// the POOL identity (key.ID()) and the swap's two asset ids — the SAME ids
+// SetHaltMarket / SetHaltAsset, the registry, analytics, and StateView use. A
+// halted scope reverts cleanly with no partial state. Returns the FIRST applicable
+// halt error, or nil.
+func checkHalt(stateDB stateKV, key PoolKey, params SwapParams) error {
 	if isHalted(stateDB, haltGlobalKey) {
 		return ErrDEXHalted
 	}
-	// MARKET halt keys on the POOL identity (r.PoolKeyHash), NOT the free-form
-	// r.MarketID. PoolKeyHash is validated == key.ID() in BindToSwap and is the SAME
-	// id SetHaltMarket callers, the registry, analytics, and StateView all use — so
-	// the kill switch addresses exactly the market operators halt. Keying on the
-	// attacker-supplied MarketID would let a compromised market dodge the halt by
-	// emitting receipts whose MarketID != its pool id (it controls that field).
-	if isHalted(stateDB, makeStorageKey(haltMarketPrefix, r.PoolKeyHash[:])) {
+	poolID := key.ID()
+	if isHalted(stateDB, makeStorageKey(haltMarketPrefix, poolID[:])) {
 		return ErrMarketHalted
 	}
-	if isHalted(stateDB, makeStorageKey(haltAssetPrefix, r.TokenInAssetID[:])) ||
-		isHalted(stateDB, makeStorageKey(haltAssetPrefix, r.TokenOutAssetID[:])) {
+	in, out := swapAssetDirection(key, params)
+	if isHalted(stateDB, makeStorageKey(haltAssetPrefix, in[:])) ||
+		isHalted(stateDB, makeStorageKey(haltAssetPrefix, out[:])) {
 		return ErrAssetHalted
-	}
-	if isHalted(stateDB, makeStorageKey(haltReceiptTypePrefix, []byte{byte(r.CertType)})) {
-		return ErrCertTypeDisabled
-	}
-	if isHalted(stateDB, makeStorageKey(haltValidatorSetPrefix, cert.ValidatorSetID[:])) {
-		return ErrVSetHalted
 	}
 	return nil
 }
@@ -92,18 +85,6 @@ func SetHaltMarket(stateDB stateKV, marketID [32]byte, on bool) {
 // SetHaltAsset halts/unhalts settlement touching one asset (injective AssetID).
 func SetHaltAsset(stateDB stateKV, assetID [32]byte, on bool) {
 	setHalt(stateDB, makeStorageKey(haltAssetPrefix, assetID[:]), on)
-}
-
-// SetHaltReceiptType disables/enables settlement for one certType (e.g. retire a
-// scheme during a cert upgrade).
-func SetHaltReceiptType(stateDB stateKV, ct CertType, on bool) {
-	setHalt(stateDB, makeStorageKey(haltReceiptTypePrefix, []byte{byte(ct)}), on)
-}
-
-// SetHaltValidatorSet halts/unhalts settlement certified by one validator set
-// (e.g. a compromised/rotated set).
-func SetHaltValidatorSet(stateDB stateKV, validatorSetID [32]byte, on bool) {
-	setHalt(stateDB, makeStorageKey(haltValidatorSetPrefix, validatorSetID[:]), on)
 }
 
 func setHalt(stateDB stateKV, key common.Hash, on bool) {
