@@ -14,56 +14,98 @@ import (
 // native_wire.go is the C<->D ATOMIC OBJECT wire format for the 0x9999 native
 // settlement seam. It is byte-for-byte the same shared-memory UTXO value the
 // dexvm side reads/writes (chains/dexvm/atomic.go encodeExportedOutput /
-// decodeExportedOutput): owner(20) | asset(32) | amount(8) = 60 bytes, fixed
-// width, deterministic. Keeping the wire identical is what lets the D side import
-// a C->D object NATIVELY (its executeImport binds the recorded owner/asset/amount)
-// and lets C consume a D->C object the same way.
+// decodeExportedOutput): rail(1) | owner(20) | asset(32) | amount(8) = 61 bytes,
+// fixed width, deterministic. Keeping the wire identical is what lets the D side
+// import a C->D object NATIVELY (its executeImport binds the recorded rail/owner/
+// asset/amount) and lets C consume a D->C object the same way.
+//
+// THE RAIL TAG (the H1 fix): the object's FIRST byte is the RAIL discriminator —
+// the lane the value travels on, a property of the OBJECT, not of the C-side
+// selector that consumes it. A swap-fill object is railSwap; an LP-collect object
+// is railLP. Each C-side consume path accepts ONLY its own rail (ImportSettlement
+// => railSwap, ImportPositionCollect => railLP) and debits ONLY its own pot
+// (seamReserve vs committedPositions). Before the tag, a D->C object was rail-
+// agnostic and the DEBITED pot was chosen by which selector the caller invoked —
+// so an LP-collect object could drain the swap pot (H1-A) and a swap-fill object
+// could drain the LP pot (H1-B). With the tag the object is UNAMBIGUOUSLY one rail
+// and a cross-rail consume is rejected at decode-bind. A unit is CSpendable XOR
+// DCommitted across BOTH rails because a D->C object carries exactly one rail and
+// only the matching consume path (drawing only the matching pot) accepts it.
 //
 // THE TWO LEGS (the ship rule made concrete):
-//   - C->D INTENT: C writes one of these into shared memory keyed by the D chain.
-//     D's executeImport consumes it and credits a funded D order/position. D is
-//     funded ONLY by consuming a C->D object.
-//   - D->C SETTLEMENT: D writes one of these into shared memory keyed by the C
-//     chain (its executeExport). C's ImportSettlement consumes it ONCE and credits
-//     C value. C is credited ONLY by consuming a D->C object.
+//   - C->D INTENT/COMMIT: C writes one of these into shared memory keyed by the D
+//     chain. D's executeImport consumes it and credits a funded D order/position.
+//     D is funded ONLY by consuming a C->D object. The C->D object is stamped with
+//     the lane that wrote it (SubmitSwapIntent => railSwap, SubmitPositionCommit
+//     => railLP) so the rail round-trips: a swap lives on railSwap for BOTH legs,
+//     an LP on railLP for BOTH legs.
+//   - D->C SETTLEMENT/COLLECT: D writes one of these into shared memory keyed by
+//     the C chain (its executeExport). C's ImportSettlement (railSwap) /
+//     ImportPositionCollect (railLP) consumes it ONCE and credits C value. C is
+//     credited ONLY by consuming a D->C object OF THE MATCHING RAIL.
 //
-// The 60-byte object carries the VALUE-BEARING identity (owner/asset/amount) the
-// atomic conservation binds. The richer order metadata (marketID, minAmountOut,
+// The 61-byte object carries the VALUE-BEARING identity (rail/owner/asset/amount)
+// the atomic conservation binds. The richer order metadata (marketID, minAmountOut,
 // recipient, deadline) is NOT value-bearing — it rides in the C->D intent EVENT
 // (events.go) the keeper reads to build the D order. The atomic object alone moves
 // value; the metadata only routes it.
 
-// exportedOutputSize is the fixed shared-memory object width: owner(20) |
+// Rail is the cross-chain object's lane discriminator (wire byte 0). It is the
+// H1-closing property that makes a D->C object UNAMBIGUOUSLY one rail, so a C-side
+// consume path can refuse an object from the other rail before it touches a pot.
+type Rail uint8
+
+const (
+	// railSwap is the swap-fill / refund lane: SubmitSwapIntent writes it on C->D,
+	// the dexvm's fill-settlement export (settleFromFills) writes it on D->C, and
+	// ImportSettlement is the ONLY C-side path that consumes it — debiting ONLY
+	// seamReserve. It is the ZERO value so an object whose lane is unstated defaults
+	// to the swap rail (the dexvm's swap-fill exports omit the field), keeping the
+	// non-LP call sites untouched.
+	railSwap Rail = 0
+	// railLP is the LP position-commit / collect lane: SubmitPositionCommit writes
+	// it on C->D, the dexvm's executeWithdraw writes it on D->C, and
+	// ImportPositionCollect is the ONLY C-side path that consumes it — debiting ONLY
+	// committedPositions. A non-zero tag, so an LP object is never mistaken for the
+	// zero-valued swap rail.
+	railLP Rail = 1
+)
+
+// exportedOutputSize is the fixed shared-memory object width: rail(1) | owner(20) |
 // asset(32) | amount(8). IDENTICAL to chains/dexvm/atomic.go exportedOutputSize.
-const exportedOutputSize9999 = 20 + 32 + 8
+const exportedOutputSize9999 = 1 + 20 + 32 + 8
 
 // encodeAtomicObject serializes a cross-chain value object as the shared-memory
-// value, byte-identical with the dexvm side: owner(20) | asset(32) | amount(8).
-// owner is the account (EVM address / dexvm ShortID — both 20 bytes); asset is the
-// full injective AssetID (assetID(Currency); native = all-zero); amount is the
-// integer asset unit count.
-func encodeAtomicObject(owner common.Address, asset [32]byte, amount uint64) []byte {
+// value, byte-identical with the dexvm side: rail(1) | owner(20) | asset(32) |
+// amount(8). rail is the lane the value travels (railSwap / railLP); owner is the
+// account (EVM address / dexvm ShortID — both 20 bytes); asset is the full
+// injective AssetID (assetID(Currency); native = all-zero); amount is the integer
+// asset unit count.
+func encodeAtomicObject(rail Rail, owner common.Address, asset [32]byte, amount uint64) []byte {
 	v := make([]byte, exportedOutputSize9999)
-	copy(v[0:20], owner[:])
-	copy(v[20:52], asset[:])
-	binary.BigEndian.PutUint64(v[52:60], amount)
+	v[0] = byte(rail)
+	copy(v[1:21], owner[:])
+	copy(v[21:53], asset[:])
+	binary.BigEndian.PutUint64(v[53:61], amount)
 	return v
 }
 
-// decodeAtomicObject is the inverse: it reads back the (owner, asset, amount) a
-// consumed cross-chain object RECORDED in shared memory. ok=false for any value
+// decodeAtomicObject is the inverse: it reads back the (rail, owner, asset, amount)
+// a consumed cross-chain object RECORDED in shared memory. ok=false for any value
 // that is not EXACTLY the canonical width, so a corrupt/garbage record is never
 // reinterpreted into a credit — the same defense the dexvm decodeExportedOutput
-// applies. The consumer binds the credited owner/asset/amount to THIS recorded
-// value, never to what the calling tx merely declares.
-func decodeAtomicObject(v []byte) (owner common.Address, asset [32]byte, amount uint64, ok bool) {
+// applies. The consumer binds the credited rail/owner/asset/amount to THIS recorded
+// value, never to what the calling tx merely declares — so the rail (and therefore
+// which pot may be debited) is the OBJECT's, not the caller's.
+func decodeAtomicObject(v []byte) (rail Rail, owner common.Address, asset [32]byte, amount uint64, ok bool) {
 	if len(v) != exportedOutputSize9999 {
-		return common.Address{}, [32]byte{}, 0, false
+		return 0, common.Address{}, [32]byte{}, 0, false
 	}
-	copy(owner[:], v[0:20])
-	copy(asset[:], v[20:52])
-	amount = binary.BigEndian.Uint64(v[52:60])
-	return owner, asset, amount, true
+	rail = Rail(v[0])
+	copy(owner[:], v[1:21])
+	copy(asset[:], v[21:53])
+	amount = binary.BigEndian.Uint64(v[53:61])
+	return rail, owner, asset, amount, true
 }
 
 // DeriveIntentID computes the deterministic id of a C->D atomic intent object.
