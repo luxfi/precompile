@@ -57,12 +57,11 @@ const (
 	DEXFHEAddress    = "0x0000000000000000000000000000000000009994" // LP-9994 FHE (RESERVED — constant only, not implemented)
 	DEXAdminAddress  = "0x0000000000000000000000000000000000009993" // LP-9993 Admin (RESERVED — constant only, not implemented)
 
-	// Core DEX (LP-901x) — DEPRECATED legacy V4 PoolManager. 0x9010 now reverts
-	// PRECOMPILE_MOVED for ALL value-moving selectors (incl swap); apps call 0x9999.
-	// Only read-only views (balanceOf/extsload/extsloadArray) stay live. The
-	// LXOracle/LXRouter/LXHooks/LXFlash/LXBook slots below are LEGACY (the canonical
-	// surface is the LP-9999 family above); kept as constants, not churned.
-	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // LP-9010 LXPool (DEPRECATED v4 PoolManager — read-only views only)
+	// Core DEX (LP-901x) — RETIRED address space. 0x9010 was removed; 0x9999 is the
+	// sole DEX precompile. These addresses are kept as constants ONLY so the values
+	// are not reused; nothing dispatches at them. The canonical surface is the
+	// LP-9999 family above.
+	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // LP-9010 LXPool (REMOVED — constant only, not dispatched)
 	LXOracleAddress = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (legacy)
 	LXRouterAddress = "0x0000000000000000000000000000000000009012" // LP-9012 LXRouter (legacy)
 	LXHooksAddress  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (legacy)
