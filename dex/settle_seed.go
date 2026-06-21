@@ -183,7 +183,12 @@ func receiveOperatorValue(stateDB StateDB, caller common.Address, asset Currency
 		if delivered.Sign() < 0 || delivered.Cmp(amount) < 0 {
 			return nil, ErrSeedUndelivered
 		}
-		return amount, nil
+		// Return what ACTUALLY arrived, not the requested amount — symmetric with the
+		// ERC-20 branch's observed delta below. The caller records this in the target
+		// pot, so an operator over-send is captured as real backing instead of stranded
+		// (keeps the four pots tracking the vault's real balance; realHolding >= Σ pots
+		// always holds, and == in the normal seed flow).
+		return delivered, nil
 	}
 	vault, ok := stateDBERC20(stateDB)
 	if !ok {
