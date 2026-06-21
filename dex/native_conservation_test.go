@@ -31,8 +31,13 @@ import (
 // These tests exercise BOTH subsystems against the SAME asset and assert the pots
 // never raid each other and the invariant holds end-to-end.
 
-// vaultInvariantNative asserts realHolding == settleVault + makerLockedVault +
-// seamReserve for the native asset, the FIX-3 vault-account invariant.
+// vaultInvariantNative asserts the FULL vault-account invariant for the native asset:
+//
+//	realHolding == settleVault + makerLockedVault + seamReserve + committedPositions
+//
+// the four orthogonal pots that partition the 0x9999 vault by CLAIM (depositor pot,
+// legacy maker pot, swap-rail seam reserve, LP-rail committed positions). Each pot
+// backs only its own credits; none can raid another.
 func (h *settleHarness) vaultInvariantNative(t testing.TB, where string) {
 	t.Helper()
 	db := newPoolStateAdapter(h.state)
@@ -40,8 +45,9 @@ func (h *settleHarness) vaultInvariantNative(t testing.TB, where string) {
 	real := h.state.stateDB.GetBalance(poolManagerAddr9999).ToBig()
 	sum := new(big.Int).Add(loadSettleVault(db, native), loadMakerLockedVault(db, native))
 	sum.Add(sum, loadSeamReserve(db, native))
+	sum.Add(sum, loadCommittedPositions(db, native))
 	if real.Cmp(sum) != 0 {
-		t.Fatalf("%s: vault-account invariant violated: realHolding=%s != settleVault+makerLocked+seamReserve=%s", where, real, sum)
+		t.Fatalf("%s: vault-account invariant violated: realHolding=%s != settleVault+makerLocked+seamReserve+committedPositions=%s", where, real, sum)
 	}
 }
 

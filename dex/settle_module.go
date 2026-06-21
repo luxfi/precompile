@@ -50,6 +50,13 @@ var (
 	SelectorSetHaltGlobal uint32 // setHaltGlobal(bool)
 	SelectorSetHaltMarket uint32 // setHaltMarket(bytes32,bool)
 	SelectorSetHaltAsset  uint32 // setHaltAsset(bytes32,bool)
+
+	// SelectorCollectPosition is the LP rail's D->C collect/withdraw money path:
+	// collectPosition(bytes32 outputID, address asset, uint256 amount) consumes a D->C
+	// atomic object ONCE and credits the caller out of the committedPositions pot. It
+	// is the SOLE C-credit path for an LP (collect, decrease, burn, cancel all return
+	// funds through here). Distinct selector, same orthogonal money-path discipline.
+	SelectorCollectPosition uint32 // collectPosition(bytes32,address,uint256)
 )
 
 // SettleModule registers the 0x9999 precompile.
@@ -66,6 +73,7 @@ func init() {
 	SelectorSetHaltGlobal = keccak4("setHaltGlobal(bool)")
 	SelectorSetHaltMarket = keccak4("setHaltMarket(bytes32,bool)")
 	SelectorSetHaltAsset = keccak4("setHaltAsset(bytes32,bool)")
+	SelectorCollectPosition = keccak4("collectPosition(bytes32,address,uint256)")
 
 	if err := modules.RegisterModule(SettleModule); err != nil {
 		panic(err)
@@ -167,10 +175,17 @@ func (s *SettleContract) Run(
 	case SelectorInitialize:
 		return s.runSettleInitialize(accessibleState, caller, data, suppliedGas, readOnly)
 
-	// Maker / resting-order path — pure reserve lock/unlock, NO matching
-	// (settle_maker.go). 0x9996 PositionManager routes its lifecycle ops here.
+	// LP D-committed liquidity path (position_commit.go): ADD commits the LP's funds
+	// to a D position via a C->D object; REMOVE requests a D->C withdraw. 0x9996
+	// PositionManager routes its lifecycle ops here.
 	case SelectorModifyLiquidity:
 		return s.runSettleModifyLiquidity(accessibleState, caller, data, suppliedGas, readOnly)
+
+	// LP D->C collect/withdraw money path (position_commit.go): consume a D->C atomic
+	// object ONCE and credit the caller out of committedPositions. The SOLE C-credit
+	// path for an LP — collect/decrease/burn/cancel all return funds through here.
+	case SelectorCollectPosition:
+		return s.runSettleCollectPosition(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// donate is explicitly UNSUPPORTED in the receipt model (settle_views9999.go):
 	// LP fee growth is D-authoritative, so a safe C-only donate cannot exist.
