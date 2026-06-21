@@ -98,39 +98,43 @@ func PredictModifyLiquidityAccesses(
 	var as AccessSet
 	orderID := MakerOrderID(owner, poolID, salt, tickLower, tickUpper)
 
-	// READS: the market record (status), the asset-halt slot, the current reserve, the
-	// per-asset vault slots (the ADD/REMOVE moves between settleVault and
-	// makerLockedVault), the order record + count, and the reentrancy guard.
+	// READS: the market record (status), the asset-halt slot, the per-owner committed
+	// reserve, the LP rail's per-asset committed-positions pot (the ADD credits it; the
+	// withdraw/collect debits it via the D->C import), the order record + count, and the
+	// reentrancy guard. The swap rail's settleVault/seamReserve are NOT touched by the LP
+	// rail (orthogonal pots).
 	as.Reads = append(as.Reads,
 		marketSlot(poolID, marketMetaSuffix),
 		makeStorageKey(haltAssetPrefix, lockedAsset[:]),
-		depositorClaimKey(owner, lockedAsset),
 		lockedReserveKey(owner, lockedAsset),
-		settleVaultKey(lockedAsset),
-		makerLockedVaultKey(lockedAsset),
+		committedPositionsKey(lockedAsset),
 		orderSlot(orderID, orderMetaSuffix),
 		orderSlot(orderID, orderAmtSuffix),
 		ownerOrdersCountKey(owner),
 		custodyGuardKey9999,
 	)
-	// WRITES: reserve split (available/locked), the per-asset vault reclassification
-	// (settleVault <-> makerLockedVault), the FULL order record (storeRestingOrder
-	// writes all 6 slots), the index slot + count, and the reentrancy guard (set+clear
-	// within the call). Each keyed by owner / asset / order — NO global hot WRITE
-	// (settleVault/makerLockedVault are per-ASSET, so two makers contend only on the
-	// same asset, which is a genuine conflict, not a global counter).
+	// WRITES: the per-owner committed reserve, the LP rail's committed-positions pot
+	// (ADD: caller balance -> committedPositions; the unit becomes DCommitted), the
+	// FULL order record (storeRestingOrder writes 6 slots + the commit-object slot), the
+	// index slot + count, the C->D commit replay slot (markIntentSubmitted, keyed by a
+	// position-commit id the static predictor cannot know), the staging seq+slots
+	// (stageAtomicPut, also seq-keyed and not statically derivable), and the reentrancy
+	// guard. Each derivable write is keyed by owner / asset / order — NO global hot WRITE
+	// (committedPositions is per-ASSET, so two LPs contend only on the same asset, a
+	// genuine conflict; the staging seq is the ONE shared counter the seam serializes on,
+	// inherent to ordering cross-chain Puts deterministically — surfaced via stageSeqKey).
 	as.Writes = append(as.Writes,
-		depositorClaimKey(owner, lockedAsset),
 		lockedReserveKey(owner, lockedAsset),
-		settleVaultKey(lockedAsset),
-		makerLockedVaultKey(lockedAsset),
+		committedPositionsKey(lockedAsset),
 		orderSlot(orderID, orderMetaSuffix),
 		orderSlot(orderID, orderOwnerSuffix),
 		orderSlot(orderID, orderPoolSuffix),
 		orderSlot(orderID, orderAssetSuffix),
 		orderSlot(orderID, orderAmtSuffix),
 		orderSlot(orderID, orderSaltSuffix),
+		orderSlot(orderID, orderCommitObjSuffix),
 		ownerOrdersCountKey(owner),
+		stageSeqKey,
 		custodyGuardKey9999,
 	)
 	// NOTE: appendOwnerOrder also writes ownerOrdersAtKey(owner, count) — a NEW slot
