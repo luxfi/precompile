@@ -13,6 +13,16 @@ import (
 	"github.com/luxfi/precompile/precompileconfig"
 )
 
+// DefaultDAOTreasury is the built-in canonical governance address for 0x9999 — the
+// Lux DAO treasury. It is the protocolFeeController that gates the settlement kill
+// switches (setHaltGlobal/Market/Asset) and the operator-gated pot seeding
+// (seedSeamReserve / creditPositionFee). It is hard-coded (NOT per-network config)
+// because 0x9999 is always-on with zero per-net configuration and DEX governance is
+// the same DAO across every Lux network. It is deliberately NOT one of the publicly-
+// known compromised dev keys (compromisedDevControllers), so it is a safe default
+// admin from genesis. Forward-perfect: one canonical governance authority, one way.
+var DefaultDAOTreasury = common.HexToAddress("0x9011E888251AB053B7bD1cdB598Db4f9DEd94714")
+
 // settle_module.go registers 0x9999 — THE production DEX settlement precompile —
 // as its own module (orthogonal: a new primitive at its own address, not bolted
 // onto 0x9010). 0x9999 is the SOLE money path. It exposes:
@@ -60,12 +70,29 @@ var (
 	SelectorCollectPosition uint32 // collectPosition(bytes32,address,uint256,bytes32)
 )
 
-// SettleModule registers the 0x9999 precompile.
+// SettleModule registers the 0x9999 precompile as ALWAYS-ON: it is active on every
+// chain that loads the EVM plugin, from genesis, with NO config entry (neither a
+// genesis-inlined precompile nor a precompileUpgrades timestamp). This is the money
+// path — it must be present + callable the instant a node boots, on every Lux network,
+// with ZERO per-net configuration. There is exactly ONE activation way and this is it.
+//
+// All parameters 0x9999 needs are resolved at RUNTIME, not from config:
+//   - protocolFeeController: the built-in DefaultDAOTreasury (set in init below).
+//   - networkID / cChainID / dChainID: from the host's atomic capability
+//     (contract.AtomicState, sourced from the consensus context — see
+//     native_dchain_client.go). dChainID is the dexvm "D" alias resolved by the host;
+//     a network with no dexvm yields ids.Empty and the seam stays safely closed.
+//
+// The Configurator below exists only to satisfy modules.Module; for an AlwaysOn module
+// the host never invokes Configure (there is no activating config). MakeConfig returns
+// an empty marker so any tooling that enumerates configs gets a valid, parameter-free
+// value that always Verifies.
 var SettleModule = modules.Module{
 	ConfigKey:    settleConfigKey,
 	Address:      poolManagerAddr9999,
 	Contract:     SettlePrecompile,
 	Configurator: &settleConfigurator{},
+	AlwaysOn:     true,
 }
 
 type settleConfigurator struct{}
@@ -78,6 +105,11 @@ func init() {
 	SelectorSeedSeamReserve = keccak4("seedSeamReserve(address,uint256)")
 	SelectorCreditPositionFee = keccak4("creditPositionFee(bytes32,address,uint256)")
 
+	// The settlement governance authority is the built-in DAO treasury — fixed across
+	// every network (always-on, zero per-net config). This is the SOLE source of
+	// s.protocolFeeController; there is no Configure step that could set it from genesis.
+	SettlePrecompile.protocolFeeController = DefaultDAOTreasury
+
 	if err := modules.RegisterModule(SettleModule); err != nil {
 		panic(err)
 	}
@@ -85,65 +117,42 @@ func init() {
 
 func (*settleConfigurator) MakeConfig() precompileconfig.Config { return &SettleConfig{} }
 
+// Configure is a no-op for the always-on 0x9999 precompile. It is never invoked by the
+// host (an AlwaysOn module has no activating config), and 0x9999 takes no per-net
+// parameters — protocolFeeController is the built-in DAO treasury (set in init) and the
+// chain identity is resolved at runtime from the atomic capability. The method exists
+// solely to satisfy the contract.Configurator interface. It validates the config type
+// so a misuse surfaces loudly rather than silently.
 func (s *settleConfigurator) Configure(
-	chainConfig precompileconfig.ChainConfig,
+	_ precompileconfig.ChainConfig,
 	cfg precompileconfig.Config,
-	state contract.StateDB,
-	blockContext contract.ConfigurationBlockContext,
+	_ contract.StateDB,
+	_ contract.ConfigurationBlockContext,
 ) error {
-	config, ok := cfg.(*SettleConfig)
-	if !ok {
+	if _, ok := cfg.(*SettleConfig); !ok {
 		return errors.New("dex: 0x9999 expected *SettleConfig")
 	}
-	// Same authority discipline as 0x9010: a missing/zero controller would leave
-	// halt + registry governance open. Refuse activation.
-	if config.ProtocolFeeController == (common.Address{}) {
-		return ErrDEXNoProtocolFeeController
-	}
-	if _, bad := compromisedDevControllers[config.ProtocolFeeController]; bad {
-		return ErrDEXCompromisedController
-	}
-	SettlePrecompile.protocolFeeController = config.ProtocolFeeController
-	// Persist the native-seam chain identity (durable, consensus-shared): the
-	// (networkID, cChainID) the C->D intent id binds, and the D-Chain (dexvm) id the
-	// atomic objects route to/from. A zero DChainID leaves atomic settlement unwired
-	// (the on-ramp is closed) and the native client refuses to move value.
-	kv := kvAdapter{db: state}
-	SetSettleChainIdentity(kv, config.NetworkID, config.CChainID)
-	SetSettleDChainTarget(kv, config.DChainID)
 	return nil
 }
 
-// SettleConfig is the 0x9999 genesis/upgrade config.
+// SettleConfig is the 0x9999 config marker. It carries NO parameters: 0x9999 is
+// always-on and resolves everything at runtime, so there is nothing to configure per
+// network. It embeds Upgrade only so the precompile framework can represent it as a
+// (parameter-free) genesis config when enumerated; it always Verifies.
 type SettleConfig struct {
 	precompileconfig.Upgrade
-	ProtocolFeeController common.Address `json:"protocolFeeController,omitempty"`
-	NetworkID             uint32         `json:"networkID,omitempty"`
-	CChainID              [32]byte       `json:"cChainID,omitempty"`
-	// DChainID is the D-Chain (dexvm) id the native C<->D atomic seam routes
-	// objects to/from. Zero => atomic settlement unwired (on-ramp closed).
-	DChainID [32]byte `json:"dChainID,omitempty"`
 }
 
-func (c *SettleConfig) Key() string        { return settleConfigKey }
-func (c *SettleConfig) Timestamp() *uint64 { return c.Upgrade.Timestamp() }
-func (c *SettleConfig) IsDisabled() bool   { return c.Upgrade.Disable }
-func (c *SettleConfig) Verify(_ precompileconfig.ChainConfig) error {
-	if c.ProtocolFeeController == (common.Address{}) {
-		return ErrDEXNoProtocolFeeController
-	}
-	return nil
-}
+func (c *SettleConfig) Key() string                            { return settleConfigKey }
+func (c *SettleConfig) Timestamp() *uint64                     { return c.Upgrade.Timestamp() }
+func (c *SettleConfig) IsDisabled() bool                       { return c.Upgrade.Disable }
+func (c *SettleConfig) Verify(_ precompileconfig.ChainConfig) error { return nil }
 func (c *SettleConfig) Equal(cfg precompileconfig.Config) bool {
 	other, ok := cfg.(*SettleConfig)
 	if !ok {
 		return false
 	}
-	return c.Upgrade.Equal(&other.Upgrade) &&
-		c.ProtocolFeeController == other.ProtocolFeeController &&
-		c.NetworkID == other.NetworkID &&
-		c.CChainID == other.CChainID &&
-		c.DChainID == other.DChainID
+	return c.Upgrade.Equal(&other.Upgrade)
 }
 
 // Run dispatches the 0x9999 surface. The swap selector is the money path
