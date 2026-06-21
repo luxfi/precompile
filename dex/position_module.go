@@ -8,6 +8,7 @@ import (
 	"math/big"
 
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/ids"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
 	"github.com/luxfi/precompile/precompileconfig"
@@ -159,19 +160,15 @@ func (p *PositionManagerContract) Run(
 	case SelectorPMModifyPosition:
 		return p.routeLifecycle(state, caller, data, suppliedGas, readOnly, deltaSignAny)
 
-	// collect: accrued maker fees are D-authoritative (the CLOB tracks fill fees), so
-	// there is NO C-side fee balance to sweep. Rather than fake a distribution C
-	// cannot compute, collect reverts ErrUnsupported (honest boundary, mirrors 0x9999
-	// donate). A maker reads fills/fees from the D book; principal is freed by
-	// decrease/cancel (which DO route to the 0x9999 kernel and move reserve).
+	// collect: accrued maker fees (and principal) are D-authoritative — the CLOB tracks
+	// them in the maker's D-Chain balance. There is no C-side fee balance to sweep; the
+	// value returns via a D->C atomic object the LP consumes through 0x9999
+	// collectPosition. So 0x9996 collect REQUESTS the D-side fee export (emits the
+	// collect routing event for the keeper to forward to D) and returns the position
+	// id; the actual C credit lands when the LP/keeper calls collectPosition with the
+	// resulting D->C object. Bound by caller == position owner.
 	case SelectorPMCollect:
-		if readOnly {
-			return nil, suppliedGas, ErrUnsupported
-		}
-		if suppliedGas < GasPositionRead {
-			return nil, 0, errors.New("dex: out of gas")
-		}
-		return nil, suppliedGas - GasPositionRead, ErrUnsupported
+		return p.routeCollectRequest(state, caller, data, suppliedGas, readOnly)
 
 	// Reads.
 	case SelectorPMPositionsOf:
@@ -267,6 +264,45 @@ func (p *PositionManagerContract) routeLifecycle(
 	// reserve moves, ownership is checked, and the reentrancy guard is taken.
 	kernelInput := buildModifyLiquidityArgs(args.key, args.tickLower, args.tickUpper, delta, args.salt, hookData)
 	return SettlePrecompile.runSettleModifyLiquidity(state, caller, kernelInput, gas, readOnly)
+}
+
+// routeCollectRequest handles 0x9996 collect: it re-derives the position id from the
+// lifecycle args, verifies the position exists and is owned by the caller, and emits
+// the D->C collect routing event (for the keeper to make D export the LP's
+// withdrawable principal + fees). It moves NO C value — the value returns when the LP
+// consumes the resulting D->C object via 0x9999 collectPosition. The owner bind here
+// is defense-in-depth; the value credit is bound again to the recorded object in
+// ImportPositionCollect, so a non-owner cannot collect another LP's funds.
+func (p *PositionManagerContract) routeCollectRequest(
+	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, gas, ErrUnsupported // a collect request emits an event (a write); not a view.
+	}
+	if gas < GasPositionRead {
+		return nil, 0, errors.New("dex: out of gas")
+	}
+	gasLeft := gas - GasPositionRead
+	args, err := decodePMLifecycle(data)
+	if err != nil {
+		return nil, gasLeft, err
+	}
+	poolID := args.key.ID()
+	orderID := MakerOrderID(caller, poolID, args.salt, args.tickLower, args.tickUpper)
+	stateDB := newPoolStateAdapter(state)
+	order := loadRestingOrder(stateDB, orderID)
+	// A collect names an existing position owned by the caller. None => nothing to
+	// collect; a foreign owner => the orderID would differ (owner is folded in), so a
+	// mismatch is already a missing record. Defense-in-depth owner compare too.
+	if order.Status == OrderStatusNone || order.Owner != caller {
+		return nil, gasLeft, ErrLPNoPosition
+	}
+	// Emit the collect routing event (reuse the native collect event — the keeper
+	// forwards it to D to export the maker's withdrawable balance for this position).
+	emitNativeCollectEvent(stateDB, ids.ID(orderID), poolID, caller)
+	out := make([]byte, 32)
+	copy(out, orderID[:])
+	return out, gasLeft, nil
 }
 
 // positionsOf(owner) -> bytes32[] OPEN orderIDs. Deterministic enumeration via the
