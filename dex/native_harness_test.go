@@ -178,6 +178,50 @@ func (h *settleHarness) fundVaultNativeOut(amount int64) {
 	storeSeamReserve(newPoolStateAdapter(h.state), [32]byte{}, big.NewInt(amount))
 }
 
+// seedCommittedNative seeds the 0x9999 vault's NATIVE holdings into the COMMITTED-
+// POSITIONS pot (the LP rail's own reserve — operator fee backing, the symmetric
+// analog of fundVaultNativeOut for the swap rail). The vault self-balance and the
+// committedPositions pot move in lockstep, so a fee collect that exceeds an LP's own
+// principal commit is backed without raiding any other pot. Used by the fee tests.
+func (h *settleHarness) seedCommittedNative(amount int64) {
+	db := newPoolStateAdapter(h.state)
+	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(uint64(amount)))
+	cur := loadCommittedPositions(db, [32]byte{})
+	storeCommittedPositions(db, [32]byte{}, new(big.Int).Add(cur, big.NewInt(amount)))
+}
+
+// commitNativePosition drives a native LP COMMIT through the 0x9999 modifyLiquidity
+// selector: it funds the caller, runs the ADD, flushes the staged C->D object, and
+// returns the position record id (MakerOrderID) and the C->D commit object id
+// (DerivePositionCommitID, read off the record). The commit moves `amount` from the
+// caller's CSpendable balance into committedPositions (DCommitted).
+func (h *settleHarness) commitNativePosition(t testing.TB, tickLower, tickUpper int24, amount int64, salt [32]byte) (recordID, commitObjID ids.ID) {
+	t.Helper()
+	h.fundCallerNative(amount)
+	hookData := []byte{makerEnvelopeTag[0], makerEnvelopeTag[1], makerEnvelopeTag[2], makerEnvelopeTag[3], byte(MakerSideBid)}
+	args := buildModifyLiquidityArgs(h.key, tickLower, tickUpper, big.NewInt(amount), salt, hookData)
+	out, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999, prependSelector(SelectorModifyLiquidity, args), 5_000_000, false)
+	if err != nil {
+		t.Fatalf("commitNativePosition ADD: %v", err)
+	}
+	var rid [32]byte
+	copy(rid[:], out[0:32])
+	h.flushStaged(t)
+	db := newPoolStateAdapter(h.state)
+	commit := db.GetState(poolManagerAddr9999, orderSlot(rid, orderCommitObjSuffix))
+	return ids.ID(rid), ids.ID(commit)
+}
+
+// collectNative drives a native LP COLLECT/WITHDRAW through the 0x9999
+// collectPosition selector: it consumes the D->C object at outputID for `amount` of
+// native, crediting the caller out of committedPositions. Returns the call error.
+func (h *settleHarness) collectNative(outputID ids.ID, amount uint64) ([]byte, error) {
+	input := EncodeCollectPositionInput(outputID, [32]byte{}, amount)
+	out, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
+		prependSelector(SelectorCollectPosition, input), 5_000_000, false)
+	return out, err
+}
+
 // flushStaged simulates the HOST's block-accept cross-domain commit using the
 // DETERMINISTIC parent->current seq window (FlushAcceptedAtomicOps), the same model
 // the production host uses. It tracks the harness's last-flushed seq as the "parent"
@@ -285,14 +329,6 @@ func buildSwapCalldata(key PoolKey, params SwapParams, hookData []byte) []byte {
 	padded := make([]byte, (len(hookData)+31)/32*32)
 	copy(padded, hookData)
 	return append(append(args, lenWord...), padded...)
-}
-
-// fundClaim seeds a depositor's claim (the maker-path reserve helper used by the
-// surviving surface tests). Mirrors the quarantined helper.
-func fundClaim(stateDB StateDB, account common.Address, assetID [32]byte, amount *big.Int) {
-	storeDepositorClaim(stateDB, account, assetID, amount)
-	cur := loadSettleVault(stateDB, assetID)
-	storeSettleVault(stateDB, assetID, new(big.Int).Add(cur, amount))
 }
 
 // prependSelector builds calldata = 4-byte selector || data (used by the surface
