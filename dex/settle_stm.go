@@ -58,9 +58,6 @@ func PredictAccesses(key PoolKey, params SwapParams, caller common.Address, epoc
 		makeStorageKey(haltMarketPrefix, poolID[:]),
 		makeStorageKey(haltAssetPrefix, in[:]),
 		makeStorageKey(haltAssetPrefix, out[:]),
-		cfgNetworkIDKey,
-		cfgCChainIDKey,
-		cfgDChainIDKey,
 		settleVaultKey(in),
 		settleVaultKey(out),
 	)
