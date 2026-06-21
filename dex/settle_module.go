@@ -34,8 +34,7 @@ var DefaultDAOTreasury = common.HexToAddress("0x9011E888251AB053B7bD1cdB598Db4f9
 //   - settlement governance: register a validator set, set halt layers (gated on
 //     the same protocolFeeController authority as the existing pause controls).
 //
-// 0x9010 (the deprecated V4 PoolManager) FORWARDS its swap to SettleSwap and
-// reverts other value-moving calls with PRECOMPILE_MOVED — one money path, one
+// 0x9010 was removed; 0x9999 is the sole DEX precompile — one money path, one
 // replay namespace (dex.precompile.v1.9999.*), never two.
 
 var settleConfigKey = "dexSettleConfig"
