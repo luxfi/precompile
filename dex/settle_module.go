@@ -42,14 +42,14 @@ var _ contract.StatefulPrecompiledContract = (*SettleContract)(nil)
 // SettlePrecompile is the singleton 0x9999 contract.
 var SettlePrecompile = &SettleContract{}
 
-// Governance selectors (computed in init via keccak4).
+// Governance selectors (computed in init via keccak4). The BLS-era
+// registerValidatorSet / setHaltReceiptType / setHaltValidatorSet selectors are
+// GONE with the cert value path — the native seam has no validator set and no cert
+// scheme. Only the real kill switches remain.
 var (
-	SelectorRegisterValidatorSet uint32 // registerValidatorSet(...) — governance
-	SelectorSetHaltGlobal        uint32 // setHaltGlobal(bool)
-	SelectorSetHaltMarket        uint32 // setHaltMarket(bytes32,bool)
-	SelectorSetHaltAsset         uint32 // setHaltAsset(bytes32,bool)
-	SelectorSetHaltReceiptType   uint32 // setHaltReceiptType(uint8,bool)
-	SelectorSetHaltValidatorSet  uint32 // setHaltValidatorSet(bytes32,bool)
+	SelectorSetHaltGlobal uint32 // setHaltGlobal(bool)
+	SelectorSetHaltMarket uint32 // setHaltMarket(bytes32,bool)
+	SelectorSetHaltAsset  uint32 // setHaltAsset(bytes32,bool)
 )
 
 // SettleModule registers the 0x9999 precompile.
@@ -66,9 +66,6 @@ func init() {
 	SelectorSetHaltGlobal = keccak4("setHaltGlobal(bool)")
 	SelectorSetHaltMarket = keccak4("setHaltMarket(bytes32,bool)")
 	SelectorSetHaltAsset = keccak4("setHaltAsset(bytes32,bool)")
-	SelectorSetHaltReceiptType = keccak4("setHaltReceiptType(uint8,bool)")
-	SelectorSetHaltValidatorSet = keccak4("setHaltValidatorSet(bytes32,bool)")
-	SelectorRegisterValidatorSet = keccak4("registerValidatorSet(bytes)")
 
 	if err := modules.RegisterModule(SettleModule); err != nil {
 		panic(err)
@@ -96,15 +93,13 @@ func (s *settleConfigurator) Configure(
 		return ErrDEXCompromisedController
 	}
 	SettlePrecompile.protocolFeeController = config.ProtocolFeeController
-	// Persist the chain identity receipts must bind to (durable, consensus-shared).
+	// Persist the native-seam chain identity (durable, consensus-shared): the
+	// (networkID, cChainID) the C->D intent id binds, and the D-Chain (dexvm) id the
+	// atomic objects route to/from. A zero DChainID leaves atomic settlement unwired
+	// (the on-ramp is closed) and the native client refuses to move value.
 	kv := kvAdapter{db: state}
 	SetSettleChainIdentity(kv, config.NetworkID, config.CChainID)
-	// Seed the genesis validator set(s), if any.
-	for i := range config.ValidatorSets {
-		if err := PutValidatorSet(kv, &config.ValidatorSets[i]); err != nil {
-			return err
-		}
-	}
+	SetSettleDChainTarget(kv, config.DChainID)
 	return nil
 }
 
@@ -114,9 +109,9 @@ type SettleConfig struct {
 	ProtocolFeeController common.Address `json:"protocolFeeController,omitempty"`
 	NetworkID             uint32         `json:"networkID,omitempty"`
 	CChainID              [32]byte       `json:"cChainID,omitempty"`
-	// ValidatorSets seeds the verifier registry at genesis (the day-1 D-validator
-	// BLS set). Governance rotates it later via registerValidatorSet.
-	ValidatorSets []ValidatorSet `json:"-"`
+	// DChainID is the D-Chain (dexvm) id the native C<->D atomic seam routes
+	// objects to/from. Zero => atomic settlement unwired (on-ramp closed).
+	DChainID [32]byte `json:"dChainID,omitempty"`
 }
 
 func (c *SettleConfig) Key() string        { return settleConfigKey }
@@ -136,7 +131,8 @@ func (c *SettleConfig) Equal(cfg precompileconfig.Config) bool {
 	return c.Upgrade.Equal(&other.Upgrade) &&
 		c.ProtocolFeeController == other.ProtocolFeeController &&
 		c.NetworkID == other.NetworkID &&
-		c.CChainID == other.CChainID
+		c.CChainID == other.CChainID &&
+		c.DChainID == other.DChainID
 }
 
 // Run dispatches the 0x9999 surface. The swap selector is the money path
@@ -161,7 +157,9 @@ func (s *SettleContract) Run(
 
 	switch selector {
 	case SelectorSwap:
-		// THE money path: receipt-settlement (deterministic BLS verify, no matcher).
+		// THE money path: native C<->D two-phase atomic settlement (no matcher, no
+		// cert). Phase A locks input + creates a C->D object; Phase B consumes a D->C
+		// object + credits. See settle9999.go SettleSwap.
 		return SettleSwap(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// Market creation — C-AUTHORITATIVE registry (settle_market.go). Computes the
@@ -196,22 +194,15 @@ func (s *SettleContract) Run(
 	case SelectorBalanceOf:
 		return s.runSettleBalanceOf(accessibleState, data, suppliedGas)
 
-	// Validator-set rotation (protocolFeeController-gated, PoP-verified). The SAME
-	// trusted authority as halt governance; replaces the genesis-only seam.
-	case SelectorRegisterValidatorSet:
-		return s.runRegisterValidatorSet(accessibleState, caller, data, suppliedGas, readOnly)
-
-	// Settlement governance (protocolFeeController-gated).
+	// Settlement governance (protocolFeeController-gated). Only the real kill
+	// switches remain (global / market / asset); the BLS-era validator-set rotation
+	// and cert-type halt are gone with the cert value path.
 	case SelectorSetHaltGlobal:
 		return s.runSetHaltGlobal(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorSetHaltMarket:
 		return s.runSetHaltScoped(accessibleState, caller, data, suppliedGas, readOnly, SetHaltMarket)
 	case SelectorSetHaltAsset:
 		return s.runSetHaltScoped(accessibleState, caller, data, suppliedGas, readOnly, SetHaltAsset)
-	case SelectorSetHaltValidatorSet:
-		return s.runSetHaltScoped(accessibleState, caller, data, suppliedGas, readOnly, SetHaltValidatorSet)
-	case SelectorSetHaltReceiptType:
-		return s.runSetHaltReceiptType(accessibleState, caller, data, suppliedGas, readOnly)
 
 	default:
 		return nil, suppliedGas, errors.New("dex: unknown 0x9999 selector")
@@ -263,72 +254,4 @@ func (s *SettleContract) runSetHaltScoped(
 	on := data[63] != 0
 	apply(newPoolStateAdapter(state), id, on)
 	return nil, gas - gasHaltAdmin, nil
-}
-
-// runSetHaltReceiptType toggles a certType halt.
-func (s *SettleContract) runSetHaltReceiptType(
-	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, gas, errors.New("dex: cannot halt in read-only mode")
-	}
-	if gas < gasHaltAdmin {
-		return nil, 0, errors.New("dex: out of gas")
-	}
-	if caller != s.protocolFeeController {
-		return nil, gas - gasHaltAdmin, ErrUnauthorized
-	}
-	if len(data) < 64 {
-		return nil, gas - gasHaltAdmin, errors.New("dex: setHaltReceiptType(uint8,bool) needs 2 words")
-	}
-	ct := CertType(data[31])
-	on := data[63] != 0
-	SetHaltReceiptType(newPoolStateAdapter(state), ct, on)
-	return nil, gas - gasHaltAdmin, nil
-}
-
-// gasRegisterValidatorSet is the base admin cost of a rotation; the per-validator
-// PoP verify dominates, so charge proportionally to the decoded set size.
-const (
-	gasRegisterValidatorSetBase uint64 = 25_000
-	gasRegisterValidatorSetPerV uint64 = 5_000 // 1 G1 decompress + 1 PoP pairing per member.
-)
-
-// runRegisterValidatorSet rotates the BLS D-validator set (governance only). It is
-// the runtime twin of the genesis Configure seam, gated on the SAME
-// protocolFeeController authority as halt. CRITICALLY it routes through the
-// PoP-checked PutValidatorSet — so a rotation can NEVER register a rogue/aggregated
-// key (the rogue-key forge the EUF-CMA reduction relies on being closed). This is
-// where wiring carelessly would turn a non-bug into a real bug; PutValidatorSet
-// verifies every member's proof-of-possession before any slot is written.
-func (s *SettleContract) runRegisterValidatorSet(
-	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, gas, errors.New("dex: cannot register a validator set in read-only mode")
-	}
-	if gas < gasRegisterValidatorSetBase {
-		return nil, 0, errors.New("dex: out of gas")
-	}
-	gasLeft := gas - gasRegisterValidatorSetBase
-	if caller != s.protocolFeeController {
-		return nil, gasLeft, ErrUnauthorized
-	}
-	vs, err := DecodeValidatorSet(data)
-	if err != nil {
-		return nil, gasLeft, err
-	}
-	// Charge per-validator (the PoP pairing dominates) before verifying possession.
-	cost := uint64(len(vs.Validators)) * gasRegisterValidatorSetPerV
-	if gasLeft < cost {
-		return nil, 0, errors.New("dex: out of gas")
-	}
-	gasLeft -= cost
-	// PutValidatorSet enforces per-key PoP + zero-total-weight rejection; a malformed
-	// or rogue set reverts here with nothing written (EVM revert rolls back any
-	// partial slot writes regardless).
-	if err := PutValidatorSet(newPoolStateAdapter(state), vs); err != nil {
-		return nil, gasLeft, err
-	}
-	return nil, gasLeft, nil
 }
