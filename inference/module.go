@@ -101,7 +101,17 @@ func (c *Config) Equal(cfg precompileconfig.Config) bool {
 type InferenceContract struct{}
 
 // RequiredGas is a deterministic function of the input (selector + requested nNew).
+//
+// ADDITIVE: the A-Chain bridge selectors (bridge.go) have their own flat gas; the
+// deterministic Generate path's gas formula below is UNCHANGED. The bridge branch
+// is checked first and only when the selector is a bridge selector, so a Generate
+// call computes byte-identical gas to before this file existed.
 func (c *InferenceContract) RequiredGas(input []byte) uint64 {
+	if len(input) >= 4 {
+		if sel := binary.BigEndian.Uint32(input[:4]); isBridgeSelector(sel) {
+			return bridgeRequiredGas(sel)
+		}
+	}
 	if len(input) < 8 {
 		return GasBaseInference
 	}
@@ -112,15 +122,31 @@ func (c *InferenceContract) RequiredGas(input []byte) uint64 {
 	return GasBaseInference + uint64(nNew)*GasPerNewToken
 }
 
-// Run executes the precompile (pure compute; no state access).
+// Run executes the precompile.
+//
+// DISPATCH (additive): an A-Chain bridge selector (bridge.go) routes to runBridge,
+// which charges its own flat gas and on-ramps to the node-LOCAL aivm (Pattern A
+// intent / Pattern B receipt). EVERYTHING ELSE is the original deterministic path:
+// the SelectorGenerate branch below is byte-identical to before the bridge existed
+// (same gas, same pure int8 compute, no state access). The bridge needs the
+// caller + AccessibleState (for identity binding + the loopback ctx); the
+// deterministic path still uses neither.
 func (c *InferenceContract) Run(
-	_ contract.AccessibleState,
-	_ common.Address,
+	accessibleState contract.AccessibleState,
+	caller common.Address,
 	_ common.Address,
 	input []byte,
 	suppliedGas uint64,
 	_ bool,
 ) (ret []byte, remainingGas uint64, err error) {
+	// ADDITIVE bridge dispatch — checked first, taken ONLY for bridge selectors so
+	// the deterministic Generate path below is reached unchanged for everything else.
+	if len(input) >= 4 {
+		if sel := binary.BigEndian.Uint32(input[:4]); isBridgeSelector(sel) {
+			return runBridge(accessibleState, caller, sel, input, suppliedGas)
+		}
+	}
+
 	gas := c.RequiredGas(input)
 	if suppliedGas < gas {
 		return nil, 0, fmt.Errorf("out of gas: need %d have %d", gas, suppliedGas)
