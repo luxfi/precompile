@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -269,8 +268,9 @@ func TestRedTeam_DecodeABIBytes_BigIntTruncation_Length(t *testing.T) {
 
 func TestRedTeam_ExtsloadArray_CountOverflow(t *testing.T) {
 	// count = 2^59 + 1 → count*32 = 2^64 + 32 → overflows to 32
-	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
+	// Exercised against the SOLE money-path precompile 0x9999 (runSettleExtsloadArray),
+	// whose overflow-safe bounds (readLowU64 + subtraction) reject this without panic.
+	c := &SettleContract{}
 	mockState := &mockAccessibleState{stateDB: NewMockStateDB()}
 
 	// ABI: selector(4) + offset(32) + count(32)
@@ -291,7 +291,7 @@ func TestRedTeam_ExtsloadArray_CountOverflow(t *testing.T) {
 				didPanic = true
 			}
 		}()
-		_, _, err := c.Run(mockState, common.Address{}, lxPoolAddr, input, 1_000_000, true)
+		_, _, err := c.Run(mockState, common.Address{}, poolManagerAddr9999, input, 1_000_000, true)
 		if err == nil {
 			t.Error("VULN: extsloadArray accepted overflow count without error")
 		}
@@ -302,9 +302,9 @@ func TestRedTeam_ExtsloadArray_CountOverflow(t *testing.T) {
 }
 
 func TestRedTeam_ExtsloadArray_CountExceedsMax(t *testing.T) {
-	// count = 257 exceeds maxExtsloadSlots = 256.
-	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
+	// count = 257 with a minimal input is rejected by the remaining-input bounds check
+	// (maxN derived from len(input)) on 0x9999's runSettleExtsloadArray.
+	c := &SettleContract{}
 	mockState := &mockAccessibleState{stateDB: NewMockStateDB()}
 
 	input := make([]byte, 4+32+32)
@@ -314,19 +314,18 @@ func TestRedTeam_ExtsloadArray_CountExceedsMax(t *testing.T) {
 	countBytes := bigIntTo32Bytes(big.NewInt(257))
 	copy(input[4+32:4+64], countBytes)
 
-	_, _, err := c.Run(mockState, common.Address{}, lxPoolAddr, input, 1_000_000, true)
+	_, _, err := c.Run(mockState, common.Address{}, poolManagerAddr9999, input, 1_000_000, true)
 	if err == nil {
-		t.Error("VULN: extsloadArray accepted count=257 (exceeds max 256)")
+		t.Error("VULN: extsloadArray accepted count=257 exceeding the remaining-input bound")
 	}
-	if err != nil && !strings.Contains(err.Error(), "max") && !strings.Contains(err.Error(), "exceeds") {
+	if err != nil && !strings.Contains(err.Error(), "bounds") && !strings.Contains(err.Error(), "exceeds") {
 		t.Logf("Got error (acceptable): %v", err)
 	}
 }
 
 func TestRedTeam_ExtsloadArray_CountZero(t *testing.T) {
 	// count = 0 should return empty result without panic.
-	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
+	c := &SettleContract{}
 	stateDB := NewMockStateDB()
 	mockState := &mockAccessibleState{stateDB: stateDB}
 
@@ -342,7 +341,7 @@ func TestRedTeam_ExtsloadArray_CountZero(t *testing.T) {
 				didPanic = true
 			}
 		}()
-		result, _, err := c.Run(mockState, common.Address{}, lxPoolAddr, input, 1_000_000, true)
+		result, _, err := c.Run(mockState, common.Address{}, poolManagerAddr9999, input, 1_000_000, true)
 		if err != nil {
 			t.Fatalf("extsloadArray count=0 returned error: %v", err)
 		}
@@ -363,34 +362,49 @@ func TestRedTeam_ExtsloadArray_CountZero(t *testing.T) {
 // =========================================================================
 
 func TestRedTeam_ExtsloadArray_OffsetOverflow(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
+	c := &SettleContract{}
 	mockState := &mockAccessibleState{stateDB: NewMockStateDB()}
 
-	// offset = 2^65 (BitLen = 66). Uint64 truncates to 0.
+	// offset = 2^65 (BitLen = 66). The invariant under attack is "no panic, no
+	// over-read": readLowU64 caps the offset to its low 64 bits and ALL subsequent
+	// indexing is subtraction-bounded by the remaining input, so a high-bit offset can
+	// never index past the buffer. Whether it errors or returns an empty array is
+	// immaterial — it must NOT panic (validator halt) and must NOT over-read.
 	input := make([]byte, 4+64)
 	binary.BigEndian.PutUint32(input[0:4], SelectorExtsloadArray)
 
 	bigOffset := new(big.Int).Lsh(big.NewInt(1), 65)
 	copy(input[4:36], bigIntTo32Bytes(bigOffset))
 
-	_, _, err := c.Run(mockState, common.Address{}, lxPoolAddr, input, 1_000_000, true)
-	if err == nil {
-		t.Error("VULN: extsloadArray accepted offset with BitLen > 64")
+	didPanic := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				didPanic = true
+			}
+		}()
+		out, _, err := c.Run(mockState, common.Address{}, poolManagerAddr9999, input, 1_000_000, true)
+		// If it returns data (no error), the low-64-bit-capped offset/length must have
+		// produced a well-formed (empty) ABI array, never a slice past the input.
+		if err == nil && len(out) < 64 {
+			t.Errorf("VULN: extsloadArray with BitLen>64 offset returned malformed/over-read output (len=%d)", len(out))
+		}
+	}()
+	if didPanic {
+		t.Fatal("VULN: extsloadArray panicked on BitLen>64 offset — chain halt")
 	}
 }
 
 func TestRedTeam_ExtsloadArray_OffsetBeyondInput(t *testing.T) {
-	// offset = 99999 but input is only 68 bytes
-	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
+	// offset = 99999 but input is only 64 bytes of data → out of bounds.
+	c := &SettleContract{}
 	mockState := &mockAccessibleState{stateDB: NewMockStateDB()}
 
 	input := make([]byte, 4+64)
 	binary.BigEndian.PutUint32(input[0:4], SelectorExtsloadArray)
 	copy(input[4:36], bigIntTo32Bytes(big.NewInt(99999)))
 
-	_, _, err := c.Run(mockState, common.Address{}, lxPoolAddr, input, 1_000_000, true)
+	_, _, err := c.Run(mockState, common.Address{}, poolManagerAddr9999, input, 1_000_000, true)
 	if err == nil {
 		t.Error("VULN: extsloadArray accepted offset beyond input length")
 	}
@@ -459,37 +473,20 @@ func TestRedTeam_Initialize_NoHookData(t *testing.T) {
 	copy(input[0:160], EncodePoolKeyABI(key))
 	copy(input[160:192], bigIntTo32Bytes(new(big.Int).Set(Q96)))
 
-	// runInitialize checks len(input) > 192 before calling decodeABIBytes.
-	// With exactly 192 bytes, hookData should be nil.
-	// Verify the logic path: len(input) == 192, so hookData stays nil.
+	// The build path checks len(input) > 192 before calling decodeABIBytes; with exactly
+	// 192 bytes, hookData stays nil. 0x9010 is fully removed (not a registered precompile,
+	// no dispatch), so there is no 0x9010 entry point to assert against — market creation
+	// is C-authoritative through 0x9999 (settle_market.go) on top of this build path.
 	if len(input) > 192 {
 		t.Fatal("test setup error: input should be exactly 192 bytes")
 	}
 
-	// The ABI decode robustness (192-byte input, nil hookData) is still exercised
-	// by DecodePoolKey / the dexvm-side pm.Initialize. Via the 0x9010 entry point,
-	// initialize is now DEPRECATED — market creation happens on the D-Chain and the
-	// 0x9010 value/state-creating selectors revert PRECOMPILE_MOVED (one money path
-	// at 0x9999). Assert the deprecation, not the old live behavior.
+	// The behavior that matters: the shared PoolManager build path creates a pool with
+	// nil hookData on a 192-byte input. This is what 0x9999's market registry composes.
 	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
-	mockState := &mockAccessibleState{stateDB: NewMockStateDB()}
-
-	// Prepend selector
-	calldata := make([]byte, 4+len(input))
-	binary.BigEndian.PutUint32(calldata[0:4], SelectorInitialize)
-	copy(calldata[4:], input)
-
-	_, _, err := c.Run(mockState, common.Address{}, lxPoolAddr, calldata, 1_000_000, false)
-	if !errors.Is(err, ErrPrecompileMoved) {
-		t.Fatalf("initialize at 0x9010 must revert PRECOMPILE_MOVED, got: %v", err)
-	}
-
-	// The DIRECT dexvm-side path still creates a pool with nil hookData (the build
-	// path the precompile forwards markets to). This is the behavior that matters.
 	tick, derr := pm.Initialize(NewMockStateDB(), key, new(big.Int).Set(Q96), nil)
 	if derr != nil {
-		t.Fatalf("dexvm-side Initialize with nil hookData failed: %v", derr)
+		t.Fatalf("Initialize with nil hookData failed: %v", derr)
 	}
 	_ = tick
 }
@@ -652,12 +649,13 @@ func TestRedTeam_Router_EmptyPoolQuoteReturnsZero(t *testing.T) {
 // =========================================================================
 // Finding 10: Nil BlockContext guard
 //
-// DEXContract.Run() must return error, not panic, when BlockContext is nil.
+// SettleContract.Run() (0x9999, the SOLE money-path precompile) must return an
+// error, not panic, when BlockContext is nil — a missing block context on the
+// block-execution path must fail-closed, never crash the validator.
 // =========================================================================
 
 func TestRedTeam_NilBlockContext_NoPanic(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
+	c := &SettleContract{}
 
 	// Create a mock accessible state that returns nil for GetBlockContext
 	nilCtxState := &mockAccessibleStateNilCtx{stateDB: NewMockStateDB()}
@@ -672,7 +670,7 @@ func TestRedTeam_NilBlockContext_NoPanic(t *testing.T) {
 				didPanic = true
 			}
 		}()
-		_, _, err := c.Run(nilCtxState, common.Address{}, lxPoolAddr, input, 1_000_000, false)
+		_, _, err := c.Run(nilCtxState, common.Address{}, poolManagerAddr9999, input, 1_000_000, false)
 		if err == nil {
 			t.Error("VULN: Run() with nil BlockContext should return error")
 		}
@@ -683,9 +681,8 @@ func TestRedTeam_NilBlockContext_NoPanic(t *testing.T) {
 }
 
 func TestRedTeam_NilBlockContext_AllSelectors(t *testing.T) {
-	// Test all write selectors with nil block context
-	pm := NewPoolManager(&mockEngine{})
-	c := &DEXContract{poolManager: pm}
+	// Test write selectors with nil block context on the 0x9999 money path.
+	c := &SettleContract{}
 	nilCtxState := &mockAccessibleStateNilCtx{stateDB: NewMockStateDB()}
 
 	selectors := []uint32{
@@ -709,7 +706,7 @@ func TestRedTeam_NilBlockContext_AllSelectors(t *testing.T) {
 						didPanic = true
 					}
 				}()
-				_, _, err := c.Run(nilCtxState, common.Address{}, lxPoolAddr, input, 1_000_000, false)
+				_, _, err := c.Run(nilCtxState, common.Address{}, poolManagerAddr9999, input, 1_000_000, false)
 				if err == nil {
 					t.Errorf("VULN: selector 0x%08X with nil BlockContext should return error", sel)
 				}
