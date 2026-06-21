@@ -51,6 +51,16 @@ type AtomicState interface {
 	// the two.
 	CChainID() ids.ID
 
+	// DChainID is the D-Chain (dexvm) blockchain id the C<->D atomic seam routes
+	// objects to/from, resolved by the host from the chain topology (the consensus
+	// context's blockchain-alias lookup of "D"). It is ids.Empty on a network with
+	// no dexvm deployed; the calling precompile MUST revert in that case rather than
+	// guess a peer (the on-ramp is honestly closed until D exists). This is the
+	// runtime-resolved replacement for a per-network configured D target — the DEX
+	// settlement seam is always-on with ZERO per-net config, and the D peer is a
+	// deterministic property of the running network, identical on every validator.
+	DChainID() ids.ID
+
 	// TxID is the id of the transaction currently executing this precompile call.
 	// Combined with CallIndex it makes a per-call cross-chain object id injective.
 	TxID() ids.ID
