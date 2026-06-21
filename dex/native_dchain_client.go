@@ -79,9 +79,26 @@ var (
 	ErrNativeSettleUnbacked  = errors.New("dex: vault cannot back the D->C credited amount (no mint)")
 
 	// LP-rail errors (C->D position commit / D->C collect-withdraw).
-	ErrLPCommitReplay        = errors.New("dex: C->D position-commit id already submitted (replay)")
-	ErrLPCollectUnbacked     = errors.New("dex: committed-positions reserve cannot back the D->C collect credit (no mint, no raid)")
-	ErrLPCollectNoPosition   = errors.New("dex: D->C collect names no open/closing position for the recorded owner (cross-rail object refused)")
+	ErrLPCommitReplay      = errors.New("dex: C->D position-commit id already submitted (replay)")
+	ErrLPCollectUnbacked   = errors.New("dex: committed-positions reserve cannot back the D->C collect credit (no mint, no raid)")
+	ErrLPCollectNoPosition = errors.New("dex: D->C collect names no open/closing position for the recorded owner (cross-rail object refused)")
+
+	// ErrSettleWrongRail / ErrLPCollectWrongRail are the H1 rail gates: a D->C object
+	// carries its lane in its wire (railSwap / railLP). ImportSettlement consumes ONLY
+	// railSwap; ImportPositionCollect consumes ONLY railLP. Feeding the other rail's
+	// object reverts here BEFORE any pot is touched — closing H1 in BOTH directions
+	// (an LP-collect object cannot drain the swap pot; a swap-fill object cannot drain
+	// the LP pot).
+	ErrSettleWrongRail    = errors.New("dex: D->C object is not a swap-rail object (cross-rail consume refused)")
+	ErrLPCollectWrongRail = errors.New("dex: D->C object is not an LP-rail object (cross-rail consume refused)")
+
+	// ErrLPCollectExceedsPosition is the FIX-1/FIX-2 per-object, per-owner bound: a
+	// collect's recorded amount may not exceed the named position record's remaining
+	// committable backing (its LockedAmt). It binds the credit to a SPECIFIC position
+	// the recorded owner holds and bounds it by that owner's OWN committed reserve, so
+	// an over-export for one owner can never draw on another owner's committed
+	// principal in the shared committedPositions pot.
+	ErrLPCollectExceedsPosition = errors.New("dex: D->C collect amount exceeds the named position's committed backing (would draw on another owner's principal)")
 )
 
 // --- Intent submission (C->D): FUND D, return an intent id, NEVER a fill. ------
@@ -155,15 +172,17 @@ func (c *NativeDChainClient) SubmitSwapIntent(
 	}
 	markIntentSubmitted(stateDB, intentID, state.GetBlockContext().Number().Uint64())
 
-	// STAGE the C->D atomic object (owner=account, asset=assetIn, amount=locked),
-	// keyed by intentID under the D chain's partition. We do NOT Apply to shared
-	// memory here — a direct Apply commits OUTSIDE the EVM revert scope, so a tx that
-	// reverts after this would leave a C->D object with no backing C debit (the lock
-	// rolled back) => D funded without a C lock = MINT. Staging into StateDB is
+	// STAGE the C->D atomic object (rail=railSwap, owner=account, asset=assetIn,
+	// amount=locked), keyed by intentID under the D chain's partition. We do NOT Apply
+	// to shared memory here — a direct Apply commits OUTSIDE the EVM revert scope, so a
+	// tx that reverts after this would leave a C->D object with no backing C debit (the
+	// lock rolled back) => D funded without a C lock = MINT. Staging into StateDB is
 	// revert-aware: a reverted tx discards the staged Put atomically with its rolled-
 	// back lock. The host flushes staged Puts to shared memory at BLOCK ACCEPT, the
-	// single cross-domain commit point. (See native_staging.go.)
-	obj := encodeAtomicObject(req.Account, req.AssetIn, locked)
+	// single cross-domain commit point. (See native_staging.go.) The railSwap tag makes
+	// the swap's D->C settlement object (which D will export on this lane) consumable
+	// ONLY by ImportSettlement.
+	obj := encodeAtomicObject(railSwap, req.Account, req.AssetIn, locked)
 	stageAtomicPut(stateDB, dChainID, intentID, obj)
 
 	// Emit the routing metadata for the keeper that builds the D order. The staged
@@ -232,10 +251,12 @@ func (c *NativeDChainClient) SubmitPositionCommit(
 	}
 	markIntentSubmitted(stateDB, positionID, state.GetBlockContext().Number().Uint64())
 
-	// STAGE the C->D commit object (owner=account, asset=assetIn, amount=locked) keyed
-	// by positionID under the D chain's partition (revert-aware — discarded with the
-	// rolled-back lock if the tx reverts; flushed to shared memory at block accept).
-	obj := encodeAtomicObject(req.Account, req.AssetIn, locked)
+	// STAGE the C->D commit object (rail=railLP, owner=account, asset=assetIn,
+	// amount=locked) keyed by positionID under the D chain's partition (revert-aware —
+	// discarded with the rolled-back lock if the tx reverts; flushed to shared memory
+	// at block accept). The railLP tag makes the LP's D->C collect object (which D will
+	// export on this lane via executeWithdraw) consumable ONLY by ImportPositionCollect.
+	obj := encodeAtomicObject(railLP, req.Account, req.AssetIn, locked)
 	stageAtomicPut(stateDB, dChainID, positionID, obj)
 
 	// Emit the DL01 routing event (kind=position) for the keeper to OPEN the D
@@ -259,20 +280,38 @@ func (c *NativeDChainClient) SubmitModifyLiquidity(
 // ImportPositionCollect is the D->C LP-COLLECT/WITHDRAW leg: it consumes a D->C
 // atomic object EXACTLY ONCE and credits C out of the COMMITTED-POSITIONS pot
 // (DPendingCollect -> CSettled). It is the LP rail's analog of ImportSettlement, on
-// the orthogonal committedPositions pot, with one ADDITIONAL gate: the recorded
-// owner MUST have a position on C in Committed/Closing status (positionExists), so a
-// swap-rail D->C object — which names no LP position — cannot be consumed here to
-// drain the LP pot. The discipline otherwise mirrors ImportSettlement byte-for-byte:
+// the orthogonal committedPositions pot, with TWO additional gates that close H1-B
+// and the per-owner blast radius:
+//
+//   - RAIL gate (H1-B): the recorded object's wire rail MUST be railLP. A swap-fill
+//     D->C object (railSwap) is rejected here BEFORE any pot is touched, so a taker
+//     holding a position can no longer route their swap-fill object through collect
+//     to drain committedPositions. (This REPLACES the prior per-owner-ANY-position
+//     gate, which armed permanently once an owner held one open position.)
+//   - PER-OBJECT / PER-OWNER bound (FIX-1/FIX-2): the claim names a SPECIFIC position
+//     record (claim.PositionID) the recorded owner must hold (Open/Closing), and the
+//     credit is bounded by that record's remaining committed backing (LockedAmt) AND
+//     decrements the owner's per-asset committed reserve. So an over-export for owner
+//     X can never draw on owner Y's committed principal in the shared pot — the C leg
+//     is bounded by X's OWN recorded commitment, independent of what D exports.
+//
+// The discipline otherwise mirrors ImportSettlement (CEI, one-time, recorded-value
+// authoritative):
 //
 //  1. read the RECORDED object (Get under the D source chain); missing => revert.
-//  2. BIND asset == claimed, owner == recipient, amount == claimed (recorded value
+//  2. RAIL gate: recorded rail == railLP (cross-rail object refused).
+//  3. BIND asset == claimed, owner == recipient, amount == claimed (recorded value
 //     authoritative — a claim cannot consume a victim's object or re-denominate it).
-//  3. RAIL gate: the recorded owner must have an open/closing C position.
 //  4. REPLAY guard: reject an already-consumed object id (shared D->C consumed set —
-//     one object, one credit, globally, across the swap and LP rails).
-//  5. MARK consumed (CEI) BEFORE moving value.
-//  6. CREDIT C from committedPositions (NO MINT, NO RAID — the LP pot must back it).
-//  7. STAGE the atomic Remove of the consumed object (flushed at block accept).
+//     one object, one credit, globally, across the swap and LP rails). BEFORE the
+//     per-object gate so a re-consume is always a replay, not a stale-backing reject.
+//  5. PER-OBJECT/OWNER gate: the named position record exists, is owned by the
+//     recorded owner, is Open/Closing, and recAmount <= its remaining LockedAmt.
+//  6. MARK consumed (CEI) BEFORE moving value.
+//  7. CREDIT C from committedPositions (NO MINT, NO RAID — the LP pot must back it).
+//  8. DRIVE the record lifecycle: decrement LockedAmt + the owner's committed reserve
+//     by the credited amount; Closed (terminal) when the record's LockedAmt hits 0.
+//  9. STAGE the atomic Remove of the consumed object (flushed at block accept).
 func (c *NativeDChainClient) ImportPositionCollect(
 	state contract.AccessibleState,
 	atomicState contract.AtomicState,
@@ -295,12 +334,18 @@ func (c *NativeDChainClient) ImportPositionCollect(
 	if gerr != nil || len(vals) != 1 || len(vals[0]) == 0 {
 		return 0, ErrNativeNoSettlement
 	}
-	recOwner, recAsset, recAmount, ok := decodeAtomicObject(vals[0])
+	recRail, recOwner, recAsset, recAmount, ok := decodeAtomicObject(vals[0])
 	if !ok {
 		return 0, ErrNativeSettleMalformed
 	}
 
-	// (2) BIND the credit to the RECORDED value (authoritative, not declared).
+	// (2) RAIL gate (H1-B): consume ONLY railLP objects. A swap-fill object (railSwap)
+	// is refused here — it can never reach the committedPositions pot.
+	if recRail != railLP {
+		return 0, ErrLPCollectWrongRail
+	}
+
+	// (3) BIND the credit to the RECORDED value (authoritative, not declared).
 	if recAsset != claim.Asset {
 		return 0, ErrNativeSettleAsset
 	}
@@ -311,30 +356,76 @@ func (c *NativeDChainClient) ImportPositionCollect(
 		return 0, ErrNativeSettleAmount
 	}
 
-	// (3) RAIL gate: the recorded owner must hold an open/closing position on C. This
-	// closes the cross-rail consume (an LP cannot consume a swap-settlement object to
-	// drain the LP pot — a swap object names no position record).
-	if !ownerHasOpenPosition(stateDB, recOwner) {
-		return 0, ErrLPCollectNoPosition
-	}
-
 	// (4) REPLAY guard: one-time consumption across ALL D->C objects (shared set).
+	// Checked BEFORE the per-object gate so re-consuming an already-spent object is
+	// always caught as a replay — independent of the position's (now-decremented)
+	// remaining backing.
 	if isSettlementConsumed(stateDB, claim.OutputID) {
 		return 0, ErrNativeSettleReplay
 	}
 
-	// (5) MARK consumed BEFORE value movement (CEI; a failed credit rolls this back).
+	// (5) PER-OBJECT / PER-OWNER gate: bind the credit to the SPECIFIC position record
+	// the claim names, owned by the recorded owner and still Open/Closing, and bound by
+	// that record's OWN remaining committed backing. This is what stops an over-export
+	// for owner X from drawing on owner Y's committed principal in the shared pot.
+	order := loadRestingOrder(stateDB, claim.PositionID)
+	if order.Status != OrderStatusOpen && order.Status != OrderStatusClosing {
+		return 0, ErrLPCollectNoPosition
+	}
+	if order.Owner != recOwner {
+		return 0, ErrLPCollectNoPosition
+	}
+	if order.LockedAmt == nil || order.LockedAmt.Cmp(new(big.Int).SetUint64(recAmount)) < 0 {
+		return 0, ErrLPCollectExceedsPosition
+	}
+
+	// (6) MARK consumed BEFORE value movement (CEI; a failed credit rolls this back).
 	markSettlementConsumed(stateDB, claim.OutputID, state.GetBlockContext().Number().Uint64())
 
-	// (6) CREDIT C from the COMMITTED-POSITIONS pot — NO MINT, NO RAID.
-	if cerr := creditPositionCollect(stateDB, recOwner, recAsset, claim.AssetAddr, recAmount); cerr != nil {
+	// (7) CREDIT C from the COMMITTED-POSITIONS pot — NO MINT, NO RAID. The transfer
+	// token is derived from the RECORDED asset inside creditPositionCollect (FIX-5), so
+	// the claim's AssetAddr cannot redirect the credit to a different token.
+	if cerr := creditPositionCollect(stateDB, recOwner, recAsset, recAmount); cerr != nil {
 		return 0, cerr
 	}
 
-	// (7) STAGE the atomic Remove of the consumed object (revert-aware; flushed at
+	// (8) DRIVE the position lifecycle (FIX-3): the collected amount LEAVES the record's
+	// committed backing AND the owner's per-asset committed reserve. When the record's
+	// LockedAmt reaches 0 the position is fully collected -> Closed (terminal). A
+	// partially-collected position stays Open/Closing (still collectable).
+	collectPositionRecord(stateDB, claim.PositionID, order, recAsset, recAmount)
+
+	// (9) STAGE the atomic Remove of the consumed object (revert-aware; flushed at
 	// block accept atomically with the committed credit).
 	stageAtomicRemove(stateDB, dChainID, key)
 	return recAmount, nil
+}
+
+// collectPositionRecord applies a collect to the named position record and the
+// owner's per-asset committed reserve: it subtracts the credited amount from the
+// record's LockedAmt and from loadLockedReserve(owner,asset), and marks the record
+// Closed (OrderStatusCancelled, the terminal "Closed" state in the None/Open/Closed
+// lifecycle) once its LockedAmt reaches 0. The amount is already proven <= LockedAmt
+// (the per-object gate), so neither subtraction underflows. This is the lifecycle
+// half of FIX-1/2/3: a fully-collected position no longer satisfies the Open/Closing
+// gate, so its object lane can never be reused, and the per-owner reserve stays the
+// exact bound on what that owner can still pull.
+func collectPositionRecord(stateDB stateKV, orderID [32]byte, order RestingOrder, asset [32]byte, amount uint64) {
+	amt := new(big.Int).SetUint64(amount)
+	order.LockedAmt = new(big.Int).Sub(order.LockedAmt, amt)
+	if order.LockedAmt.Sign() == 0 {
+		order.Status = OrderStatusCancelled // == Closed (terminal): fully collected.
+	}
+	storeRestingOrder(stateDB, orderID, order)
+
+	// Decrement the owner's per-asset committed reserve (the defense-in-depth
+	// accumulator) by the same amount — it stays == Σ the owner's live records'
+	// LockedAmt, the per-owner bound D cannot exceed.
+	reserve := loadLockedReserve(stateDB, order.Owner, asset)
+	if reserve.Cmp(amt) < 0 {
+		reserve = amt // never negative (defense in depth; the per-object gate bounds it).
+	}
+	storeLockedReserve(stateDB, order.Owner, asset, new(big.Int).Sub(reserve, amt))
 }
 
 // SubmitCancel submits a D cancel for a resting order/position. A cancel moves no
@@ -383,9 +474,15 @@ func (c *NativeDChainClient) SubmitCollect(
 type SettlementClaim struct {
 	OutputID  ids.ID         // the D->C object's shared-memory UTXO key (sourceTxID|outputIndex-derived on D)
 	Asset     [32]byte       // claimed output asset — MUST equal the recorded asset
-	AssetAddr common.Address // ERC-20 token for the credit (address(0) for native)
+	AssetAddr common.Address // ERC-20 token for the credit (address(0) for native) — IGNORED for the transfer token, which is derived from the recorded asset (FIX-5)
 	Amount    uint64         // claimed output amount — MUST equal the recorded amount
 	Recipient common.Address // claimed owner — MUST equal the recorded owner
+	// PositionID is the LP-rail-only binding: the position RECORD id (MakerOrderID)
+	// the collect draws against. ImportPositionCollect requires the recorded owner to
+	// hold THIS specific position (Open/Closing) and bounds the credit by that
+	// record's remaining committed backing — the per-object, per-owner gate (FIX-1/2).
+	// The swap rail (ImportSettlement) leaves it zero; it consults no position record.
+	PositionID [32]byte
 }
 
 // ImportSettlement consumes a D->C atomic object EXACTLY ONCE and credits C. This
@@ -433,12 +530,20 @@ func (c *NativeDChainClient) ImportSettlement(
 	if gerr != nil || len(vals) != 1 || len(vals[0]) == 0 {
 		return 0, ErrNativeNoSettlement
 	}
-	recOwner, recAsset, recAmount, ok := decodeAtomicObject(vals[0])
+	recRail, recOwner, recAsset, recAmount, ok := decodeAtomicObject(vals[0])
 	if !ok {
 		return 0, ErrNativeSettleMalformed
 	}
 
-	// (2) BIND the credit to the RECORDED value (authoritative, not declared).
+	// (2) RAIL gate (H1-A): consume ONLY railSwap objects. An LP-collect object
+	// (railLP) is refused here — it can never reach the swap rail's seamReserve pot,
+	// so an LP cannot route their collect object through swap-settlement to drain the
+	// swap pot and strand real swap settlements.
+	if recRail != railSwap {
+		return 0, ErrSettleWrongRail
+	}
+
+	// (3) BIND the credit to the RECORDED value (authoritative, not declared).
 	if recAsset != claim.Asset {
 		return 0, ErrNativeSettleAsset
 	}
@@ -452,22 +557,24 @@ func (c *NativeDChainClient) ImportSettlement(
 		return 0, ErrNativeSettleAmount
 	}
 
-	// (3) REPLAY guard: one-time settlement, durable + consensus-shared.
+	// (4) REPLAY guard: one-time settlement, durable + consensus-shared.
 	if isSettlementConsumed(stateDB, claim.OutputID) {
 		return 0, ErrNativeSettleReplay
 	}
 
-	// (4) MARK consumed BEFORE value movement (CEI for the replay slot). A failed
+	// (5) MARK consumed BEFORE value movement (CEI for the replay slot). A failed
 	// credit still leaves it unconsumed because the EVM revert rolls back this write.
 	markSettlementConsumed(stateDB, claim.OutputID, state.GetBlockContext().Number().Uint64())
 
-	// (5) CREDIT C from the vault — NO MINT (the vault must already hold the output;
-	// it was funded by the tokenIn legs of prior intents and operator seeding).
-	if cerr := creditSettlementOutput(stateDB, recOwner, recAsset, claim.AssetAddr, recAmount); cerr != nil {
+	// (6) CREDIT C from the vault — NO MINT (the vault must already hold the output;
+	// it was funded by the tokenIn legs of prior intents and operator seeding). The
+	// transfer token is derived from the RECORDED asset inside creditSettlementOutput
+	// (FIX-5), so the claim's AssetAddr cannot redirect the credit to a different token.
+	if cerr := creditSettlementOutput(stateDB, recOwner, recAsset, recAmount); cerr != nil {
 		return 0, cerr
 	}
 
-	// (6) STAGE the atomic Remove of the consumed object under the D source chain. As
+	// (7) STAGE the atomic Remove of the consumed object under the D source chain. As
 	// with the C->D Put, we do NOT Apply here: a direct Apply commits outside the EVM
 	// revert scope, so a tx reverting after this would consume (remove) the D->C
 	// object while the C credit + consumed-mark rolled back => the object is gone and
@@ -567,7 +674,14 @@ func lockIntentInput(stateDB StateDB, caller common.Address, assetID [32]byte, a
 // taker out of a depositor's claim (settleVault) or a maker's locked reserve
 // (makerLockedVault). Native via SubBalance(0x9999)/AddBalance(recipient); ERC-20 via
 // the vault transfer.
-func creditSettlementOutput(stateDB StateDB, recipient common.Address, assetID [32]byte, assetAddr common.Address, amount uint64) error {
+//
+// FIX-5 (defense in depth): the ERC-20 transfer token is DERIVED from the recorded
+// asset id (assetAddress(assetID)) INSIDE this function — it does NOT trust a token
+// address the caller passes. assetID is the recorded D->C object's asset (the value
+// the seam reserve is denominated in), and assetAddress is its injective inverse, so
+// the token credited is provably the one the reserve was debited for; a caller can
+// no longer name a different token to transfer than the asset it claims to settle.
+func creditSettlementOutput(stateDB StateDB, recipient common.Address, assetID [32]byte, amount uint64) error {
 	amt := new(big.Int).SetUint64(amount)
 	held := loadSeamReserve(stateDB, assetID)
 	if held.Cmp(amt) < 0 {
@@ -595,7 +709,7 @@ func creditSettlementOutput(stateDB StateDB, recipient common.Address, assetID [
 	if !ok {
 		return ErrNativeERC20Vault
 	}
-	return safeTransferTokenTo(vault, assetAddr, recipient, amt)
+	return safeTransferTokenTo(vault, assetAddress(assetID), recipient, amt)
 }
 
 // --- LP-rail value movement (commit into committedPositions / collect out of it). --
@@ -647,7 +761,11 @@ func commitPositionInput(stateDB StateDB, caller common.Address, assetID [32]byt
 // seamReserve, the depositor settleVault, or the legacy makerLockedVault). This is
 // the CSettled credit (the collected unit re-enters the LP's CSpendable balance).
 // Native via SubBalance(0x9999)/AddBalance(recipient); ERC-20 via the vault transfer.
-func creditPositionCollect(stateDB StateDB, recipient common.Address, assetID [32]byte, assetAddr common.Address, amount uint64) error {
+//
+// FIX-5 (defense in depth): the ERC-20 transfer token is DERIVED from the recorded
+// asset id (assetAddress(assetID)) INSIDE this function — same discipline as
+// creditSettlementOutput; the caller cannot redirect the credit to a different token.
+func creditPositionCollect(stateDB StateDB, recipient common.Address, assetID [32]byte, amount uint64) error {
 	amt := new(big.Int).SetUint64(amount)
 	held := loadCommittedPositions(stateDB, assetID)
 	if held.Cmp(amt) < 0 {
@@ -672,5 +790,5 @@ func creditPositionCollect(stateDB StateDB, recipient common.Address, assetID [3
 	if !ok {
 		return ErrNativeERC20Vault
 	}
-	return safeTransferTokenTo(vault, assetAddr, recipient, amt)
+	return safeTransferTokenTo(vault, assetAddress(assetID), recipient, amt)
 }
