@@ -52,11 +52,12 @@ var (
 	SelectorSetHaltAsset  uint32 // setHaltAsset(bytes32,bool)
 
 	// SelectorCollectPosition is the LP rail's D->C collect/withdraw money path:
-	// collectPosition(bytes32 outputID, address asset, uint256 amount) consumes a D->C
-	// atomic object ONCE and credits the caller out of the committedPositions pot. It
-	// is the SOLE C-credit path for an LP (collect, decrease, burn, cancel all return
-	// funds through here). Distinct selector, same orthogonal money-path discipline.
-	SelectorCollectPosition uint32 // collectPosition(bytes32,address,uint256)
+	// collectPosition(bytes32 outputID, address asset, uint256 amount, bytes32
+	// positionID) consumes a D->C railLP object ONCE and credits the caller out of the
+	// committedPositions pot, bounded by the named position record's backing. It is the
+	// SOLE C-credit path for an LP (collect, decrease, burn, cancel all return funds
+	// through here). Distinct selector, same orthogonal money-path discipline.
+	SelectorCollectPosition uint32 // collectPosition(bytes32,address,uint256,bytes32)
 )
 
 // SettleModule registers the 0x9999 precompile.
@@ -73,7 +74,9 @@ func init() {
 	SelectorSetHaltGlobal = keccak4("setHaltGlobal(bool)")
 	SelectorSetHaltMarket = keccak4("setHaltMarket(bytes32,bool)")
 	SelectorSetHaltAsset = keccak4("setHaltAsset(bytes32,bool)")
-	SelectorCollectPosition = keccak4("collectPosition(bytes32,address,uint256)")
+	SelectorCollectPosition = keccak4("collectPosition(bytes32,address,uint256,bytes32)")
+	SelectorSeedSeamReserve = keccak4("seedSeamReserve(address,uint256)")
+	SelectorCreditPositionFee = keccak4("creditPositionFee(bytes32,address,uint256)")
 
 	if err := modules.RegisterModule(SettleModule); err != nil {
 		panic(err)
@@ -218,6 +221,14 @@ func (s *SettleContract) Run(
 		return s.runSetHaltScoped(accessibleState, caller, data, suppliedGas, readOnly, SetHaltMarket)
 	case SelectorSetHaltAsset:
 		return s.runSetHaltScoped(accessibleState, caller, data, suppliedGas, readOnly, SetHaltAsset)
+
+	// Operator funding of the settlement pots (protocolFeeController-gated). The swap
+	// rail's seamReserve counterparty seed (FIX-4 liveness: a market's first matched
+	// swap settles without manual state-poking) and the LP rail's per-owner fee credit.
+	case SelectorSeedSeamReserve:
+		return s.runSeedSeamReserve(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorCreditPositionFee:
+		return s.runCreditPositionFee(accessibleState, caller, data, suppliedGas, readOnly)
 
 	default:
 		return nil, suppliedGas, errors.New("dex: unknown 0x9999 selector")
