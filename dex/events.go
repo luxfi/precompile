@@ -18,6 +18,13 @@ var (
 	swapEventSig            = common.BytesToHash(crypto.Keccak256([]byte("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")))
 	modifyLiquidityEventSig = common.BytesToHash(crypto.Keccak256([]byte("ModifyLiquidity(bytes32,address,int24,int24,int256,bytes32)")))
 
+	// DEXFill is THE indexable native-CLOB settlement signal, emitted by the
+	// 0x9999 settlement precompile on a Phase-B credit. Unlike the V4 Swap event
+	// (read-only views at the deprecated 0x9010 pool manager), this fires on the
+	// money path so the explorer's DEX graph and lux.exchange can index settled
+	// fills via eth_getLogs. poolId + taker indexed; amountOut + blockNumber data.
+	dexFillEventSig = common.BytesToHash(crypto.Keccak256([]byte("DEXFill(bytes32,address,uint256,uint256)")))
+
 	// Pause/Freeze event signatures (ATS regulatory compliance)
 	dexPausedEventSig   = common.BytesToHash(crypto.Keccak256([]byte("DEXPaused(address)")))
 	dexResumedEventSig  = common.BytesToHash(crypto.Keccak256([]byte("DEXResumed(address)")))
@@ -172,6 +179,34 @@ func emitModifyLiquidityEvent(
 			modifyLiquidityEventSig,
 			common.BytesToHash(poolId[:]),
 			common.BytesToHash(sender.Bytes()),
+		},
+		Data: data,
+	})
+}
+
+// emitDEXFillEvent emits DEXFill(bytes32 indexed poolId, address indexed taker,
+// uint256 amountOut, uint256 blockNumber) from the 0x9999 settlement precompile.
+// This is the authoritative on-chain record of a settled native-CLOB fill — the
+// signal the graph indexer ingests into the DEX (CLOB) schema. It is emitted at
+// poolManagerAddr9999 (the money path), NOT lxPoolAddr (the deprecated 0x9010
+// read-only views), so an indexer can scope CLOB fills to the settlement vault.
+func emitDEXFillEvent(
+	stateDB StateDB,
+	poolId [32]byte,
+	taker common.Address,
+	amountOut *big.Int,
+	blockNumber uint64,
+) {
+	data := make([]byte, 0, 64)
+	data = append(data, abiEncodeBigInt(amountOut)...)
+	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(blockNumber))...)
+
+	stateDB.AddLog(&ethtypes.Log{
+		Address: poolManagerAddr9999,
+		Topics: []common.Hash{
+			dexFillEventSig,
+			common.BytesToHash(poolId[:]),
+			common.BytesToHash(taker.Bytes()),
 		},
 		Data: data,
 	})
