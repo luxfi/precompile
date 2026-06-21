@@ -182,7 +182,12 @@ func SettleSwap(
 			return nil, gasLeft, ierr
 		}
 		// Analytics — sharded, no global hot write.
-		accrueVolume(stateDB, key.ID(), new(big.Int).SetUint64(credited), blockNumber)
+		creditedAmt := new(big.Int).SetUint64(credited)
+		accrueVolume(stateDB, key.ID(), creditedAmt, blockNumber)
+		// Indexable settled-fill signal for the DEX graph / lux.exchange. Emitted
+		// on the money path (Phase-B credit) so eth_getLogs surfaces native-CLOB
+		// fills. accrueVolume is sharded state (not a log); this is the log.
+		emitDEXFillEvent(stateDB, key.ID(), caller, creditedAmt, blockNumber)
 		// V4 return: the taker received `credited` of the output asset. Map to the
 		// BalanceDelta direction (output paid out to taker = negative to pool).
 		delta := balanceDeltaForOutput(params, new(big.Int).SetUint64(credited))
