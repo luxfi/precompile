@@ -11,6 +11,36 @@ import (
 	ethtypes "github.com/luxfi/geth/core/types"
 )
 
+// DexSettleActivationTime is the layer-local mirror of the canonical 0x9999 DEX
+// settlement activation boundary — Dec 25 2025 00:00:00 UTC (unix 1766704800).
+//
+// The CANONICAL definition lives in luxfi/evm params/extras.DexSettleActivationTime;
+// that is the single source of truth the EVM dispatch gate and marker-installing
+// state transition reference. This package (luxfi/precompile) sits BELOW evm in the
+// import graph (evm imports precompile, never the reverse), so it cannot import the
+// extras constant — it mirrors the value here. Drift between the two copies is a
+// consensus bug, so an equality guard test in the evm layer (which imports BOTH)
+// asserts dex.DexSettleActivationTime == extras.DexSettleActivationTime and fails CI
+// if either moves. The value is a protocol constant (one decision), not config.
+//
+// Why the precompile gates on this AT ALL, given the EVM overrider already withholds
+// 0x9999 from the enabled set pre-activation: defense in depth. The dispatch gate is
+// in the high (evm) layer; a new consensus-visible log (one that changes the receipt
+// root + bloom) is emitted in this low (precompile) layer. If any host dispatches
+// SettleSwap at a pre-activation timestamp — a buggy overrider, a non-Lux EVM that
+// integrates the precompile without the dated-fork gate, a future direct-call path —
+// an ungated log would split the chain (a re-syncing node that did NOT emit the log
+// would compute a different receipt root). Gating the log on the SAME timestamp the
+// dispatch uses means: on every chain, every settlement that ever executes also emits
+// the log, and no execution before the boundary ever can. No settlement-without-log
+// window, no log-without-settlement window.
+const DexSettleActivationTime uint64 = 1766704800 // 2025-12-25T00:00:00Z; canonical: evm extras.DexSettleActivationTime
+
+// dexLogsActive reports whether 0x9999's new consensus-visible logs (DEXFill, and the
+// V4 Initialize the native registry emits) may be written at blockTimestamp. It is the
+// ONE policy predicate gating those logs; the emit functions stay pure log-builders.
+func dexLogsActive(blockTimestamp uint64) bool { return blockTimestamp >= DexSettleActivationTime }
+
 // Event signature hashes (topic0) matching standard Uniswap V4 events.
 // Computed as keccak256 of the canonical event signature string.
 var (
@@ -99,9 +129,15 @@ func abiEncodeBytes32(v [32]byte) []byte {
 	return word
 }
 
-// emitInitializeEvent emits a standard Uniswap V4 Initialize event.
+// emitInitializeEvent emits a standard Uniswap V4 Initialize event from `manager`.
+// The emitting address is a property of WHICH manager fired the init, not of the
+// event shape, so it is a parameter: the in-process V4 PoolManager passes its own
+// (0x9010 read-only-view) address; the native 0x9999 registry passes 0x9999 so the
+// graph's isPoolManager check creates the DEX Market for native pools. One builder,
+// address-parameterized — no second copy of the V4-Initialize encoding.
 func emitInitializeEvent(
 	stateDB StateDB,
+	manager common.Address,
 	poolId [32]byte,
 	key PoolKey,
 	sqrtPriceX96 *big.Int,
@@ -116,7 +152,7 @@ func emitInitializeEvent(
 	data = append(data, abiEncodeInt24(tick)...)
 
 	stateDB.AddLog(&ethtypes.Log{
-		Address: lxPoolAddr,
+		Address: manager,
 		Topics: []common.Hash{
 			initializeEventSig,
 			common.BytesToHash(poolId[:]),
