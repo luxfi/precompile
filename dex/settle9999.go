@@ -38,34 +38,13 @@ import (
 // RECORDED atomic object's amount, and absent a real object in shared memory it
 // reverts.
 
-// --- 0x9999 config (networkID, cChainID): the precompile's CONFIGURED chain
-// identity, written to StateDB at Configure (durable, consensus-shared). Retained
-// from the prior design: the native intent id binds the chain identity so an object
-// minted on one chain/network can never be consumed on another.
-var (
-	cfgNetworkIDKey = makeStorageKey([]byte(settleStateNamespace+"cfg.net"), []byte{})
-	cfgCChainIDKey  = makeStorageKey([]byte(settleStateNamespace+"cfg.cid"), []byte{})
-)
-
-// SetSettleChainIdentity records the (networkID, cChainID) the 0x9999 native seam
-// binds to. Called once at Configure from genesis config.
-func SetSettleChainIdentity(stateDB stateKV, networkID uint32, cChainID [32]byte) {
-	var n common.Hash
-	new(big.Int).SetUint64(uint64(networkID)).FillBytes(n[:])
-	stateDB.SetState(poolManagerAddr9999, cfgNetworkIDKey, n)
-	var c common.Hash
-	copy(c[:], cChainID[:])
-	stateDB.SetState(poolManagerAddr9999, cfgCChainIDKey, c)
-}
-
-func loadSettleChainIdentity(stateDB stateKV) (uint32, [32]byte) {
-	n := stateDB.GetState(poolManagerAddr9999, cfgNetworkIDKey)
-	networkID := uint32(new(big.Int).SetBytes(n[:]).Uint64())
-	c := stateDB.GetState(poolManagerAddr9999, cfgCChainIDKey)
-	var cChainID [32]byte
-	copy(cChainID[:], c[:])
-	return networkID, cChainID
-}
+// --- 0x9999 native-seam chain identity (networkID, cChainID, dChainID). It is NOT
+// configured and NOT persisted: 0x9999 is ALWAYS-ON with zero per-net config, so the
+// chain identity is resolved at RUNTIME from the host's atomic capability
+// (contract.AtomicState: NetworkID()/CChainID()/DChainID(), sourced from the consensus
+// context). The native intent id still binds the full (networkID, cChainID, dChainID)
+// so an object minted on one chain/network can never be consumed on another — that
+// binding is unchanged; only its SOURCE moved from genesis config to runtime context.
 
 // --- Settlement value movement vault. The 0x9999 vault (the precompile self-
 // address) is the counterparty reserve: a Phase-A intent locks tokenIn into the
