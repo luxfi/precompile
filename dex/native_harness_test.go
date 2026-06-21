@@ -34,14 +34,15 @@ import (
 // contract.AtomicState so SettleSwap's `state.(contract.AtomicState)` assertion
 // succeeds and reaches a real SharedMemory + chain identity.
 type nativeAtomicState struct {
-	stateDB   *MockStateDB
-	sm        atomic.SharedMemory
-	networkID uint32
-	chainID   ids.ID // THIS chain (C)
-	cChainID  ids.ID
-	dChainID  ids.ID // the D-Chain (dexvm) peer the host resolves at runtime
-	txID      ids.ID
-	callIndex uint32
+	stateDB        *MockStateDB
+	sm             atomic.SharedMemory
+	networkID      uint32
+	chainID        ids.ID // THIS chain (C)
+	cChainID       ids.ID
+	dChainID       ids.ID // the D-Chain (dexvm) peer the host resolves at runtime
+	txID           ids.ID
+	callIndex      uint32
+	blockTimestamp uint64 // block time the precompile reads via GetBlockContext().Timestamp()
 }
 
 // --- AccessibleState ---
@@ -49,7 +50,7 @@ func (m *nativeAtomicState) GetStateDB() contract.StateDB {
 	return &contractStateDBWrapper{inner: m.stateDB}
 }
 func (m *nativeAtomicState) GetBlockContext() contract.BlockContext {
-	return &mockBlockCtx{number: big.NewInt(int64(m.stateDB.blockNumber))}
+	return &mockBlockCtx{number: big.NewInt(int64(m.stateDB.blockNumber)), timestamp: m.blockTimestamp}
 }
 func (m *nativeAtomicState) GetConsensusContext() context.Context             { return context.Background() }
 func (m *nativeAtomicState) GetChainConfig() precompileconfig.ChainConfig     { return nil }
@@ -111,6 +112,10 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 		dChainID:  dChainID, // host-resolved D peer (runtime), as the EVM adapter supplies it
 		txID:      ids.ID{0x7A}, // a fixed tx id for the harness; tests vary callIndex/txID
 		callIndex: 0,
+		// Default to the activation boundary so settlement/init tests exercise the
+		// live-chain path where 0x9999's DEXFill + Initialize logs are active. A test
+		// that needs a pre-activation block sets state.blockTimestamp explicitly.
+		blockTimestamp: DexSettleActivationTime,
 	}
 	h := &settleHarness{
 		c:            &SettleContract{protocolFeeController: common.HexToAddress("0xFEE0000000000000000000000000000000000001")},
