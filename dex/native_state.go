@@ -113,3 +113,46 @@ func storeSeamReserve(stateDB stateKV, assetID [32]byte, amount *big.Int) {
 	}
 	stateDB.SetState(poolManagerAddr9999, seamReserveKey(assetID), w)
 }
+
+// --- Committed-positions reserve: the LP RAIL's OWN per-asset pot inside the 0x9999
+// vault, tracked SEPARATELY from the depositor pot (settleVault), the legacy maker
+// C-side pot (makerLockedVault), and the swap-rail pot (seamReserve). This is the
+// fourth orthogonal claim on the SAME 0x9999 vault account — the FIX-3 decomplection
+// extended to the LP rail. It tracks the C-side BACKING of value COMMITTED to live D
+// positions (the DCommitted state):
+//
+//	committedPositions[a] = operator seed of a (fee backing)
+//	                       + Σ LP principal commits of a (C->D DL01 commits)
+//	                       − Σ collect/decrease/burn credits of a (D->C imports)
+//
+// THE VAULT-ACCOUNT INVARIANT becomes (per asset a):
+//
+//	realHolding(0x9999, a) == settleVault[a] + makerLockedVault[a]
+//	                          + seamReserve[a] + committedPositions[a]
+//
+// An LP commit moves value from the caller's CSpendable EVM balance INTO
+// committedPositions (DCommitted): the unit is no longer spendable on C and a C->D
+// commit object backs a funded D position. A collect/decrease/burn draws ONLY on
+// committedPositions (creditPositionCollect), so it can NEVER pay an LP out of a
+// depositor's claim, a maker's legacy lock, or the swap rail's seam reserve — and a
+// swap settlement (which draws ONLY seamReserve) can never raid an LP's committed
+// principal. The pots are orthogonal; the blast radius of one rail can't reach
+// another. The NEVER-BOTH invariant (a unit is CSpendable XOR DCommitted) is the
+// commit debit + the committedPositions credit being a single balanced move.
+var committedPositionsPrefix = []byte(settleStateNamespace + "cpos") // committedPositions[asset]
+
+func committedPositionsKey(assetID [32]byte) common.Hash {
+	return makeStorageKey(committedPositionsPrefix, assetID[:])
+}
+
+func loadCommittedPositions(stateDB stateKV, assetID [32]byte) *big.Int {
+	return new(big.Int).SetBytes(stateDB.GetState(poolManagerAddr9999, committedPositionsKey(assetID)).Bytes())
+}
+
+func storeCommittedPositions(stateDB stateKV, assetID [32]byte, amount *big.Int) {
+	var w common.Hash
+	if amount != nil && amount.Sign() > 0 {
+		amount.FillBytes(w[:])
+	}
+	stateDB.SetState(poolManagerAddr9999, committedPositionsKey(assetID), w)
+}

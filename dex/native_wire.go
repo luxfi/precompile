@@ -112,3 +112,56 @@ func DeriveIntentID(
 // nativeIntentDomain scopes the intent-id derivation so an id minted for the DEX
 // C->D atomic seam can never be confused with any other shared-memory object id.
 const nativeIntentDomain = "lux.dex.native.intent.v1"
+
+// DerivePositionCommitID computes the deterministic id of a C->D LP POSITION-COMMIT
+// atomic object (intent kind DL01) — the C->D leg that FUNDS a D position. It is the
+// shared-memory UTXO key the commit object is PUT under (and that D's import
+// consumes). It is derived with its OWN domain (positionCommitDomain) so a
+// position-commit id and a swap-intent id (DeriveIntentID, nativeIntentDomain) live
+// in DISJOINT id spaces — a swap intent object can NEVER be consumed as a position
+// commit, nor vice-versa, even with the same (account, asset, amount, market). The
+// 60-byte object wire (owner|asset|amount) is IDENTICAL so D imports both natively;
+// only the id DOMAIN (and the routing event KIND) distinguish the two rails.
+//
+//	SHA-256( positionCommitDomain | networkID | cChainID | dChainID | txID |
+//	         callIndex | account | assetIn | amountIn | poolID )
+//
+// Every component is fixed width and length-stable; callIndex disambiguates two
+// commits in one tx; (networkID, cChainID, dChainID) scope the object to one rail;
+// account/asset/amount/pool bind the economic payload so the id cannot be reused.
+func DerivePositionCommitID(
+	networkID uint32,
+	cChainID, dChainID ids.ID,
+	txID ids.ID,
+	callIndex uint32,
+	account common.Address,
+	assetIn [32]byte,
+	amountIn uint64,
+	poolID [32]byte,
+) ids.ID {
+	h := sha256.New()
+	h.Write([]byte(positionCommitDomain))
+	var u4 [4]byte
+	binary.BigEndian.PutUint32(u4[:], networkID)
+	h.Write(u4[:])
+	h.Write(cChainID[:])
+	h.Write(dChainID[:])
+	h.Write(txID[:])
+	binary.BigEndian.PutUint32(u4[:], callIndex)
+	h.Write(u4[:])
+	h.Write(account[:])
+	h.Write(assetIn[:])
+	var u8 [8]byte
+	binary.BigEndian.PutUint64(u8[:], amountIn)
+	h.Write(u8[:])
+	h.Write(poolID[:])
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return ids.ID(out)
+}
+
+// positionCommitDomain scopes the position-commit-id derivation so a DL01 LP commit
+// object id can never collide with a DI01 swap-intent object id (nativeIntentDomain)
+// or any other shared-memory object id. This is the id-space half of the rail
+// separation (the routing-event KIND is the other half).
+const positionCommitDomain = "lux.dex.native.poscommit.v1"

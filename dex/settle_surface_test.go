@@ -154,132 +154,140 @@ func TestInitialize_Deterministic(t *testing.T) {
 
 // ── 0x9999 modifyLiquidity ───────────────────────────────────────────────────
 
-func TestModifyLiquidity_LockUnlockConservation(t *testing.T) {
+func TestModifyLiquidity_CommitConservation(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 
-	// Seed the maker's available reserve of currency0 (the BID-side asset = native).
+	// The LP funds its CSpendable balance of currency0 (the BID-side asset = native).
+	// The committed model debits the caller's REAL balance (no prior deposit needed).
 	bidAsset := assetID(h.key.Currency0)
 	db := newPoolStateAdapter(h.state)
-	fundClaim(db, h.caller, bidAsset, big.NewInt(1000))
+	h.fundCallerNative(1000)
 
-	availBefore := loadDepositorClaim(db, h.caller, bidAsset)
-	lockedBefore := loadLockedReserve(db, h.caller, bidAsset)
-	sumBefore := new(big.Int).Add(availBefore, lockedBefore)
+	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
+	committedBefore := loadCommittedPositions(db, bidAsset)
+	h.vaultInvariantNative(t, "before commit")
 
 	var salt [32]byte
 	salt[31] = 0x07
 
-	// ADD 400: available -= 400, locked += 400 (sum invariant).
+	// COMMIT 400: caller CSpendable -= 400, committedPositions += 400 (the unit moves
+	// from CSpendable to DCommitted — never both).
 	out, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
 		modLiqCalldata(h.key, -60, 60, big.NewInt(400), salt, MakerSideBid), 5_000_000, false)
 	if err != nil {
-		t.Fatalf("modifyLiquidity ADD: %v", err)
+		t.Fatalf("modifyLiquidity COMMIT: %v", err)
 	}
 	if len(out) < 32 {
-		t.Fatal("modifyLiquidity must return (orderID, remaining)")
+		t.Fatal("modifyLiquidity must return (positionID, committed)")
 	}
-	availAfterAdd := loadDepositorClaim(db, h.caller, bidAsset)
-	lockedAfterAdd := loadLockedReserve(db, h.caller, bidAsset)
-	if availAfterAdd.Int64() != 600 || lockedAfterAdd.Int64() != 400 {
-		t.Fatalf("after ADD 400: available=%s locked=%s (want 600/400)", availAfterAdd, lockedAfterAdd)
+	callerAfter := h.state.stateDB.GetBalance(h.caller).ToBig()
+	committedAfter := loadCommittedPositions(db, bidAsset)
+	if new(big.Int).Sub(callerBefore, callerAfter).Int64() != 400 {
+		t.Fatalf("commit must debit caller CSpendable by exactly 400, got %s", new(big.Int).Sub(callerBefore, callerAfter))
 	}
-	if new(big.Int).Add(availAfterAdd, lockedAfterAdd).Cmp(sumBefore) != 0 {
-		t.Fatal("CONSERVATION violated by ADD (available+locked changed)")
+	if new(big.Int).Sub(committedAfter, committedBefore).Int64() != 400 {
+		t.Fatalf("commit must add 400 to committedPositions, got %s", new(big.Int).Sub(committedAfter, committedBefore))
 	}
-	// The resting order is recorded OPEN.
+	h.vaultInvariantNative(t, "after commit")
+	// The position is recorded OPEN (Committed) in the owner index.
 	orderID := MakerOrderID(h.caller, h.key.ID(), salt, -60, 60)
 	if loadRestingOrder(db, orderID).Status != OrderStatusOpen {
-		t.Fatal("order must be OPEN after ADD")
+		t.Fatal("position must be OPEN (Committed) after commit")
 	}
-	// It is in the owner index.
 	if len(OwnerOrderIDs(db, h.caller)) != 1 {
-		t.Fatal("owner index must have exactly one order")
+		t.Fatal("owner index must have exactly one position")
 	}
 
-	// REMOVE 400: locked -= 400, available += 400, order CANCELLED.
+	// REMOVE (withdraw request): marks the position CLOSING and emits the D->C withdraw
+	// request — it moves NO C value here (funds are on D; they return via collectPosition).
 	if _, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
 		modLiqCalldata(h.key, -60, 60, big.NewInt(-400), salt, MakerSideBid), 5_000_000, false); err != nil {
-		t.Fatalf("modifyLiquidity REMOVE: %v", err)
+		t.Fatalf("modifyLiquidity REMOVE (withdraw request): %v", err)
 	}
-	availAfterRm := loadDepositorClaim(db, h.caller, bidAsset)
-	lockedAfterRm := loadLockedReserve(db, h.caller, bidAsset)
-	if availAfterRm.Cmp(availBefore) != 0 || lockedAfterRm.Sign() != 0 {
-		t.Fatalf("after REMOVE: available=%s locked=%s (want %s/0)", availAfterRm, lockedAfterRm, availBefore)
+	if loadRestingOrder(db, orderID).Status != OrderStatusClosing {
+		t.Fatal("position must be CLOSING after a withdraw request")
 	}
-	if loadRestingOrder(db, orderID).Status != OrderStatusCancelled {
-		t.Fatal("order must be CANCELLED after full REMOVE")
+	// committedPositions is UNCHANGED by the withdraw request (the debit happens only
+	// when the LP consumes the D->C collect object). Conservation still holds.
+	if loadCommittedPositions(db, bidAsset).Int64() != committedAfter.Int64() {
+		t.Fatal("a withdraw request must not change committedPositions (D->C collect debits it)")
 	}
+	h.vaultInvariantNative(t, "after withdraw request")
 }
 
-// TestModifyLiquidity_InsufficientReserveReverts: ADD beyond available reverts.
-func TestModifyLiquidity_InsufficientReserveReverts(t *testing.T) {
+// TestModifyLiquidity_InsufficientBalanceReverts: a COMMIT beyond the caller's
+// CSpendable balance reverts (the funds must come from the caller's real balance —
+// no mint, no commit of value the LP does not hold).
+func TestModifyLiquidity_InsufficientBalanceReverts(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
-	bidAsset := assetID(h.key.Currency0)
-	fundClaim(newPoolStateAdapter(h.state), h.caller, bidAsset, big.NewInt(100))
+	h.fundCallerNative(100)
 
 	var salt [32]byte
 	if _, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
-		modLiqCalldata(h.key, -60, 60, big.NewInt(500), salt, MakerSideBid), 5_000_000, false); err != ErrMakerInsufficient {
-		t.Fatalf("ADD beyond reserve must revert ErrMakerInsufficient, got: %v", err)
+		modLiqCalldata(h.key, -60, 60, big.NewInt(500), salt, MakerSideBid), 5_000_000, false); err != ErrNativeFundsShort {
+		t.Fatalf("COMMIT beyond balance must revert ErrNativeFundsShort, got: %v", err)
 	}
 }
 
 // TestModifyLiquidity_CrossOwnerCancelReverts: account B cannot cancel account A's
-// order. The orderID binds owner; B's derived id is a DIFFERENT (empty) order, and
-// even a forged id with A's owner stored reverts ErrMakerNotOwner.
+// position. The positionID binds owner; B's derived id is a DIFFERENT (empty)
+// position, so a withdraw request for it reverts ErrMakerNotOwner.
 func TestModifyLiquidity_CrossOwnerCancelReverts(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	alice := h.caller
 	bob := common.HexToAddress("0xB0B0000000000000000000000000000000000000")
-	bidAsset := assetID(h.key.Currency0)
 	db := newPoolStateAdapter(h.state)
-	fundClaim(db, alice, bidAsset, big.NewInt(1000))
+	h.fundCallerNative(1000)
 
 	var salt [32]byte
 	salt[31] = 0x09
-	// Alice opens.
+	// Alice commits.
 	if _, _, err := h.c.Run(h.state, alice, poolManagerAddr9999,
 		modLiqCalldata(h.key, -60, 60, big.NewInt(300), salt, MakerSideBid), 5_000_000, false); err != nil {
-		t.Fatalf("alice ADD: %v", err)
+		t.Fatalf("alice COMMIT: %v", err)
 	}
-	// Bob tries to cancel WITH ALICE'S salt/range. Bob's derived orderID differs
-	// (owner is folded into the id), so there is no such order for Bob => revert.
+	// Bob tries to cancel WITH ALICE'S salt/range. Bob's derived positionID differs
+	// (owner is folded into the id), so there is no such position for Bob => revert.
 	if _, _, err := h.c.Run(h.state, bob, poolManagerAddr9999,
 		modLiqCalldata(h.key, -60, 60, big.NewInt(-300), salt, MakerSideBid), 5_000_000, false); err != ErrMakerNotOwner {
 		t.Fatalf("cross-owner cancel must revert ErrMakerNotOwner, got: %v", err)
 	}
-	// Alice's order is still OPEN and her locked reserve untouched.
-	if loadLockedReserve(db, alice, bidAsset).Int64() != 300 {
-		t.Fatal("alice's locked reserve must be untouched by bob's failed cancel")
+	// Alice's position is still OPEN (Committed) — bob's failed cancel did not close it.
+	aliceOrder := MakerOrderID(alice, h.key.ID(), salt, -60, 60)
+	if loadRestingOrder(db, aliceOrder).Status != OrderStatusOpen {
+		t.Fatal("alice's position must remain OPEN (Committed) after bob's failed cancel")
 	}
 }
 
 // TestModifyLiquidity_ReentrancyGuard: while the shared 0x9999 custody guard is
-// held (as it would be inside a malicious token's transferFrom callback during a
-// deposit/withdraw), a nested modifyLiquidity reverts ErrCustodyReentrant before
-// moving any reserve. Simulated by setting the guard slot directly.
+// held (as inside a malicious token's transferFrom callback during a custody op), a
+// nested modifyLiquidity reverts ErrCustodyReentrant before committing any value.
 func TestModifyLiquidity_ReentrancyGuard(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	bidAsset := assetID(h.key.Currency0)
 	db := newPoolStateAdapter(h.state)
-	fundClaim(db, h.caller, bidAsset, big.NewInt(1000))
+	h.fundCallerNative(1000)
 
 	// Simulate "a custody op is already in progress" (the guard is held).
 	db.SetState(poolManagerAddr9999, custodyGuardKey9999, common.Hash{31: 1})
 
 	var salt [32]byte
 	salt[31] = 0x21
-	availBefore := loadDepositorClaim(db, h.caller, bidAsset)
+	balBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
+	committedBefore := loadCommittedPositions(db, bidAsset)
 	if _, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
 		modLiqCalldata(h.key, -60, 60, big.NewInt(100), salt, MakerSideBid), 5_000_000, false); err != ErrCustodyReentrant {
 		t.Fatalf("nested modifyLiquidity must revert ErrCustodyReentrant, got: %v", err)
 	}
-	if loadDepositorClaim(db, h.caller, bidAsset).Cmp(availBefore) != 0 {
-		t.Fatal("reentrant-refused modifyLiquidity must move no reserve")
+	if h.state.stateDB.GetBalance(h.caller).ToBig().Cmp(balBefore) != 0 {
+		t.Fatal("reentrant-refused modifyLiquidity must move no value")
+	}
+	if loadCommittedPositions(db, bidAsset).Cmp(committedBefore) != 0 {
+		t.Fatal("reentrant-refused modifyLiquidity must not commit to the LP pot")
 	}
 }
 
@@ -484,25 +492,25 @@ func TestPositionManager_EnumerateAndCancelRoutesTo9999(t *testing.T) {
 
 	bidAsset := assetID(h.key.Currency0)
 	db := newPoolStateAdapter(h.state)
-	fundClaim(db, h.caller, bidAsset, big.NewInt(1000))
+	h.fundCallerNative(1000)
 
 	var salt [32]byte
 	salt[31] = 0x11
 
-	// openPosition (ADD via 0x9996) routes into the 0x9999 kernel: reserve locks.
+	// openPosition (ADD via 0x9996) routes into the 0x9999 kernel: COMMITS to D.
 	if _, _, err := pm.Run(h.state, h.caller, positionManagerAddr,
 		pmLifecycleCalldata(SelectorPMOpenPosition, h.key, -120, 120, big.NewInt(500), salt, MakerSideBid), 5_000_000, false); err != nil {
 		t.Fatalf("openPosition: %v", err)
 	}
-	if loadLockedReserve(db, h.caller, bidAsset).Int64() != 500 {
-		t.Fatal("openPosition must lock reserve via the 0x9999 kernel")
+	if loadCommittedPositions(db, bidAsset).Int64() != 500 {
+		t.Fatal("openPosition must commit to D via the 0x9999 kernel (committedPositions += 500)")
 	}
 	orderID := MakerOrderID(h.caller, h.key.ID(), salt, -120, 120)
 	if loadRestingOrder(db, orderID).Status != OrderStatusOpen {
-		t.Fatal("openPosition must record an OPEN order in 0x9999 state")
+		t.Fatal("openPosition must record an OPEN (Committed) position in 0x9999 state")
 	}
 
-	// positionsOf(owner) enumerates the OPEN order.
+	// positionsOf(owner) enumerates the OPEN position.
 	out, _, err := pm.Run(h.state, h.caller, positionManagerAddr, prependSelector(SelectorPMPositionsOf, leftPad32(h.caller.Bytes())), 5_000_000, true)
 	if err != nil {
 		t.Fatalf("positionsOf: %v", err)
@@ -510,10 +518,10 @@ func TestPositionManager_EnumerateAndCancelRoutesTo9999(t *testing.T) {
 	// bytes32[]: offset(0x20) | len | elems.
 	n := new(big.Int).SetBytes(out[32:64]).Int64()
 	if n != 1 {
-		t.Fatalf("positionsOf must list 1 open order, got %d", n)
+		t.Fatalf("positionsOf must list 1 open position, got %d", n)
 	}
 	if common.BytesToHash(out[64:96]) != common.BytesToHash(orderID[:]) {
-		t.Fatal("positionsOf must list the opened orderID")
+		t.Fatal("positionsOf must list the opened positionID")
 	}
 
 	// positionInfo(orderID) returns the record.
@@ -525,30 +533,32 @@ func TestPositionManager_EnumerateAndCancelRoutesTo9999(t *testing.T) {
 		t.Fatal("positionInfo owner mismatch")
 	}
 	if new(big.Int).SetBytes(pi[128:160]).Int64() != 500 {
-		t.Fatal("positionInfo lockedAmount must be 500")
+		t.Fatal("positionInfo committed amount must be 500")
 	}
 
-	// cancelLimit (REMOVE via 0x9996) routes into the kernel: reserve unlocks, order
-	// CANCELLED, and positionsOf drops it.
+	// collect (via 0x9996) emits a D->C collect REQUEST (returns the positionID) — the
+	// actual C credit lands when the LP consumes the resulting object via collectPosition.
+	cOut, _, err := pm.Run(h.state, h.caller, positionManagerAddr,
+		pmLifecycleCalldata(SelectorPMCollect, h.key, -120, 120, big.NewInt(1), salt, MakerSideBid), 5_000_000, false)
+	if err != nil {
+		t.Fatalf("collect request must succeed (emit event), got: %v", err)
+	}
+	if common.BytesToHash(cOut) != common.BytesToHash(orderID[:]) {
+		t.Fatal("collect request must return the positionID")
+	}
+
+	// cancelLimit (REMOVE via 0x9996) routes into the kernel: marks the position
+	// CLOSING (the withdraw request); positionsOf drops it (only OPEN listed).
 	if _, _, err := pm.Run(h.state, h.caller, positionManagerAddr,
 		pmLifecycleCalldata(SelectorPMCancelLimit, h.key, -120, 120, big.NewInt(500), salt, MakerSideBid), 5_000_000, false); err != nil {
 		t.Fatalf("cancelLimit: %v", err)
 	}
-	if loadLockedReserve(db, h.caller, bidAsset).Sign() != 0 {
-		t.Fatal("cancelLimit must unlock reserve via the 0x9999 kernel")
-	}
-	if loadRestingOrder(db, orderID).Status != OrderStatusCancelled {
-		t.Fatal("cancelLimit must mark the order CANCELLED")
+	if loadRestingOrder(db, orderID).Status != OrderStatusClosing {
+		t.Fatal("cancelLimit must mark the position CLOSING (withdraw requested)")
 	}
 	out2, _, _ := pm.Run(h.state, h.caller, positionManagerAddr, prependSelector(SelectorPMPositionsOf, leftPad32(h.caller.Bytes())), 5_000_000, true)
 	if new(big.Int).SetBytes(out2[32:64]).Int64() != 0 {
-		t.Fatal("positionsOf must be empty after cancel (CANCELLED skipped)")
-	}
-
-	// collect reverts ErrUnsupported (fees are D-authoritative).
-	if _, _, err := pm.Run(h.state, h.caller, positionManagerAddr,
-		pmLifecycleCalldata(SelectorPMCollect, h.key, -120, 120, big.NewInt(1), salt, MakerSideBid), 5_000_000, false); err != ErrUnsupported {
-		t.Fatalf("collect must revert ErrUnsupported, got: %v", err)
+		t.Fatal("positionsOf must be empty after cancel (only OPEN listed)")
 	}
 }
 
@@ -560,8 +570,7 @@ func TestPositionManager_CrossOwnerCancelReverts(t *testing.T) {
 	pm := PositionManagerPrecompile
 	alice := h.caller
 	bob := common.HexToAddress("0xB0B0000000000000000000000000000000000000")
-	bidAsset := assetID(h.key.Currency0)
-	fundClaim(newPoolStateAdapter(h.state), alice, bidAsset, big.NewInt(1000))
+	h.fundCallerNative(1000)
 
 	var salt [32]byte
 	salt[31] = 0x13

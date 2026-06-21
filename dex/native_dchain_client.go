@@ -77,6 +77,11 @@ var (
 	ErrNativeSettleOwner     = errors.New("dex: D->C settlement object owner does not match the recipient")
 	ErrNativeSettleAmount    = errors.New("dex: D->C settlement object amount does not match the claim")
 	ErrNativeSettleUnbacked  = errors.New("dex: vault cannot back the D->C credited amount (no mint)")
+
+	// LP-rail errors (C->D position commit / D->C collect-withdraw).
+	ErrLPCommitReplay        = errors.New("dex: C->D position-commit id already submitted (replay)")
+	ErrLPCollectUnbacked     = errors.New("dex: committed-positions reserve cannot back the D->C collect credit (no mint, no raid)")
+	ErrLPCollectNoPosition   = errors.New("dex: D->C collect names no open/closing position for the recorded owner (cross-rail object refused)")
 )
 
 // --- Intent submission (C->D): FUND D, return an intent id, NEVER a fill. ------
@@ -167,20 +172,169 @@ func (c *NativeDChainClient) SubmitSwapIntent(
 	return intentID, nil
 }
 
-// SubmitModifyLiquidity locks an LP's funds on C and writes a C->D atomic object so
-// D opens a FUNDED position. Same lock-then-export discipline as a swap intent;
-// returns the positionID (== the object's UTXO key). The position rests/opens
-// under D consensus; a later collect/decrease settles back via ImportSettlement.
+// SubmitPositionCommit is the C->D LP-COMMIT leg (intent kind DL01): it moves an
+// LP's funds OUT of CSpendable and INTO the DCommitted state, and writes a C->D
+// position-commit atomic object D imports to open a FUNDED position. It is the LP
+// rail's analog of SubmitSwapIntent, on its OWN orthogonal pot (committedPositions)
+// and its OWN id space (DerivePositionCommitID, positionCommitDomain) — so an LP
+// commit can never be confused with a taker intent.
+//
+// THE NEVER-BOTH MOVE (CEI + conservation): the LP's C value is debited FIRST — real
+// SubBalance / observed-delta transferFrom from the caller's CSpendable balance into
+// the 0x9999 vault, recorded as committedPositions[asset] += locked — so the unit
+// LEAVES the caller's spendable balance and becomes committed backing in one atomic
+// step (never both spendable and committed). Then the C->D commit object (owner,
+// assetIn, locked) is STAGED keyed by the position-commit id; at block accept the
+// host flushes it to shared memory and D's executeImport consumes it to open the
+// funded position. D is funded ONLY by consuming this object.
+func (c *NativeDChainClient) SubmitPositionCommit(
+	state contract.AccessibleState,
+	atomicState contract.AtomicState,
+	req IntentRequest,
+) (positionID ids.ID, locked uint64, err error) {
+	sm := atomicState.AtomicMemory()
+	if sm == nil {
+		return ids.Empty, 0, ErrNativeNoAtomicMemory
+	}
+	if req.AmountIn == 0 {
+		return ids.Empty, 0, ErrNativeBadAmount
+	}
+	stateDB := newPoolStateAdapter(state)
+
+	// Lock the LP principal into the COMMITTED-POSITIONS pot (the LP rail's own pot),
+	// NOT the swap-rail seam reserve and NOT a depositor claim. This is the C-side
+	// debit that BACKS the C->D commit object: D imports value C has already removed
+	// from the caller's spendable balance, so no mint can occur on either side. locked
+	// is the value ACTUALLY committed (observed delta for ERC-20) — the authoritative
+	// amount the pot, the object, and the record all use, so none can overstate.
+	locked, lockErr := commitPositionInput(stateDB, req.Account, req.AssetIn, req.AssetInAddr, req.AmountIn)
+	if lockErr != nil {
+		return ids.Empty, 0, lockErr
+	}
+
+	// Derive the injective position-commit id (the shared-memory key) over the FULL
+	// identity, in the position-commit domain (disjoint from swap-intent ids).
+	cChainID := atomicState.CChainID()
+	dChainID := atomicState.ChainID()
+	if dID := loadDChainTarget(stateDB); dID != ids.Empty {
+		dChainID = dID
+	}
+	positionID = DerivePositionCommitID(
+		atomicState.NetworkID(), cChainID, dChainID,
+		atomicState.TxID(), atomicState.CallIndex(),
+		req.Account, req.AssetIn, locked, req.MarketID,
+	)
+
+	// Replay guard: the same commit id must not be submitted twice (a re-executed /
+	// reorged C tx). Durable, consensus-shared (StateDB), CEI before the export.
+	if isIntentSubmitted(stateDB, positionID) {
+		return ids.Empty, 0, ErrLPCommitReplay
+	}
+	markIntentSubmitted(stateDB, positionID, state.GetBlockContext().Number().Uint64())
+
+	// STAGE the C->D commit object (owner=account, asset=assetIn, amount=locked) keyed
+	// by positionID under the D chain's partition (revert-aware — discarded with the
+	// rolled-back lock if the tx reverts; flushed to shared memory at block accept).
+	obj := encodeAtomicObject(req.Account, req.AssetIn, locked)
+	stageAtomicPut(stateDB, dChainID, positionID, obj)
+
+	// Emit the DL01 routing event (kind=position) for the keeper to OPEN the D
+	// position against the committed collateral. The staged object backs the value.
+	emitNativePositionCommitEvent(stateDB, positionID, dChainID, req, locked)
+	return positionID, locked, nil
+}
+
+// SubmitModifyLiquidity is the on-ramp interface alias for an LP add: it routes to
+// SubmitPositionCommit (the DL01 commit), returning the positionID. Kept so call
+// sites that speak the modify-liquidity vocabulary reach the position rail.
 func (c *NativeDChainClient) SubmitModifyLiquidity(
 	state contract.AccessibleState,
 	atomicState contract.AtomicState,
 	req IntentRequest,
 ) (positionID ids.ID, err error) {
-	// Funding a position is the SAME atomic primitive as funding a swap intent: lock
-	// C value, export a C->D object D imports to open the funded position. The only
-	// difference is the keeper's interpretation of the routing event (open position
-	// vs place taker order), which is carried in the event kind.
-	return c.SubmitSwapIntent(state, atomicState, req)
+	positionID, _, err = c.SubmitPositionCommit(state, atomicState, req)
+	return positionID, err
+}
+
+// ImportPositionCollect is the D->C LP-COLLECT/WITHDRAW leg: it consumes a D->C
+// atomic object EXACTLY ONCE and credits C out of the COMMITTED-POSITIONS pot
+// (DPendingCollect -> CSettled). It is the LP rail's analog of ImportSettlement, on
+// the orthogonal committedPositions pot, with one ADDITIONAL gate: the recorded
+// owner MUST have a position on C in Committed/Closing status (positionExists), so a
+// swap-rail D->C object — which names no LP position — cannot be consumed here to
+// drain the LP pot. The discipline otherwise mirrors ImportSettlement byte-for-byte:
+//
+//  1. read the RECORDED object (Get under the D source chain); missing => revert.
+//  2. BIND asset == claimed, owner == recipient, amount == claimed (recorded value
+//     authoritative — a claim cannot consume a victim's object or re-denominate it).
+//  3. RAIL gate: the recorded owner must have an open/closing C position.
+//  4. REPLAY guard: reject an already-consumed object id (shared D->C consumed set —
+//     one object, one credit, globally, across the swap and LP rails).
+//  5. MARK consumed (CEI) BEFORE moving value.
+//  6. CREDIT C from committedPositions (NO MINT, NO RAID — the LP pot must back it).
+//  7. STAGE the atomic Remove of the consumed object (flushed at block accept).
+func (c *NativeDChainClient) ImportPositionCollect(
+	state contract.AccessibleState,
+	atomicState contract.AtomicState,
+	claim SettlementClaim,
+) (credited uint64, err error) {
+	sm := atomicState.AtomicMemory()
+	if sm == nil {
+		return 0, ErrNativeNoAtomicMemory
+	}
+	stateDB := newPoolStateAdapter(state)
+
+	dChainID := loadDChainTarget(stateDB)
+	if dChainID == ids.Empty {
+		return 0, ErrNativeNoAtomicMemory
+	}
+
+	// (1) Read the RECORDED object. A missing object => never credit.
+	key := claim.OutputID
+	vals, gerr := sm.Get(dChainID, [][]byte{key[:]})
+	if gerr != nil || len(vals) != 1 || len(vals[0]) == 0 {
+		return 0, ErrNativeNoSettlement
+	}
+	recOwner, recAsset, recAmount, ok := decodeAtomicObject(vals[0])
+	if !ok {
+		return 0, ErrNativeSettleMalformed
+	}
+
+	// (2) BIND the credit to the RECORDED value (authoritative, not declared).
+	if recAsset != claim.Asset {
+		return 0, ErrNativeSettleAsset
+	}
+	if recOwner != claim.Recipient {
+		return 0, ErrNativeSettleOwner
+	}
+	if recAmount != claim.Amount || recAmount == 0 {
+		return 0, ErrNativeSettleAmount
+	}
+
+	// (3) RAIL gate: the recorded owner must hold an open/closing position on C. This
+	// closes the cross-rail consume (an LP cannot consume a swap-settlement object to
+	// drain the LP pot — a swap object names no position record).
+	if !ownerHasOpenPosition(stateDB, recOwner) {
+		return 0, ErrLPCollectNoPosition
+	}
+
+	// (4) REPLAY guard: one-time consumption across ALL D->C objects (shared set).
+	if isSettlementConsumed(stateDB, claim.OutputID) {
+		return 0, ErrNativeSettleReplay
+	}
+
+	// (5) MARK consumed BEFORE value movement (CEI; a failed credit rolls this back).
+	markSettlementConsumed(stateDB, claim.OutputID, state.GetBlockContext().Number().Uint64())
+
+	// (6) CREDIT C from the COMMITTED-POSITIONS pot — NO MINT, NO RAID.
+	if cerr := creditPositionCollect(stateDB, recOwner, recAsset, claim.AssetAddr, recAmount); cerr != nil {
+		return 0, cerr
+	}
+
+	// (7) STAGE the atomic Remove of the consumed object (revert-aware; flushed at
+	// block accept atomically with the committed credit).
+	stageAtomicRemove(stateDB, dChainID, key)
+	return recAmount, nil
 }
 
 // SubmitCancel submits a D cancel for a resting order/position. A cancel moves no
@@ -432,6 +586,83 @@ func creditSettlementOutput(stateDB StateDB, recipient common.Address, assetID [
 		// balance, so this only fires on a regression — fail loud, never wrap.
 		if stateDB.GetBalance(poolManagerAddr9999).Cmp(u) < 0 {
 			return ErrNativeSettleUnbacked
+		}
+		stateDB.SubBalance(poolManagerAddr9999, u)
+		stateDB.AddBalance(recipient, u)
+		return nil
+	}
+	vault, ok := stateDBERC20(stateDB)
+	if !ok {
+		return ErrNativeERC20Vault
+	}
+	return safeTransferTokenTo(vault, assetAddr, recipient, amt)
+}
+
+// --- LP-rail value movement (commit into committedPositions / collect out of it). --
+
+// commitPositionInput debits amount of the LP's input asset from the caller's
+// CSpendable balance into the 0x9999 vault, recording it in the COMMITTED-POSITIONS
+// pot (the LP rail's own pot), and returns the value ACTUALLY committed (observed
+// delta for ERC-20). Native moves via SubBalance(caller)/AddBalance(0x9999) with a
+// balance pre-check; ERC-20 via the vault transferFrom observed delta. The committed
+// value backs the C->D commit object's amount AND represents the DCommitted state
+// (the unit left the caller's spendable balance). Byte-for-byte the same discipline
+// as lockIntentInput, but on committedPositions instead of seamReserve — the
+// orthogonal-pot rule (an LP commit can never appear in the swap rail's reserve).
+func commitPositionInput(stateDB StateDB, caller common.Address, assetID [32]byte, assetAddr common.Address, amount uint64) (uint64, error) {
+	amt := new(big.Int).SetUint64(amount)
+	if isNativeAsset(assetID) {
+		u, of := uint256.FromBig(amt)
+		if of {
+			return 0, ErrNativeBadAmount
+		}
+		if stateDB.GetBalance(caller).Cmp(u) < 0 {
+			return 0, ErrNativeFundsShort
+		}
+		before := loadCommittedPositions(stateDB, assetID)
+		stateDB.SubBalance(caller, u)
+		stateDB.AddBalance(poolManagerAddr9999, u)
+		storeCommittedPositions(stateDB, assetID, new(big.Int).Add(before, amt))
+		return amount, nil
+	}
+	vault, ok := stateDBERC20(stateDB)
+	if !ok {
+		return 0, ErrNativeERC20Vault
+	}
+	delta, err := safeTransferTokenFrom(vault, assetAddr, caller, poolManagerAddr9999, amt)
+	if err != nil {
+		return 0, err
+	}
+	before := loadCommittedPositions(stateDB, assetID)
+	storeCommittedPositions(stateDB, assetID, new(big.Int).Add(before, delta))
+	if !delta.IsUint64() {
+		return 0, ErrNativeBadAmount
+	}
+	return delta.Uint64(), nil
+}
+
+// creditPositionCollect releases amount of the collected asset from the COMMITTED-
+// POSITIONS pot to the LP — NO MINT (the LP pot must already hold it), NO RAID (the
+// credit is conservation-checked against committedPositions[a], never the swap-rail
+// seamReserve, the depositor settleVault, or the legacy makerLockedVault). This is
+// the CSettled credit (the collected unit re-enters the LP's CSpendable balance).
+// Native via SubBalance(0x9999)/AddBalance(recipient); ERC-20 via the vault transfer.
+func creditPositionCollect(stateDB StateDB, recipient common.Address, assetID [32]byte, assetAddr common.Address, amount uint64) error {
+	amt := new(big.Int).SetUint64(amount)
+	held := loadCommittedPositions(stateDB, assetID)
+	if held.Cmp(amt) < 0 {
+		// NO MINT, NO RAID: the LP pot's own reserve must back the collect. A short
+		// committed-positions pot reverts even if other pots hold this asset.
+		return ErrLPCollectUnbacked
+	}
+	storeCommittedPositions(stateDB, assetID, new(big.Int).Sub(held, amt))
+	if isNativeAsset(assetID) {
+		u, of := uint256.FromBig(amt)
+		if of {
+			return ErrNativeBadAmount
+		}
+		if stateDB.GetBalance(poolManagerAddr9999).Cmp(u) < 0 {
+			return ErrLPCollectUnbacked
 		}
 		stateDB.SubBalance(poolManagerAddr9999, u)
 		stateDB.AddBalance(recipient, u)

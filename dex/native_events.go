@@ -43,10 +43,31 @@ const (
 	intentKindPosition nativeIntentKind = 1
 )
 
-// emitNativeIntentEvent logs a C->D intent's routing metadata for the keeper. The
-// intentID is the indexed topic so a keeper subscribes per-intent; the rest is the
-// order the keeper submits to D against the locked collateral.
+// emitNativeIntentEvent logs a C->D SWAP intent's routing metadata for the keeper.
+// The intentID is the indexed topic so a keeper subscribes per-intent; the rest is
+// the taker order the keeper submits to D against the locked collateral. Kind is
+// fixed intentKindSwap — this is the taker rail; the LP rail uses
+// emitNativePositionCommitEvent (kind intentKindPosition).
 func emitNativeIntentEvent(stateDB StateDB, intentID, dChainID ids.ID, req IntentRequest, locked uint64) {
+	emitNativeRoutingEvent(stateDB, intentID, dChainID, req, locked, intentKindSwap)
+}
+
+// emitNativePositionCommitEvent logs a C->D LP POSITION-COMMIT (DL01) routing event
+// for the keeper. Identical wire to the swap intent event but kind=intentKindPosition,
+// so the keeper OPENS a funded D position (range = the tick window carried in the
+// position record) against the committed collateral instead of placing a taker order.
+// The atomic commit object alone moves the value; this event only routes it into the
+// D position-open. positionID is the C->D object key (the indexed topic).
+func emitNativePositionCommitEvent(stateDB StateDB, positionID, dChainID ids.ID, req IntentRequest, locked uint64) {
+	emitNativeRoutingEvent(stateDB, positionID, dChainID, req, locked, intentKindPosition)
+}
+
+// emitNativeRoutingEvent is the SINGLE DRY emitter for both C->D rails: it logs the
+// (account, assetIn, locked, marketID, minAmountOut, recipient, deadline, kind)
+// routing metadata under the object id. kind selects the rail (swap vs position) so
+// the keeper builds the right D op; the value-bearing identity is in the staged
+// atomic object, never here.
+func emitNativeRoutingEvent(stateDB StateDB, objectID, dChainID ids.ID, req IntentRequest, locked uint64, kind nativeIntentKind) {
 	data := make([]byte, 0, 7*32)
 	data = append(data, abiEncodeAddress(req.Account)...)
 	data = append(data, abiEncodeBytes32(req.AssetIn)...)
@@ -59,12 +80,12 @@ func emitNativeIntentEvent(stateDB StateDB, intentID, dChainID ids.ID, req Inten
 	data = append(data, abiEncodeBigInt(min)...)
 	data = append(data, abiEncodeAddress(req.Recipient)...)
 	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(req.Deadline))...)
-	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(uint64(intentKindSwap)))...)
+	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(uint64(kind)))...)
 	stateDB.AddLog(&ethtypes.Log{
 		Address: poolManagerAddr9999,
 		Topics: []common.Hash{
 			nativeIntentEventSig,
-			common.BytesToHash(intentID[:]),
+			common.BytesToHash(objectID[:]),
 			common.BytesToHash(dChainID[:]),
 		},
 		Data: data,
