@@ -226,6 +226,20 @@ func (s *SettleContract) runSettleInitialize(
 	}
 	storeMarket(stateDB, poolID, rec)
 
+	// --- Emit the canonical V4 Initialize log so the off-chain graph learns the
+	// pair + fee tier (handleInitializeV4 reads poolId/currency0/currency1/fee and
+	// creates the DEX Market entity). Without this log a native market is invisible
+	// to eth_getLogs and the graph degrades to a poolID-only stub. It is the SAME
+	// event signature a vanilla V4 PoolManager emits (topic
+	// keccak256("Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)")),
+	// so the indexer needs no new handler. Gated on the SAME dated fork as 0x9999
+	// dispatch (defense in depth — see dexLogsActive): a consensus-visible log MUST
+	// NOT enter a receipt root before activation. The state write above is the
+	// authoritative registry (C is source of truth); the log is the indexable mirror.
+	if dexLogsActive(state.GetBlockContext().Timestamp()) {
+		emitInitializeEvent(stateDB, poolManagerAddr9999, poolID, key, sqrtPriceX96, tick)
+	}
+
 	// V4 initialize returns the int24 tick (ABI: int24, sign-extended to a word).
 	return encodeInt24Word(tick), gasLeft, nil
 }
