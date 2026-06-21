@@ -39,6 +39,7 @@ type nativeAtomicState struct {
 	networkID uint32
 	chainID   ids.ID // THIS chain (C)
 	cChainID  ids.ID
+	dChainID  ids.ID // the D-Chain (dexvm) peer the host resolves at runtime
 	txID      ids.ID
 	callIndex uint32
 }
@@ -59,6 +60,7 @@ func (m *nativeAtomicState) AtomicMemory() atomic.SharedMemory { return m.sm }
 func (m *nativeAtomicState) NetworkID() uint32                 { return m.networkID }
 func (m *nativeAtomicState) ChainID() ids.ID                   { return m.chainID }
 func (m *nativeAtomicState) CChainID() ids.ID                  { return m.cChainID }
+func (m *nativeAtomicState) DChainID() ids.ID                  { return m.dChainID }
 func (m *nativeAtomicState) TxID() ids.ID                      { return m.txID }
 func (m *nativeAtomicState) CallIndex() uint32                 { return m.callIndex }
 
@@ -106,6 +108,7 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 		networkID: 1,
 		chainID:   cChainID,
 		cChainID:  cChainID,
+		dChainID:  dChainID, // host-resolved D peer (runtime), as the EVM adapter supplies it
 		txID:      ids.ID{0x7A}, // a fixed tx id for the harness; tests vary callIndex/txID
 		callIndex: 0,
 	}
@@ -132,13 +135,10 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 	}
 	h.params = SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-100), SqrtPriceLimitX96: big.NewInt(0)}
 
-	// Configure the native-seam chain identity + D-Chain target (as Configure would).
-	kv := newPoolStateAdapter(h.state)
-	var c32, d32 [32]byte
-	copy(c32[:], cChainID[:])
-	copy(d32[:], dChainID[:])
-	SetSettleChainIdentity(kv, h.networkID, c32)
-	SetSettleDChainTarget(kv, d32)
+	// The native-seam chain identity (networkID, cChainID) and the D-Chain peer are
+	// supplied at RUNTIME by the host via the AtomicState capability (nativeAtomicState
+	// above) — there is NO per-net config to seed. This mirrors production exactly:
+	// 0x9999 is always-on and resolves its chain topology from the consensus context.
 	return h
 }
 
