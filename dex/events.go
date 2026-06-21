@@ -12,7 +12,13 @@ import (
 )
 
 // DexSettleActivationTime is the layer-local mirror of the canonical 0x9999 DEX
-// settlement activation boundary — Dec 25 2025 00:00:00 UTC (unix 1766704800).
+// settlement activation boundary — unix 1766704800, i.e. 2025-12-25T23:20:00Z.
+//
+// DO NOT "round" this to midnight: the value (not the prose date) is the protocol
+// constant. It is ALREADY LIVE — it gates 0x9999 dispatch on a settling devnet — so
+// changing the number would move an activation boundary that historical receipts were
+// already built against and FORK every chain that crossed it. Only the human-readable
+// instant is annotated here; the number is authoritative.
 //
 // The CANONICAL definition lives in luxfi/evm params/extras.DexSettleActivationTime;
 // that is the single source of truth the EVM dispatch gate and marker-installing
@@ -34,7 +40,7 @@ import (
 // dispatch uses means: on every chain, every settlement that ever executes also emits
 // the log, and no execution before the boundary ever can. No settlement-without-log
 // window, no log-without-settlement window.
-const DexSettleActivationTime uint64 = 1766704800 // 2025-12-25T00:00:00Z; canonical: evm extras.DexSettleActivationTime
+const DexSettleActivationTime uint64 = 1766704800 // 2025-12-25T23:20:00Z; canonical: evm extras.DexSettleActivationTime
 
 // dexLogsActive reports whether 0x9999's new consensus-visible logs (DEXFill, and the
 // V4 Initialize the native registry emits) may be written at blockTimestamp. It is the
