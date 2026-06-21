@@ -312,10 +312,10 @@ func encodeOrderResult(orderID [32]byte, remaining *big.Int) []byte {
 
 // enterCustodyKV / exitCustodyKV take the GLOBAL non-reentrant custody guard via the
 // stateKV surface (the maker path holds a stateKV, not a *PoolManager). They read/
-// write the SAME custodyGuardKey slot the PoolManager.enterCustody uses, so the
-// guard is ONE flag across deposit/withdraw/modifyLiquidity — a reentry through any
-// of them trips it. (Decomplected from the PoolManager method, same slot, no second
-// guard.)
+// write the 0x9999 namespace's custodyGuardKey9999 slot — the ONE flag across the
+// 0x9999 deposit/withdraw/modifyLiquidity/collectPosition entrypoints, so a reentry
+// through any of them trips it. (This is a DISTINCT slot from 0x9010's custodyGuardKey,
+// which lives under 0x9010's own address; the two precompiles do not share a guard.)
 func enterCustodyKV(stateDB stateKV) bool {
 	if stateDB.GetState(poolManagerAddr9999, custodyGuardKey9999) != (common.Hash{}) {
 		return false
@@ -328,9 +328,11 @@ func exitCustodyKV(stateDB stateKV) {
 	stateDB.SetState(poolManagerAddr9999, custodyGuardKey9999, common.Hash{})
 }
 
-// custodyGuardKey9999 is the 0x9999 namespace's single non-reentrant custody flag.
-// Distinct from the 0x9010 custodyGuardKey (different owning address); ONE slot for
-// the whole 0x9999 custody entrypoint set.
+// custodyGuardKey9999 is the 0x9999 namespace's single non-reentrant custody flag,
+// stored under the 0x9999 PoolManager address (poolManagerAddr9999). Distinct from
+// the 0x9010 custodyGuardKey (a different slot under 0x9010's own address); ONE slot
+// for the whole 0x9999 custody entrypoint set (deposit/withdraw/modifyLiquidity/
+// collectPosition).
 var custodyGuardKey9999 = makeStorageKey([]byte(settleStateNamespace+"creg"), []byte{0x01})
 
 var _ = contract.AccessibleState(nil)

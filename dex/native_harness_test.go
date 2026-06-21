@@ -161,33 +161,55 @@ func (h *settleHarness) fundCallerNative(amount int64) {
 	h.state.stateDB.AddBalance(h.caller, uint256.NewInt(uint64(amount)))
 }
 
-// fundVaultOut seeds the 0x9999 vault's OUTPUT token into the SEAM RESERVE (the seam's
-// own pot — operator-seeded counterparty backing), so a D->C settlement credit is
-// backed (no mint). Mirrors day-1 operator seeding of the seam reserve, NOT a
-// depositor's claim.
+// operator is the harness's protocolFeeController (the SettleContract is constructed
+// with this authority), so the operator-gated seed/fee selectors accept it.
+func (h *settleHarness) operator() common.Address { return h.c.protocolFeeController }
+
+// fundVaultOut seeds the 0x9999 vault's OUTPUT token into the SEAM RESERVE through the
+// REAL operator-gated seedSeamReserve selector (FIX-4 — the production counterparty
+// seed, not a test-only state poke), so a D->C settlement credit is backed (no mint).
 func (h *settleHarness) fundVaultOut(amount int64) {
-	h.wrapper().mintTestToken(h.outToken(), poolManagerAddr9999, big.NewInt(amount))
-	storeSeamReserve(newPoolStateAdapter(h.state), h.outAssetID(), big.NewInt(amount))
+	// The operator holds the token; the mock vault transferFrom debits the operator's
+	// balance into 0x9999 (no allowance model in the mock — honest balance check only).
+	h.wrapper().mintTestToken(h.outToken(), h.operator(), big.NewInt(amount))
+	data := make([]byte, 64)
+	copy(data[12:32], h.outToken().Bytes())
+	big.NewInt(amount).FillBytes(data[32:64])
+	if _, _, err := h.c.Run(h.state, h.operator(), poolManagerAddr9999,
+		prependSelector(SelectorSeedSeamReserve, data), 5_000_000, false); err != nil {
+		panic("fundVaultOut seed: " + err.Error())
+	}
 }
 
 // fundVaultNativeOut seeds the 0x9999 vault's NATIVE holdings into the SEAM RESERVE
-// (for a native D->C credit). The vault self-balance and the seam reserve move in
-// lockstep.
+// through the REAL seedSeamReserve selector. The host call frame moves msg.value into
+// 0x9999 before Run (observed-delta), so we add the operator-delivered native first.
 func (h *settleHarness) fundVaultNativeOut(amount int64) {
-	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(uint64(amount)))
-	storeSeamReserve(newPoolStateAdapter(h.state), [32]byte{}, big.NewInt(amount))
+	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(uint64(amount))) // host frame moved msg.value
+	data := make([]byte, 64)                                                        // asset = address(0) (native), amount
+	big.NewInt(amount).FillBytes(data[32:64])
+	if _, _, err := h.c.Run(h.state, h.operator(), poolManagerAddr9999,
+		prependSelector(SelectorSeedSeamReserve, data), 5_000_000, false); err != nil {
+		panic("fundVaultNativeOut seed: " + err.Error())
+	}
 }
 
-// seedCommittedNative seeds the 0x9999 vault's NATIVE holdings into the COMMITTED-
-// POSITIONS pot (the LP rail's own reserve — operator fee backing, the symmetric
-// analog of fundVaultNativeOut for the swap rail). The vault self-balance and the
-// committedPositions pot move in lockstep, so a fee collect that exceeds an LP's own
-// principal commit is backed without raiding any other pot. Used by the fee tests.
-func (h *settleHarness) seedCommittedNative(amount int64) {
-	db := newPoolStateAdapter(h.state)
-	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(uint64(amount)))
-	cur := loadCommittedPositions(db, [32]byte{})
-	storeCommittedPositions(db, [32]byte{}, new(big.Int).Add(cur, big.NewInt(amount)))
+// creditPositionFeeNative credits `amount` of NATIVE earned fees into a SPECIFIC LP
+// position via the REAL operator-gated creditPositionFee selector (the keeper's
+// per-owner reflection of D-Chain maker-fee credits). It raises the named record's
+// withdrawable + the owner reserve + the committedPositions pot together, so the LP
+// can collect principal+fees while the per-owner committed bound (FIX-2) stays exact.
+func (h *settleHarness) creditPositionFeeNative(t testing.TB, positionID [32]byte, amount int64) {
+	t.Helper()
+	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(uint64(amount))) // host frame moved msg.value
+	data := make([]byte, 96)
+	copy(data[0:32], positionID[:])
+	// asset word: native == address(0) in the right 20 bytes (left-padded), so word stays zero.
+	big.NewInt(amount).FillBytes(data[64:96])
+	if _, _, err := h.c.Run(h.state, h.operator(), poolManagerAddr9999,
+		prependSelector(SelectorCreditPositionFee, data), 5_000_000, false); err != nil {
+		t.Fatalf("creditPositionFeeNative: %v", err)
+	}
 }
 
 // commitNativePosition drives a native LP COMMIT through the 0x9999 modifyLiquidity
@@ -213,10 +235,11 @@ func (h *settleHarness) commitNativePosition(t testing.TB, tickLower, tickUpper 
 }
 
 // collectNative drives a native LP COLLECT/WITHDRAW through the 0x9999
-// collectPosition selector: it consumes the D->C object at outputID for `amount` of
-// native, crediting the caller out of committedPositions. Returns the call error.
-func (h *settleHarness) collectNative(outputID ids.ID, amount uint64) ([]byte, error) {
-	input := EncodeCollectPositionInput(outputID, [32]byte{}, amount)
+// collectPosition selector: it consumes the railLP D->C object at outputID for
+// `amount` of native against the named position record, crediting the caller out of
+// committedPositions. Returns the call error.
+func (h *settleHarness) collectNative(outputID ids.ID, amount uint64, positionID [32]byte) ([]byte, error) {
+	input := EncodeCollectPositionInput(outputID, [32]byte{}, amount, positionID)
 	out, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
 		prependSelector(SelectorCollectPosition, input), 5_000_000, false)
 	return out, err
@@ -257,12 +280,27 @@ func (s *seqOnlyState) GetState(addr common.Address, key common.Hash) common.Has
 	return common.Hash{}
 }
 
-// putDtoCObject simulates the dexvm's executeExport: it PUTs a D->C atomic object
-// into shared memory keyed by the C chain (so the precompile reads it via
-// Get(dChainID)). owner/asset/amount are the recorded value the C side will bind.
+// putDtoCObject simulates the dexvm's executeExport of a SWAP-rail (railSwap) D->C
+// object — the swap rail's fill/refund settlement. It PUTs the object into shared
+// memory keyed by the C chain (so ImportSettlement reads it via Get(dChainID)).
 func (h *settleHarness) putDtoCObject(t testing.TB, owner common.Address, outputID ids.ID, asset [32]byte, amount uint64) {
 	t.Helper()
-	obj := encodeAtomicObject(owner, asset, amount)
+	h.putDtoCObjectRail(t, railSwap, owner, outputID, asset, amount)
+}
+
+// putDtoCLPObject simulates the dexvm's executeWithdraw of an LP-rail (railLP) D->C
+// object — the LP collect/withdraw leg ImportPositionCollect consumes.
+func (h *settleHarness) putDtoCLPObject(t testing.TB, owner common.Address, outputID ids.ID, asset [32]byte, amount uint64) {
+	t.Helper()
+	h.putDtoCObjectRail(t, railLP, owner, outputID, asset, amount)
+}
+
+// putDtoCObjectRail PUTs a D->C atomic object of the given RAIL into shared memory
+// (the dexvm export side stamps the lane). rail/owner/asset/amount are the recorded
+// value the C-side consume path binds — including the rail gate.
+func (h *settleHarness) putDtoCObjectRail(t testing.TB, rail Rail, owner common.Address, outputID ids.ID, asset [32]byte, amount uint64) {
+	t.Helper()
+	obj := encodeAtomicObject(rail, owner, asset, amount)
 	reqs := map[ids.ID]*atomic.Requests{
 		h.cChainID: {PutRequests: []*atomic.Element{{
 			Key:    outputID[:],
@@ -272,7 +310,7 @@ func (h *settleHarness) putDtoCObject(t testing.TB, owner common.Address, output
 	}
 	// The D side applies to the C chain's partition (D is the source).
 	if err := h.dSM.Apply(reqs); err != nil {
-		t.Fatalf("putDtoCObject: %v", err)
+		t.Fatalf("putDtoCObjectRail: %v", err)
 	}
 }
 

@@ -264,7 +264,7 @@ func collectRange(stateDB stateKV, fromSeq, toSeq uint64) (map[ids.ID]*atomic.Re
 		switch kindWord[31] {
 		case stageKindPut:
 			rec := readBytesFromSlots(stateDB, stagePutPrefix, i)
-			// version(1)|dChainID(32)|key(32)|object(>=60). Reject malformed (fatal).
+			// version(1)|dChainID(32)|key(32)|object(>=61). Reject malformed (fatal).
 			if len(rec) < 1+32+32+exportedOutputSize9999 || rec[0] != stagedOpVersion {
 				return nil, ErrStagedOpMalformed
 			}
@@ -272,12 +272,14 @@ func collectRange(stateDB stateKV, fromSeq, toSeq uint64) (map[ids.ID]*atomic.Re
 			copy(dChainID[:], rec[1:33])
 			copy(key[:], rec[33:65])
 			object := rec[65:]
-			// The object must be a well-formed atomic value (owner|asset|amount).
-			if _, _, _, ok := decodeAtomicObject(object); !ok {
+			// The object must be a well-formed atomic value (rail|owner|asset|amount).
+			// The owner Trait is read from the decoded value (offset past the rail byte),
+			// so the destination indexes the object by recipient — the same Trait the
+			// precompile/dexvm export side writes.
+			_, owner, _, _, ok := decodeAtomicObject(object)
+			if !ok {
 				return nil, ErrStagedOpMalformed
 			}
-			var owner common.Address
-			copy(owner[:], object[0:20])
 			req := forChain(dChainID)
 			req.PutRequests = append(req.PutRequests, &atomic.Element{
 				Key:    append([]byte(nil), key[:]...),
