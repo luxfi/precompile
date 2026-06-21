@@ -48,26 +48,3 @@ type stateKV interface {
 	GetState(addr common.Address, key common.Hash) common.Hash
 	SetState(addr common.Address, key common.Hash, value common.Hash)
 }
-
-// kvAdapter wraps a precompile contract.StateDB so a Configure handler (which
-// receives a bare contract.StateDB, not an AccessibleState) can write settlement
-// config / registry state through the stateKV surface. It discards SetState's
-// return value (the prior slot value) the package helpers do not use. This is the
-// ONE place the contract.StateDB SetState/GetState signatures are bridged to the
-// package's; everywhere a handler has an AccessibleState it uses newPoolStateAdapter.
-type kvAdapter struct{ db contractStateDB }
-
-// contractStateDB is the subset of contract.StateDB kvAdapter bridges (avoids an
-// import alias churn; the real type is github.com/luxfi/precompile/contract.StateDB).
-type contractStateDB interface {
-	GetState(common.Address, common.Hash) common.Hash
-	SetState(common.Address, common.Hash, common.Hash) common.Hash
-}
-
-func (k kvAdapter) GetState(addr common.Address, key common.Hash) common.Hash {
-	return k.db.GetState(addr, key)
-}
-
-func (k kvAdapter) SetState(addr common.Address, key common.Hash, value common.Hash) {
-	k.db.SetState(addr, key, value)
-}
