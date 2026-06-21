@@ -80,8 +80,8 @@ var (
 // fixed shared-memory write/read + one StateDB replay slot + the value move. No
 // per-validator crypto (the BLS pairing model is gone), so a flat tier suffices.
 const (
-	GasNativeIntent     uint64 = 40_000 // decode + lock + SM put + replay slot + event.
-	GasNativeSettlement uint64 = 50_000 // decode + SM get/bind + replay slot + credit + SM remove.
+	GasNativeIntent     uint64 = 40_000 // decode + lock + SM put + replay slot. Phase A emits NO log.
+	GasNativeSettlement uint64 = 50_000 // decode + SM get/bind + replay slot + credit + SM remove + DEXFill log (Phase B).
 )
 
 // isNativeAsset reports whether an injective AssetID is native LUX (all-zero).
@@ -159,6 +159,7 @@ func SettleSwap(
 	defer exitCustodyKV(stateDB)
 
 	blockNumber := state.GetBlockContext().Number().Uint64()
+	blockTimestamp := state.GetBlockContext().Timestamp()
 
 	phase, body := decodeSwapPhase(hookData)
 	switch phase {
@@ -186,8 +187,15 @@ func SettleSwap(
 		accrueVolume(stateDB, key.ID(), creditedAmt, blockNumber)
 		// Indexable settled-fill signal for the DEX graph / lux.exchange. Emitted
 		// on the money path (Phase-B credit) so eth_getLogs surfaces native-CLOB
-		// fills. accrueVolume is sharded state (not a log); this is the log.
-		emitDEXFillEvent(stateDB, key.ID(), caller, creditedAmt, blockNumber)
+		// fills. accrueVolume is sharded state (not a log); this is the log. Gated on
+		// the SAME dated fork as 0x9999 dispatch (defense in depth — see dexLogsActive):
+		// a consensus-visible log MUST NOT enter a receipt root before the activation
+		// boundary, or a re-syncing node that did not emit it would compute a different
+		// root. On the relaunched chain every settlement is at/after the boundary, so
+		// every settlement emits the log — no ungated window.
+		if dexLogsActive(blockTimestamp) {
+			emitDEXFillEvent(stateDB, key.ID(), caller, creditedAmt, blockNumber)
+		}
 		// V4 return: the taker received `credited` of the output asset. Map to the
 		// BalanceDelta direction (output paid out to taker = negative to pool).
 		delta := balanceDeltaForOutput(params, new(big.Int).SetUint64(credited))

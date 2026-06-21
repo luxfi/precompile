@@ -685,7 +685,7 @@ func (pm *PoolManager) Initialize(
 		}
 	}
 
-	emitInitializeEvent(stateDB, poolId, key, sqrtPriceX96, tick)
+	emitInitializeEvent(stateDB, lxPoolAddr, poolId, key, sqrtPriceX96, tick)
 
 	return tick, nil
 }
