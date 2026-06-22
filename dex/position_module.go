@@ -144,6 +144,15 @@ func (p *PositionManagerContract) Run(
 	if state.GetBlockContext() == nil {
 		return nil, suppliedGas, errors.New("dex: block context unavailable")
 	}
+	// CALL-only guard (same invariant as 0x9999): 0x9996 composes the 0x9999 kernel,
+	// whose LP-commit ERC-20 leg (commitPositionInput -> safeTransferTokenFrom) moves
+	// token value with the precompile self as msg.sender. geth binds self here as
+	// `addr`; only DELEGATECALL makes addr != 0x9996 (CALL/CALLCODE both pass self =
+	// 0x9996), which would commit ERC-20 liquidity as the WRONG msg.sender and break
+	// the same conservation invariant. Reject it before any routing. See ErrSettleWrongContext.
+	if addr != positionManagerAddr {
+		return nil, suppliedGas, ErrSettleWrongContext
+	}
 	selector := uint32(input[0])<<24 | uint32(input[1])<<16 | uint32(input[2])<<8 | uint32(input[3])
 	data := input[4:]
 

@@ -223,19 +223,21 @@ func (s *callSeamStateDB) SubBalance(addr common.Address, amt *uint256.Int, _ tr
 	s.inner.SubBalance(addr, amt)
 	return *s.inner.GetBalance(addr)
 }
-func (s *callSeamStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int { return big.NewInt(0) }
-func (s *callSeamStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int)  {}
-func (s *callSeamStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int)  {}
-func (s *callSeamStateDB) CreateAccount(addr common.Address)                          { s.inner.CreateAccount(addr) }
-func (s *callSeamStateDB) Exist(addr common.Address) bool                             { return s.inner.Exist(addr) }
-func (s *callSeamStateDB) AddLog(log *ethtypes.Log)                                   { s.inner.AddLog(log) }
-func (s *callSeamStateDB) Logs() []*ethtypes.Log                                      { return s.inner.Logs() }
+func (s *callSeamStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int {
+	return big.NewInt(0)
+}
+func (s *callSeamStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}
+func (s *callSeamStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}
+func (s *callSeamStateDB) CreateAccount(addr common.Address)                         { s.inner.CreateAccount(addr) }
+func (s *callSeamStateDB) Exist(addr common.Address) bool                            { return s.inner.Exist(addr) }
+func (s *callSeamStateDB) AddLog(log *ethtypes.Log)                                  { s.inner.AddLog(log) }
+func (s *callSeamStateDB) Logs() []*ethtypes.Log                                     { return s.inner.Logs() }
 func (s *callSeamStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) {
 	return nil, false
 }
-func (s *callSeamStateDB) TxHash() common.Hash      { return common.Hash{} }
-func (s *callSeamStateDB) Snapshot() int            { return 0 }
-func (s *callSeamStateDB) RevertToSnapshot(int)     {}
+func (s *callSeamStateDB) TxHash() common.Hash  { return common.Hash{} }
+func (s *callSeamStateDB) Snapshot() int        { return 0 }
+func (s *callSeamStateDB) RevertToSnapshot(int) {}
 
 // Compile-time proof this StateDB satisfies the external contract.StateDB the bridge
 // plumbs. Its NON-implementation of erc20Vault (the load-bearing fact that forces the
@@ -263,7 +265,7 @@ func (m *callSeamState) GetStateDB() contract.StateDB { return m.sdb }
 func (m *callSeamState) GetBlockContext() contract.BlockContext {
 	return &mockBlockCtx{number: big.NewInt(int64(m.sdb.inner.blockNumber)), timestamp: m.timestamp}
 }
-func (m *callSeamState) GetConsensusContext() context.Context { return context.Background() }
+func (m *callSeamState) GetConsensusContext() context.Context         { return context.Background() }
 func (m *callSeamState) GetChainConfig() precompileconfig.ChainConfig { return nil }
 
 // GetPrecompileEnv mirrors evm/registry's accessibleStateBridge.GetPrecompileEnv: it
@@ -399,6 +401,84 @@ func TestERC20Settle_CallSeam_DepositWithdrawConserves(t *testing.T) {
 		t.Fatalf("after withdraw: depositor token balance=%s, want %d", dBal, wantDepositor)
 	}
 	checkConservation("after-withdraw")
+}
+
+// TestERC20Settle_CallSeam_RejectsDelegatecall is the MEDIUM-finding regression: a
+// DELEGATECALL into 0x9999 must be REJECTED before any token moves, while a direct
+// CALL still settles. geth binds the precompile self from the call opcode and passes
+// it as Run's `addr`: CALL/CALLCODE bind self = the target (0x9999), but DELEGATECALL
+// rebinds self to the DELEGATING contract. We model that here by driving Run with an
+// `addr` that is NOT 0x9999 (the delegating contract's address) — exactly the value
+// geth's evm.DelegateCall hands a precompile via NewPrecompileEnvironment(evm,
+// originCaller, caller). The guard must refuse with ErrSettleWrongContext and the
+// token balances must be UNTOUCHED (no transferFrom happened — funds not stranded).
+// Then the SAME input via a true CALL (addr == 0x9999) settles, proving the guard
+// rejects ONLY the wrong-self context.
+func TestERC20Settle_CallSeam_RejectsDelegatecall(t *testing.T) {
+	const (
+		totalSupply = int64(1_000_000)
+		depositAmt  = int64(250_000)
+	)
+	token := common.HexToAddress("0x000000000000000000000000000000000000C0FE")
+	depositor := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	// The delegating contract geth would rebind self to under DELEGATECALL — any
+	// address that is NOT 0x9999. A victim EOA/contract that delegatecalls 0x9999.
+	delegator := common.HexToAddress("0xDEADBEEF00000000000000000000000000000001")
+
+	tc := newTokenContract(token)
+	tc.mint(depositor, big.NewInt(totalSupply))
+	// Depositor grants 0x9999 (the real vault) the allowance — the only legit pull.
+	tc.approve(depositor, poolManagerAddr9999, big.NewInt(depositAmt))
+
+	env := &callSeamEnv{self: poolManagerAddr9999, tokens: map[common.Address]*tokenContract{token: tc}}
+	state := &callSeamState{
+		sdb:       &callSeamStateDB{inner: NewMockStateDB()},
+		env:       env,
+		timestamp: DexSettleActivationTime,
+	}
+	c := &SettleContract{protocolFeeController: common.HexToAddress("0xFEE0000000000000000000000000000000000001")}
+	aid := assetID(Currency{Address: token})
+
+	depData := make([]byte, 64)
+	copy(depData[12:32], token.Bytes())
+	big.NewInt(depositAmt).FillBytes(depData[32:64])
+	input := prependSelector(SelectorDeposit, depData)
+
+	// ── DELEGATECALL context: addr = the delegating contract, NOT 0x9999 ──────────────
+	_, _, err := c.Run(state, depositor, delegator, input, 5_000_000, false)
+	if !errors.Is(err, ErrSettleWrongContext) {
+		t.Fatalf("DELEGATECALL into 0x9999 (addr=%s) must be rejected with ErrSettleWrongContext, got: %v", delegator, err)
+	}
+	// CRITICAL: no token moved. transferFrom never ran, so the depositor keeps every
+	// token and the vault holds nothing — the guard fired before any value movement.
+	if dBal := tc.bal(depositor); dBal.Cmp(big.NewInt(totalSupply)) != 0 {
+		t.Fatalf("after rejected delegatecall: depositor balance=%s, want %d (no transfer must have occurred)", dBal, totalSupply)
+	}
+	if vBal := vaultTokenBalance(env, token); vBal.Sign() != 0 {
+		t.Fatalf("after rejected delegatecall: vault balance=%s, want 0 (no transferFrom must have occurred)", vBal)
+	}
+	if claim := loadDepositorClaim(newPoolStateAdapter(state), depositor, aid); claim.Sign() != 0 {
+		t.Fatalf("after rejected delegatecall: depositor claim=%s, want 0 (no credit must have been recorded)", claim)
+	}
+	// The depositor's allowance to 0x9999 is also untouched (nothing was pulled).
+	if al := tc.getAllowance(depositor, poolManagerAddr9999); al.Cmp(big.NewInt(depositAmt)) != 0 {
+		t.Fatalf("after rejected delegatecall: allowance consumed=%s, want %d (must be intact)", al, depositAmt)
+	}
+
+	// ── CALL context: addr = 0x9999 — the SAME input now settles ──────────────────────
+	out, _, err := c.Run(state, depositor, poolManagerAddr9999, input, 5_000_000, false)
+	if err != nil {
+		t.Fatalf("direct CALL (addr=0x9999) must settle, got: %v", err)
+	}
+	if got := new(big.Int).SetBytes(out); got.Cmp(big.NewInt(depositAmt)) != 0 {
+		t.Fatalf("CALL deposit credited=%s, want %d", got, depositAmt)
+	}
+	if vBal := vaultTokenBalance(env, token); vBal.Cmp(big.NewInt(depositAmt)) != 0 {
+		t.Fatalf("after CALL: vault balance=%s, want %d", vBal, depositAmt)
+	}
+	if claim := loadDepositorClaim(newPoolStateAdapter(state), depositor, aid); claim.Cmp(big.NewInt(depositAmt)) != 0 {
+		t.Fatalf("after CALL: depositor claim=%s, want %d", claim, depositAmt)
+	}
 }
 
 // TestERC20Settle_NoEnv_RefusesFailSecure proves the fail-secure posture is intact:
