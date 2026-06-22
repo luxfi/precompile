@@ -37,6 +37,22 @@ import (
 // matcher can credit C — Phase B has no fill-amount parameter; the credit is the
 // RECORDED atomic object's amount, and absent a real object in shared memory it
 // reverts.
+//
+// WHAT C ENFORCES INDEPENDENTLY vs RELIES ON D FOR (the swap rail, precisely):
+//   - C enforces, with NO trust in D: the credit binds to the RECORDED object's
+//     owner/asset/amount (no aliasing/re-denomination), the object's rail is railSwap
+//     (no cross-rail pot drain), the object is consumed at most once (replay), the
+//     credit is drawn ONLY from seamReserve (never a depositor/maker/LP pot), AND —
+//     the per-taker cap (MEDIUM) — the credit is bounded by the taker's OWN intent's
+//     remaining locked principal, so an over-export for one taker can never draw on
+//     other takers' pooled tokenIn. C ALSO guarantees liveness independently: a locked
+//     intent's principal can always exit via reclaimIntent once its deadline passes,
+//     with no dependence on D or the keeper.
+//   - C relies on D for: WHICH fills occurred and their amounts (D is the matcher;
+//     conservation of proceeds vs refund within a single taker's locked principal is
+//     enforced on D by settleFromFills' spent<=locked). C does NOT re-derive the match;
+//     it bounds the blast radius of a faulty/hostile D export to the taker's OWN stake
+//     (the per-taker cap) and refuses anything past the deadline.
 
 // --- 0x9999 native-seam chain identity (networkID, cChainID, dChainID). It is NOT
 // configured and NOT persisted: 0x9999 is ALWAYS-ON with zero per-net config, so the
@@ -161,7 +177,7 @@ func SettleSwap(
 	blockNumber := state.GetBlockContext().Number().Uint64()
 	blockTimestamp := state.GetBlockContext().Timestamp()
 
-	phase, body := decodeSwapPhase(hookData)
+	phase, body, taggedIntent := decodeSwapPhase(hookData)
 	switch phase {
 	case swapPhaseSettlement:
 		// PHASE B — consume a D->C atomic settlement object and credit C.
@@ -211,7 +227,21 @@ func SettleSwap(
 		if herr := checkHalt(stateDB, key, params); herr != nil {
 			return nil, gasLeft, herr
 		}
-		req, berr := buildIntentRequest(key, params, caller)
+		// The OPTIONAL deadline rides in an EXPLICIT DI01 intent body (the V4 SwapParams
+		// tuple is unchanged). It is read ONLY for a DI01-tagged intent; an untagged /
+		// opaque hook body carries no deadline (taggedIntent=false => body ignored), so a
+		// hook contract's arbitrary bytes are never mis-parsed as a deadline. A non-zero
+		// deadline is persisted in the per-intent record so a late settlement is refused
+		// and the locker can reclaim past it (no stranded funds).
+		var deadline uint64
+		if taggedIntent {
+			d, derr := decodeIntentDeadline(body)
+			if derr != nil {
+				return nil, gasLeft, derr
+			}
+			deadline = d
+		}
+		req, berr := buildIntentRequest(key, params, caller, deadline)
 		if berr != nil {
 			return nil, gasLeft, berr
 		}
@@ -229,9 +259,11 @@ func SettleSwap(
 
 // buildIntentRequest derives the C->D intent from the V4 swap: the taker is the
 // caller, the input asset/amount come from the swap direction + amountSpecified
-// (exact-input magnitude), the market is the pool id, and the recipient defaults
-// to the caller.
-func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address) (IntentRequest, error) {
+// (exact-input magnitude), the market is the pool id, the recipient defaults to the
+// caller, and the deadline is the (optional) value parsed from the Phase-A hookData
+// body. A non-zero deadline is persisted in the per-intent record so Phase-B refuses
+// a late settlement and the locker can reclaim the principal past it.
+func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, deadline uint64) (IntentRequest, error) {
 	in, _ := swapAssetDirection(key, params)
 	// Exact-input: AmountSpecified < 0, magnitude is the input. Exact-output is a P4
 	// router concern; the native intent locks the exact input the taker commits.
@@ -250,9 +282,63 @@ func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address) (
 		MarketID:     key.ID(),
 		MinAmountOut: minAmountOut(params),
 		Recipient:    caller,
-		Deadline:     0,
+		Deadline:     deadline,
 	}, nil
 }
+
+// runSettleReclaimIntent is the reclaimIntent(bytes32 intentID) handler: the swap
+// rail's deadline-reclaim. It decodes the intent id, takes the shared custody
+// non-reentrant guard (the refund moves value through the seam reserve, and an ERC-20
+// transfer can re-enter), and calls ReclaimIntent which refunds the remaining locked
+// principal to the caller (the locker) once the deadline has passed. Returns the
+// refunded amount. NOT gated by the swap halt — funds must always be able to exit.
+func (s *SettleContract) runSettleReclaimIntent(
+	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
+) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, gas, errors.New("dex: cannot reclaimIntent in read-only mode")
+	}
+	if gas < GasNativeSettlement {
+		return nil, 0, errors.New("dex: out of gas")
+	}
+	gasLeft := gas - GasNativeSettlement
+
+	atomicState, ok := state.(contract.AtomicState)
+	if !ok || atomicState.AtomicMemory() == nil {
+		return nil, gasLeft, ErrSettleNoAtomicState
+	}
+	if len(data) < 32 {
+		return nil, gasLeft, ErrReclaimBadInput
+	}
+	var intentID ids.ID
+	copy(intentID[:], data[0:32])
+
+	stateDB := newPoolStateAdapter(state)
+	if !enterCustodyKV(stateDB) {
+		return nil, gasLeft, ErrCustodyReentrant
+	}
+	defer exitCustodyKV(stateDB)
+
+	refunded, rerr := nativeClient.ReclaimIntent(state, atomicState, caller, intentID)
+	if rerr != nil {
+		return nil, gasLeft, rerr
+	}
+	out := make([]byte, 32)
+	new(big.Int).SetUint64(refunded).FillBytes(out)
+	return out, gasLeft, nil
+}
+
+// EncodeReclaimIntentInput builds reclaimIntent(bytes32) calldata for the locker's
+// reclaim tx and tests.
+func EncodeReclaimIntentInput(intentID ids.ID) []byte {
+	out := make([]byte, 32)
+	copy(out, intentID[:])
+	return out
+}
+
+// ErrReclaimBadInput is returned when reclaimIntent calldata is too short to carry an
+// intent id.
+var ErrReclaimBadInput = errors.New("dex: reclaimIntent input too short (need bytes32 intentID)")
 
 // balanceDeltaForOutput maps a credited output amount to the V4 BalanceDelta
 // convention (output paid out to taker = negative on the output side; the input
