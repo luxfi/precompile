@@ -109,7 +109,7 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 		networkID: 1,
 		chainID:   cChainID,
 		cChainID:  cChainID,
-		dChainID:  dChainID, // host-resolved D peer (runtime), as the EVM adapter supplies it
+		dChainID:  dChainID,     // host-resolved D peer (runtime), as the EVM adapter supplies it
 		txID:      ids.ID{0x7A}, // a fixed tx id for the harness; tests vary callIndex/txID
 		callIndex: 0,
 		// Default to the activation boundary so settlement/init tests exercise the
@@ -330,14 +330,71 @@ func (h *settleHarness) readCtoDObject(t testing.TB, intentID ids.ID) ([]byte, b
 	return vals[0], true
 }
 
-// settlementCalldata builds a Phase-B swap calldata that consumes a D->C object.
+// settlementCalldata builds a Phase-B swap calldata that consumes a D->C object,
+// bound to a standing per-taker swap intent for the caller (auto-seeded with ample
+// principal + no deadline) so the per-taker cap (MEDIUM) is satisfied. Tests that
+// exercise the cap/deadline directly seed their own intent and use
+// settlementCalldataFor with a specific intent id.
 func (h *settleHarness) settlementCalldata(outputID ids.ID, amount uint64) []byte {
-	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, amount))
+	intentID := h.standingIntent(amount)
+	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, amount, intentID))
 }
 
-// intentCalldata builds a Phase-A swap calldata (empty hookData => intent).
+// settlementCalldataFor builds a Phase-B swap calldata naming a SPECIFIC intent id
+// (for the per-taker cap / deadline tests).
+func (h *settleHarness) settlementCalldataFor(outputID ids.ID, amount uint64, intentID ids.ID) []byte {
+	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, amount, intentID))
+}
+
+// intentCalldata builds a Phase-A swap calldata (empty hookData => intent, no deadline).
 func (h *settleHarness) intentCalldata() []byte {
 	return buildSwapCalldata(h.key, h.params, nil)
+}
+
+// intentCalldataWithDeadline builds a Phase-A swap calldata carrying an explicit
+// deadline in the hookData body (the V4 SwapParams tuple is unchanged).
+func (h *settleHarness) intentCalldataWithDeadline(deadline uint64) []byte {
+	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(deadline))
+}
+
+// standingIntent lazily seeds (once) a per-taker swap intent for the caller covering
+// the OUTPUT asset with ample principal and NO deadline, and returns its id. It is the
+// default intent settlementCalldata binds to so existing settle tests (which assert the
+// object-bind / replay / rail axes) satisfy the per-taker cap without each restating it.
+func (h *settleHarness) standingIntent(minPrincipal uint64) ids.ID {
+	id := ids.ID{0x57, 0x7A, 0x11} // a fixed standing-intent id for the harness.
+	db := newPoolStateAdapter(h.state)
+	rec := loadSwapIntentRecord(db, id)
+	if rec.Status != swapIntentOpen || rec.Remaining < minPrincipal {
+		// (Re)seed with generous principal so the cap never spuriously bites the
+		// object-bind tests; cap-specific tests use seedSwapIntent with exact principal.
+		principal := minPrincipal * 4
+		if principal < 1_000_000 {
+			principal = 1_000_000
+		}
+		putSwapIntentRecord(db, id, swapIntentRecord{
+			Owner:     h.caller,
+			AssetIn:   h.outAssetID(), // bound only on owner; asset axis is not cross-checked.
+			Remaining: principal,
+			Deadline:  0,
+			Status:    swapIntentOpen,
+		})
+	}
+	return id
+}
+
+// seedSwapIntent writes a per-taker swap intent record directly (the test analog of
+// SubmitSwapIntent's record write) and returns its id, so the per-taker cap / deadline
+// / reclaim tests have a precise intent (exact owner/principal/deadline) to bind to.
+func (h *settleHarness) seedSwapIntent(owner common.Address, assetIn [32]byte, principal, deadline uint64, id ids.ID) ids.ID {
+	putSwapIntentRecord(newPoolStateAdapter(h.state), id, swapIntentRecord{
+		Owner:     owner,
+		AssetIn:   assetIn,
+		Remaining: principal,
+		Deadline:  deadline,
+		Status:    swapIntentOpen,
+	})
+	return id
 }
 
 // buildSwapCalldata encodes a V4 swap call (UNCHANGED ABI) carrying hookData. The
