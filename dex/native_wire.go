@@ -14,10 +14,21 @@ import (
 // native_wire.go is the C<->D ATOMIC OBJECT wire format for the 0x9999 native
 // settlement seam. It is byte-for-byte the same shared-memory UTXO value the
 // dexvm side reads/writes (chains/dexvm/atomic.go encodeExportedOutput /
-// decodeExportedOutput): rail(1) | owner(20) | asset(32) | amount(8) = 61 bytes,
-// fixed width, deterministic. Keeping the wire identical is what lets the D side
-// import a C->D object NATIVELY (its executeImport binds the recorded rail/owner/
-// asset/amount) and lets C consume a D->C object the same way.
+// decodeExportedOutput): rail(1) | owner(20) | asset(32) | amount(8) | spent(8) =
+// 69 bytes, fixed width, deterministic. Keeping the wire identical is what lets the
+// D side import a C->D object NATIVELY (its executeImport binds the recorded rail/
+// owner/asset/amount) and lets C consume a D->C object the same way.
+//
+// THE SPENT WITNESS (trailing 8 bytes): on a D->C swap PROCEEDS leg, spent carries
+// the matched INPUT amount (in the locked/input-asset units) that produced this
+// output. It is 0 on every other leg (C->D intents/commits, same-asset refunds, LP
+// collects). ImportSettlement reads it to enforce the TAKER's OWN recorded slippage
+// limit on the proceeds leg — realized price = out/spent (SELL) or spent/out (BUY) —
+// INDEPENDENTLY of the keeper-relayed RelayOrderTx.PriceLimit. So a keeper that
+// zeroes the relay limit to let a sandwiched fill through still produces a proceeds
+// object whose realized price C refuses to credit (taker-authenticated MEV floor).
+// The two repos extend this width in LOCKSTEP; native_seam_parity_test pins the
+// golden bytes so a one-sided change is caught at test time, never in consensus.
 //
 // THE RAIL TAG (the H1 fix): the object's FIRST byte is the RAIL discriminator —
 // the lane the value travels on, a property of the OBJECT, not of the C-side
@@ -44,11 +55,11 @@ import (
 //     ImportPositionCollect (railLP) consumes it ONCE and credits C value. C is
 //     credited ONLY by consuming a D->C object OF THE MATCHING RAIL.
 //
-// The 61-byte object carries the VALUE-BEARING identity (rail/owner/asset/amount)
-// the atomic conservation binds. The richer order metadata (marketID, minAmountOut,
-// recipient, deadline) is NOT value-bearing — it rides in the C->D intent EVENT
-// (events.go) the keeper reads to build the D order. The atomic object alone moves
-// value; the metadata only routes it.
+// The 69-byte object carries the VALUE-BEARING identity (rail/owner/asset/amount)
+// the atomic conservation binds, plus the price-binding spent witness. The richer
+// order metadata (marketID, minAmountOut, recipient, deadline) is NOT value-bearing —
+// it rides in the C->D intent EVENT (events.go) the keeper reads to build the D order.
+// The atomic object alone moves value; the metadata only routes it.
 
 // Rail is the cross-chain object's lane discriminator (wire byte 0). It is the
 // H1-closing property that makes a D->C object UNAMBIGUOUSLY one rail, so a C-side
@@ -72,40 +83,63 @@ const (
 )
 
 // exportedOutputSize is the fixed shared-memory object width: rail(1) | owner(20) |
-// asset(32) | amount(8). IDENTICAL to chains/dexvm/atomic.go exportedOutputSize.
-const exportedOutputSize9999 = 1 + 20 + 32 + 8
+// asset(32) | amount(8) | spent(8). IDENTICAL to chains/dexvm/atomic.go
+// exportedOutputSize. The trailing spent(8) is the matched-input witness on a swap
+// proceeds leg (0 elsewhere); both repos carry it in lockstep.
+const exportedOutputSize9999 = 1 + 20 + 32 + 8 + 8
 
 // encodeAtomicObject serializes a cross-chain value object as the shared-memory
 // value, byte-identical with the dexvm side: rail(1) | owner(20) | asset(32) |
-// amount(8). rail is the lane the value travels (railSwap / railLP); owner is the
-// account (EVM address / dexvm ShortID — both 20 bytes); asset is the full
-// injective AssetID (assetID(Currency); native = all-zero); amount is the integer
-// asset unit count.
+// amount(8) | spent(8). rail is the lane the value travels (railSwap / railLP);
+// owner is the account (EVM address / dexvm ShortID — both 20 bytes); asset is the
+// full injective AssetID (assetID(Currency); native = all-zero); amount is the
+// integer asset unit count.
+//
+// The precompile only ever writes C->D INTENT/COMMIT objects, which carry NO matched
+// input (the match happens later on D), so spent is ALWAYS 0 here — written as the
+// trailing zero word. The D side fills spent on the D->C proceeds leg (settleFromFills);
+// the precompile DECODES it in ImportSettlement. Keeping spent=0 on the C->D leg makes
+// the C->D object byte-identical with what the dexvm's executeImport expects (its
+// decodeExportedOutput requires exactly this width and ignores spent on an import).
 func encodeAtomicObject(rail Rail, owner common.Address, asset [32]byte, amount uint64) []byte {
+	// A C->D intent/commit object carries no matched input, so spent is always 0 here.
+	return encodeAtomicObjectSpent(rail, owner, asset, amount, 0)
+}
+
+// encodeAtomicObjectSpent is the full encoder including the trailing spent witness. The
+// production C->D path uses spent=0 (encodeAtomicObject); the D side (chains
+// settleFromFills) sets spent>0 on a D->C PROCEEDS leg. This variant exists so the seam
+// surface (and the parity/redteam tests) can construct the EXACT bytes the dexvm exports,
+// byte-identical with chains/dexvm/atomic.go encodeExportedOutput.
+func encodeAtomicObjectSpent(rail Rail, owner common.Address, asset [32]byte, amount, spent uint64) []byte {
 	v := make([]byte, exportedOutputSize9999)
 	v[0] = byte(rail)
 	copy(v[1:21], owner[:])
 	copy(v[21:53], asset[:])
 	binary.BigEndian.PutUint64(v[53:61], amount)
+	binary.BigEndian.PutUint64(v[61:69], spent)
 	return v
 }
 
-// decodeAtomicObject is the inverse: it reads back the (rail, owner, asset, amount)
-// a consumed cross-chain object RECORDED in shared memory. ok=false for any value
-// that is not EXACTLY the canonical width, so a corrupt/garbage record is never
+// decodeAtomicObject is the inverse: it reads back the (rail, owner, asset, amount,
+// spent) a consumed cross-chain object RECORDED in shared memory. ok=false for any
+// value that is not EXACTLY the canonical width, so a corrupt/garbage record is never
 // reinterpreted into a credit — the same defense the dexvm decodeExportedOutput
 // applies. The consumer binds the credited rail/owner/asset/amount to THIS recorded
 // value, never to what the calling tx merely declares — so the rail (and therefore
-// which pot may be debited) is the OBJECT's, not the caller's.
-func decodeAtomicObject(v []byte) (rail Rail, owner common.Address, asset [32]byte, amount uint64, ok bool) {
+// which pot may be debited) is the OBJECT's, not the caller's. spent is meaningful
+// ONLY on a D->C swap proceeds leg (the MEV-floor witness ImportSettlement checks);
+// the LP-collect and staging consumers ignore it.
+func decodeAtomicObject(v []byte) (rail Rail, owner common.Address, asset [32]byte, amount, spent uint64, ok bool) {
 	if len(v) != exportedOutputSize9999 {
-		return 0, common.Address{}, [32]byte{}, 0, false
+		return 0, common.Address{}, [32]byte{}, 0, 0, false
 	}
 	rail = Rail(v[0])
 	copy(owner[:], v[1:21])
 	copy(asset[:], v[21:53])
 	amount = binary.BigEndian.Uint64(v[53:61])
-	return rail, owner, asset, amount, true
+	spent = binary.BigEndian.Uint64(v[61:69])
+	return rail, owner, asset, amount, spent, true
 }
 
 // DeriveIntentID computes the deterministic id of a C->D atomic intent object.
@@ -176,8 +210,8 @@ const nativeIntentDomain = "lux.dex.native.intent.v1"
 // position-commit id and a swap-intent id (DeriveIntentID, nativeIntentDomain) live
 // in DISJOINT id spaces — a swap intent object can NEVER be consumed as a position
 // commit, nor vice-versa, even with the same (account, asset, amount, market). The
-// 60-byte object wire (owner|asset|amount) is IDENTICAL so D imports both natively;
-// only the id DOMAIN (and the routing event KIND) distinguish the two rails.
+// 69-byte object wire (rail|owner|asset|amount|spent) is IDENTICAL so D imports both
+// natively; only the id DOMAIN (and the routing event KIND) distinguish the two rails.
 //
 //	SHA-256( positionCommitDomain | networkID | cChainID | dChainID | txID |
 //	         callIndex | account | assetIn | amountIn | poolID )
@@ -185,6 +219,18 @@ const nativeIntentDomain = "lux.dex.native.intent.v1"
 // Every component is fixed width and length-stable; callIndex disambiguates two
 // commits in one tx; (networkID, cChainID, dChainID) scope the object to one rail;
 // account/asset/amount/pool bind the economic payload so the id cannot be reused.
+//
+// DELIBERATE ASYMMETRY vs DeriveIntentID (txID+callIndex here, user NONCE there — do NOT
+// "align" them into a consensus break). The SWAP id is chain-observable (derived from the
+// taker's DI01 nonce, no txID) because an OFF-CHAIN keeper must re-derive it from calldata
+// to correlate its fill watch. The LP commit id has NO such off-chain re-derivation: it is
+// only ever READ from shared memory by the dexvm's executeImport (the keeper opens the D
+// position from the routing EVENT, which already carries the id), so it does not need to be
+// computable from calldata alone. txID+callIndex is therefore the right choice for the LP
+// rail — injective, and callIndex (not a user-supplied nonce the LP path doesn't carry)
+// disambiguates two commits in one tx. Switching the LP rail to a nonce would add a
+// user-managed field the modifyLiquidity ABI doesn't have and change a consensus-shared key
+// for no correlation benefit.
 func DerivePositionCommitID(
 	networkID uint32,
 	cChainID, dChainID ids.ID,
