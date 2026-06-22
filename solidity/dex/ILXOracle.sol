@@ -62,7 +62,7 @@ interface ILXOracle {
     }
 
     /// @notice Robust index construction parameters
-    /// @dev Based on Hyperliquid's robust index methodology
+    /// @dev TWAP-windowed, outlier-trimmed robust index methodology
     struct RobustIndexParams {
         uint32 windowSeconds;       // TWAP window (e.g., 900 = 15 min)
         uint32 minSamples;          // Minimum samples in window

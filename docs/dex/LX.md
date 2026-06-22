@@ -1,6 +1,6 @@
 # LX Architecture
 
-LX is a native EVM DEX combining Uniswap v4-style AMM with Hyperliquid-class CLOB in a unified, permissionless protocol.
+LX is a native EVM DEX combining Uniswap v4-style AMM with a high-performance native CLOB in a unified, permissionless protocol.
 
 ## Overview
 
@@ -302,7 +302,7 @@ Funding Payment = Position Size × Funding Rate
 
 ### Robust Index Construction
 
-Following Hyperliquid methodology:
+Robust index methodology:
 1. Collect prices from multiple CEX/DEX sources
 2. Remove outliers (>1% deviation from median)
 3. Compute TWAP over 15-minute window
