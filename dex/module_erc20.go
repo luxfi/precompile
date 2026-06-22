@@ -28,9 +28,7 @@ import (
 // adapter chain that reaches the external DEX precompile USED TO narrow it away —
 // accessibleStateBridge.GetPrecompileEnv() returned nil, so this seam got nil and an
 // ERC-20 deposit/withdraw refused with ErrERC20VaultUnavailable (fail-secure: never
-// minting an unbacked claim). The forwarding now lands in luxfi/evm, kept OFF the
-// shared, many-implementer contract.PrecompileEnvironment interface (Call is an
-// optional concrete capability this seam type-asserts, not an interface widening):
+// minting an unbacked claim). The forwarding now lands in luxfi/evm:
 //
 //	geth vm.PrecompileEnvironment{Call,...}                       <- has Call
 //	  └─> evm/core accessibleStateAdapter.GetPrecompileEnv()      <- now EXPOSES the geth env
@@ -38,6 +36,22 @@ import (
 //	              -> *precompileEnvBridge{ReadOnly(), Call(...)}   <- forwards Call
 //	                    └─> luxfi/precompile contract.PrecompileEnvironment
 //	                          + the optional Call this callableEnv asserts
+//
+// BLAST RADIUS — be precise about what IS and ISN'T shared:
+//   - Call is NOT on contract.PrecompileEnvironment (that interface declares only
+//     ReadOnly()). Call is an OPTIONAL concrete capability this seam type-asserts, so
+//     forwarding it does not widen the shared PrecompileEnvironment interface.
+//   - BUT GetPrecompileEnv() IS a method on the SHARED external contract.AccessibleState
+//     interface (contract/interfaces.go) — every external stateful precompile receives
+//     the SAME accessibleStateBridge and can therefore type-assert callableEnv on the
+//     env it returns. So ANY external precompile that asserts callableEnv gets EVM
+//     sub-call power with ITSELF as the sub-call's msg.sender. That is the seam's true
+//     reach. Two controls bound it: (1) the bridge hands a non-nil callable env ONLY to
+//     the DEX settlement addresses (0x9999 / 0x9996) — every other precompile, incl. the
+//     PQ/ZK verifiers, gets nil and falls back to fail-secure refusal (evm/registry
+//     bridge.go); (2) the CALL-only guard in each settlement Run pins self == the
+//     settlement address, so a DELEGATECALL can never make a sub-call's msg.sender be a
+//     foreign contract (settle_module.go ErrSettleWrongContext).
 //
 // CALLER SEMANTICS (a money-path correctness edge): the sub-call is made with the
 // precompile SELF (0x9999) as the token's msg.sender — NO caller proxying. A deposit
@@ -119,9 +133,9 @@ func (a *poolStateAdapter) TokenBalanceOf(token, owner common.Address) *big.Int 
 
 // TransferTokenFrom pulls amount of token from `from` to `to` via a
 // transferFrom(address,address,uint256) sub-call, using the allowance `from`
-// granted to 0x9010 (the precompile self). OZ-safe: a revert OR a false bool
-// return is a FAILED transfer (errors); a no-return-data success (non-compliant
-// tokens that return nothing) is accepted, matching SafeERC20.
+// granted to the precompile self (0x9999 on the live settlement path). OZ-safe: a
+// revert OR a false bool return is a FAILED transfer (errors); a no-return-data
+// success (non-compliant tokens that return nothing) is accepted, matching SafeERC20.
 func (a *poolStateAdapter) TransferTokenFrom(token, from, to common.Address, amount *big.Int) error {
 	c := a.callable()
 	if c == nil {
@@ -136,9 +150,9 @@ func (a *poolStateAdapter) TransferTokenFrom(token, from, to common.Address, amo
 	return checkERC20Return(ret, err)
 }
 
-// TransferTokenTo pushes amount of token from the vault (0x9010, the precompile
-// self) to `to` via a transfer(address,uint256) sub-call. Same OZ-safe semantics
-// as TransferTokenFrom.
+// TransferTokenTo pushes amount of token from the vault (the precompile self,
+// 0x9999 on the live settlement path) to `to` via a transfer(address,uint256)
+// sub-call. Same OZ-safe semantics as TransferTokenFrom.
 func (a *poolStateAdapter) TransferTokenTo(token, to common.Address, amount *big.Int) error {
 	c := a.callable()
 	if c == nil {
