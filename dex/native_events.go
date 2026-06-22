@@ -25,9 +25,12 @@ import (
 // money path sees the full intent->settlement/reclaim lifecycle in one place.
 
 var (
-	// IntentSubmitted(bytes32 intentID, bytes32 dChainID, address account, bytes32 assetIn, uint256 amountIn, bytes32 marketID, uint256 minAmountOut, address recipient, uint64 deadline, uint8 kind)
+	// IntentSubmitted(bytes32 intentID, bytes32 dChainID, address account, bytes32 assetIn, uint256 amountIn, bytes32 marketID, uint256 minAmountOut, address recipient, uint64 deadline, uint8 kind, uint64 priceLimit, uint8 limitIsUpper)
+	// priceLimit (CLOB quote-per-base float64 bits) + limitIsUpper let the keeper carry
+	// the taker's slippage floor onto the settling relay (the bounded-MEV guard) without
+	// re-deriving it from the V4 sqrt limit.
 	nativeIntentEventSig = common.BytesToHash(crypto.Keccak256([]byte(
-		"IntentSubmitted(bytes32,bytes32,address,bytes32,uint256,bytes32,uint256,address,uint64,uint8)")))
+		"IntentSubmitted(bytes32,bytes32,address,bytes32,uint256,bytes32,uint256,address,uint64,uint8,uint64,uint8)")))
 	// CancelSubmitted(bytes32 orderID, bytes32 marketID, address owner)
 	nativeCancelEventSig = common.BytesToHash(crypto.Keccak256([]byte(
 		"CancelSubmitted(bytes32,bytes32,address)")))
@@ -73,7 +76,7 @@ func emitNativePositionCommitEvent(stateDB StateDB, positionID, dChainID ids.ID,
 // the keeper builds the right D op; the value-bearing identity is in the staged
 // atomic object, never here.
 func emitNativeRoutingEvent(stateDB StateDB, objectID, dChainID ids.ID, req IntentRequest, locked uint64, kind nativeIntentKind) {
-	data := make([]byte, 0, 7*32)
+	data := make([]byte, 0, 9*32)
 	data = append(data, abiEncodeAddress(req.Account)...)
 	data = append(data, abiEncodeBytes32(req.AssetIn)...)
 	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(locked))...)
@@ -86,6 +89,14 @@ func emitNativeRoutingEvent(stateDB StateDB, objectID, dChainID ids.ID, req Inte
 	data = append(data, abiEncodeAddress(req.Recipient)...)
 	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(req.Deadline))...)
 	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(uint64(kind)))...)
+	// Slippage floor for the keeper to carry onto the settling relay (bounded-MEV guard):
+	// priceLimit is the CLOB quote-per-base limit as float64 bits, limitIsUpper its side.
+	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(req.PriceLimit))...)
+	var limitFlag uint64
+	if req.LimitIsUpper {
+		limitFlag = 1
+	}
+	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(limitFlag))...)
 	stateDB.AddLog(&ethtypes.Log{
 		Address: poolManagerAddr9999,
 		Topics: []common.Hash{
