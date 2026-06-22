@@ -265,8 +265,8 @@ github.com/luxfi/validators v1.2.0 h1:VygpiBqBAdGrfkb7xzE2yrVmnXaqE+hm8FLWdGXO7G
 github.com/luxfi/validators v1.2.0/go.mod h1:GYLulrNXAan23ZlX7sgWVbVnLpUexeB/m2qr2ymsXok=
 github.com/luxfi/version v1.0.1 h1:T/1KYWEMmsrNQk7pN7PFPAwh/7XbeX7cFAKLBqI37Sk=
 github.com/luxfi/version v1.0.1/go.mod h1:Y5fPkQ2DB0XRBCxgSPXp4ISzL1/jptKnmFknShRJCyg=
-github.com/luxfi/vm v1.2.3 h1:IdfB02OtDmdy/YNxaIR8DquPp5Aq0fi5QXBqGHoRkug=
-github.com/luxfi/vm v1.2.3/go.mod h1:ZXmw1sKA6GL3Ma3BfYUv5Fzvx3aWu2QMtkxF3lL/3R4=
+github.com/luxfi/vm v1.2.5 h1:L1etY/gh68f9tns1BtyDUpZcBVqc3Ng1mqU3n38GyLo=
+github.com/luxfi/vm v1.2.5/go.mod h1:TCCg4lDcQFCjxaxfXnxPIrpRSVAyyf2ucT4A4w654Hg=
 github.com/luxfi/warp v1.19.5 h1:vigIDV4JxLz8bLxQ97dOIcZVM9FAXHmrKdmIh+/WWvk=
 github.com/luxfi/warp v1.19.5/go.mod h1:t5upY5vhKvjapImmUsgPUlW8C8LZhvQpQg5WzAitQs0=
 github.com/luxfi/zap v0.7.2 h1:YecWTWNE5PPJXL56sLIkzS8b23bprUwZ5lPAQuLUtTE=
