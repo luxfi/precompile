@@ -202,7 +202,7 @@ event Donate(bytes32 indexed poolId, address indexed sender, uint256 amount0, ui
 
 ## ILXBook (LP-9020) — CLOB Matching Engine
 
-Hyperliquid-style CLOB with execute() endpoint.
+Native CLOB with single-entrypoint execute() endpoint.
 
 ### Custom Types
 
@@ -377,7 +377,7 @@ function cancelAllOrders(MarketId marketId) external returns (uint32 cancelled);
 function amendOrder(AmendRequest calldata req) external returns (OrderId newOrderId);
 ```
 
-#### Hyperliquid-Style Execute
+#### Single-Entrypoint Execute
 
 ```solidity
 function execute(string calldata action, bytes calldata data) external returns (bytes memory result);

@@ -7,7 +7,7 @@ import {ILXVault} from "./ILXVault.sol";
 /// @notice Central Limit Order Book (CLOB) matching engine for LX
 /// @dev Precompile address: LP-9020 (0x0000000000000000000000000000000000009020)
 /// @dev Matches orders and atomically settles via LXVault.applyFills()
-/// @dev Hyperliquid-style execute() endpoint for HFT
+/// @dev Native HFT surface: single-entrypoint execute() dispatch
 interface ILXBook {
     // =========================================================================
     // Custom Types
@@ -205,11 +205,11 @@ interface ILXBook {
     function amendOrder(AmendRequest calldata req) external returns (OrderId newOrderId);
 
     // =========================================================================
-    // Hyperliquid-Style Execute Endpoint
+    // Native HFT Execute Endpoint
     // =========================================================================
 
     /// @notice Single entry point for all trading operations
-    /// @dev Hyperliquid-compatible execute() pattern
+    /// @dev Single-entrypoint execute() dispatch pattern
     /// @dev Action types: "order", "cancel", "cancelByClOrdId", "cancelAll", "amend"
     /// @param action Action type string
     /// @param data ABI-encoded action data
