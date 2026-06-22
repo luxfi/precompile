@@ -81,7 +81,7 @@ func TestLP_ModifyLiquidityCommitsCToD(t *testing.T) {
 	if !ok {
 		t.Fatal("C->D commit object not found in shared memory after commit")
 	}
-	rail, owner, asset, amount, decOK := decodeAtomicObject(raw)
+	rail, owner, asset, amount, _, decOK := decodeAtomicObject(raw)
 	if !decOK || rail != railLP || owner != h.caller || asset != native || amount != 400 {
 		t.Fatalf("C->D commit object mismatch: ok=%v rail=%d owner=%s asset=%x amount=%d", decOK, rail, owner.Hex(), asset, amount)
 	}
@@ -433,7 +433,7 @@ func TestRED_LP_PositionFundableOnlyByConsumingCToDObject(t *testing.T) {
 	if !ok {
 		t.Fatal("a backed commit must stage a C->D object D can consume")
 	}
-	rail, _, _, amount, _ := decodeAtomicObject(raw)
+	rail, _, _, amount, _, _ := decodeAtomicObject(raw)
 	if rail != railLP {
 		t.Fatalf("the C->D commit object must be stamped railLP, got rail=%d", rail)
 	}
