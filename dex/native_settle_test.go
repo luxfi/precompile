@@ -539,16 +539,39 @@ func TestRED_9999_AtomicOpsAreDeferredNotImmediate(t *testing.T) {
 // atomic state, so a test does not have to thread (state, atomicState) twice.
 
 func (c *SettleContract) atomicImport(s *nativeAtomicState, claim SettlementClaim) (uint64, error) {
+	// Auto-bind to a standing per-taker intent for the recipient (ample principal, no
+	// deadline) when the caller didn't name one, so the object-bind / replay / rail
+	// axis tests satisfy the per-taker cap (MEDIUM) without each restating it. Cap /
+	// deadline tests set claim.IntentID explicitly to a precisely-seeded intent.
+	if claim.IntentID == ([32]byte{}) {
+		db := newPoolStateAdapter(s)
+		// Per-recipient standing intent id (no cross-recipient contamination): derive a
+		// stable id from the recipient so owner-mismatch tests still bind owner==recipient.
+		var id ids.ID
+		id[0], id[1], id[2] = 0x57, 0x7A, 0x11
+		copy(id[12:32], claim.Recipient.Bytes())
+		rec := loadSwapIntentRecord(db, id)
+		if rec.Status != swapIntentOpen || rec.Remaining < claim.Amount {
+			putSwapIntentRecord(db, id, swapIntentRecord{
+				Owner: claim.Recipient, AssetIn: claim.Asset, Remaining: 1_000_000_000, Status: swapIntentOpen,
+			})
+		}
+		claim.IntentID = id
+	}
 	return nativeClient.ImportSettlement(s, s, claim)
 }
 func (c *SettleContract) atomicModifyLiquidity(s *nativeAtomicState, req IntentRequest) (ids.ID, error) {
 	return nativeClient.SubmitModifyLiquidity(s, s, req)
 }
 func (c *SettleContract) atomicCancel(s *nativeAtomicState, orderID ids.ID, marketID [32]byte, owner common.Address) error {
-	return nativeClient.SubmitCancel(s, s, orderID, marketID, owner)
+	// Cancel is a keeper-routing notification emitted at the withdraw lifecycle site
+	// (requestPositionWithdraw); the test exercises the resulting D->C refund import.
+	emitNativeCancelEvent(newPoolStateAdapter(s), orderID, marketID, owner)
+	return nil
 }
 func (c *SettleContract) atomicCollect(s *nativeAtomicState, positionID ids.ID, marketID [32]byte, owner common.Address) error {
-	return nativeClient.SubmitCollect(s, s, positionID, marketID, owner)
+	emitNativeCollectEvent(newPoolStateAdapter(s), positionID, marketID, owner)
+	return nil
 }
 
 // tokenBal reads a holder's balance of an ERC-20 test token (0 if absent).

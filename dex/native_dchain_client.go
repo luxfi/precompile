@@ -31,12 +31,29 @@ import (
 //     done and tested).
 //
 //   - ImportSettlement CREDITS C: it consumes a D->C atomic object out of shared
-//     memory EXACTLY ONCE (replay-rejected, asset/owner/amount-bound to the
+//     memory EXACTLY ONCE (replay-rejected, rail/asset/owner/amount-bound to the
 //     RECORDED value, sourceChain-bound), credits the C balance/refund, and applies
 //     the shared-memory Remove atomically. A C balance is credited ONLY along this
 //     path — there is no other C credit from a settlement. A "live matcher answer"
 //     (a fill value a relayer hands the precompile) CANNOT credit C: nothing here
 //     trusts a declared amount; the credit derives from a consumed D->C object.
+//     PER-TAKER CAP (MEDIUM): the credit is additionally bound to the taker's OWN
+//     intent record and capped by that intent's remaining locked principal, so an
+//     over-export for taker X can never draw on other takers' pooled tokenIn in the
+//     shared seam reserve — the swap-rail analog of the LP per-position bound.
+//
+//   - ReclaimIntent EXITS C (liveness): once a swap intent's deadline passes and D has
+//     not settled it, the original locker reclaims the remaining locked principal from
+//     the seam reserve (one-time, deadline-gated, conservation-preserving — a reclaim
+//     and a late settlement can never both pay out, since both draw down the same
+//     remaining-principal counter and reclaim makes the intent terminal). So locked
+//     swap input can ALWAYS exit, with no dependence on D or the keeper.
+//
+// WHAT C ENFORCES vs RELIES ON D FOR: C enforces — with NO trust in D — the recorded-
+// value bind, the rail gate, one-time consumption, the seam-reserve-only credit, the
+// per-taker principal cap, AND deadline-gated reclaim liveness. C relies on D ONLY for
+// WHICH fills occurred / their amounts (D is the matcher); the per-taker cap bounds the
+// blast radius of a faulty/hostile D export to that one taker's own locked principal.
 //
 // CONSENSUS-SAFETY: every method is a pure deterministic function of (input,
 // StateDB, shared-memory contents) — no live query whose result is not already a
@@ -99,6 +116,35 @@ var (
 	// an over-export for one owner can never draw on another owner's committed
 	// principal in the shared committedPositions pot.
 	ErrLPCollectExceedsPosition = errors.New("dex: D->C collect amount exceeds the named position's committed backing (would draw on another owner's principal)")
+
+	// Swap-rail per-intent gates (MEDIUM cap + HIGH reclaim deadline), the swap-rail
+	// analogs of the LP per-position gates above.
+	//
+	// ErrSettleNoIntent: the settlement names no live (Open) intent for the recorded
+	// owner — a swap settlement MUST draw against the taker's own submitted intent, so a
+	// claim naming a zero / unknown / already-reclaimed intent (or one whose owner is not
+	// the recorded object owner) is refused. The credit cannot float free of an intent.
+	ErrSettleNoIntent = errors.New("dex: D->C settlement names no open intent for the recorded owner (unbound settlement refused)")
+	// ErrSettleExceedsIntent: a SAME-ASSET refund (recAsset == intent.AssetIn) exceeds the
+	// named intent's remaining locked principal — the per-taker cap, the exact same-asset
+	// analog of ErrLPCollectExceedsPosition (the LP collects the same asset it committed).
+	// Bounding the refund by the taker's OWN locked principal is what stops an over-refund
+	// for taker X from drawing on other takers' pooled tokenIn of the input asset. (The
+	// proceeds leg — the opposite asset — is not input-unit-capped; its no-mint guard is
+	// the seam-reserve backing + one-time consumption + the intent binding.)
+	ErrSettleExceedsIntent = errors.New("dex: D->C refund amount exceeds the intent's remaining locked principal (would draw on another taker's tokenIn)")
+	// ErrSettlePastDeadline: a Phase-B settlement arrived after the intent's deadline.
+	// Past the deadline the taker may reclaim the locked principal (ReclaimIntent), so a
+	// late settlement is refused to keep settlement and reclaim mutually exclusive.
+	ErrSettlePastDeadline = errors.New("dex: D->C settlement is past the intent's deadline (reclaim path applies)")
+
+	// Reclaim gates (HIGH liveness: locked swap input can always exit if D never settles).
+	ErrReclaimNoIntent       = errors.New("dex: reclaimIntent names no open intent for the caller")
+	ErrReclaimNotOwner       = errors.New("dex: reclaimIntent caller is not the intent's locker")
+	ErrReclaimBeforeDeadline = errors.New("dex: reclaimIntent before the intent deadline (settlement may still land)")
+	ErrReclaimNoDeadline     = errors.New("dex: reclaimIntent requires the intent to carry a deadline")
+	ErrReclaimNothingLocked  = errors.New("dex: reclaimIntent has no remaining locked principal to refund")
+	ErrReclaimReplay         = errors.New("dex: intent principal already reclaimed (replay)")
 )
 
 // --- Intent submission (C->D): FUND D, return an intent id, NEVER a fill. ------
@@ -171,6 +217,22 @@ func (c *NativeDChainClient) SubmitSwapIntent(
 		return ids.Empty, ErrNativeIntentReplay
 	}
 	markIntentSubmitted(stateDB, intentID, state.GetBlockContext().Number().Uint64())
+
+	// PERSIST the per-intent escrow record (the swap-rail analog of the LP RestingOrder).
+	// It carries the owner (settlement authority + reclaim payee), the locked asset, the
+	// remaining locked principal (== locked at submission), and the deadline. It is the
+	// SINGLE record both ImportSettlement (per-taker cap) and ReclaimIntent (deadline
+	// refund) consult — so a settlement is bounded by THIS taker's own principal and a
+	// stranded intent is reclaimable to THIS taker after the deadline. owner==account is
+	// the recorded D->C object owner D will mirror on the settlement object, so the
+	// settlement's recorded-owner bind and this record's owner agree.
+	putSwapIntentRecord(stateDB, intentID, swapIntentRecord{
+		Owner:     req.Account,
+		AssetIn:   req.AssetIn,
+		Remaining: locked,
+		Deadline:  req.Deadline,
+		Status:    swapIntentOpen,
+	})
 
 	// STAGE the C->D atomic object (rail=railSwap, owner=account, asset=assetIn,
 	// amount=locked), keyed by intentID under the D chain's partition. We do NOT Apply
@@ -428,42 +490,13 @@ func collectPositionRecord(stateDB stateKV, orderID [32]byte, order RestingOrder
 	storeLockedReserve(stateDB, order.Owner, asset, new(big.Int).Sub(reserve, amt))
 }
 
-// SubmitCancel submits a D cancel for a resting order/position. A cancel moves no
-// C value by itself — the eventual refund of the cancelled order's locked funds
-// returns via a D->C settlement object that ImportSettlement consumes. So a cancel
-// is a routing notification (event) for the keeper; it never credits C here.
-func (c *NativeDChainClient) SubmitCancel(
-	state contract.AccessibleState,
-	atomicState contract.AtomicState,
-	orderID ids.ID,
-	marketID [32]byte,
-	owner common.Address,
-) error {
-	if atomicState.AtomicMemory() == nil {
-		return ErrNativeNoAtomicMemory
-	}
-	stateDB := newPoolStateAdapter(state)
-	emitNativeCancelEvent(stateDB, orderID, marketID, owner)
-	return nil
-}
-
-// SubmitCollect submits a D collect (claim accrued fees / proceeds) for a position.
-// Like cancel, collect moves no C value here — the collected value returns as a
-// D->C settlement object ImportSettlement consumes. It is a routing notification.
-func (c *NativeDChainClient) SubmitCollect(
-	state contract.AccessibleState,
-	atomicState contract.AtomicState,
-	positionID ids.ID,
-	marketID [32]byte,
-	owner common.Address,
-) error {
-	if atomicState.AtomicMemory() == nil {
-		return ErrNativeNoAtomicMemory
-	}
-	stateDB := newPoolStateAdapter(state)
-	emitNativeCollectEvent(stateDB, positionID, marketID, owner)
-	return nil
-}
+// The cancel/collect KEEPER-ROUTING notifications are emitted DIRECTLY at their
+// lifecycle sites — requestPositionWithdraw (position_commit.go) emits
+// emitNativeCancelEvent on a REMOVE, and the position collect path emits
+// emitNativeCollectEvent — so there is no standalone Submit{Cancel,Collect} client
+// method (it had no production caller; the swap reclaim is the reclaimIntent selector,
+// and the LP withdraw/collect is the collectPosition selector). One way to request
+// each lifecycle op, at its own site — no redundant client wrapper.
 
 // --- Settlement import (D->C): the ONLY path that credits C. -------------------
 
@@ -483,6 +516,12 @@ type SettlementClaim struct {
 	// record's remaining committed backing — the per-object, per-owner gate (FIX-1/2).
 	// The swap rail (ImportSettlement) leaves it zero; it consults no position record.
 	PositionID [32]byte
+	// IntentID is the SWAP-rail-only binding: the originating C->D intent id this
+	// settlement draws against. ImportSettlement requires the recorded owner to hold
+	// THIS specific Open intent and bounds the credit by that intent's remaining locked
+	// principal (the per-taker cap, the swap-rail analog of the LP per-position bound),
+	// and refuses a settlement past the intent's deadline. The LP rail leaves it zero.
+	IntentID [32]byte
 }
 
 // ImportSettlement consumes a D->C atomic object EXACTLY ONCE and credits C. This
@@ -562,11 +601,45 @@ func (c *NativeDChainClient) ImportSettlement(
 		return 0, ErrNativeSettleReplay
 	}
 
-	// (5) MARK consumed BEFORE value movement (CEI for the replay slot). A failed
+	// (5) PER-INTENT / PER-TAKER gate (MEDIUM — the swap-rail analog of the LP per-
+	// position bound). BIND the settlement to a SPECIFIC intent record the recorded owner
+	// holds (Open), not past its deadline — so a credit can never float free of the
+	// taker's own intent (no phantom settlement), and a late settlement is refused.
+	intent := loadSwapIntentRecord(stateDB, claim.IntentID)
+	if intent.Status != swapIntentOpen {
+		return 0, ErrSettleNoIntent
+	}
+	if intent.Owner != recOwner {
+		return 0, ErrSettleNoIntent
+	}
+	if intent.Deadline != 0 && state.GetBlockContext().Timestamp() > intent.Deadline {
+		return 0, ErrSettlePastDeadline
+	}
+	// The PER-TAKER PRINCIPAL CAP is the EXACT LP-rail analog: it bounds a SAME-ASSET
+	// return by the taker's OWN remaining locked principal. The LP collects the same
+	// asset it committed; the swap's same-asset return is the REFUND of unfilled tokenIn
+	// (recAsset == intent.AssetIn). For that leg, recAmount must not exceed the intent's
+	// remaining locked principal — so an over-refund for taker X can never draw on OTHER
+	// takers' pooled tokenIn of the input asset — and the credit decrements remaining.
+	//
+	// The PROCEEDS leg (recAsset != intent.AssetIn — the OPPOSITE asset the taker
+	// receives) is NOT bounded by the input-asset principal: that is a different
+	// dimension (output units legitimately differ from input units at any price != 1, so
+	// an input-unit cap would wrongly refuse honest proceeds). Its no-mint protection is
+	// the seamReserve backing (creditSettlementOutput) + one-time consumption + this
+	// intent binding; WHICH fill amount occurred is D's matching authority (C never
+	// matches), bounded to the documented single-venue proposer-trust surface.
+	if recAsset == intent.AssetIn {
+		if recAmount > intent.Remaining {
+			return 0, ErrSettleExceedsIntent
+		}
+	}
+
+	// (6) MARK consumed BEFORE value movement (CEI for the replay slot). A failed
 	// credit still leaves it unconsumed because the EVM revert rolls back this write.
 	markSettlementConsumed(stateDB, claim.OutputID, state.GetBlockContext().Number().Uint64())
 
-	// (6) CREDIT C from the vault — NO MINT (the vault must already hold the output;
+	// (7) CREDIT C from the vault — NO MINT (the vault must already hold the output;
 	// it was funded by the tokenIn legs of prior intents and operator seeding). The
 	// transfer token is derived from the RECORDED asset inside creditSettlementOutput
 	// (FIX-5), so the claim's AssetAddr cannot redirect the credit to a different token.
@@ -574,7 +647,16 @@ func (c *NativeDChainClient) ImportSettlement(
 		return 0, cerr
 	}
 
-	// (7) STAGE the atomic Remove of the consumed object under the D source chain. As
+	// (8) DECREMENT the intent's remaining locked principal ONLY for a same-asset refund
+	// (the per-taker cap's accounting; recAmount <= remaining was proven above, so this
+	// never underflows). A proceeds credit (different asset) does not touch the input
+	// principal. The terminal Reclaimed state is reached only via ReclaimIntent.
+	if recAsset == intent.AssetIn {
+		intent.Remaining -= recAmount
+		putSwapIntentRecord(stateDB, claim.IntentID, intent)
+	}
+
+	// (9) STAGE the atomic Remove of the consumed object under the D source chain. As
 	// with the C->D Put, we do NOT Apply here: a direct Apply commits outside the EVM
 	// revert scope, so a tx reverting after this would consume (remove) the D->C
 	// object while the C credit + consumed-mark rolled back => the object is gone and
@@ -582,6 +664,105 @@ func (c *NativeDChainClient) ImportSettlement(
 	// Remove to shared memory at BLOCK ACCEPT atomically with the committed credit.
 	stageAtomicRemove(stateDB, dChainID, key)
 	return recAmount, nil
+}
+
+// ReclaimIntent is the HIGH liveness fix: it lets the original locker reclaim a swap
+// intent's remaining locked principal once the intent's deadline has passed and D has
+// not settled it. Without this, a locked tokenIn whose intent D never settles (a
+// dropped keeper, an unmatched order, a halted D) is STRANDED forever in seamReserve
+// with no exit — settle_module's "funds can always exit" guarantee held for
+// deposit/withdraw but not for swaps. This closes that gap symmetrically to the LP
+// rail's collect path.
+//
+// DISCIPLINE (one-time, deadline-gated, conservation-preserving, fail-secure):
+//
+//  1. require the intent exists and is Open for the CALLER (the locker) — only the
+//     locker may reclaim, and the refund goes only to them.
+//  2. require the intent carried a deadline and the block timestamp is PAST it — before
+//     the deadline a settlement may still legitimately land, so reclaim is refused
+//     (settlement and reclaim are mutually exclusive by the deadline boundary).
+//  3. require remaining principal > 0 (a fully-settled intent has nothing to refund).
+//  4. REPLAY guard: reject an already-reclaimed intent (durable, consensus-shared).
+//  5. MARK reclaimed + zero the remaining principal + set Status=Reclaimed BEFORE value
+//     movement (CEI). The zeroed remaining makes any later settlement naming this intent
+//     fail the per-taker cap (capped to 0) — so reclaim and a late settlement can never
+//     BOTH pay out (conservation: the principal exits exactly once).
+//  6. REFUND the remaining principal of the LOCKED asset from seamReserve to the locker
+//     (creditSettlementOutput: NO MINT — the seam's own pot must back it; it does,
+//     because the lock at SubmitSwapIntent added exactly this to seamReserve and no
+//     settlement drew it down past `remaining`).
+//  7. STAGE a compensating C->D Remove of the ORIGINAL intent object (keyed by intentID)
+//     so a dexvm that has NOT yet imported the C->D object can never later fund a D order
+//     from a reclaimed intent (double-fund). If D already imported it, the Remove is a
+//     no-op on a missing key; the now-zero remaining still prevents a double payout.
+func (c *NativeDChainClient) ReclaimIntent(
+	state contract.AccessibleState,
+	atomicState contract.AtomicState,
+	caller common.Address,
+	intentID ids.ID,
+) (refunded uint64, err error) {
+	sm := atomicState.AtomicMemory()
+	if sm == nil {
+		return 0, ErrNativeNoAtomicMemory
+	}
+	dChainID := atomicState.DChainID()
+	if dChainID == ids.Empty {
+		return 0, ErrNativeNoAtomicMemory
+	}
+	stateDB := newPoolStateAdapter(state)
+
+	// (1) The intent must exist, be Open, and belong to the caller (the locker).
+	intent := loadSwapIntentRecord(stateDB, intentID)
+	if intent.Status != swapIntentOpen {
+		return 0, ErrReclaimNoIntent
+	}
+	if intent.Owner != caller {
+		return 0, ErrReclaimNotOwner
+	}
+
+	// (2) Deadline must exist and be PAST. Before it, a settlement may still land.
+	if intent.Deadline == 0 {
+		return 0, ErrReclaimNoDeadline
+	}
+	if state.GetBlockContext().Timestamp() <= intent.Deadline {
+		return 0, ErrReclaimBeforeDeadline
+	}
+
+	// (3) Something must remain to refund (a fully-settled intent refunds nothing).
+	if intent.Remaining == 0 {
+		return 0, ErrReclaimNothingLocked
+	}
+
+	// (4) REPLAY guard: one-time reclaim (durable, consensus-shared). The record's
+	// terminal Status is authoritative; this is the explicit single-claim slot.
+	if isSwapIntentReclaimed(stateDB, intentID) {
+		return 0, ErrReclaimReplay
+	}
+
+	// (5) MARK reclaimed + zero remaining + terminal status BEFORE value movement (CEI).
+	// The zeroed remaining is what makes a late settlement naming this intent fail the
+	// per-taker cap, so the principal can never be paid out twice.
+	refunded = intent.Remaining
+	blockNumber := state.GetBlockContext().Number().Uint64()
+	markSwapIntentReclaimed(stateDB, intentID, blockNumber)
+	intent.Remaining = 0
+	intent.Status = swapIntentReclaimed
+	putSwapIntentRecord(stateDB, intentID, intent)
+
+	// (6) REFUND the locked principal of the LOCKED asset from seamReserve — NO MINT.
+	// creditSettlementOutput draws ONLY seamReserve[assetIn] (the swap rail's own pot),
+	// the exact pot SubmitSwapIntent credited, so the refund can never raid a depositor
+	// or LP pot. The transfer token is derived from the recorded asset inside it (FIX-5).
+	if cerr := creditSettlementOutput(stateDB, intent.Owner, intent.AssetIn, refunded); cerr != nil {
+		return 0, cerr
+	}
+
+	// (7) STAGE a compensating C->D Remove of the original intent object so a dexvm that
+	// has not yet imported it cannot later fund a D order from a reclaimed intent.
+	stageAtomicRemove(stateDB, dChainID, intentID)
+
+	emitNativeReclaimEvent(stateDB, intentID, intent.Owner, intent.AssetIn, refunded)
+	return refunded, nil
 }
 
 // --- DChainClient interface conformance (the on-ramp seam). --------------------
