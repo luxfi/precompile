@@ -305,7 +305,16 @@ func (h *settleHarness) putDtoCLPObject(t testing.TB, owner common.Address, outp
 // value the C-side consume path binds — including the rail gate.
 func (h *settleHarness) putDtoCObjectRail(t testing.TB, rail Rail, owner common.Address, outputID ids.ID, asset [32]byte, amount uint64) {
 	t.Helper()
-	obj := encodeAtomicObject(rail, owner, asset, amount)
+	h.putDtoCObjectRailSpent(t, rail, owner, outputID, asset, amount, 0)
+}
+
+// putDtoCObjectRailSpent PUTs a D->C atomic object carrying an explicit spent witness —
+// the matched-input amount the dexvm's settleFromFills stamps on a swap PROCEEDS leg. The
+// existing same-asset-refund / LP-collect helpers pass spent=0 (no price is realized on
+// those legs); the MEV-floor redteam test uses spent>0 to drive the realized-price check.
+func (h *settleHarness) putDtoCObjectRailSpent(t testing.TB, rail Rail, owner common.Address, outputID ids.ID, asset [32]byte, amount, spent uint64) {
+	t.Helper()
+	obj := encodeAtomicObjectSpent(rail, owner, asset, amount, spent)
 	reqs := map[ids.ID]*atomic.Requests{
 		h.cChainID: {PutRequests: []*atomic.Element{{
 			Key:    outputID[:],
@@ -315,7 +324,7 @@ func (h *settleHarness) putDtoCObjectRail(t testing.TB, rail Rail, owner common.
 	}
 	// The D side applies to the C chain's partition (D is the source).
 	if err := h.dSM.Apply(reqs); err != nil {
-		t.Fatalf("putDtoCObjectRail: %v", err)
+		t.Fatalf("putDtoCObjectRailSpent: %v", err)
 	}
 }
 
@@ -401,6 +410,23 @@ func (h *settleHarness) seedSwapIntent(owner common.Address, assetIn [32]byte, p
 		Remaining: principal,
 		Deadline:  deadline,
 		Status:    swapIntentOpen,
+	})
+	return id
+}
+
+// seedSwapIntentLimit seeds an intent carrying the taker's OWN recorded slippage limit
+// (priceLimit float64 bits, limitIsUpper side) — what SubmitSwapIntent persists from the
+// taker's V4 SqrtPriceLimitX96. The MEV-floor redteam test uses it to prove ImportSettlement
+// enforces the RECORDED limit (taker-authenticated), independent of any keeper relay value.
+func (h *settleHarness) seedSwapIntentLimit(owner common.Address, assetIn [32]byte, principal, deadline uint64, priceLimit uint64, limitIsUpper bool, id ids.ID) ids.ID {
+	putSwapIntentRecord(newPoolStateAdapter(h.state), id, swapIntentRecord{
+		Owner:        owner,
+		AssetIn:      assetIn,
+		Remaining:    principal,
+		Deadline:     deadline,
+		Status:       swapIntentOpen,
+		PriceLimit:   priceLimit,
+		LimitIsUpper: limitIsUpper,
 	})
 	return id
 }

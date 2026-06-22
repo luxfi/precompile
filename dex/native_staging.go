@@ -276,7 +276,7 @@ func collectRange(stateDB stateKV, fromSeq, toSeq uint64) (map[ids.ID]*atomic.Re
 			// The owner Trait is read from the decoded value (offset past the rail byte),
 			// so the destination indexes the object by recipient — the same Trait the
 			// precompile/dexvm export side writes.
-			_, owner, _, _, ok := decodeAtomicObject(object)
+			_, owner, _, _, _, ok := decodeAtomicObject(object)
 			if !ok {
 				return nil, ErrStagedOpMalformed
 			}
