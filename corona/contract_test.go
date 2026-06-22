@@ -251,7 +251,11 @@ func generateThresholdSignature(thresholdVal, totalParties uint32, message strin
 	// Round 1: Each party generates D matrix and MACs
 	round1Data := make(map[int]*threshold.Round1Data)
 	for i, signer := range thresholdSigners {
-		round1Data[i] = signer.Round1(sessionID, prfKey, signers)
+		r1, err := signer.Round1(sessionID, prfKey, signers)
+		if err != nil {
+			t.Fatalf("corona round1: %v", err)
+		}
+		round1Data[i] = r1
 	}
 
 	// Round 2: Each party generates z share (use hex-encoded message)
