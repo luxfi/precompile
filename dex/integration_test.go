@@ -16,7 +16,7 @@ import (
 //
 // Demonstrates how the ATS backend connects to the DEX precompile:
 //   - LXRouter routes swaps through V4 pools (on-chain matching)
-//   - External venues (Alpaca, Hyperliquid) provide indicative quotes
+//   - External venues (Alpaca, a perps DEX) provide indicative quotes
 //   - Actual external execution settles via FillAttestation (LP-9090)
 //   - Pause/Freeze controls enforce regulatory compliance
 // =========================================================================
@@ -53,18 +53,18 @@ func (v *mockAlpacaVenue) Quote(stateDB StateDB, tokenIn, tokenOut common.Addres
 	return new(big.Int).Div(new(big.Int).Mul(amountIn, big.NewInt(95)), big.NewInt(100)), nil
 }
 
-// mockHyperliquidVenue simulates the Hyperliquid perps DEX.
+// mockPerpsVenue simulates an external perps DEX.
 // Provides indicative quotes at ~3% spread (0.97x).
-type mockHyperliquidVenue struct{}
+type mockPerpsVenue struct{}
 
-func (v *mockHyperliquidVenue) VenueID() [32]byte {
+func (v *mockPerpsVenue) VenueID() [32]byte {
 	var id [32]byte
-	copy(id[:], []byte("hyperliquid"))
+	copy(id[:], []byte("perps"))
 	return id
 }
 
-func (v *mockHyperliquidVenue) Quote(stateDB StateDB, tokenIn, tokenOut common.Address, amountIn *big.Int) (*big.Int, error) {
-	// Hyperliquid gives 0.97x the input (simulating ~3% spread for perps)
+func (v *mockPerpsVenue) Quote(stateDB StateDB, tokenIn, tokenOut common.Address, amountIn *big.Int) (*big.Int, error) {
+	// The perps venue gives 0.97x the input (simulating ~3% spread for perps)
 	return new(big.Int).Div(new(big.Int).Mul(amountIn, big.NewInt(97)), big.NewInt(100)), nil
 }
 
@@ -123,8 +123,8 @@ func testSetup(t *testing.T) {
 	t.Log("Registering external venue: Alpaca (equities, ~5% spread)")
 	router.RegisterVenue(&mockAlpacaVenue{})
 
-	t.Log("Registering external venue: Hyperliquid (perps, ~3% spread)")
-	router.RegisterVenue(&mockHyperliquidVenue{})
+	t.Log("Registering external venue: Perps DEX (perps, ~3% spread)")
+	router.RegisterVenue(&mockPerpsVenue{})
 
 	t.Logf("Setup complete: 3 pools initialized, 2 external venues registered")
 
@@ -210,7 +210,7 @@ func testMultiHopSwap(t *testing.T) {
 }
 
 // =========================================================================
-// Step 4: Multi-venue quote — V4 pool + Alpaca + Hyperliquid
+// Step 4: Multi-venue quote — V4 pool + Alpaca + Perps DEX
 // =========================================================================
 
 func testMultiVenueQuote(t *testing.T) {
@@ -222,7 +222,7 @@ func testMultiVenueQuote(t *testing.T) {
 
 	setupV4Pool(t, pm, stateDB, tUSDL, tETH)
 	router.RegisterVenue(&mockAlpacaVenue{})
-	router.RegisterVenue(&mockHyperliquidVenue{})
+	router.RegisterVenue(&mockPerpsVenue{})
 
 	amountIn := big.NewInt(10_000)
 	quotes, err := router.QuoteExactInputSingle(stateDB, tUSDL, tETH, amountIn, 0)
@@ -230,7 +230,7 @@ func testMultiVenueQuote(t *testing.T) {
 		t.Fatalf("QuoteExactInputSingle failed: %v", err)
 	}
 
-	// Expect 3 quotes: V4 + Alpaca + Hyperliquid
+	// Expect 3 quotes: V4 + Alpaca + Perps DEX
 	if len(quotes) < 3 {
 		t.Fatalf("expected at least 3 quotes, got %d", len(quotes))
 	}
@@ -248,7 +248,7 @@ func testMultiVenueQuote(t *testing.T) {
 	}
 
 	// V4 mock engine gives 50% of input (5000), Alpaca gives 95% (9500),
-	// Hyperliquid gives 97% (9700). Hyperliquid wins in this mock.
+	// the perps venue gives 97% (9700). The perps venue wins in this mock.
 	t.Logf("Best price: %s from %s", bestQuote.AmountOut, venueLabel(bestQuote.Venue, bestQuote.PoolID))
 
 	// Verify V4 is among the results
@@ -276,7 +276,7 @@ func testExternalVenueQuoteOnly(t *testing.T) {
 
 	// No AAPL/USDL pool exists on-chain. Only Alpaca can quote it.
 	router.RegisterVenue(&mockAlpacaVenue{})
-	router.RegisterVenue(&mockHyperliquidVenue{})
+	router.RegisterVenue(&mockPerpsVenue{})
 
 	amountIn := big.NewInt(10_000)
 
@@ -412,7 +412,7 @@ func testATSOrderFlow(t *testing.T) {
 
 	setupV4Pool(t, pm, stateDB, tUSDL, tETH)
 	router.RegisterVenue(&mockAlpacaVenue{})
-	router.RegisterVenue(&mockHyperliquidVenue{})
+	router.RegisterVenue(&mockPerpsVenue{})
 
 	fillMgr := NewFillAttestationManager()
 
@@ -472,7 +472,7 @@ func testATSOrderFlow(t *testing.T) {
 
 	// --- Phase 3: External venue fill via FillAttestation ---
 	// In production, if V4 has insufficient liquidity the ATS splits the order:
-	// part on-chain, remainder off-chain via Broker -> Alpaca/Hyperliquid.
+	// part on-chain, remainder off-chain via Broker -> Alpaca/perps venue.
 	// Here we simulate the off-chain fill being recorded on-chain.
 	t.Log("Phase 3: Recording external venue fill via FillAttestation (LP-9090)...")
 
