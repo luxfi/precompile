@@ -43,17 +43,16 @@ func Test9999AtomicFlush_UsesParentToCurrentSeqWindow(t *testing.T) {
 		t.Fatal("block1 object must be flushed")
 	}
 
-	// Block 2: a SECOND intent. callIndex differs so the intent id differs; the seq
+	// Block 2: a SECOND intent. A distinct NONCE makes the intent id differ; the seq
 	// advances to 2. The flush window must be (1,2] — only block2's op.
-	h.state.callIndex = 1 // distinct call -> distinct intent id
-	out2, err := h.runSwap(t, h.intentCalldata(), false)
+	out2, err := h.runSwap(t, h.intentCalldataWithNonce(0, 1), false) // nonce 1 -> distinct id
 	if err != nil {
 		t.Fatalf("intent2: %v", err)
 	}
 	var id2 ids.ID
 	copy(id2[:], out2)
 	if id2 == id1 {
-		t.Fatal("two intents must have distinct ids (callIndex disambiguation)")
+		t.Fatal("two intents must have distinct ids (nonce disambiguation)")
 	}
 
 	// The window collected for block 2 must contain ONLY block2's op (1 Put), not

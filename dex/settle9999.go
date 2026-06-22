@@ -5,6 +5,7 @@ package dex
 
 import (
 	"errors"
+	"math"
 	"math/big"
 
 	"github.com/luxfi/geth/common"
@@ -227,21 +228,22 @@ func SettleSwap(
 		if herr := checkHalt(stateDB, key, params); herr != nil {
 			return nil, gasLeft, herr
 		}
-		// The OPTIONAL deadline rides in an EXPLICIT DI01 intent body (the V4 SwapParams
-		// tuple is unchanged). It is read ONLY for a DI01-tagged intent; an untagged /
-		// opaque hook body carries no deadline (taggedIntent=false => body ignored), so a
-		// hook contract's arbitrary bytes are never mis-parsed as a deadline. A non-zero
-		// deadline is persisted in the per-intent record so a late settlement is refused
-		// and the locker can reclaim past it (no stranded funds).
-		var deadline uint64
+		// The OPTIONAL deadline + nonce ride in an EXPLICIT DI01 intent body (the V4
+		// SwapParams tuple is unchanged). They are read ONLY for a DI01-tagged intent; an
+		// untagged / opaque hook body carries neither (taggedIntent=false => body ignored),
+		// so a hook contract's arbitrary bytes are never mis-parsed. The deadline gates late
+		// settlement + reclaim; the NONCE is folded into the intent id so it is
+		// chain-observable (the off-chain keeper derives the SAME id from the SAME calldata —
+		// the watch-correlation fix) and disambiguates otherwise-identical swaps.
+		var deadline, nonce uint64
 		if taggedIntent {
-			d, derr := decodeIntentDeadline(body)
+			d, n, derr := decodeIntentBody(body)
 			if derr != nil {
 				return nil, gasLeft, derr
 			}
-			deadline = d
+			deadline, nonce = d, n
 		}
-		req, berr := buildIntentRequest(key, params, caller, deadline)
+		req, berr := buildIntentRequest(key, params, caller, deadline, nonce)
 		if berr != nil {
 			return nil, gasLeft, berr
 		}
@@ -263,7 +265,7 @@ func SettleSwap(
 // caller, and the deadline is the (optional) value parsed from the Phase-A hookData
 // body. A non-zero deadline is persisted in the per-intent record so Phase-B refuses
 // a late settlement and the locker can reclaim the principal past it.
-func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, deadline uint64) (IntentRequest, error) {
+func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, deadline, nonce uint64) (IntentRequest, error) {
 	in, _ := swapAssetDirection(key, params)
 	// Exact-input: AmountSpecified < 0, magnitude is the input. Exact-output is a P4
 	// router concern; the native intent locks the exact input the taker commits.
@@ -274,6 +276,7 @@ func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, d
 	if !mag.IsUint64() || mag.Sign() <= 0 {
 		return IntentRequest{}, ErrInvalidAmount
 	}
+	priceLimit, limitIsUpper := priceLimitToCLOB(params)
 	return IntentRequest{
 		Account:      caller,
 		AssetIn:      in,
@@ -281,10 +284,62 @@ func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, d
 		AssetInAddr:  assetAddress(in),
 		MarketID:     key.ID(),
 		MinAmountOut: minAmountOut(params),
+		PriceLimit:   priceLimit,
+		LimitIsUpper: limitIsUpper,
 		Recipient:    caller,
 		Deadline:     deadline,
+		Nonce:        nonce,
 	}, nil
 }
+
+// priceLimitToCLOB converts the V4 SqrtPriceLimitX96 into the CLOB price domain the
+// dexvm settles in — quote-per-base as a float64, returned as its IEEE-754 bits so it
+// crosses the seam exactly (no decimal reparse). It is the slippage floor the matcher /
+// settle path enforces: a fill WORSE than this is refused (bounded sandwich/MEV).
+//
+//	price (quote/base) = (sqrtPriceX96 / 2^96)^2 = currency1 per currency0.
+//
+// DIRECTION. limitIsUpper reports which side the limit bounds, matching the dexvm's
+// fill-side convention:
+//   - zeroForOne (sell currency0/base for currency1/quote => CLOB SELL): the V4 limit is
+//     the MINIMUM sqrt price, i.e. a price FLOOR — reject fills BELOW it (limitIsUpper=false).
+//   - !zeroForOne (buy currency0/base with currency1/quote => CLOB BUY): the V4 limit is
+//     the MAXIMUM sqrt price, i.e. a price CEILING — reject fills ABOVE it (limitIsUpper=true).
+//
+// A SqrtPriceLimitX96 at/beyond the V4 sentinel bounds (MinSqrtRatio for zeroForOne,
+// MaxSqrtRatio for !zeroForOne) means "no limit" — returns 0 so the settle path imposes
+// no floor (the pre-existing unbounded behavior, preserved).
+func priceLimitToCLOB(params SwapParams) (priceLimitBits uint64, limitIsUpper bool) {
+	limitIsUpper = !params.ZeroForOne
+	s := params.SqrtPriceLimitX96
+	if s == nil || s.Sign() <= 0 {
+		return 0, limitIsUpper // unset => no limit
+	}
+	// Treat the V4 "no limit" sentinels as unbounded: a zeroForOne floor at/below
+	// MinSqrtRatio, or a !zeroForOne ceiling at/above MaxSqrtRatio, imposes nothing.
+	if params.ZeroForOne {
+		if s.Cmp(MinSqrtRatio) <= 0 {
+			return 0, limitIsUpper
+		}
+	} else {
+		if s.Cmp(MaxSqrtRatio) >= 0 {
+			return 0, limitIsUpper
+		}
+	}
+	// price = (s / 2^96)^2. Compute in float64: ratio = s / 2^96, then square. The CLOB
+	// price domain is float64 (Fill.Price), so this is the exact value the settle path
+	// compares against — no precision is lost beyond float64's own (the same domain the
+	// matcher already operates in).
+	ratio := new(big.Float).Quo(new(big.Float).SetInt(s), twoPow96Float)
+	price, _ := new(big.Float).Mul(ratio, ratio).Float64()
+	if price <= 0 || math.IsInf(price, 0) || math.IsNaN(price) {
+		return 0, limitIsUpper // degenerate => treat as no limit rather than reject all fills
+	}
+	return math.Float64bits(price), limitIsUpper
+}
+
+// twoPow96Float is 2^96 as a big.Float, the V4 sqrt-price fixed-point denominator.
+var twoPow96Float = new(big.Float).SetInt(new(big.Int).Lsh(big.NewInt(1), 96))
 
 // runSettleReclaimIntent is the reclaimIntent(bytes32 intentID) handler: the swap
 // rail's deadline-reclaim. It decodes the intent id, takes the shared custody
