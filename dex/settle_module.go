@@ -67,6 +67,14 @@ var (
 	// SOLE C-credit path for an LP (collect, decrease, burn, cancel all return funds
 	// through here). Distinct selector, same orthogonal money-path discipline.
 	SelectorCollectPosition uint32 // collectPosition(bytes32,address,uint256,bytes32)
+
+	// SelectorReclaimIntent is the SWAP rail's deadline-reclaim liveness path:
+	// reclaimIntent(bytes32 intentID) refunds the remaining locked principal of a
+	// stranded swap intent (one D never settled) from seamReserve to the original
+	// locker, once the intent's deadline has passed. It is the swap-rail analog of the
+	// LP collect path's exit guarantee — so locked swap input "can always exit" exactly
+	// like deposit/withdraw, never stranded by a non-settling D.
+	SelectorReclaimIntent uint32 // reclaimIntent(bytes32)
 )
 
 // SettleModule registers the 0x9999 precompile as ALWAYS-ON: it is active on every
@@ -101,6 +109,7 @@ func init() {
 	SelectorSetHaltMarket = keccak4("setHaltMarket(bytes32,bool)")
 	SelectorSetHaltAsset = keccak4("setHaltAsset(bytes32,bool)")
 	SelectorCollectPosition = keccak4("collectPosition(bytes32,address,uint256,bytes32)")
+	SelectorReclaimIntent = keccak4("reclaimIntent(bytes32)")
 	SelectorSeedSeamReserve = keccak4("seedSeamReserve(address,uint256)")
 	SelectorCreditPositionFee = keccak4("creditPositionFee(bytes32,address,uint256)")
 
@@ -142,9 +151,9 @@ type SettleConfig struct {
 	precompileconfig.Upgrade
 }
 
-func (c *SettleConfig) Key() string                            { return settleConfigKey }
-func (c *SettleConfig) Timestamp() *uint64                     { return c.Upgrade.Timestamp() }
-func (c *SettleConfig) IsDisabled() bool                       { return c.Upgrade.Disable }
+func (c *SettleConfig) Key() string                                 { return settleConfigKey }
+func (c *SettleConfig) Timestamp() *uint64                          { return c.Upgrade.Timestamp() }
+func (c *SettleConfig) IsDisabled() bool                            { return c.Upgrade.Disable }
 func (c *SettleConfig) Verify(_ precompileconfig.ChainConfig) error { return nil }
 func (c *SettleConfig) Equal(cfg precompileconfig.Config) bool {
 	other, ok := cfg.(*SettleConfig)
@@ -197,6 +206,14 @@ func (s *SettleContract) Run(
 	// path for an LP — collect/decrease/burn/cancel all return funds through here.
 	case SelectorCollectPosition:
 		return s.runSettleCollectPosition(accessibleState, caller, data, suppliedGas, readOnly)
+
+	// SWAP-rail deadline reclaim (settle9999.go): refund a stranded swap intent's
+	// remaining locked principal to the locker once its deadline has passed and D never
+	// settled. The swap-rail analog of collectPosition's exit guarantee — locked swap
+	// input can always exit. NOT gated by the swap halt (funds must exit even when
+	// halted), exactly like deposit/withdraw.
+	case SelectorReclaimIntent:
+		return s.runSettleReclaimIntent(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// donate is explicitly UNSUPPORTED in the receipt model (settle_views9999.go):
 	// LP fee growth is D-authoritative, so a safe C-only donate cannot exist.
