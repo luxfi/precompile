@@ -159,8 +159,21 @@ type IntentRequest struct {
 	AssetInAddr  common.Address // the ERC-20 token (address(0) for native) for the C lock
 	MarketID     [32]byte       // D market the order targets
 	MinAmountOut *big.Int       // taker slippage floor (routing only; D enforces at match)
+	// PriceLimit is the taker's worst-acceptable CLOB price (quote-per-base, float64
+	// bits) derived from the V4 SqrtPriceLimitX96 (priceLimitToCLOB). LimitIsUpper says
+	// which side it bounds (true = a BUY ceiling, false = a SELL floor). The keeper carries
+	// these onto the settling relay (RelayOrderTx.PriceLimit/LimitIsUpper) and the dexvm
+	// settle path REFUSES a fill worse than the limit — the bounded sandwich/MEV guard.
+	// Emitted in the routing event so the keeper does not re-derive them. 0 = no limit.
+	PriceLimit   uint64
+	LimitIsUpper bool
 	Recipient    common.Address // where the D->C settlement must credit (object owner on return)
 	Deadline     uint64         // order deadline (routing only)
+	// Nonce is the taker's intent disambiguator, carried in the swap's DI01 hookData and
+	// folded into DeriveIntentID. It makes the intent id CHAIN-OBSERVABLE (the off-chain
+	// keeper derives the same id from the same calldata — the watch-correlation fix) and
+	// distinguishes two otherwise-identical swaps. NOT value-bearing.
+	Nonce uint64
 }
 
 // SubmitSwapIntent locks the taker's input on C and writes a C->D atomic intent
@@ -205,10 +218,14 @@ func (c *NativeDChainClient) SubmitSwapIntent(
 	if dChainID == ids.Empty {
 		return ids.Empty, ErrNativeNoAtomicMemory
 	}
+	// CHAIN-OBSERVABLE id: derived from the taker's nonce (carried in the swap's own
+	// calldata), NOT the post-landing txID — so the off-chain keeper derives the SAME id
+	// from the SAME calldata and its watch correlates against the live chain. (The host's
+	// per-tx CallIndex still scopes other precompiles; the swap id no longer needs it
+	// because the user-supplied nonce disambiguates repeats and multi-swap-per-tx.)
 	intentID = DeriveIntentID(
 		atomicState.NetworkID(), cChainID, dChainID,
-		atomicState.TxID(), atomicState.CallIndex(),
-		req.Account, req.AssetIn, locked, req.MarketID,
+		req.Account, req.AssetIn, locked, req.MarketID, req.Nonce,
 	)
 
 	// Replay guard: the same intent id must not be submitted twice (a re-executed /
