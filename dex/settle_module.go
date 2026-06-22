@@ -39,6 +39,23 @@ var DefaultDAOTreasury = common.HexToAddress("0x9011E888251AB053B7bD1cdB598Db4f9
 
 var settleConfigKey = "dexSettleConfig"
 
+// ErrSettleWrongContext rejects any invocation of 0x9999 whose self-address is not
+// 0x9999 — in practice a DELEGATECALL into the settlement precompile from a delegating
+// contract. The whole money path's correctness rests on ONE invariant: the ERC-20
+// token leg (transferFrom / transfer) is made with 0x9999 as the token's msg.sender,
+// so a deposit pulls against approve(0x9999, amount) and the vault holds the asset at
+// 0x9999. geth derives the precompile self from the call opcode — CALL and CALLCODE
+// both pass the TARGET (0x9999) as self (geth core/vm/evm.go Call/CallCode:
+// NewPrecompileEnvironment(evm, caller, addr=target)), but DELEGATECALL passes the
+// DELEGATING contract as self (DelegateCall: NewPrecompileEnvironment(evm,
+// originCaller, caller) — self is the caller's context, not the target). Under
+// DELEGATECALL the token's msg.sender would become the delegating contract, breaking
+// the conservation invariant (realHolding == settleVault + makerLockedVault +
+// seamReserve + committedPositions) and stranding the caller's own funds. Pinning
+// addr == 0x9999 at the top of Run rejects exactly DELEGATECALL while CALL and CALLCODE
+// (both bind self = 0x9999) pass.
+var ErrSettleWrongContext = errors.New("dex: 0x9999 must be entered with self == 0x9999 (CALL/CALLCODE); DELEGATECALL from a delegating contract is rejected")
+
 // SettleContract is the 0x9999 stateful precompile. It holds the same
 // protocolFeeController authority value as the 0x9010 contract (set at Configure)
 // so halt/registry governance is gated identically.
@@ -179,6 +196,15 @@ func (s *SettleContract) Run(
 	}
 	if accessibleState.GetBlockContext() == nil {
 		return nil, suppliedGas, errors.New("dex: block context unavailable")
+	}
+	// CALL-only guard: 0x9999 must execute with itself as self (msg.sender of its
+	// token sub-calls). geth passes the call opcode's self here as `addr`; only
+	// DELEGATECALL makes addr != 0x9999 (CALL/CALLCODE both pass self = 0x9999), which
+	// would pull/push ERC-20 value as the WRONG msg.sender and break conservation.
+	// Reject it before any state is touched (no gas charged — a context error, like
+	// the two checks above). See ErrSettleWrongContext.
+	if addr != poolManagerAddr9999 {
+		return nil, suppliedGas, ErrSettleWrongContext
 	}
 	selector := binary.BigEndian.Uint32(input[:4])
 	data := input[4:]
