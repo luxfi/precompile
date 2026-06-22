@@ -9,18 +9,18 @@ require (
 	github.com/consensys/gnark-crypto v0.20.1
 	github.com/crate-crypto/go-kzg-4844 v1.1.0
 	github.com/holiman/uint256 v1.3.2
-	github.com/luxfi/accel v1.2.2
+	github.com/luxfi/accel v1.2.4
 	github.com/luxfi/ai v0.1.0
 	github.com/luxfi/corona v0.7.6
-	github.com/luxfi/crypto v1.19.17
-	github.com/luxfi/database v1.19.0
+	github.com/luxfi/crypto v1.19.21
+	github.com/luxfi/database v1.20.3
 	github.com/luxfi/fhe v1.8.2
-	github.com/luxfi/geth v1.17.11
+	github.com/luxfi/geth v1.17.12
 	github.com/luxfi/lattice/v7 v7.1.4
 	github.com/luxfi/magnetar v1.2.0
 	github.com/luxfi/runtime v1.1.1
-	github.com/luxfi/threshold v1.9.4
-	github.com/luxfi/warp v1.19.3
+	github.com/luxfi/threshold v1.9.9
+	github.com/luxfi/warp v1.19.5
 	github.com/stretchr/testify v1.11.1
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.52.0
@@ -66,11 +66,10 @@ require (
 	github.com/luxfi/log v1.4.3 // indirect
 	github.com/luxfi/math v1.4.1 // indirect
 	github.com/luxfi/math/big v0.1.0 // indirect
-	github.com/luxfi/metric v1.5.8 // indirect
+	github.com/luxfi/metric v1.5.9 // indirect
 	github.com/luxfi/mock v0.1.1 // indirect
 	github.com/luxfi/p2p v1.21.1 // indirect
 	github.com/luxfi/pq v1.0.3 // indirect
-	github.com/luxfi/rpc v1.1.0
 	github.com/luxfi/sampler v1.1.0 // indirect
 	github.com/luxfi/utils v1.2.0 // indirect
 	github.com/luxfi/validators v1.2.0 // indirect
