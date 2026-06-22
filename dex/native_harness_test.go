@@ -346,15 +346,23 @@ func (h *settleHarness) settlementCalldataFor(outputID ids.ID, amount uint64, in
 	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, amount, intentID))
 }
 
-// intentCalldata builds a Phase-A swap calldata (empty hookData => intent, no deadline).
+// intentCalldata builds a Phase-A swap calldata (empty hookData => intent, no deadline,
+// nonce 0).
 func (h *settleHarness) intentCalldata() []byte {
 	return buildSwapCalldata(h.key, h.params, nil)
 }
 
 // intentCalldataWithDeadline builds a Phase-A swap calldata carrying an explicit
-// deadline in the hookData body (the V4 SwapParams tuple is unchanged).
+// deadline in the hookData body (nonce 0; the V4 SwapParams tuple is unchanged).
 func (h *settleHarness) intentCalldataWithDeadline(deadline uint64) []byte {
-	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(deadline))
+	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(deadline, 0))
+}
+
+// intentCalldataWithNonce builds a Phase-A swap calldata carrying an explicit nonce
+// (and optional deadline) in the DI01 hookData — the taker's intent disambiguator that
+// is folded into the (chain-observable) intent id.
+func (h *settleHarness) intentCalldataWithNonce(deadline, nonce uint64) []byte {
+	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(deadline, nonce))
 }
 
 // standingIntent lazily seeds (once) a per-taker swap intent for the caller covering
