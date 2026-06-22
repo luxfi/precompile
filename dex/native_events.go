@@ -15,12 +15,14 @@ import (
 // native_events.go emits the ROUTING events for the native C<->D atomic seam. The
 // atomic shared-memory object alone moves value; these events only tell the keeper
 // (a relayer with NO custody authority) how to route an intent into a D order, or
-// that a cancel/collect was requested. A keeper that drops every event cannot lose
-// or steal value — the value is already locked in shared memory; the worst case is
-// a settlement that no one builds, which the user reclaims via the cancel path.
+// that a cancel/collect/reclaim was requested. A keeper that drops every event cannot
+// lose or steal value — the value is already locked in shared memory; the worst case
+// is a swap settlement that no one builds, which the LOCKER RECLAIMS DIRECTLY via the
+// reclaimIntent selector once the intent's deadline passes (no keeper required — the
+// reclaim refunds the locked principal from the seam reserve on the locker's own tx).
 //
 // Events are emitted from the 0x9999 settlement address so an indexer keyed to the
-// money path sees the full intent->settlement lifecycle in one place.
+// money path sees the full intent->settlement/reclaim lifecycle in one place.
 
 var (
 	// IntentSubmitted(bytes32 intentID, bytes32 dChainID, address account, bytes32 assetIn, uint256 amountIn, bytes32 marketID, uint256 minAmountOut, address recipient, uint64 deadline, uint8 kind)
@@ -32,6 +34,9 @@ var (
 	// CollectSubmitted(bytes32 positionID, bytes32 marketID, address owner)
 	nativeCollectEventSig = common.BytesToHash(crypto.Keccak256([]byte(
 		"CollectSubmitted(bytes32,bytes32,address)")))
+	// IntentReclaimed(bytes32 intentID, address owner, bytes32 assetIn, uint256 amount)
+	nativeReclaimEventSig = common.BytesToHash(crypto.Keccak256([]byte(
+		"IntentReclaimed(bytes32,address,bytes32,uint256)")))
 )
 
 // nativeIntentKind distinguishes a taker swap intent from an LP position-open
@@ -115,6 +120,25 @@ func emitNativeCollectEvent(stateDB StateDB, positionID ids.ID, marketID [32]byt
 			nativeCollectEventSig,
 			common.BytesToHash(positionID[:]),
 			common.BytesToHash(marketID[:]),
+		},
+		Data: data,
+	})
+}
+
+// emitNativeReclaimEvent logs a completed intent reclaim: the locker recovered
+// `amount` of `assetIn` for the stranded `intentID` (deadline-gated). This is a
+// settled value-movement signal (the refund already happened on this tx), not a
+// keeper request — an indexer surfaces it as the intent's terminal exit.
+func emitNativeReclaimEvent(stateDB StateDB, intentID ids.ID, owner common.Address, assetIn [32]byte, amount uint64) {
+	data := make([]byte, 0, 3*32)
+	data = append(data, abiEncodeAddress(owner)...)
+	data = append(data, abiEncodeBytes32(assetIn)...)
+	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(amount))...)
+	stateDB.AddLog(&ethtypes.Log{
+		Address: poolManagerAddr9999,
+		Topics: []common.Hash{
+			nativeReclaimEventSig,
+			common.BytesToHash(intentID[:]),
 		},
 		Data: data,
 	})
