@@ -26,14 +26,19 @@ import (
 //	tag "DI01" + deadline[32]    -> PHASE A (INTENT) with an explicit deadline.
 //	tag "DS01" + body            -> PHASE B (SETTLEMENT): consume a D->C object.
 //
-// PHASE A body layout (optional; absent => deadline 0 = no deadline):
+// PHASE A body layout (optional, two recognized widths; absent => deadline 0, nonce 0):
 //
-//	deadline[32]   // swap deadline as a block timestamp (uint256; must fit uint64)
+//	deadline[32]                 // swap deadline as a block timestamp (uint256; fits uint64)
+//	deadline[32] | nonce[32]     // + the intent nonce (uint256; fits uint64)
 //
 // The deadline is persisted in the per-intent escrow record so (a) Phase-B settlement
 // past it is refused and (b) reclaimIntent can refund the locked principal once it
-// passes and D has not settled. It rides in hookData (the V4 SwapParams tuple is
-// UNCHANGED) — the deadline is not a value-bearing field, only a routing/liveness one.
+// passes and D has not settled. The NONCE is the taker's intent disambiguator: it is
+// folded into DeriveIntentID so the intent id is CHAIN-OBSERVABLE (derivable off-chain
+// before the txID exists — the watch-correlation fix) and so two otherwise-identical
+// swaps get distinct ids. Both ride in hookData (the V4 SwapParams tuple is UNCHANGED) —
+// neither is value-bearing, only routing/liveness/identity. A body with the deadline but
+// no nonce derives the id with nonce 0 (back-compatible with a plain single-swap intent).
 //
 // PHASE B body layout (deterministic, fixed width, bounds-checked):
 //
@@ -150,42 +155,68 @@ func EncodeSettlementHookData(outputID ids.ID, amount uint64, intentID ids.ID) [
 	return out
 }
 
-// intentBodyLen is the fixed Phase-A body width when a deadline is present:
-// deadline(32). An empty Phase-A body (the common plain-swap case) means no deadline.
-const intentBodyLen = 32
+// intentBodyLen is the Phase-A body width with a deadline only: deadline(32).
+// intentBodyLenWithNonce adds the nonce word: deadline(32) | nonce(32). An empty body
+// (the common plain-swap case) means deadline 0, nonce 0.
+const (
+	intentBodyLen          = 32
+	intentBodyLenWithNonce = 64
+)
 
-// decodeIntentDeadline parses the OPTIONAL Phase-A intent body into a deadline. An
-// empty body => deadline 0 (no deadline) — the plain-swap default. A non-empty body
-// MUST be exactly the canonical width and fit uint64, else it is malformed (a swap
-// that carries garbage where a deadline should be reverts rather than silently
-// dropping the deadline and stranding funds with no reclaim horizon).
-func decodeIntentDeadline(body []byte) (uint64, error) {
-	if len(body) == 0 {
-		return 0, nil
+// decodeIntentBody parses the OPTIONAL Phase-A intent body into (deadline, nonce). An
+// empty body => (0, 0) — the plain-swap default. A 32-byte body carries only a deadline
+// (nonce 0). A 64-byte body carries deadline + nonce. Any other width, or a value that
+// does not fit uint64, is malformed (a swap that carries garbage where a deadline/nonce
+// should be reverts rather than silently dropping it and deriving a mismatched id /
+// stranding funds with no reclaim horizon).
+func decodeIntentBody(body []byte) (deadline, nonce uint64, err error) {
+	switch len(body) {
+	case 0:
+		return 0, 0, nil
+	case intentBodyLen:
+		d := new(big.Int).SetBytes(body[0:32])
+		if !d.IsUint64() {
+			return 0, 0, ErrIntentBadDeadline
+		}
+		return d.Uint64(), 0, nil
+	case intentBodyLenWithNonce:
+		d := new(big.Int).SetBytes(body[0:32])
+		n := new(big.Int).SetBytes(body[32:64])
+		if !d.IsUint64() || !n.IsUint64() {
+			return 0, 0, ErrIntentBadDeadline
+		}
+		return d.Uint64(), n.Uint64(), nil
+	default:
+		return 0, 0, ErrIntentBodyMalformed
 	}
-	if len(body) != intentBodyLen {
-		return 0, ErrIntentBodyMalformed
-	}
-	d := new(big.Int).SetBytes(body[0:32])
-	if !d.IsUint64() {
-		return 0, ErrIntentBadDeadline
-	}
-	return d.Uint64(), nil
 }
 
-// EncodeIntentHookData builds an explicit Phase-A hookData: the tag, plus a deadline
-// word when deadline != 0. A plain empty hookData also selects Phase A with no
-// deadline; this is for callers that want the tag (and optionally a deadline) explicit.
-func EncodeIntentHookData(deadline uint64) []byte {
-	if deadline == 0 {
+// EncodeIntentHookData builds an explicit Phase-A hookData: the tag, plus deadline and
+// nonce words. A plain empty hookData also selects Phase A with deadline 0, nonce 0.
+// The encoding is MINIMAL-WIDTH so the off-chain (zap/dexsession) and on-chain encoders
+// produce byte-identical calldata for the same (deadline, nonce):
+//   - deadline==0 && nonce==0 -> tag only (4 bytes)
+//   - nonce==0                -> tag | deadline[32]
+//   - else                    -> tag | deadline[32] | nonce[32]
+func EncodeIntentHookData(deadline, nonce uint64) []byte {
+	if deadline == 0 && nonce == 0 {
 		out := make([]byte, 4)
 		copy(out, intentPhaseTag[:])
 		return out
 	}
-	out := make([]byte, 0, 4+intentBodyLen)
-	out = append(out, intentPhaseTag[:]...)
 	var d [32]byte
 	binary.BigEndian.PutUint64(d[24:32], deadline)
+	if nonce == 0 {
+		out := make([]byte, 0, 4+intentBodyLen)
+		out = append(out, intentPhaseTag[:]...)
+		out = append(out, d[:]...)
+		return out
+	}
+	var n [32]byte
+	binary.BigEndian.PutUint64(n[24:32], nonce)
+	out := make([]byte, 0, 4+intentBodyLenWithNonce)
+	out = append(out, intentPhaseTag[:]...)
 	out = append(out, d[:]...)
+	out = append(out, n[:]...)
 	return out
 }
