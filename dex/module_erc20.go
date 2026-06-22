@@ -14,52 +14,46 @@ import (
 
 // module_erc20.go binds the erc20Vault capability (erc20_vault.go) to the EVM by
 // sub-calling the token contract for transferFrom / transfer / balanceOf. This is
-// the C-Chain token-movement leg of ERC-20 custody — the analog of the EVM moving
-// msg.value into 0x9010 for native LUX. The PoolManager's ERC-20 deposit/withdraw
-// branches type-assert the StateDB for erc20Vault; poolStateAdapter satisfies it
-// here, so the rail is live whenever the precompile execution environment exposes a
-// Call surface (the optional callableEnv seam below).
+// the C-Chain token-movement leg of ERC-20 settlement — the analog of the EVM moving
+// msg.value into 0x9999 for native LUX. The settle path type-asserts the StateDB for
+// erc20Vault (stateDBERC20); poolStateAdapter satisfies it here, so the rail is live
+// whenever the precompile execution environment exposes a Call surface (the
+// callableEnv seam below).
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// THE ONE EXTERNAL WIRE (surfaced, not hidden):
+// THE ONE EXTERNAL WIRE (now landed):
 //
 // A precompile can only sub-call a contract through the EVM execution environment.
 // The geth EVM environment (vm.PrecompileEnvironment) HAS a Call method, but the
-// adapter chain that reaches the external DEX precompile narrows it away:
+// adapter chain that reaches the external DEX precompile USED TO narrow it away —
+// accessibleStateBridge.GetPrecompileEnv() returned nil, so this seam got nil and an
+// ERC-20 deposit/withdraw refused with ErrERC20VaultUnavailable (fail-secure: never
+// minting an unbacked claim). The forwarding now lands in luxfi/evm, kept OFF the
+// shared, many-implementer contract.PrecompileEnvironment interface (Call is an
+// optional concrete capability this seam type-asserts, not an interface widening):
 //
-//	geth vm.PrecompileEnvironment{Call,...}            <- has Call
-//	  └─> evm/core/precompile_overrider.accessibleStateAdapter (coreth iface,
-//	        4 methods, no GetPrecompileEnv)             <- env captured, NOT exposed
-//	        └─> evm/precompile/registry.accessibleStateBridge.GetPrecompileEnv()=nil
-//	              └─> luxfi/precompile contract.AccessibleState.GetPrecompileEnv()
-//	                    -> contract.PrecompileEnvironment{ReadOnly()}  <- no Call
+//	geth vm.PrecompileEnvironment{Call,...}                       <- has Call
+//	  └─> evm/core accessibleStateAdapter.GetPrecompileEnv()      <- now EXPOSES the geth env
+//	        └─> evm/registry accessibleStateBridge.GetPrecompileEnv()
+//	              -> *precompileEnvBridge{ReadOnly(), Call(...)}   <- forwards Call
+//	                    └─> luxfi/precompile contract.PrecompileEnvironment
+//	                          + the optional Call this callableEnv asserts
 //
-// So GetPrecompileEnv() currently yields nil for this precompile, and an ERC-20
-// deposit/withdraw refuses with ErrERC20VaultUnavailable rather than minting an
-// unbacked claim — fail-secure. To make the live token leg execute, the env must be
-// forwarded with a Call surface. The MINIMAL forwarding (kept off the shared,
-// many-implementer contract.PrecompileEnvironment interface to avoid breaking every
-// precompile's mocks) is to have the concrete adapters expose a Call method this
-// seam type-asserts:
+// CALLER SEMANTICS (a money-path correctness edge): the sub-call is made with the
+// precompile SELF (0x9999) as the token's msg.sender — NO caller proxying. A deposit
+// pulls via transferFrom against the allowance the depositor granted the VAULT
+// (approve(0x9999, amount)); a withdraw pushes via transfer from the vault's own
+// balance. Proxying the original EOA caller would make the token check the wrong
+// allowance/balance and break the pull — so the bridge forwards Call WITHOUT
+// WithUNSAFECallerAddressProxying.
 //
-//   1. geth/core/vm/lux_precompiles.go precompileEnvAdapter: add
-//        func (p *precompileEnvAdapter) Call(addr common.Address, input []byte,
-//            gas uint64, value *big.Int) ([]byte, uint64, error) {
-//            return p.env.Call(addr, input, gas, value,
-//                vm.WithUNSAFECallerAddressProxying()) // for transferFrom: pull as caller's allowance to self(0x9010)
-//        }
-//   2. evm/precompile/registry/bridge.go accessibleStateBridge.GetPrecompileEnv():
-//        return a bridge that forwards Call to the internal env (requires the
-//        coreth accessibleStateAdapter to expose the env — a concrete method, not
-//        an interface widening).
-//   3. evm/core/precompile_overrider.go accessibleStateAdapter: expose the env
-//        (concrete GetPrecompileEnv or a Call passthrough) so the bridge can reach it.
-//
-// Until that wire lands, the precompile-rail ERC-20 deposit/withdraw is COMPLETE
-// and conserving in logic (observed-delta credit, per-token vault ledger,
-// vault-underflow guard, idempotency) and is exercised end-to-end by the unit
-// suite against the in-memory token double; it simply refuses live ERC-20 custody
-// on a chain whose env does not yet forward Call. Native LUX custody is unaffected.
+// The precompile-rail ERC-20 deposit/withdraw is COMPLETE and conserving (observed-
+// delta credit, per-token vault ledger, vault-underflow guard, idempotency, custody
+// reentrancy guard) and is proven end-to-end: the in-state-vault path by the existing
+// suite, and the live Call seam by settle_erc20_callseam_test.go (deposit -> balanceOf
+// -> withdraw against a token reached only via Call, asserting conservation). On a
+// host that wires no Call surface (a non-EVM caller / harness) it still refuses
+// cleanly. Native LUX custody is unaffected (it uses the StateDB balance directly).
 // ─────────────────────────────────────────────────────────────────────────────
 
 // callableEnv is the OPTIONAL Call surface this seam type-asserts on the precompile
