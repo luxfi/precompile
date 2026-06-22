@@ -110,25 +110,40 @@ func decodeAtomicObject(v []byte) (rail Rail, owner common.Address, asset [32]by
 
 // DeriveIntentID computes the deterministic id of a C->D atomic intent object.
 // It is the shared-memory UTXO key the object is PUT under (and that D's import
-// consumes), and it is INJECTIVE over the full identity so two distinct intents —
-// or the same logical intent across networks/chains/txs/calls — never collide:
+// consumes), and it is INJECTIVE over the full identity so two distinct intents
+// never collide:
 //
-//	SHA-256( domain | networkID | cChainID | dChainID | txID | callIndex |
-//	         account | assetIn | amountIn | marketID )
+//	SHA-256( domain | networkID | cChainID | dChainID |
+//	         account | assetIn | amountIn | marketID | nonce )
 //
 // Every component is fixed width and length-stable (no concatenation ambiguity).
-// callIndex disambiguates two swaps in one tx; (networkID, cChainID, dChainID)
-// scope the object to exactly one rail; account/asset/amount/market bind the
-// economic payload so the id cannot be reused for a different one.
+// (networkID, cChainID, dChainID) scope the object to exactly one rail;
+// account/asset/amount/market bind the economic payload; nonce is the taker's
+// own disambiguator so two otherwise-identical swaps get distinct ids.
+//
+// CHAIN-OBSERVABLE BY CONSTRUCTION (the watch-correlation fix). The id derives ONLY
+// from values the off-chain client knows BEFORE it signs — there is NO txID here. The
+// nonce is carried in the swap's own DI01 hookData, so the precompile (on-chain) and the
+// keeper/SDK (off-chain) read the IDENTICAL nonce from the IDENTICAL calldata and derive
+// the IDENTICAL id. Previously the off-chain side substituted a ZERO txID (the real txID
+// is unknown pre-landing) while the chain used the REAL txID, so the two ids never
+// matched and the keeper's watch could not correlate against a live chain. Binding the id
+// to a chain-observable nonce (not the post-landing txID) closes that.
+//
+// REPLAY/INJECTIVITY. Two distinct takers differ by account; the same taker's two
+// DIFFERENT swaps differ by asset/amount/market; the same taker's two IDENTICAL swaps
+// must use DISTINCT nonces (a reused tuple derives the same id and the second submit is
+// replay-rejected by the on-chain isIntentSubmitted guard — idempotent, never a second
+// debit). The nonce is the user's order-nonce: it disambiguates repeats AND two swaps in
+// one tx (the caller supplies distinct nonces), replacing the former callIndex axis.
 func DeriveIntentID(
 	networkID uint32,
 	cChainID, dChainID ids.ID,
-	txID ids.ID,
-	callIndex uint32,
 	account common.Address,
 	assetIn [32]byte,
 	amountIn uint64,
 	marketID [32]byte,
+	nonce uint64,
 ) ids.ID {
 	h := sha256.New()
 	h.Write([]byte(nativeIntentDomain))
@@ -137,15 +152,14 @@ func DeriveIntentID(
 	h.Write(u4[:])
 	h.Write(cChainID[:])
 	h.Write(dChainID[:])
-	h.Write(txID[:])
-	binary.BigEndian.PutUint32(u4[:], callIndex)
-	h.Write(u4[:])
 	h.Write(account[:])
 	h.Write(assetIn[:])
 	var u8 [8]byte
 	binary.BigEndian.PutUint64(u8[:], amountIn)
 	h.Write(u8[:])
 	h.Write(marketID[:])
+	binary.BigEndian.PutUint64(u8[:], nonce)
+	h.Write(u8[:])
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return ids.ID(out)
