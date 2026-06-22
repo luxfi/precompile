@@ -86,6 +86,14 @@ func markSettlementConsumed(stateDB stateKV, outputID ids.ID, blockNumber uint64
 //     refused after it; reclaim is allowed only after it.
 //   - status     : Open (settlable / reclaimable) or Reclaimed (terminal — no further
 //     settlement or reclaim).
+//   - priceLimit : the taker's OWN worst-acceptable CLOB price (quote-per-base, float64
+//     bits), derived at submit from the taker's V4 SqrtPriceLimitX96 (priceLimitToCLOB).
+//     limitIsUpper says which side it bounds (true = a BUY ceiling, false = a SELL floor).
+//     ImportSettlement enforces it on the PROCEEDS leg against the realized fill price
+//     (out/spent) — INDEPENDENTLY of the keeper-relayed RelayOrderTx.PriceLimit — so a
+//     keeper that zeroes the relay limit to sandwich the taker still produces a proceeds
+//     object C refuses to credit. This is the TAKER-AUTHENTICATED MEV floor: the binding
+//     authority is the taker's recorded intent, not the keeper's relay. 0 = no limit.
 var (
 	swapIntentPrefix          = []byte(settleStateNamespace + "swint") // swapIntent[intentID][suffix]
 	swapIntentReclaimedPrefix = []byte(settleStateNamespace + "swrcl") // reclaimed-set: intentID -> blockNumber+1
@@ -108,14 +116,23 @@ type swapIntentRecord struct {
 	Remaining uint64
 	Deadline  uint64
 	Status    swapIntentStatus
+	// PriceLimit is the taker's OWN worst-acceptable CLOB price (quote-per-base, IEEE-754
+	// float64 bits) recorded at SubmitSwapIntent from the taker's V4 SqrtPriceLimitX96.
+	// 0 = no limit. ImportSettlement enforces it against the realized proceeds price so the
+	// floor is TAKER-authenticated, not keeper-relayed (the MEV sandwich fix).
+	PriceLimit uint64
+	// LimitIsUpper is the limit's side: true = a BUY ceiling (reject realized > limit),
+	// false = a SELL floor (reject realized < limit). Matches priceLimitToCLOB's convention.
+	LimitIsUpper bool
 }
 
 // swap-intent record slot suffixes (one concern per slot, mirroring the LP order).
 var (
 	swapIntentOwnerSuffix  = []byte("o") // owner (address)
 	swapIntentAssetSuffix  = []byte("a") // assetIn (bytes32)
-	swapIntentMetaSuffix   = []byte("m") // status(1) | deadline(uint64, big-endian in low 8 bytes)
+	swapIntentMetaSuffix   = []byte("m") // status(1) | limitIsUpper(1) | deadline(uint64, big-endian in low 8 bytes)
 	swapIntentRemainSuffix = []byte("r") // remaining principal (uint64)
+	swapIntentLimitSuffix  = []byte("l") // taker's recorded CLOB price limit (float64 bits, uint64)
 )
 
 func swapIntentSlot(intentID ids.ID, suffix []byte) common.Hash {
@@ -125,7 +142,10 @@ func swapIntentSlot(intentID ids.ID, suffix []byte) common.Hash {
 	return makeStorageKey(swapIntentPrefix, id)
 }
 
-// putSwapIntentRecord persists a swap-intent escrow record across its slots.
+// putSwapIntentRecord persists a swap-intent escrow record across its slots. The meta
+// word packs status(byte 0) | limitIsUpper(byte 1) | deadline(low 8 bytes); the taker's
+// recorded price limit rides its own slot so the floor is durable, consensus-shared, and
+// reverted atomically with the submit tx — exactly like every other field of the record.
 func putSwapIntentRecord(stateDB stateKV, intentID ids.ID, r swapIntentRecord) {
 	stateDB.SetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentOwnerSuffix),
 		common.BytesToHash(r.Owner.Bytes()))
@@ -133,11 +153,17 @@ func putSwapIntentRecord(stateDB stateKV, intentID ids.ID, r swapIntentRecord) {
 		common.BytesToHash(r.AssetIn[:]))
 	var meta common.Hash
 	meta[0] = byte(r.Status)
+	if r.LimitIsUpper {
+		meta[1] = 1
+	}
 	putU64(meta[24:32], r.Deadline)
 	stateDB.SetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentMetaSuffix), meta)
 	var rem common.Hash
 	putU64(rem[24:32], r.Remaining)
 	stateDB.SetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentRemainSuffix), rem)
+	var lim common.Hash
+	putU64(lim[24:32], r.PriceLimit)
+	stateDB.SetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentLimitSuffix), lim)
 }
 
 // loadSwapIntentRecord reads a swap-intent record. Status swapIntentNone means no
@@ -146,6 +172,7 @@ func loadSwapIntentRecord(stateDB stateKV, intentID ids.ID) swapIntentRecord {
 	meta := stateDB.GetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentMetaSuffix))
 	var r swapIntentRecord
 	r.Status = swapIntentStatus(meta[0])
+	r.LimitIsUpper = meta[1] != 0
 	r.Deadline = bytesToU64(meta[24:32])
 	if r.Status == swapIntentNone {
 		return r
@@ -153,6 +180,7 @@ func loadSwapIntentRecord(stateDB stateKV, intentID ids.ID) swapIntentRecord {
 	r.Owner = common.BytesToAddress(stateDB.GetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentOwnerSuffix)).Bytes())
 	copy(r.AssetIn[:], stateDB.GetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentAssetSuffix)).Bytes())
 	r.Remaining = bytesToU64(stateDB.GetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentRemainSuffix)).Bytes())
+	r.PriceLimit = bytesToU64(stateDB.GetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentLimitSuffix)).Bytes())
 	return r
 }
 
