@@ -253,7 +253,7 @@ func generateThresholdSignature(thresholdVal, totalParties uint32, message strin
 	for i, signer := range thresholdSigners {
 		r1, err := signer.Round1(sessionID, prfKey, signers)
 		if err != nil {
-			t.Fatalf("corona round1: %v", err)
+			return nil, nil, fmt.Errorf("corona round1: %w", err)
 		}
 		round1Data[i] = r1
 	}
