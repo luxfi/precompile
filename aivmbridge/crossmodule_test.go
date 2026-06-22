@@ -1,7 +1,16 @@
+//go:build crossmodule
+
 // Copyright (C) 2026, Lux Partners Limited. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //
 // crossmodule_test.go — RED-A cross-module byte-equality proof.
+//
+// Build-tagged `crossmodule`: this is the ONLY file importing
+// github.com/luxfi/chains/aivm (the A-side encoders), resolvable only via the
+// repo go.work workspace. Default `go test ./...` (CI, no workspace) must NOT
+// compile it. Run the parity proof explicitly, with the workspace:
+//   GOWORK= go test -tags crossmodule ./aivmbridge/...
+// Production aivmbridge is decoupled from chains/aivm (wire-format agreement only).
 //
 // This is the load-bearing seam: the C side (this package, github.com/luxfi/precompile/aivmbridge)
 // and the A side (the counterparty, github.com/luxfi/chains/aivm) MUST agree, BYTE FOR BYTE, on
