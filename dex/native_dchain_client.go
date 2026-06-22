@@ -5,6 +5,7 @@ package dex
 
 import (
 	"errors"
+	"math"
 	"math/big"
 
 	"github.com/holiman/uint256"
@@ -137,6 +138,13 @@ var (
 	// Past the deadline the taker may reclaim the locked principal (ReclaimIntent), so a
 	// late settlement is refused to keep settlement and reclaim mutually exclusive.
 	ErrSettlePastDeadline = errors.New("dex: D->C settlement is past the intent's deadline (reclaim path applies)")
+	// ErrSettlePriceLimit: a PROCEEDS settlement's realized price (out/spent) is WORSE than
+	// the taker's OWN recorded slippage limit (intent.PriceLimit). This is the taker-
+	// AUTHENTICATED MEV floor — it binds against the limit the taker recorded at submit, NOT
+	// the keeper-relayed limit — so a keeper that zeroes the relay limit to sandwich the
+	// taker cannot get the bad-price proceeds credited. The intent stays Open and its
+	// principal remains reclaimable after the deadline.
+	ErrSettlePriceLimit = errors.New("dex: D->C proceeds price violates the taker's recorded slippage limit (taker-authenticated MEV floor)")
 
 	// Reclaim gates (HIGH liveness: locked swap input can always exit if D never settles).
 	ErrReclaimNoIntent       = errors.New("dex: reclaimIntent names no open intent for the caller")
@@ -181,10 +189,21 @@ type IntentRequest struct {
 // it does NOT match and does NOT return an output fill. The realized fill settles
 // later through ImportSettlement once D matches and exports D->C.
 //
-// LOCK-THEN-EXPORT (CEI + conservation): the C value is debited into the 0x9999
-// escrow FIRST (real EVM SubBalance / observed-delta transferFrom), then the
-// atomic object is written. The object's amount equals the value actually locked
-// (observed delta for ERC-20), so D can never be funded beyond what C locked.
+// ORDERING (lock -> derive id -> replay-check -> export). The C value is debited into
+// the 0x9999 escrow FIRST (real EVM SubBalance / observed-delta transferFrom); the
+// object's amount equals the value ACTUALLY locked (observed delta for ERC-20), so D can
+// never be funded beyond what C locked. The replay guard (isIntentSubmitted) is checked
+// AFTER the lock, NOT before — this is deliberate and is NOT a CEI violation: the intent
+// id IS the replay key, and it binds the observed-delta `locked` amount (DeriveIntentID
+// takes `locked`, not the requested `AmountIn`), so the replay key is UNKNOWABLE until the
+// lock has measured the real amount. Replay-safety is therefore provided by EVM REVERT
+// ATOMICITY rather than check-ordering: a re-executed/reorged submit of the same intent
+// recomputes the same id (the deterministic replay locks the same amount), hits
+// isIntentSubmitted, and reverts — and the revert rolls back the lock in the SAME atomic
+// step, so no double-debit ever persists. Deriving the id from the requested amount instead
+// (to move the check earlier) would reintroduce the fee-on-transfer id divergence (the
+// off-chain keeper and the chain would disagree on the id), so the observed-delta binding
+// is the correct invariant and the post-lock replay check is its consequence.
 func (c *NativeDChainClient) SubmitSwapIntent(
 	state contract.AccessibleState,
 	atomicState contract.AtomicState,
@@ -243,12 +262,21 @@ func (c *NativeDChainClient) SubmitSwapIntent(
 	// stranded intent is reclaimable to THIS taker after the deadline. owner==account is
 	// the recorded D->C object owner D will mirror on the settlement object, so the
 	// settlement's recorded-owner bind and this record's owner agree.
+	// PriceLimit/LimitIsUpper are the taker's OWN slippage floor (from their V4
+	// SqrtPriceLimitX96 via priceLimitToCLOB). Recording them HERE — at submit, bound to
+	// the taker's authenticated intent — is what makes the Phase-B floor TAKER-authenticated
+	// rather than keeper-asserted: ImportSettlement checks the realized proceeds price against
+	// THIS recorded limit, so a malicious keeper that drops the relay limit cannot sandwich
+	// the taker (the proceeds object whose price violates the recorded limit is refused). 0 =
+	// no limit (preserves the unbounded behavior for a taker who set none).
 	putSwapIntentRecord(stateDB, intentID, swapIntentRecord{
-		Owner:     req.Account,
-		AssetIn:   req.AssetIn,
-		Remaining: locked,
-		Deadline:  req.Deadline,
-		Status:    swapIntentOpen,
+		Owner:        req.Account,
+		AssetIn:      req.AssetIn,
+		Remaining:    locked,
+		Deadline:     req.Deadline,
+		Status:       swapIntentOpen,
+		PriceLimit:   req.PriceLimit,
+		LimitIsUpper: req.LimitIsUpper,
 	})
 
 	// STAGE the C->D atomic object (rail=railSwap, owner=account, asset=assetIn,
@@ -413,7 +441,7 @@ func (c *NativeDChainClient) ImportPositionCollect(
 	if gerr != nil || len(vals) != 1 || len(vals[0]) == 0 {
 		return 0, ErrNativeNoSettlement
 	}
-	recRail, recOwner, recAsset, recAmount, ok := decodeAtomicObject(vals[0])
+	recRail, recOwner, recAsset, recAmount, _, ok := decodeAtomicObject(vals[0])
 	if !ok {
 		return 0, ErrNativeSettleMalformed
 	}
@@ -586,7 +614,7 @@ func (c *NativeDChainClient) ImportSettlement(
 	if gerr != nil || len(vals) != 1 || len(vals[0]) == 0 {
 		return 0, ErrNativeNoSettlement
 	}
-	recRail, recOwner, recAsset, recAmount, ok := decodeAtomicObject(vals[0])
+	recRail, recOwner, recAsset, recAmount, recSpent, ok := decodeAtomicObject(vals[0])
 	if !ok {
 		return 0, ErrNativeSettleMalformed
 	}
@@ -652,6 +680,26 @@ func (c *NativeDChainClient) ImportSettlement(
 		}
 	}
 
+	// (5b) TAKER-AUTHENTICATED MEV FLOOR (the swap-rail sandwich fix). On the PROCEEDS leg
+	// (recAsset != intent.AssetIn — the OPPOSITE asset the taker receives), enforce the
+	// taker's OWN recorded slippage limit against the REALIZED fill price, drawn from the
+	// venue-attested witness (recSpent = matched input, recAmount = output). The binding
+	// authority is intent.PriceLimit — recorded at SubmitSwapIntent from the taker's V4
+	// SqrtPriceLimitX96 — NOT the keeper-relayed RelayOrderTx.PriceLimit. So a keeper that
+	// zeroes the relay limit to let a sandwiched fill through (the dexvm settle path would
+	// impose no D-side floor) STILL produces a proceeds object whose realized price C refuses
+	// here: the taker is protected by their own intent, independent of the keeper.
+	//
+	// Why the proceeds leg only: the same-asset refund (recAsset == intent.AssetIn) is the
+	// taker's unfilled principal coming back at par — no price is realized, so no floor
+	// applies (it is bounded by the per-taker cap above). The floor binds exactly where a
+	// price is realized: input converted to output.
+	if recAsset != intent.AssetIn {
+		if perr := enforceProceedsPriceFloor(intent.PriceLimit, intent.LimitIsUpper, recSpent, recAmount); perr != nil {
+			return 0, perr
+		}
+	}
+
 	// (6) MARK consumed BEFORE value movement (CEI for the replay slot). A failed
 	// credit still leaves it unconsumed because the EVM revert rolls back this write.
 	markSettlementConsumed(stateDB, claim.OutputID, state.GetBlockContext().Number().Uint64())
@@ -681,6 +729,72 @@ func (c *NativeDChainClient) ImportSettlement(
 	// Remove to shared memory at BLOCK ACCEPT atomically with the committed credit.
 	stageAtomicRemove(stateDB, dChainID, key)
 	return recAmount, nil
+}
+
+// enforceProceedsPriceFloor is the TAKER-AUTHENTICATED MEV floor: it refuses a swap
+// PROCEEDS settlement whose realized fill price is worse than the limit the TAKER
+// recorded at submit (priceLimit, limitIsUpper) — independent of any keeper-relayed
+// limit. It is a PURE function of the recorded limit and the venue-attested witness
+// (spent = matched input, out = proceeds output), so calling it before any state write
+// preserves ImportSettlement's CEI ordering.
+//
+// PRICE DOMAIN. priceLimit is quote-per-base (currency1 per currency0) as IEEE-754
+// float64 bits — the SAME CLOB price domain the dexvm matcher uses (Fill.Price) and the
+// SAME value priceLimitToCLOB produced from the taker's V4 SqrtPriceLimitX96. The realized
+// price is reconstructed in that domain from the integer witness:
+//
+//   - SELL (limitIsUpper == false; zeroForOne: base in -> quote out): spent = base in,
+//     out = quote out, so realized quote/base = out/spent. The taker must receive AT LEAST
+//     the limit per base — a FLOOR. Reject realized < limit.
+//   - BUY  (limitIsUpper == true; !zeroForOne: quote in -> base out): spent = quote in,
+//     out = base out, so realized quote/base = spent/out. The taker must pay AT MOST the
+//     limit per base — a CEILING. Reject realized > limit.
+//
+// EDGE CASES (fail-secure):
+//   - priceLimit == 0: the taker set no limit (or a V4 sentinel) — impose no floor, exactly
+//     as priceLimitToCLOB's 0 = unbounded. The pre-existing behavior for limitless swaps.
+//   - spent == 0 or out == 0 with a limit SET: the realized price is undefined (0 or
+//     infinite). A proceeds leg under a real limit MUST carry both sides; absent them the
+//     price is unprovable, so REJECT rather than credit an unverifiable fill. (D's
+//     settleFromFills always sets spent > 0 on a proceeds export; a zero here is a malformed
+//     or hostile object and the floor refuses it.)
+//
+// To avoid float division (and its divide-by-zero / rounding pitfalls) the comparison is
+// cross-multiplied: out/spent >= limit  <=>  out >= limit*spent (SELL), and spent/out <=
+// limit  <=>  spent <= limit*out (BUY). Both sides are non-negative float64 (the matcher's
+// own domain), so this neither tightens nor loosens the floor relative to D.
+//
+// PROPOSER vs KEEPER. A hostile proposer UNDERSTATING spent would inflate the realized price
+// (loosening this floor), but that same understatement inflates the refund and is
+// independently bounded by the per-taker principal cap + seam-reserve conservation — the
+// documented single-venue proposer-trust surface the fill attestation (the HIGH) covers.
+// This floor's job is the KEEPER vector (a relay that drops the limit), against which it is
+// sound: the keeper cannot touch the venue-signed spent/out witness.
+func enforceProceedsPriceFloor(priceLimit uint64, limitIsUpper bool, spent, out uint64) error {
+	if priceLimit == 0 {
+		return nil // taker set no limit — unbounded, as recorded.
+	}
+	if spent == 0 || out == 0 {
+		return ErrSettlePriceLimit // limit set but price unprovable — fail secure.
+	}
+	limit := math.Float64frombits(priceLimit)
+	if !(limit > 0) || math.IsInf(limit, 0) || math.IsNaN(limit) {
+		return nil // a degenerate recorded limit imposes nothing (mirrors priceLimitToCLOB).
+	}
+	spentF := float64(spent)
+	outF := float64(out)
+	if limitIsUpper {
+		// BUY ceiling: realized quote/base = spent/out must not EXCEED the limit.
+		if spentF > limit*outF {
+			return ErrSettlePriceLimit
+		}
+		return nil
+	}
+	// SELL floor: realized quote/base = out/spent must not fall BELOW the limit.
+	if outF < limit*spentF {
+		return ErrSettlePriceLimit
+	}
+	return nil
 }
 
 // ReclaimIntent is the HIGH liveness fix: it lets the original locker reclaim a swap
