@@ -715,8 +715,15 @@ func (w *contractStateDBWrapper) TxHash() common.Hash {
 	return common.Hash{}
 }
 
-func (w *contractStateDBWrapper) Snapshot() int        { return 0 }
-func (w *contractStateDBWrapper) RevertToSnapshot(int) {}
+// Snapshot / RevertToSnapshot model the REAL EVM atomicity boundary over the mock:
+// Snapshot clones every mutable field of the inner MockStateDB and returns its id;
+// RevertToSnapshot restores that clone. Keyed by the inner *MockStateDB so a fresh
+// wrapper (GetStateDB returns a new wrapper each call) shares the same snapshot
+// stack. This is what lets the atomicity tests observe that a failed swap rolls
+// back BOTH the C balances and the D book — exactly as geth/core/vm/evm.go's Call
+// reverts a precompile's writes on error. Defined in swap_sync_snapshot_test.go.
+func (w *contractStateDBWrapper) Snapshot() int        { return takeMockSnapshot(w.inner) }
+func (w *contractStateDBWrapper) RevertToSnapshot(id int) { revertMockToSnapshot(w.inner, id) }
 
 // --- erc20Vault (additive test capability; lets the 0x9999 settlement tests
 // exercise the real native-in / token-out direction). An in-memory per-token
