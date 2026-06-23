@@ -82,9 +82,10 @@ func onChainVerifierFor(stateDB StateDB) dexcore.OnChainAssetVerifier {
 // "every asset has zero code" (which would refuse even native).
 func codeStaterFor(stateDB StateDB) (codeStater, bool) {
 	if a, ok := stateDB.(*poolStateAdapter); ok {
-		// The adapter is code-capable only when its underlying geth StateDB exposes
-		// GetCodeSize; otherwise CodeSizeOf returns -1 and we report not-capable so the
-		// caller fails closed rather than admit on a fabricated zero.
+		// The adapter is code-capable only when its underlying StateDB exposes GetCodeSize;
+		// otherwise CodeSizeOf returns -1 and we report not-capable so the caller fails
+		// closed rather than admit on a fabricated zero. On the live path the underlying is
+		// the registry stateDBBridge, which forwards GetCodeSize to the geth StateDB.
 		if a.CodeSizeOf(common.Address{}) >= 0 {
 			return a, true
 		}
