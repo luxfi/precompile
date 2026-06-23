@@ -401,6 +401,54 @@ func Test9999RoutesV3WhenCLOBEmpty(t *testing.T) {
 	}
 }
 
+// Test9999SyncSwap_TakerPriorDepositPreserved proves a swap does NOT strand a taker's
+// PRE-EXISTING dexcore deposit. A multi-role user (a maker who deposited, then swaps as
+// a taker on the same market) has a resting dexcore balance of the market's asset. The
+// post-swap ledger drain must remove ONLY the transient swap proceeds/refund — NEVER the
+// prior deposit — and conservation must hold (the vault still backs the surviving
+// deposit). This guards the "drain the whole available to zero" hazard.
+func Test9999SyncSwap_TakerPriorDepositPreserved(t *testing.T) {
+	h := newE2EHarness(t)
+	maker, taker := e2eMaker, e2eTaker
+
+	// Maker rests a deep real-funded BID (the taker will SELL into it).
+	h.mint(e2eLUSD, maker, 1_000_000)
+	h.deposit(t, maker, e2eLUSD, 1_000_000)
+	h.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 1000)
+
+	// The TAKER ALSO holds a prior dexcore deposit of LUSD (the market's QUOTE) — e.g. it
+	// deposited 500 LUSD earlier to rest its own orders. This is real backing in the vault.
+	h.mint(e2eLUSD, taker, 500)
+	h.deposit(t, taker, e2eLUSD, 500)
+	if got := h.dcAvail(taker, e2eLUSD); got != 500 {
+		t.Fatalf("setup: taker prior LUSD deposit = %d, want 500", got)
+	}
+
+	// Now the taker SELLs 80 LETH -> LUSD through 0x9999. Proceeds = 4000 LUSD (to EVM).
+	h.mint(e2eLETH, taker, 80)
+	if _, err := h.swap(t, taker, true, 80, nil); err != nil {
+		t.Fatalf("swap: %v", err)
+	}
+
+	// THE INVARIANT: the taker's PRIOR 500 LUSD dexcore deposit SURVIVES — only the
+	// transient swap proceeds were drained (and released to EVM). A naive drain-to-zero
+	// would have wiped the 500 and stranded its vault backing.
+	if got := h.dcAvail(taker, e2eLUSD); got != 500 {
+		t.Fatalf("taker prior LUSD deposit = %d after swap, want 500 (the swap stranded the prior deposit)", got)
+	}
+	if got := h.ercBal(e2eLUSD, taker); got != 4000 {
+		t.Fatalf("taker EVM LUSD = %d, want 4000 (proceeds)", got)
+	}
+	// CONSERVATION holds: the vault backs the surviving 500 LUSD deposit + the maker's
+	// remaining lock.
+	assertVaultConservation(t, h, maker, taker)
+	// The taker can still withdraw its prior 500 LUSD deposit (it's real, backed).
+	withdrawAll(t, h, taker, e2eLUSD)
+	if got := h.ercBal(e2eLUSD, taker); got != 4500 {
+		t.Fatalf("taker EVM LUSD after withdraw = %d, want 4500 (4000 proceeds + 500 prior deposit)", got)
+	}
+}
+
 // Test9999SyncSwap_AMMLegMovesRealERC20EndToEnd proves the AMM fallthrough end-to-end
 // through the FULL 0x9999 swap Run: with NO CLOB depth and a real-vault-BACKED AMM pool,
 // a taker's swap routes to the AMM, moves REAL ERC-20 balances (input into the vault,
