@@ -61,8 +61,6 @@ func newE2EHarness(t *testing.T) *e2eHarness {
 	h.key = e2eMarketKey()
 	// Value gate (A2): enable native-value swaps for the test (a quorum-finality node would);
 	// restore on cleanup so the fail-closed default is re-established for every other test.
-	EnableValueSwaps(true)
-	t.Cleanup(func() { EnableValueSwaps(false) })
 	// C1: install the real-asset resolver, admitting this market's real ERC-20s (LETH,
 	// LUSD) and the native coin, so the value path's admission gate passes for the
 	// legitimate market. A fabricated asset is NOT admitted (see the C1 redteam test).

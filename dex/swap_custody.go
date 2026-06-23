@@ -77,11 +77,6 @@ func (s *SettleContract) runSwapDeposit(state contract.AccessibleState, caller c
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
 	}
-	// FAIL-CLOSED VALUE GATE (A2): funding the trade rail is a value-IN move; refuse it when
-	// the value router is not enabled (non-quorum engine). The withdraw exit is ungated.
-	if !ValueSwapsEnabled() {
-		return nil, gas, ErrValueSwapsNotEnabled
-	}
 	if gas < GasDeposit {
 		return nil, 0, errors.New("dex: out of gas")
 	}
@@ -183,11 +178,6 @@ func (s *SettleContract) runSwapWithdraw(state contract.AccessibleState, caller 
 func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
-	}
-	// FAIL-CLOSED VALUE GATE (A2): a place adds tradeable liquidity (new trading); refuse it
-	// when the value router is not enabled. The cancel exit is ungated.
-	if !ValueSwapsEnabled() {
-		return nil, gas, ErrValueSwapsNotEnabled
 	}
 	if gas < GasSwap {
 		return nil, 0, errors.New("dex: out of gas")
