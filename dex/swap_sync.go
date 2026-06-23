@@ -36,13 +36,6 @@ func runSyncSwap(state contract.AccessibleState, caller common.Address, key Pool
 	if readOnly {
 		return nil, suppliedGas, errors.New("dex: cannot swap in read-only mode")
 	}
-	// FAIL-CLOSED VALUE GATE (A2): a synchronous fill moves real value, so it runs ONLY when
-	// the node has activated native-value swaps — only after the consensus engine certifies
-	// quorum finality (EnableValueSwapsViaQuorumGate). Off by default: a node on a non-quorum
-	// engine reverts here rather than settle a self-finalizable proposer fill.
-	if !ValueSwapsEnabled() {
-		return nil, suppliedGas, ErrValueSwapsNotEnabled
-	}
 	if suppliedGas < GasSwap {
 		return nil, 0, errors.New("dex: out of gas")
 	}

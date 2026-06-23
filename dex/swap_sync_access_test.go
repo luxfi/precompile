@@ -232,8 +232,6 @@ func Test9999_SyncDispatch_RoutesToSyncPredictor(t *testing.T) {
 // it is ACCEPTED (no false reject), the fence the brief requires.
 func Test9999_SyncAccessSet_FeeOnTransferDoesNotFalseReject(t *testing.T) {
 	h := newE2EHarness(t)
-	EnableValueSwaps(true) // explicit: this test drives value deposits/swaps (self-sufficient)
-	t.Cleanup(func() { EnableValueSwaps(false) })
 	maker, taker := e2eMaker, h.caller
 
 	// Deep maker bid so the whole delivered input fills.
@@ -282,8 +280,6 @@ func Test9999_SyncAccessSet_FeeOnTransferDoesNotFalseReject(t *testing.T) {
 // root (which binds the actual writes).
 func Test9999_SyncAccessCommitment_RootBinding(t *testing.T) {
 	h := newE2EHarness(t)
-	EnableValueSwaps(true) // explicit: this test drives value deposits (self-sufficient)
-	t.Cleanup(func() { EnableValueSwaps(false) })
 	maker := e2eMaker
 	h.mint(e2eLUSD, maker, 5000)
 	h.deposit(t, maker, e2eLUSD, 5000)

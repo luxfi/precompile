@@ -211,27 +211,25 @@ func (s *SettleContract) Run(
 
 	switch selector {
 	case SelectorSwap:
-		// THE swap path. The 0x9999 precompile is always DISPATCHABLE (a plain swap() reaches
-		// this case), but the SYNCHRONOUS VALUE router runs only when native-value swaps are
-		// ENABLED — which the node does solely after its consensus engine certifies QUORUM
-		// FINALITY (value_gate_boot.go). Dispatchable != value-enabled: on a degraded/K=1/non-
-		// quorum engine a proposer could self-finalize a fabricated fill, so value stays gated.
-		// Two models share the V4 swap selector, distinguished by the hookData phase tag AND,
-		// for the sync route, the value gate:
+		// THE swap path. The 0x9999 precompile is ALWAYS-ON and UNCONDITIONAL: a plain swap()
+		// reaches this case and an UNTAGGED swap routes to the SYNCHRONOUS on-chain smart-order-
+		// router. There is no value-activation gate — the decomplect collapsed "is this
+		// dispatchable?" and "may value move?" into one path, with the swap's own intrinsic
+		// fail-closed controls deciding whether it fills. Two models still share the V4 swap
+		// selector, distinguished SOLELY by the hookData phase tag:
 		//
-		//   - UNTAGGED swap (empty hookData / a DM01 min-out floor / any opaque hook blob) WITH
-		//     value swaps ENABLED: the SYNCHRONOUS on-chain smart-order-router (swap_sync.go).
-		//     One in-process, in-trie, atomic transition — route across the native CLOB + the
-		//     V2/V3 AMM, apply the C EVM balance delta AND the D book/fill delta in ONE block.
-		//     THE normal same-domain swap path on a value-live node. Its own intrinsic
-		//     fail-closed controls (real-asset admission, live-code verifier, min-out floor,
-		//     halt, custody mutex) decide whether it fills.
-		//   - TAGGED swap (DI01 intent / DS01 settlement hookData), OR an untagged swap while
-		//     value swaps are NOT enabled: the async cross-CHAIN D->C settlement primitive
-		//     (settle9999.go SettleSwap), retained for a genuine settlement to a DIFFERENT
-		//     network. Its own deadline-reclaim guarantees a locked intent can always exit; it
-		//     never settles a synchronous fill, so it is not the self-finalizable-fill surface
-		//     the value gate guards. runSyncSwap ITSELF re-checks the gate (defense in depth).
+		//   - UNTAGGED swap (empty hookData / a DM01 min-out floor / any opaque hook blob): the
+		//     SYNCHRONOUS on-chain smart-order-router (swap_sync.go). One in-process, in-trie,
+		//     atomic transition — route across the native CLOB + the V2/V3 AMM, apply the C EVM
+		//     balance delta AND the D book/fill delta in ONE block. THE normal same-domain swap
+		//     path. Its intrinsic fail-closed controls (real-asset admission via the installed
+		//     resolver, live-code verifier, min-out floor, halt, custody mutex) decide whether it
+		//     fills; on a node that wired no resolver it fails closed (ErrNoAssetResolver) — the
+		//     structural replacement for the retired consensus gate.
+		//   - TAGGED swap (DI01 intent / DS01 settlement hookData): the async cross-CHAIN D->C
+		//     settlement primitive (settle9999.go SettleSwap), retained for a genuine settlement
+		//     to a DIFFERENT network. Its own deadline-reclaim guarantees a locked intent can
+		//     always exit; it never settles a synchronous fill.
 		//
 		// L2 ACCESS-SET SOUNDNESS (anti-fork): the synchronous route is wrapped in the runtime
 		// write-set assertion. The handler runs against a write-OBSERVING StateDB; if it touches
@@ -243,7 +241,7 @@ func (s *SettleContract) Run(
 		// value, same keys) does NOT false-reject (B6: the sync path is fee-on-transfer-safe by
 		// construction; the async/intent path's amount-keyed id divergence is why ONLY the sync
 		// route is L2-wrapped here). A malformed swap input falls through to the async handler.
-		if key, params, hookData, derr := DecodeSwapInput(data); derr == nil && isUntaggedSwap(hookData) && ValueSwapsEnabled() {
+		if key, params, hookData, derr := DecodeSwapInput(data); derr == nil && isUntaggedSwap(hookData) {
 			// Declare the sync write-set against the PRE-call state (the exact state runSyncSwap
 			// reads when it runs), then run the handler under the L2 assertion.
 			declared := PredictSyncSwapWriteSet(newPoolStateAdapter(accessibleState), key, params, caller)

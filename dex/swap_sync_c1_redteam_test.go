@@ -48,8 +48,6 @@ func TestRED_C1_SyncSwap_FabricatedBaseReverts(t *testing.T) {
 	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
 	// absence), which runs only when native-value swaps are enabled — enable it as a
 	// quorum-finality node would; cleanup restores the fail-closed default.
-	EnableValueSwaps(true)
-	t.Cleanup(func() { EnableValueSwaps(false) })
 	h.key = c1MarketKey()
 
 	// Install a resolver that admits ONLY the real quote (and native) — NOT the fabricated
@@ -97,8 +95,6 @@ func TestRED_C1_SyncSwap_NoResolverFailsClosed(t *testing.T) {
 	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
 	// absence), which runs only when native-value swaps are enabled — enable it as a
 	// quorum-finality node would; cleanup restores the fail-closed default.
-	EnableValueSwaps(true)
-	t.Cleanup(func() { EnableValueSwaps(false) })
 	h.key = c1MarketKey()
 
 	// Force NO resolver installed for this test.
@@ -124,8 +120,6 @@ func TestRED_C1_SyncSwap_IdentityMismatchReverts(t *testing.T) {
 	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
 	// absence), which runs only when native-value swaps are enabled — enable it as a
 	// quorum-finality node would; cleanup restores the fail-closed default.
-	EnableValueSwaps(true)
-	t.Cleanup(func() { EnableValueSwaps(false) })
 	h.key = c1MarketKey()
 
 	// Resolver bound to a DIFFERENT C-Chain id than the harness runs (h.cChainID == {0xCC}).
