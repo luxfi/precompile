@@ -211,27 +211,29 @@ func (s *SettleContract) Run(
 
 	switch selector {
 	case SelectorSwap:
-		// THE swap path. Two models share the V4 swap selector, distinguished by the
-		// hookData phase tag:
+		// THE swap path — ONE settlement path for a normal swap, no gate. The 0x9999 DEX
+		// is always-on (live since the Dec 25 2025 activation), so a plain swap() ALWAYS
+		// settles synchronously in-process; there is no runtime flag that diverts it. Two
+		// models share the V4 swap selector, distinguished SOLELY by the hookData phase tag:
 		//
-		//   - UNTAGGED swap (the default, empty/opaque hookData): the SYNCHRONOUS on-
-		//     chain smart-order-router (swap_sync.go). One in-process, in-trie, atomic
-		//     transition — route across the native CLOB + the V2/V3 AMM, apply the C
-		//     EVM balance delta AND the D book/fill delta in ONE block. This is the
-		//     normal same-domain swap path. Gated on the node having enabled native-
-		//     value swaps (which it does only on a quorum-finality engine).
-		//   - TAGGED swap (DI01 intent / DS01 settlement hookData): the async cross-
-		//     CHAIN settlement path (settle9999.go SettleSwap), retained ONLY for a
-		//     genuine settlement to a DIFFERENT network. Never the spot-swap path.
+		//   - UNTAGGED swap (the default — empty hookData, a DM01 min-out floor, or any
+		//     opaque hook blob): the SYNCHRONOUS on-chain smart-order-router (swap_sync.go).
+		//     One in-process, in-trie, atomic transition — route across the native CLOB +
+		//     the V2/V3 AMM, apply the C EVM balance delta AND the D book/fill delta in ONE
+		//     block. THE normal same-domain swap path, unconditionally. It can NEVER create
+		//     a locked async intent, so a normal swap() can never strand funds.
+		//   - TAGGED swap (DI01 intent / DS01 settlement hookData): the async cross-CHAIN
+		//     D->C settlement primitive (settle9999.go SettleSwap), retained ONLY for a
+		//     genuine settlement to a DIFFERENT network. A normal swap() never reaches it;
+		//     and even there a missing deadline defaults to a finite reclaim horizon, so the
+		//     deadline-0 fund-lock is unreachable from any selector.
 		//
-		// We route by peeking the phase: an untagged swap with value-swaps enabled goes
-		// synchronous; everything else (tagged, or value-swaps not yet enabled) falls to
-		// the async handler, which itself reverts cleanly when its cross-chain capability
-		// is absent.
-		if key, params, hookData, derr := DecodeSwapInput(data); derr == nil {
-			if isUntaggedSwap(hookData) && ValueSwapsEnabled() {
-				return runSyncSwap(accessibleState, caller, key, params, suppliedGas, readOnly)
-			}
+		// We route by peeking the phase: a recognized DI01/DS01 tag is the ONLY thing that
+		// selects the async cross-chain handler; everything else is a normal swap routed
+		// synchronously. A malformed swap input falls through to the async handler, which
+		// re-decodes and returns the precise decode error.
+		if key, params, hookData, derr := DecodeSwapInput(data); derr == nil && isUntaggedSwap(hookData) {
+			return runSyncSwap(accessibleState, caller, key, params, hookData, suppliedGas, readOnly)
 		}
 		return SettleSwap(accessibleState, caller, data, suppliedGas, readOnly)
 
@@ -285,8 +287,8 @@ func (s *SettleContract) Run(
 	// Synchronous on-chain-router custody (swap_custody.go): the maker side of the
 	// in-process router — deposit REAL tokens into the dexcore ledger (vault-backed),
 	// rest/cancel a limit order, withdraw. The "money lives in the order book" model
-	// for the sync swap path. Value-gated (the node enables it only on a quorum-final
-	// engine); deposit/withdraw are not halt-gated so funds can always exit.
+	// for the sync swap path — always-on, like the rest of 0x9999 (no enable gate);
+	// deposit/withdraw are not halt-gated so funds can always exit.
 	case SelectorSwapDeposit:
 		return s.runSwapDeposit(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorSwapWithdraw:
