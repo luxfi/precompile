@@ -30,6 +30,15 @@ import (
 // so a C->D Put is readable by D via Get(cChainID) and a D->C Put is readable by C
 // via Get(dChainID) — the real platformvm import/export semantics.
 
+// testGovernance is the harness's per-network DEX governance controller — the address
+// the mock AtomicState returns from GovernanceController(), i.e. the ONLY caller that may
+// halt 0x9999 settlement or seed its pots. In production this is a governance CONTRACT
+// the host wires per network; here it is a fixed test address that stands in for that
+// contract. It is deliberately a non-EOA-looking sentinel distinct from the harness's
+// trading caller (0x1111…) and from the retired mnemonic-derivable 0x9011… EOA, so the
+// governance tests can prove only this address halts and the old EOA cannot.
+var testGovernance = common.HexToAddress("0x60F0000000000000000000000000000000000A11") // "GOV ...0A11"
+
 // nativeAtomicState implements BOTH contract.AccessibleState and
 // contract.AtomicState so SettleSwap's `state.(contract.AtomicState)` assertion
 // succeeds and reaches a real SharedMemory + chain identity.
@@ -39,7 +48,8 @@ type nativeAtomicState struct {
 	networkID      uint32
 	chainID        ids.ID // THIS chain (C)
 	cChainID       ids.ID
-	dChainID       ids.ID // the D-Chain (dexvm) peer the host resolves at runtime
+	dChainID       ids.ID         // the D-Chain (dexvm) peer the host resolves at runtime
+	governance     common.Address // the per-network DEX governance controller (halt/seed authority)
 	txID           ids.ID
 	callIndex      uint32
 	blockTimestamp uint64 // block time the precompile reads via GetBlockContext().Timestamp()
@@ -57,13 +67,14 @@ func (m *nativeAtomicState) GetChainConfig() precompileconfig.ChainConfig     { 
 func (m *nativeAtomicState) GetPrecompileEnv() contract.PrecompileEnvironment { return nil }
 
 // --- AtomicState ---
-func (m *nativeAtomicState) AtomicMemory() atomic.SharedMemory { return m.sm }
-func (m *nativeAtomicState) NetworkID() uint32                 { return m.networkID }
-func (m *nativeAtomicState) ChainID() ids.ID                   { return m.chainID }
-func (m *nativeAtomicState) CChainID() ids.ID                  { return m.cChainID }
-func (m *nativeAtomicState) DChainID() ids.ID                  { return m.dChainID }
-func (m *nativeAtomicState) TxID() ids.ID                      { return m.txID }
-func (m *nativeAtomicState) CallIndex() uint32                 { return m.callIndex }
+func (m *nativeAtomicState) AtomicMemory() atomic.SharedMemory    { return m.sm }
+func (m *nativeAtomicState) NetworkID() uint32                    { return m.networkID }
+func (m *nativeAtomicState) ChainID() ids.ID                      { return m.chainID }
+func (m *nativeAtomicState) CChainID() ids.ID                     { return m.cChainID }
+func (m *nativeAtomicState) GovernanceController() common.Address { return m.governance }
+func (m *nativeAtomicState) DChainID() ids.ID                     { return m.dChainID }
+func (m *nativeAtomicState) TxID() ids.ID                         { return m.txID }
+func (m *nativeAtomicState) CallIndex() uint32                    { return m.callIndex }
 
 var _ contract.AccessibleState = (*nativeAtomicState)(nil)
 var _ contract.AtomicState = (*nativeAtomicState)(nil)
@@ -104,21 +115,22 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 	dSM := mem.NewSharedMemory(dChainID)
 
 	state := &nativeAtomicState{
-		stateDB:   NewMockStateDB(),
-		sm:        cSM,
-		networkID: 1,
-		chainID:   cChainID,
-		cChainID:  cChainID,
-		dChainID:  dChainID,     // host-resolved D peer (runtime), as the EVM adapter supplies it
-		txID:      ids.ID{0x7A}, // a fixed tx id for the harness; tests vary callIndex/txID
-		callIndex: 0,
+		stateDB:    NewMockStateDB(),
+		sm:         cSM,
+		networkID:  1,
+		chainID:    cChainID,
+		cChainID:   cChainID,
+		dChainID:   dChainID,       // host-resolved D peer (runtime), as the EVM adapter supplies it
+		governance: testGovernance, // the per-network governance controller the host supplies via AtomicState
+		txID:       ids.ID{0x7A},   // a fixed tx id for the harness; tests vary callIndex/txID
+		callIndex:  0,
 		// Default to the activation boundary so settlement/init tests exercise the
 		// live-chain path where 0x9999's DEXFill + Initialize logs are active. A test
 		// that needs a pre-activation block sets state.blockTimestamp explicitly.
 		blockTimestamp: DexSettleActivationTime,
 	}
 	h := &settleHarness{
-		c:            &SettleContract{protocolFeeController: common.HexToAddress("0xFEE0000000000000000000000000000000000001")},
+		c:            &SettleContract{},
 		state:        state,
 		mem:          mem,
 		cSM:          cSM,
@@ -202,9 +214,12 @@ func (h *settleHarness) fundCallerNative(amount int64) {
 	h.state.stateDB.AddBalance(h.caller, uint256.NewInt(uint64(amount)))
 }
 
-// operator is the harness's protocolFeeController (the SettleContract is constructed
-// with this authority), so the operator-gated seed/fee selectors accept it.
-func (h *settleHarness) operator() common.Address { return h.c.protocolFeeController }
+// operator is the harness's DEX governance controller — the authority the mock
+// AtomicState returns from GovernanceController(), the SOLE caller the governance-gated
+// seed/fee/halt selectors accept. It is the per-network governance address the host
+// supplies at runtime (testGovernance here), NOT a field on the SettleContract and NOT a
+// hardcoded mnemonic-derivable EOA.
+func (h *settleHarness) operator() common.Address { return h.state.governance }
 
 // fundVaultOut seeds the 0x9999 vault's OUTPUT token into the SEAM RESERVE through the
 // REAL operator-gated seedSeamReserve selector (FIX-4 — the production counterparty
