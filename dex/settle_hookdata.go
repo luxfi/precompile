@@ -70,6 +70,22 @@ const (
 	swapPhaseSettlement
 )
 
+// isUntaggedSwap reports whether the hookData carries NEITHER cross-chain phase tag
+// (DI01 intent / DS01 settlement) — i.e. it is a plain same-domain swap that routes
+// through the synchronous on-chain router, not the async cross-chain settlement path.
+// Empty hookData (the common case) is untagged; an opaque hook blob that is not one
+// of the two recognized tags is also untagged (it is a normal swap whose hook bytes
+// the router ignores). The two explicit cross-chain tags are the ONLY thing that
+// routes a swap to the async settlement handler.
+func isUntaggedSwap(hookData []byte) bool {
+	if len(hookData) >= 4 {
+		if bytes.Equal(hookData[:4], intentPhaseTag[:]) || bytes.Equal(hookData[:4], settlementPhaseTag[:]) {
+			return false
+		}
+	}
+	return true
+}
+
 var (
 	ErrSettleBodyMalformed = errors.New("dex: settlement hookData body is malformed")
 	ErrSettleBadAmount     = errors.New("dex: settlement claim amount out of range")
