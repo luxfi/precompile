@@ -321,7 +321,7 @@ func TestERC20Settle_CallSeam_DepositWithdrawConserves(t *testing.T) {
 		t.Fatal("GetPrecompileEnv() does not satisfy callableEnv: ERC-20 leg would refuse with ErrERC20VaultUnavailable")
 	}
 
-	c := &SettleContract{protocolFeeController: common.HexToAddress("0xFEE0000000000000000000000000000000000001")}
+	c := &SettleContract{} // deposit/withdraw are custody ops, not governance-gated
 	aid := assetID(Currency{Address: token})
 
 	// Conservation oracle: depositor + vault token balances == totalSupply, always; and
@@ -436,7 +436,7 @@ func TestERC20Settle_CallSeam_RejectsDelegatecall(t *testing.T) {
 		env:       env,
 		timestamp: DexSettleActivationTime,
 	}
-	c := &SettleContract{protocolFeeController: common.HexToAddress("0xFEE0000000000000000000000000000000000001")}
+	c := &SettleContract{} // deposit/withdraw are custody ops, not governance-gated
 	aid := assetID(Currency{Address: token})
 
 	depData := make([]byte, 64)
@@ -502,7 +502,7 @@ func TestERC20Settle_NoEnv_RefusesFailSecure(t *testing.T) {
 		t.Fatal("setup")
 	}
 
-	c := &SettleContract{protocolFeeController: common.HexToAddress("0xFEE0000000000000000000000000000000000001")}
+	c := &SettleContract{} // deposit/withdraw are custody ops, not governance-gated
 	depData := make([]byte, 64)
 	copy(depData[12:32], token.Bytes())
 	big.NewInt(1000).FillBytes(depData[32:64])
