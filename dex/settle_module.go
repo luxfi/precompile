@@ -211,27 +211,31 @@ func (s *SettleContract) Run(
 
 	switch selector {
 	case SelectorSwap:
-		// THE swap path. Two models share the V4 swap selector, distinguished by the
-		// hookData phase tag:
+		// THE swap path. The 0x9999 precompile is ALWAYS-ON and UNCONDITIONAL: a plain swap()
+		// reaches this case and routes to the SYNCHRONOUS on-chain smart-order-router. There is
+		// no value-activation gate — the decomplect collapsed "is this dispatchable?" and "may
+		// value move?" into one path, with the swap's own intrinsic fail-closed controls (real-
+		// asset admission, live-code verifier, min-out floor, halt, custody mutex) deciding
+		// whether it fills. Two models still share the V4 swap selector, distinguished SOLELY by
+		// the hookData phase tag:
 		//
-		//   - UNTAGGED swap (the default, empty/opaque hookData): the SYNCHRONOUS on-
-		//     chain smart-order-router (swap_sync.go). One in-process, in-trie, atomic
-		//     transition — route across the native CLOB + the V2/V3 AMM, apply the C
-		//     EVM balance delta AND the D book/fill delta in ONE block. This is the
-		//     normal same-domain swap path. Gated on the node having enabled native-
-		//     value swaps (which it does only on a quorum-finality engine).
-		//   - TAGGED swap (DI01 intent / DS01 settlement hookData): the async cross-
-		//     CHAIN settlement path (settle9999.go SettleSwap), retained ONLY for a
-		//     genuine settlement to a DIFFERENT network. Never the spot-swap path.
+		//   - UNTAGGED swap (the default — empty hookData, a DM01 min-out floor, or any opaque
+		//     hook blob): the SYNCHRONOUS on-chain smart-order-router (swap_sync.go). One in-
+		//     process, in-trie, atomic transition — route across the native CLOB + the V2/V3
+		//     AMM, apply the C EVM balance delta AND the D book/fill delta in ONE block. THE
+		//     normal same-domain swap path. On a node that wired no resolver it fails closed
+		//     (ErrNoAssetResolver) — the structural replacement for the retired consensus gate.
+		//   - TAGGED swap (DI01 intent / DS01 settlement hookData): the async cross-CHAIN D->C
+		//     settlement primitive (settle9999.go SettleSwap), retained for a genuine settlement
+		//     to a DIFFERENT network. Its own deadline-reclaim guarantees a locked intent can
+		//     always exit; it never settles a synchronous fill.
 		//
-		// We route by peeking the phase: an untagged swap with value-swaps enabled goes
-		// synchronous; everything else (tagged, or value-swaps not yet enabled) falls to
-		// the async handler, which itself reverts cleanly when its cross-chain capability
-		// is absent.
-		if key, params, hookData, derr := DecodeSwapInput(data); derr == nil {
-			if isUntaggedSwap(hookData) && ValueSwapsEnabled() {
-				return runSyncSwap(accessibleState, caller, key, params, suppliedGas, readOnly)
-			}
+		// We route by peeking the phase: an untagged swap goes synchronous; a tagged swap falls
+		// to the async handler, which itself reverts cleanly when its cross-chain capability is
+		// absent. A malformed swap input falls through to the async handler, which re-decodes
+		// and returns the precise decode error.
+		if key, params, hookData, derr := DecodeSwapInput(data); derr == nil && isUntaggedSwap(hookData) {
+			return runSyncSwap(accessibleState, caller, key, params, hookData, suppliedGas, readOnly)
 		}
 		return SettleSwap(accessibleState, caller, data, suppliedGas, readOnly)
 
@@ -285,8 +289,8 @@ func (s *SettleContract) Run(
 	// Synchronous on-chain-router custody (swap_custody.go): the maker side of the
 	// in-process router — deposit REAL tokens into the dexcore ledger (vault-backed),
 	// rest/cancel a limit order, withdraw. The "money lives in the order book" model
-	// for the sync swap path. Value-gated (the node enables it only on a quorum-final
-	// engine); deposit/withdraw are not halt-gated so funds can always exit.
+	// for the sync swap path — always-on, like the rest of 0x9999 (no enable gate);
+	// deposit/withdraw are not halt-gated so funds can always exit.
 	case SelectorSwapDeposit:
 		return s.runSwapDeposit(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorSwapWithdraw:
