@@ -14,7 +14,8 @@ require (
 	github.com/luxfi/chains v1.3.14
 	github.com/luxfi/corona v0.7.9
 	github.com/luxfi/crypto v1.19.21
-	github.com/luxfi/database v1.20.3
+	github.com/luxfi/database v1.20.4
+	github.com/luxfi/dex v0.0.0
 	github.com/luxfi/fhe v1.8.2
 	github.com/luxfi/geth v1.17.12
 	github.com/luxfi/lattice/v7 v7.1.4
@@ -69,8 +70,10 @@ require (
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grandcat/zeroconf v1.0.0 // indirect
-	github.com/hanzoai/vfs v0.4.1 // indirect
+	github.com/hanzoai/vfs v0.4.3 // indirect
+	github.com/hanzos3/go-sdk v1.0.2 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
@@ -78,12 +81,11 @@ require (
 	github.com/luxfi/mdns v0.1.1 // indirect
 	github.com/luxfi/node v1.30.6 // indirect
 	github.com/luxfi/timer v1.0.2 // indirect
-	github.com/luxfi/zap v0.7.2 // indirect
-	github.com/luxfi/zapdb v1.10.0 // indirect
+	github.com/luxfi/zap v0.8.10 // indirect
+	github.com/luxfi/zapdb v1.10.1 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
-	github.com/minio/minio-go/v7 v7.0.100 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -93,6 +95,7 @@ require (
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/rs/xid v1.6.0 // indirect
+	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20220721030215-126854af5e6d // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
@@ -173,3 +176,5 @@ exclude (
 	github.com/luxfi/precompiles v0.1.10
 	github.com/luxfi/precompiles v0.1.11
 )
+
+replace github.com/luxfi/dex => ../dex
