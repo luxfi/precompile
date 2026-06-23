@@ -64,7 +64,9 @@ var (
 // runSeedSeamReserve funds seamReserve[asset] from operator-delivered value. Native:
 // observed-delta (the host frame moved msg.value into 0x9999; delivered = realBal −
 // Σpots), exactly the deposit discipline so a value==0 seed delivers 0 and reverts.
-// ERC-20: transferFrom observed delta. protocolFeeController-gated.
+// ERC-20: transferFrom observed delta. Gated to the per-network DEX governance
+// controller (governanceController), resolved from the runtime AtomicState — never a
+// hardcoded key; fail-closed when no governance controller is configured.
 func (s *SettleContract) runSeedSeamReserve(
 	state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool,
 ) ([]byte, uint64, error) {
@@ -75,7 +77,11 @@ func (s *SettleContract) runSeedSeamReserve(
 		return nil, 0, errors.New("dex: out of gas")
 	}
 	gasLeft := gas - gasSeedReserve
-	if caller != s.protocolFeeController {
+	gov, gerr := governanceController(state)
+	if gerr != nil {
+		return nil, gasLeft, gerr
+	}
+	if caller != gov {
 		return nil, gasLeft, ErrUnauthorized
 	}
 	asset, amount, perr := decodeAssetAmount(input)
@@ -105,7 +111,9 @@ func (s *SettleContract) runSeedSeamReserve(
 // committed reserve by the same amount. So a maker's withdrawable rises with the fees
 // the D-Chain credited them, the per-owner committed bound stays exact (a collect can
 // still only pull up to THIS owner's record), and conservation holds (the fee credit
-// is backed by deposited value). protocolFeeController-gated.
+// is backed by deposited value). Gated to the per-network DEX governance controller
+// (governanceController), resolved from the runtime AtomicState — never a hardcoded
+// key; fail-closed when no governance controller is configured.
 func (s *SettleContract) runCreditPositionFee(
 	state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool,
 ) ([]byte, uint64, error) {
@@ -116,7 +124,11 @@ func (s *SettleContract) runCreditPositionFee(
 		return nil, 0, errors.New("dex: out of gas")
 	}
 	gasLeft := gas - gasSeedReserve
-	if caller != s.protocolFeeController {
+	gov, gerr := governanceController(state)
+	if gerr != nil {
+		return nil, gasLeft, gerr
+	}
+	if caller != gov {
 		return nil, gasLeft, ErrUnauthorized
 	}
 	if len(input) < 96 {
