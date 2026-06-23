@@ -13,20 +13,29 @@ import (
 	"github.com/luxfi/ids"
 )
 
-// swap_sync_fix1_registry_test.go is the FIX-1 RED suite for the registry-route seam: it
-// proves the 0x9999 value path admits a swap/route/market-open ONLY over a REGISTERED,
-// ENABLED asset that is ALSO backed by LIVE on-chain code, and that the WHOLE gate runs
-// BEFORE any C-balance debit and BEFORE any DEX state write. Asset identity is no longer
-// asserted (a left-padded ASCII ticker) — it is VERIFIED. Every test runs the REAL 0x9999
-// Run dispatch over the real EVM/vault/atomic harness (no stubs), using REAL ERC-20 token
-// balances and real registry admission, exactly like the e2e suite.
+// swap_sync_fix1_registry_test.go is the PERMISSIONLESS admission suite for the 0x9999 value
+// path. It proves the corrected product rule: admission is CANONICAL RESOLUTION + ON-CHAIN
+// PROOF, never an admin allowlist. Concretely:
 //
-// Token layout matches the e2e harness: LETH = currency0 (base, 0x..01), LUSD = currency1
-// (quote, 0x..02); "sell LETH for LUSD" is zeroForOne.
+//   - a REAL on-chain ERC-20 (code at its address) TRADES without being pre-registered in any
+//     manifest (TestPermissionlessRealERC20Trades, TestAdmissionDoesNotRequireManifest);
+//   - a SYNTHETIC asset (an ASCII ticker / an address with no code) FAILS CLOSED, proven by
+//     EXTCODESIZE — not by allowlist absence (Test9999RejectsSyntheticAsset);
+//   - a market opens PERMISSIONLESSLY over any two real assets, idempotently
+//     (TestPermissionlessOpenMarket);
+//   - a real-looking asset bound to the WRONG chain/network fails closed (the identity gate is
+//     kept — permissionless is not identity-free) (Test9999RejectsWrongNetworkAsset);
+//   - the ERC-20 identity IS its 20-byte code-bearing address; the UTXO identity is its real
+//     32-byte assetID (Test9999ERC20AssetIDUsesTokenAddress, Test9999UTXOAssetIDUsesRealAssetID);
+//   - the on-chain-proof gate runs strictly BEFORE any debit/state write
+//     (Test9999OnChainProofRunsBeforeAnyDebit).
+//
+// Every test runs the REAL 0x9999 Run dispatch over the real EVM/vault/atomic harness (no
+// stubs), using REAL ERC-20 token balances and real code-presence, exactly like the e2e suite.
 
-// a32 left-pads an ASCII ticker into a 20-byte EVM address — the FAKE asset identity the
-// old (assert-only) path would have admitted as if it were a real token. It has no contract
-// code and no registry entry, so the FIX-1 gate must refuse it.
+// a32 left-pads an ASCII ticker into a 20-byte EVM address — the FAKE asset identity the old
+// (assert-only) path would have admitted as if it were a real token. It has no contract code,
+// so the on-chain proof — the authoritative permissionless reality gate — refuses it.
 func a32(ticker string) common.Address {
 	var addr common.Address
 	b := []byte(ticker)
@@ -37,53 +46,170 @@ func a32(ticker string) common.Address {
 	return addr
 }
 
-// Test9999RejectsUnregisteredAsset: a swap whose base resolves to NOTHING in the registry
-// (an unregistered ERC-20) reverts with ErrAssetNotAdmitted — the registry resolve gate.
-func Test9999RejectsUnregisteredAsset(t *testing.T) {
-	h := newE2EHarness(t)
-	// Build a market over an UNREGISTERED base (not in the resolver) and the real quote.
-	unregBase := common.HexToAddress("0x00000000000000000000000000000000000000A1") // never admitted
-	// Give it live code so the resolve gate (not the code gate) is the one that fires.
-	h.state.stateDB.SetCodeSize(unregBase, 1)
-	key := PoolKey{Currency0: Currency{Address: unregBase}, Currency1: Currency{Address: e2eLUSD}, Fee: 3000, TickSpacing: 60}
+// TestPermissionlessRealERC20Trades is the decisive PERMISSIONLESS proof: a real ERC-20 with
+// live code on THIS C-Chain trades end-to-end WITHOUT being pre-registered in any manifest. The
+// tokens here (novelBase/novelQuote) are addresses that appear in NO committed manifest and were
+// NEVER admitted to any registered set — they are admitted SOLELY because they have on-chain
+// code and their canonical identity resolves on the bound network. A maker rests a real-funded
+// BID; a taker SELLs into it; the fill clears and real balances move.
+func TestPermissionlessRealERC20Trades(t *testing.T) {
+	// Two ERC-20 addresses that are NOT e2eLETH/e2eLUSD and are in no manifest. V4 requires
+	// currency0 < currency1.
+	novelBase := common.HexToAddress("0x00000000000000000000000000000000000000A1")  // base / currency0
+	novelQuote := common.HexToAddress("0x00000000000000000000000000000000000000B2") // quote / currency1
 
-	params := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-10), SqrtPriceLimitX96: big.NewInt(0)}
-	calldata := buildSwapCalldata(key, params, EncodeMinOutHookData(1)) // floor met -> reach the admission gate
-	_, _, err := runWithEVMSnapshot(h.c, h.state, e2eTaker, poolManagerAddr9999,
-		prependSelector(SelectorSwap, calldata), 5_000_000, false)
-	if !errors.Is(err, dexcore.ErrAssetNotAdmitted) {
-		t.Fatalf("a swap over an unregistered asset must revert ErrAssetNotAdmitted, got: %v", err)
+	// Use the e2e harness machinery (real ERC-20 ledger + deposit/place/swap), but point the
+	// market at the NOVEL, never-listed tokens and re-install the resolver for them.
+	h := newE2EHarness(t)
+	novelKey := PoolKey{Currency0: Currency{Address: novelBase}, Currency1: Currency{Address: novelQuote}, Fee: 3000, TickSpacing: 60}
+	h.key = novelKey
+	h.settleHarness.key = novelKey
+
+	// PERMISSIONLESS install: a canonical resolver (no manifest, no membership) + live on-chain
+	// code for BOTH novel tokens. Code presence is the entire admission credential.
+	r := newTestAssetResolver(h.networkID, h.cChainID).boundToHarness(h.settleHarness)
+	r.admitERC20(t, novelBase, 18)  // seeds live on-chain code
+	r.admitERC20(t, novelQuote, 18) // seeds live on-chain code
+	prev := installedAssetResolver.Load()
+	installedAssetResolver.Store(nil)
+	if err := InstallAssetResolver(r, h.networkID, h.cChainID); err != nil {
+		t.Fatalf("InstallAssetResolver: %v", err)
+	}
+	t.Cleanup(func() { installedAssetResolver.Store(prev) })
+
+	maker, taker := e2eMaker, e2eTaker
+
+	// Maker deposits 5000 novelQuote and rests a BID of 100 novelBase @ 50 (locks 5000 quote).
+	h.mint(novelQuote, maker, 5000)
+	h.deposit(t, maker, novelQuote, 5000)
+	h.placeArgs(t, maker, true, uint64(50)*uint64(priceMultiplierConst), 100)
+
+	// Taker SELLs 80 novelBase into the book through 0x9999 (synchronous router), with a
+	// permissive price floor so the SELL-protection policy is satisfied.
+	h.mint(novelBase, taker, 80)
+	out, err := h.swapMinOut(t, taker, 80, 1)
+	if err != nil {
+		t.Fatalf("a REAL on-chain ERC-20 (with code) must trade PERMISSIONLESSLY (no manifest), got: %v", err)
+	}
+
+	// The V4 BalanceDelta: paid 80 base (amount0 = -80), received 4000 quote (amount1 = +4000).
+	a0, a1 := UnpackBalanceDelta(out)
+	if a0.Int64() != -80 || a1.Int64() != 4000 {
+		t.Fatalf("BalanceDelta = (%s, %s), want (-80, 4000) [80 base SELL @ 50] — permissionless fill", a0, a1)
+	}
+	// Real C-Chain balances moved: taker sold all base, received 4000 quote proceeds.
+	if got := h.ercBal(novelBase, taker); got != 0 {
+		t.Fatalf("taker real base = %d, want 0 (sold into the vault) — permissionless settle", got)
+	}
+	if got := h.ercBal(novelQuote, taker); got != 4000 {
+		t.Fatalf("taker real quote = %d, want 4000 (proceeds) — permissionless settle", got)
+	}
+	// The market is now bound (created permissionlessly by the swap's OpenMarket).
+	if _, _, ok, _ := dexcore.ReadMarketAssets(newEVMStore(newPoolStateAdapter(h.state)), novelKey.ID()); !ok {
+		t.Fatal("a permissionless real-asset swap must have bound the market")
 	}
 }
 
-// Test9999RejectsSyntheticAsset is THE critical FIX-1 test: a swap whose assetID is a FAKE
-// ASCII ticker (a32("LUSD")) — a perfectly well-formed 32-byte left-pad with no registry
-// entry and NO on-chain code — MUST revert, and it must revert BEFORE any C balance debit
-// and BEFORE any DEX state write (no market bound, no lock taken). The synthetic asset is
-// structurally untradeable on the value path.
+// TestAdmissionDoesNotRequireManifest proves the core permissionless property at the unit gate:
+// with NO manifest and NO registered-asset set anywhere, a real on-chain ERC-20 is STILL
+// admitted by OpenMarketChecked. The resolver is the production-shaped canonical resolver (it
+// holds no membership); the verifier proves the asset real by code presence. Admission depends
+// ONLY on (canonical identity resolves) AND (code present) — never on manifest membership.
+func TestAdmissionDoesNotRequireManifest(t *testing.T) {
+	h := newSettleHarness(t)
+	// An ERC-20 address that is in NO manifest and was NEVER registered.
+	unlisted := common.HexToAddress("0x00000000000000000000000000000000000000C3")
+	h.state.stateDB.SetCodeSize(unlisted, 1) // it is a real, deployed contract (has code)
+
+	// The permissionless resolver: it resolves ANY well-formed reference, with no manifest.
+	r := newTestAssetResolver(h.networkID, h.cChainID).boundToHarness(h)
+	verifier := onChainVerifierFor(newPoolStateAdapter(h.state))
+	if verifier == nil {
+		t.Fatal("the value path must have an on-chain verifier")
+	}
+
+	store := newEVMStore(newPoolStateAdapter(h.state))
+	pid := h.key.ID()
+	// Open a market with the unlisted-but-real ERC-20 as base and native as quote-side partner
+	// is not sorted; use native (zero addr) as base and the unlisted token as quote so currency
+	// sorting holds (native 0x0 < any token). Admission must SUCCEED — no manifest required.
+	baseSide := dexcore.AssetSide{Kind: dexcore.AssetKindEVMNative, Ref: dexcore.EVMNativeMarker}
+	quoteSide := dexcore.AssetSide{Kind: dexcore.AssetKindERC20, Ref: unlisted.Bytes()}
+	if err := dexcore.OpenMarketChecked(store, r, verifier, pid, baseSide, quoteSide); err != nil {
+		t.Fatalf("admission must NOT require a manifest: a real on-chain ERC-20 (with code) must be admitted, got: %v", err)
+	}
+	// The market is bound (created permissionlessly).
+	if _, _, ok, _ := dexcore.ReadMarketAssets(store, pid); !ok {
+		t.Fatal("a permissionless admission must have bound the market")
+	}
+}
+
+// TestPermissionlessOpenMarket proves OpenMarket(base, quote) creates a market for ANY two real
+// on-chain assets with NO admin approval, and is idempotent on re-open. It drives the gate
+// directly (OpenMarketChecked, the value-path market-open) so the property is pinned at the
+// admission seam itself.
+func TestPermissionlessOpenMarket(t *testing.T) {
+	h := newSettleHarness(t)
+	tokA := common.HexToAddress("0x00000000000000000000000000000000000000D4")
+	tokB := common.HexToAddress("0x00000000000000000000000000000000000000E5")
+	h.state.stateDB.SetCodeSize(tokA, 1) // both are real deployed contracts (code present)
+	h.state.stateDB.SetCodeSize(tokB, 1)
+
+	r := newTestAssetResolver(h.networkID, h.cChainID).boundToHarness(h)
+	verifier := onChainVerifierFor(newPoolStateAdapter(h.state))
+	store := newEVMStore(newPoolStateAdapter(h.state))
+
+	// A deterministic poolID for the (tokA, tokB) pair (sorted; tokA < tokB).
+	key := PoolKey{Currency0: Currency{Address: tokA}, Currency1: Currency{Address: tokB}, Fee: 3000, TickSpacing: 60}
+	pid := key.ID()
+	baseSide := dexcore.AssetSide{Kind: dexcore.AssetKindERC20, Ref: tokA.Bytes()}
+	quoteSide := dexcore.AssetSide{Kind: dexcore.AssetKindERC20, Ref: tokB.Bytes()}
+
+	// First open: creates the market with NO admin approval.
+	if err := dexcore.OpenMarketChecked(store, r, verifier, pid, baseSide, quoteSide); err != nil {
+		t.Fatalf("OpenMarket over two real assets must succeed permissionlessly, got: %v", err)
+	}
+	gotBase, gotQuote, ok, err := dexcore.ReadMarketAssets(store, pid)
+	if err != nil || !ok {
+		t.Fatalf("the permissionlessly-opened market must be bound (ok=%v err=%v)", ok, err)
+	}
+	// Re-open: IDEMPOTENT — succeeds and leaves the same binding.
+	if err := dexcore.OpenMarketChecked(store, r, verifier, pid, baseSide, quoteSide); err != nil {
+		t.Fatalf("re-opening the same market must be idempotent (no error), got: %v", err)
+	}
+	gotBase2, gotQuote2, ok2, _ := dexcore.ReadMarketAssets(store, pid)
+	if !ok2 || gotBase2 != gotBase || gotQuote2 != gotQuote {
+		t.Fatal("re-open must be idempotent: the market binding must be unchanged")
+	}
+}
+
+// Test9999RejectsSyntheticAsset is THE critical permissionless rejection test: a swap whose
+// assetID is a FAKE ASCII ticker (a32("LUSD")) — a perfectly well-formed 32-byte left-pad whose
+// canonical identity RESOLVES fine but which has NO on-chain code — MUST revert via the
+// EXTCODESIZE on-chain proof (ErrAssetNotOnChain), and it must revert BEFORE any C balance debit
+// and BEFORE any DEX state write. The synthetic asset is structurally untradeable — refused by
+// on-chain proof, NOT by allowlist absence (there is no allowlist).
 func Test9999RejectsSyntheticAsset(t *testing.T) {
 	h := newE2EHarness(t)
 	taker := e2eTaker
 
 	// The fake base: ASCII "LUSD" packed into an address — a perfectly well-formed 32-byte
-	// left-pad an assert-only path would have admitted as a real token. We make it the
-	// HARDEST case for the gate: REGISTERED in the resolver (so the resolve gate passes) but
-	// with NO contract code (a synthetic/phantom token). The ON-CHAIN reality gate must be
-	// what catches it — proving identity is VERIFIED against live code, not merely resolved.
+	// left-pad whose canonical identity RESOLVES (it is on this network), but with NO contract
+	// code (a synthetic/phantom token). The ON-CHAIN proof must be what catches it — proving
+	// identity is VERIFIED against live code, not membership.
 	fakeBase := a32("LUSD")
 	resolver := h.installAssetResolverFor(t, e2eLETH, e2eLUSD) // re-install incl. the real pair
-	resolver.admitERC20(t, fakeBase, 18)                       // register the FAKE ticker too
+	_ = resolver
 	key := PoolKey{Currency0: Currency{Address: fakeBase}, Currency1: Currency{Address: e2eLUSD}, Fee: 3000, TickSpacing: 60}
 
-	// Fund the taker with the fake base so a DEBIT would be observable if the gate failed to
-	// run first. (The mock ERC-20 ledger lets us mint any token; the point is the gate must
-	// refuse BEFORE touching it.)
+	// Fund the taker with the fake base so a DEBIT would be observable if the gate failed to run
+	// first. (The mock ERC-20 ledger lets us mint any token; the point is the gate must refuse
+	// BEFORE touching it.)
 	h.wrapper().mintTestToken(fakeBase, taker, big.NewInt(1_000))
-	// Crucially, clear the code mintTestToken seeds — a synthetic asset has NO contract code.
+	// Crucially, the fake base has NO contract code — a synthetic asset.
 	h.state.stateDB.SetCodeSize(fakeBase, 0)
 
-	// SNAPSHOT the observable state BEFORE the swap: the taker's fake-base balance and
-	// whether the market is bound.
+	// SNAPSHOT the observable state BEFORE the swap.
 	takerBaseBefore := h.wrapper().ercBal(fakeBase, taker).Uint64()
 	store := newEVMStore(newPoolStateAdapter(h.state))
 	if _, _, ok, _ := dexcore.ReadMarketAssets(store, key.ID()); ok {
@@ -99,10 +225,10 @@ func Test9999RejectsSyntheticAsset(t *testing.T) {
 	if err == nil {
 		t.Fatal("a swap over a fake ASCII assetID MUST revert (synthetic asset is untradeable)")
 	}
-	// It refuses at the LIVE-REALITY gate (registered, but no on-chain code) — the synthetic-
-	// asset refusal that a resolve-only gate could NOT make.
+	// It refuses at the ON-CHAIN PROOF gate (well-formed identity, but no code) — the synthetic-
+	// asset refusal proven by EXTCODESIZE, NOT by allowlist absence.
 	if !errors.Is(err, dexcore.ErrAssetNotOnChain) {
-		t.Fatalf("expected ErrAssetNotOnChain (registered but no code at the fake address), got: %v", err)
+		t.Fatalf("expected ErrAssetNotOnChain (no code at the fake address), got: %v", err)
 	}
 
 	// BEFORE ANY DEBIT: the taker's fake-base balance is UNCHANGED (no lock was taken).
@@ -115,29 +241,21 @@ func Test9999RejectsSyntheticAsset(t *testing.T) {
 	}
 }
 
-// Test9999RejectsWrongNetworkAsset: a resolver bound to a DIFFERENT network/C-Chain than
-// the running chain is refused at swap time — a resolver for the wrong chain must never
-// admit assets for this one (derive-don't-trust).
+// Test9999RejectsWrongNetworkAsset: a resolver bound to a DIFFERENT network/C-Chain than the
+// running chain is refused at swap time — a resolver for the wrong chain must never admit assets
+// for this one (derive-don't-trust). This identity binding is KEPT under permissionless rules:
+// permissionless means no allowlist, NOT no network-identity discipline.
 func Test9999RejectsWrongNetworkAsset(t *testing.T) {
 	h := newSettleHarness(t)
-	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
-	// absence), which runs only when native-value swaps are enabled — enable it as a
-	// quorum-finality node would; cleanup restores the fail-closed default.
 	h.key = e2eMarketKey()
 
-	// Resolver bound to a WRONG C-Chain id (the harness runs cChainID {0xCC}). Replace the
-	// harness's default (correct-network) resolver: InstallAssetResolver refuses to re-install a
-	// DIFFERENT identity over an existing one, so we clear the slot first; the cleanup restores
-	// the default. The property under test is that the wrong-NETWORK resolver is refused at SWAP
-	// time (ErrAssetResolverIdentityMismatch), not the install guard.
+	// Resolver bound to a WRONG C-Chain id (the harness runs cChainID {0xCC}). Both currencies
+	// are code-backed so the ONLY thing that can refuse the swap is the identity cross-check.
 	wrongChain := h.cChainID
 	wrongChain[0] ^= 0xFF
-	r := newTestAssetResolver(h.networkID, wrongChain)
-	r.admitNative(t, 18)
+	r := newTestAssetResolver(h.networkID, wrongChain).boundToHarness(h)
 	r.admitERC20(t, e2eLETH, 18)
 	r.admitERC20(t, e2eLUSD, 18)
-	h.state.stateDB.SetCodeSize(e2eLETH, 1)
-	h.state.stateDB.SetCodeSize(e2eLUSD, 1)
 	prev := installedAssetResolver.Load()
 	installedAssetResolver.Store(nil) // drop the harness default so the wrong-network install lands
 	if err := InstallAssetResolver(r, h.networkID, wrongChain); err != nil {
@@ -154,74 +272,10 @@ func Test9999RejectsWrongNetworkAsset(t *testing.T) {
 	}
 }
 
-// Test9999CannotOpenMarketWithoutRegistryApproval: a maker RESTING an order (swapPlace,
-// which BINDS the market) over an unregistered asset is refused — closing the
-// "OpenMarket binds any caller-named pair" hole on the maker side.
-func Test9999CannotOpenMarketWithoutRegistryApproval(t *testing.T) {
-	h := newSettleHarness(t)
-	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
-	// absence), which runs only when native-value swaps are enabled — enable it as a
-	// quorum-finality node would; cleanup restores the fail-closed default.
-	h.key = e2eMarketKey()
-
-	// Install a resolver that admits ONLY native (NOT LETH/LUSD), so the market's assets are
-	// unregistered. A maker must not be able to bind a market over them.
-	r := newTestAssetResolver(h.networkID, h.cChainID)
-	r.admitNative(t, 18)
-	prev := installedAssetResolver.Load()
-	if err := InstallAssetResolver(r, h.networkID, h.cChainID); err != nil {
-		t.Fatalf("InstallAssetResolver: %v", err)
-	}
-	t.Cleanup(func() { installedAssetResolver.Store(prev) })
-
-	// A maker tries to rest a BID on the (unregistered) LETH/LUSD market.
-	data := make([]byte, 256)
-	copy(data[0:160], EncodePoolKeyABI(h.key))
-	data[191] = 1                                                            // isBid
-	new(big.Int).SetUint64(50 * priceMultiplierConst).FillBytes(data[192:224]) // price
-	new(big.Int).SetUint64(100).FillBytes(data[224:256])                       // size
-	_, _, err := h.c.Run(h.state, e2eMaker, poolManagerAddr9999, prependSelector(SelectorSwapPlace, data), 5_000_000, false)
-	if !errors.Is(err, dexcore.ErrAssetNotAdmitted) {
-		t.Fatalf("a maker placing on an unregistered market must revert ErrAssetNotAdmitted, got: %v", err)
-	}
-	// And NO market binding may have been written (fail-closed).
-	if _, _, ok, _ := dexcore.ReadMarketAssets(newEVMStore(newPoolStateAdapter(h.state)), h.key.ID()); ok {
-		t.Fatal("a refused swapPlace must NOT have bound any market assets")
-	}
-}
-
-// Test9999CannotRouteWithoutRegistryApproval: a taker's swap (route) over an unregistered
-// market is refused at the admission gate — the taker-side twin of the maker test.
-func Test9999CannotRouteWithoutRegistryApproval(t *testing.T) {
-	h := newSettleHarness(t)
-	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
-	// absence), which runs only when native-value swaps are enabled — enable it as a
-	// quorum-finality node would; cleanup restores the fail-closed default.
-	h.key = e2eMarketKey()
-
-	// Resolver admits ONLY native — the LETH/LUSD market is unregistered.
-	r := newTestAssetResolver(h.networkID, h.cChainID)
-	r.admitNative(t, 18)
-	prev := installedAssetResolver.Load()
-	if err := InstallAssetResolver(r, h.networkID, h.cChainID); err != nil {
-		t.Fatalf("InstallAssetResolver: %v", err)
-	}
-	t.Cleanup(func() { installedAssetResolver.Store(prev) })
-
-	params := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-50), SqrtPriceLimitX96: big.NewInt(0)}
-	calldata := buildSwapCalldata(h.key, params, EncodeMinOutHookData(1))
-	_, _, err := runWithEVMSnapshot(h.c, h.state, e2eTaker, poolManagerAddr9999,
-		prependSelector(SelectorSwap, calldata), 5_000_000, false)
-	if !errors.Is(err, dexcore.ErrAssetNotAdmitted) {
-		t.Fatalf("a route over an unregistered market must revert ErrAssetNotAdmitted, got: %v", err)
-	}
-}
-
-// Test9999ERC20AssetIDUsesTokenAddress proves the identity discipline for ERC-20: the
-// value-path asset id IS the left-pad of the 20-byte token ADDRESS (assetID), the registry
-// admission key derives from that same address, and the on-chain verifier requires CODE at
-// exactly that address. So an ERC-20 is keyed by its real contract address with bytecode —
-// never by a ticker.
+// Test9999ERC20AssetIDUsesTokenAddress proves the identity discipline for ERC-20: the value-path
+// asset id IS the left-pad of the 20-byte token ADDRESS (assetID), and the on-chain verifier
+// requires CODE at exactly that address. So an ERC-20 is keyed by its real contract address with
+// bytecode — never by a ticker — and admission is permissionless on the code, not a list.
 func Test9999ERC20AssetIDUsesTokenAddress(t *testing.T) {
 	// (a) The precompile's value key for an ERC-20 currency is the left-pad of its address.
 	wantID := assetID(Currency{Address: e2eLUSD})
@@ -230,7 +284,6 @@ func Test9999ERC20AssetIDUsesTokenAddress(t *testing.T) {
 	if wantID != fromAddr {
 		t.Fatalf("ERC-20 value key must be the left-pad of the token address: got %x want %x", wantID, fromAddr)
 	}
-	// The low 20 bytes are exactly the token address; the high 12 are zero.
 	if common.BytesToAddress(wantID[12:]) != e2eLUSD {
 		t.Fatalf("ERC-20 value key low-20 bytes must equal the token address, got %x", wantID[12:])
 	}
@@ -240,52 +293,43 @@ func Test9999ERC20AssetIDUsesTokenAddress(t *testing.T) {
 		}
 	}
 
-	// (b) The live-reality verifier requires CODE at that token address; a code-less address
-	// (an ASCII ticker masquerading as a token) is refused.
+	// (b) The on-chain verifier requires CODE at that token address; a code-less address (an
+	// ASCII ticker masquerading as a token) is refused — the permissionless reality gate.
 	h := newE2EHarness(t)
 	verifier := onChainVerifierFor(newPoolStateAdapter(h.state))
 	if verifier == nil {
 		t.Fatal("the value path must have an on-chain verifier")
 	}
-	// e2eLUSD was code-seeded by the harness -> real.
 	if err := verifier.VerifyOnChainAsset(dexcore.AssetKindERC20, e2eLUSD.Bytes()); err != nil {
 		t.Fatalf("a code-backed ERC-20 address must verify as real on-chain: %v", err)
 	}
-	// A fake ASCII-ticker address has no code -> refused.
 	if err := verifier.VerifyOnChainAsset(dexcore.AssetKindERC20, a32("USDC").Bytes()); err == nil {
 		t.Fatal("a code-less ASCII-ticker address must NOT verify as a real ERC-20")
 	}
 }
 
 // Test9999UTXOAssetIDUsesRealAssetID proves the identity discipline for UTXO assets: the
-// canonical AssetID is DERIVED from the real 32-byte source-chain assetID (a domain-
-// separated fold over the real reference), NEVER a left-padded ASCII ticker. Two distinct
-// real assetIDs yield distinct ids; a ticker-shaped ref is not even a valid UTXO reference.
+// canonical AssetID is DERIVED from the real 32-byte source-chain assetID (a domain-separated
+// fold over the real reference), NEVER a left-padded ASCII ticker.
 func Test9999UTXOAssetIDUsesRealAssetID(t *testing.T) {
 	const net uint32 = 1
 	srcChain := ids.ID{0xCC}
 
-	// A real 32-byte UTXO assetID.
 	realAssetID := ids.GenerateTestID()
 	id, err := dexcore.DeriveAssetID(net, srcChain, dexcore.AssetKindUTXO, realAssetID[:])
 	if err != nil {
 		t.Fatalf("DeriveAssetID(UTXO, real assetID): %v", err)
 	}
-	// The derived id is a domain-separated fold — NOT the raw assetID and NOT a left-pad.
 	if id == realAssetID {
 		t.Fatal("the canonical UTXO id must be a derived fold, not the raw assetID passed through")
 	}
 
-	// A LEFT-PADDED ASCII TICKER is NOT a valid UTXO reference (UTXO refs are 32-byte real
-	// assetIDs, and a ticker padded into 20 bytes is the wrong shape / would be all-zero in
-	// the wrong places) — CanonicalRefFor refuses anything that is not a real 32-byte ref.
 	var tickerRef [20]byte
 	copy(tickerRef[:], []byte("ZOO"))
 	if _, err := dexcore.CanonicalRefFor(dexcore.AssetKindUTXO, tickerRef[:]); err == nil {
 		t.Fatal("a 20-byte ASCII-ticker ref must NOT be accepted as a UTXO assetID (UTXO refs are real 32-byte assetIDs)")
 	}
 
-	// Two distinct real assetIDs derive to two distinct ids (injective over the real ref).
 	other := ids.GenerateTestID()
 	id2, err := dexcore.DeriveAssetID(net, srcChain, dexcore.AssetKindUTXO, other[:])
 	if err != nil {
@@ -296,40 +340,43 @@ func Test9999UTXOAssetIDUsesRealAssetID(t *testing.T) {
 	}
 }
 
-// Test9999RegistryGateRunsBeforeAnyDebit is the ordering proof: even with the taker FUNDED
-// and a min-out floor that would clear the slippage policy, a swap whose asset fails
-// admission moves NEITHER the taker's C balance NOR any DEX state — the gate runs strictly
-// before the lock. We use an unregistered (but code-backed) base so the RESOLVE gate fires,
-// and assert no debit and no market binding occurred.
-func Test9999RegistryGateRunsBeforeAnyDebit(t *testing.T) {
+// Test9999OnChainProofRunsBeforeAnyDebit is the ordering proof under permissionless rules: even
+// with the taker FUNDED and a min-out floor that would clear the slippage policy, a swap whose
+// base is SYNTHETIC (no on-chain code) moves NEITHER the taker's C balance NOR any DEX state —
+// the on-chain-proof gate runs strictly before the lock. We use a code-less base so the on-chain
+// PROOF fires (the permissionless rejection), and assert no debit and no market binding occurred.
+func Test9999OnChainProofRunsBeforeAnyDebit(t *testing.T) {
 	h := newE2EHarness(t)
 	taker := e2eTaker
 
-	unregBase := common.HexToAddress("0x00000000000000000000000000000000000000B2")
-	h.state.stateDB.SetCodeSize(unregBase, 1) // has code, but NOT registered
-	key := PoolKey{Currency0: Currency{Address: unregBase}, Currency1: Currency{Address: e2eLUSD}, Fee: 3000, TickSpacing: 60}
+	synthBase := common.HexToAddress("0x00000000000000000000000000000000000000B2")
+	key := PoolKey{Currency0: Currency{Address: synthBase}, Currency1: Currency{Address: e2eLUSD}, Fee: 3000, TickSpacing: 60}
 
-	// Fund the taker generously so a debit would be unmistakable.
-	h.wrapper().mintTestToken(unregBase, taker, big.NewInt(10_000))
-	takerBefore := h.wrapper().ercBal(unregBase, taker).Uint64()
-	seamBefore := h.seamReserveOf(unregBase)
+	// Fund the taker generously so a debit would be unmistakable. NOTE: mintTestToken auto-seeds
+	// code (a minted test token is a real ERC-20 by default), so we zero the code AFTER minting
+	// to model a SYNTHETIC asset (funded, but no contract code) — the case the on-chain proof
+	// must refuse.
+	h.wrapper().mintTestToken(synthBase, taker, big.NewInt(10_000))
+	h.state.stateDB.SetCodeSize(synthBase, 0) // SYNTHETIC: no code -> on-chain proof refuses it
+	takerBefore := h.wrapper().ercBal(synthBase, taker).Uint64()
+	seamBefore := h.seamReserveOf(synthBase)
 
 	params := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-5_000), SqrtPriceLimitX96: big.NewInt(0)}
 	calldata := buildSwapCalldata(key, params, EncodeMinOutHookData(1))
 	_, _, err := runWithEVMSnapshot(h.c, h.state, taker, poolManagerAddr9999,
 		prependSelector(SelectorSwap, calldata), 5_000_000, false)
-	if !errors.Is(err, dexcore.ErrAssetNotAdmitted) {
-		t.Fatalf("expected ErrAssetNotAdmitted, got: %v", err)
+	if !errors.Is(err, dexcore.ErrAssetNotOnChain) {
+		t.Fatalf("expected ErrAssetNotOnChain (synthetic base, no code), got: %v", err)
 	}
 	// NO DEBIT: the taker's balance is untouched and the vault reserve did not grow.
-	if got := h.wrapper().ercBal(unregBase, taker).Uint64(); got != takerBefore {
-		t.Fatalf("the registry gate debited the taker BEFORE refusing: %d -> %d", takerBefore, got)
+	if got := h.wrapper().ercBal(synthBase, taker).Uint64(); got != takerBefore {
+		t.Fatalf("the on-chain-proof gate debited the taker BEFORE refusing: %d -> %d", takerBefore, got)
 	}
-	if got := h.seamReserveOf(unregBase); got != seamBefore {
-		t.Fatalf("the registry gate moved value into the vault BEFORE refusing: %d -> %d", seamBefore, got)
+	if got := h.seamReserveOf(synthBase); got != seamBefore {
+		t.Fatalf("the on-chain-proof gate moved value into the vault BEFORE refusing: %d -> %d", seamBefore, got)
 	}
 	// NO DEX STATE WRITE: no market bound.
 	if _, _, ok, _ := dexcore.ReadMarketAssets(newEVMStore(newPoolStateAdapter(h.state)), key.ID()); ok {
-		t.Fatal("the registry gate bound a market BEFORE refusing (no DEX write may precede admission)")
+		t.Fatal("the on-chain-proof gate bound a market BEFORE refusing (no DEX write may precede admission)")
 	}
 }
