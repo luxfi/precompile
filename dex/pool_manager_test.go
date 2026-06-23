@@ -27,7 +27,26 @@ type MockStateDB struct {
 	// to the recipient, modelling a fee-on-transfer token so the observed-delta short
 	// branches (ErrSettleObservedShort / ErrSettleDepositShort) can be exercised.
 	feeOnTransferBps uint64
+	// codeSizes backs the codeStater capability (CodeSizeOf == EXTCODESIZE): an address
+	// with a non-zero size is a deployed contract. A real ERC-20 in a test has code (set
+	// by mintTestToken); a never-deployed / self-destructed address has none, so the
+	// value path's live-reality verifier refuses it. Native (the zero address) is never a
+	// contract and needs no entry.
+	codeSizes map[common.Address]int
 }
+
+// SetCodeSize marks addr as having a contract code of the given size (the test analog of
+// deploying a contract). Used to make a token address "real on-chain" for the value-path
+// OnChainAssetVerifier, and to model a self-destructed token (size 0) for the redteam.
+func (m *MockStateDB) SetCodeSize(addr common.Address, size int) {
+	if m.codeSizes == nil {
+		m.codeSizes = make(map[common.Address]int)
+	}
+	m.codeSizes[addr] = size
+}
+
+// CodeSizeOf implements the codeStater capability the value-path on-chain verifier reads.
+func (m *MockStateDB) CodeSizeOf(addr common.Address) int { return m.codeSizes[addr] }
 
 func NewMockStateDB() *MockStateDB {
 	return &MockStateDB{

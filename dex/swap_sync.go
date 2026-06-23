@@ -7,7 +7,6 @@ import (
 	"errors"
 	"math"
 	"math/big"
-	"sync/atomic"
 
 	"github.com/luxfi/dex/pkg/dexcore"
 	"github.com/luxfi/dex/pkg/lx"
@@ -15,45 +14,17 @@ import (
 	"github.com/luxfi/precompile/contract"
 )
 
-// valueSwapsEnabled is the FAIL-CLOSED activation gate for the synchronous on-chain
-// router. It is OFF by default: the precompile ships with native-value swaps DISABLED,
-// and only the node may enable them — and only AFTER it has verified the consensus
-// engine is in quorum-finality mode (RequireQuorumFinalityForValueDEX). A node on a
-// single-validator or non-quorum engine never enables it, so no value swap can run
-// where a proposer could self-finalize a fabricated fill. This is the precompile-side
-// half of the launch rule; the node-side half (the actual engine.Mode() check) lives
-// in the EVM plugin boot, which calls EnableValueSwaps(true) only when the gate
-// passes. See consensus/engine/chain/quorum_guard.go.
-var valueSwapsEnabled atomic.Bool
-
-// EnableValueSwaps is the node's switch to activate (or deactivate) the synchronous
-// native-value router. The EVM plugin calls EnableValueSwaps(true) at boot ONLY after
-// engine.RequireQuorumFinalityForValueDEX(true) returns nil — i.e. the engine is K>1
-// with a verified alpha-of-K cert path. Until then native-value swaps revert
-// (ErrValueSwapsNotEnabled), fail-closed.
-func EnableValueSwaps(on bool) { valueSwapsEnabled.Store(on) }
-
-// ValueSwapsEnabled reports whether the synchronous native-value router is active.
-func ValueSwapsEnabled() bool { return valueSwapsEnabled.Load() }
-
-// ErrValueSwapsNotEnabled is returned when a synchronous value swap is attempted on a
-// node that has not enabled the router (the engine is not in quorum-finality mode, or
-// the node has not yet activated value trading). Fail-closed.
-var ErrValueSwapsNotEnabled = errors.New("dex: native-value swaps are not enabled on this node (requires quorum-finality consensus)")
-
 // runSyncSwap is the 0x9999 dispatch entry for a SYNCHRONOUS (untagged) V4 swap — the
-// on-chain smart-order-router path. It mirrors SettleSwap's guards (read-only reject,
-// value-enabled gate, gas, the global non-reentrant custody mutex, the halt gate) but
-// needs NO cross-chain atomic capability: the whole swap is one in-process, in-trie
-// transition. Returns the V4 BalanceDelta and the remaining gas.
-func runSyncSwap(state contract.AccessibleState, caller common.Address, key PoolKey, params SwapParams, suppliedGas uint64, readOnly bool) ([]byte, uint64, error) {
+// on-chain smart-order-router path, and THE path every normal swap() takes. The 0x9999
+// DEX precompile is ALWAYS-ON (live since the Dec 25 2025 activation); there is NO enable
+// gate. The fail-closed controls that matter are intrinsic to the swap itself and apply on
+// every call: real-asset registry admission (OpenMarketChecked), the live-code verifier
+// (EXTCODESIZE), the per-swap min-out / price floor, the halt switches, and the single
+// non-reentrant custody mutex. It needs NO cross-chain atomic capability: the whole swap is
+// one in-process, in-trie transition. Returns the V4 BalanceDelta and the remaining gas.
+func runSyncSwap(state contract.AccessibleState, caller common.Address, key PoolKey, params SwapParams, hookData []byte, suppliedGas uint64, readOnly bool) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, suppliedGas, errors.New("dex: cannot swap in read-only mode")
-	}
-	// FAIL-CLOSED value gate: no native-value swap unless the node enabled it (which it
-	// does only on a quorum-finality engine).
-	if !valueSwapsEnabled.Load() {
-		return nil, suppliedGas, ErrValueSwapsNotEnabled
 	}
 	if suppliedGas < GasSwap {
 		return nil, 0, errors.New("dex: out of gas")
@@ -75,13 +46,29 @@ func runSyncSwap(state contract.AccessibleState, caller common.Address, key Pool
 	}
 	defer exitCustodyKV(stateDB)
 
+	// C1: resolve the real-asset admission authority for the chain this node actually
+	// runs. The runtime (networkID, cChainID) come from the host's atomic capability —
+	// the SAME consensus-supplied identity 0x9999 already uses — and the installed
+	// resolver's bound identity is cross-checked against them (fail-closed on mismatch).
+	// A node with no resolver installed yields a nil resolver, which OpenMarketChecked
+	// turns into the fail-closed ErrNoAssetResolver — a swap never admits a left-padded
+	// address as a real asset.
+	atomicState, ok := state.(contract.AtomicState)
+	if !ok {
+		return nil, gasLeft, ErrSettleNoAtomicState
+	}
+	resolver, err := resolverForRuntime(atomicState.NetworkID(), atomicState.CChainID())
+	if err != nil {
+		return nil, gasLeft, err
+	}
+
 	// The block timestamp gates the consensus-visible DEXFill log (the activation-fork
 	// replay guard). It comes from the AccessibleState's block context (the StateDB
 	// adapter exposes only the number); the sync handler reads it here and threads it
 	// into syncSwap so the fill log fires on the SAME dated fork the async path uses.
 	blockTimestamp := state.GetBlockContext().Timestamp()
 
-	out, err := syncSwap(stateDB, caller, key, params, blockTimestamp)
+	out, err := syncSwap(stateDB, resolver, caller, key, params, hookData, blockTimestamp)
 	if err != nil {
 		return nil, gasLeft, err
 	}
@@ -130,19 +117,29 @@ func runSyncSwap(state contract.AccessibleState, caller common.Address, key Pool
 // receipt root before the activation boundary (dexLogsActive), or a node re-syncing
 // from before the boundary would compute a divergent root. On the relaunched chain
 // every swap is at/after the boundary, so every filled swap emits the fill log.
-func syncSwap(stateDB StateDB, caller common.Address, key PoolKey, params SwapParams, blockTimestamp uint64) ([]byte, error) {
-	// Decode the V4 swap into the real-asset routing request.
-	req, inAssetAddr, err := buildSwapRequest(stateDB, caller, key, params)
+func syncSwap(stateDB StateDB, resolver dexcore.AssetResolver, caller common.Address, key PoolKey, params SwapParams, hookData []byte, blockTimestamp uint64) ([]byte, error) {
+	// Decode the V4 swap into the real-asset routing request (incl. the taker's min-out
+	// floor from hookData and the value-path slippage-protection policy).
+	req, inAssetAddr, err := buildSwapRequest(stateDB, caller, key, params, hookData)
 	if err != nil {
 		return nil, err
 	}
 
 	store := newEVMStore(stateDB)
 
-	// Ensure the market's (base,quote) binding exists in the dexcore ledger. The
-	// market is the V4 pool; its assets are currency0 (base) / currency1 (quote),
-	// identified by their REAL token addresses (assetID). Idempotent.
-	if err := dexcore.OpenMarket(store, req.PoolID, req.Base, req.Quote); err != nil {
+	// C1: open the market ONLY over two assets that are BOTH (a) registered + enabled in
+	// the registry AND (b) backed by live on-chain code in the executing state. Each side
+	// is admitted through TWO orthogonal gates BEFORE any binding or debit:
+	//   - the injected AssetResolver (the AssetRegistry's authority, repointed onto the
+	//     value path): a fabricated/unregistered/disabled asset REVERTS (ErrAssetNotAdmitted),
+	//     and a node with no resolver installed fails closed (ErrNoAssetResolver);
+	//   - the live-state OnChainAssetVerifier (EXTCODESIZE on the token address): an ERC-20
+	//     whose contract was self-destructed / never deployed REVERTS (ErrAssetNotOnChain),
+	//     and a non-EVM caller (no verifier) fails closed (ErrNoOnChainVerifier).
+	// The left-padded address is no longer sufficient to create a market. Idempotent.
+	verifier := onChainVerifierFor(stateDB)
+	if err := dexcore.OpenMarketChecked(store, resolver, verifier, req.PoolID,
+		assetSideForCurrency(key.Currency0), assetSideForCurrency(key.Currency1)); err != nil {
 		return nil, err
 	}
 
@@ -217,9 +214,18 @@ func syncSwap(stateDB StateDB, caller common.Address, key PoolKey, params SwapPa
 // The taker is the caller; its dexcore identity is the left-16-bytes of its address
 // (the wallet axis), matching the settlement-identity fold. Returns the request and
 // the input asset's real token address (for the vault lock).
-func buildSwapRequest(stateDB StateDB, caller common.Address, key PoolKey, params SwapParams) (dexcore.SwapRequest, common.Address, error) {
+func buildSwapRequest(stateDB StateDB, caller common.Address, key PoolKey, params SwapParams, hookData []byte) (dexcore.SwapRequest, common.Address, error) {
 	if params.AmountSpecified == nil || params.AmountSpecified.Sign() == 0 {
 		return dexcore.SwapRequest{}, common.Address{}, ErrInvalidAmount
+	}
+	// V4 sign convention: AmountSpecified < 0 is EXACT-INPUT, > 0 is EXACT-OUTPUT. The
+	// synchronous router is EXACT-INPUT only (it locks the exact input and floors the
+	// realized output via MinOut). An EXACT-OUTPUT swap has a maxAmountIn semantics the sync
+	// router does not implement, and silently treating Abs(amount) as exact-input would lock
+	// the wrong leg with NO floor — exactly the unprotected case FIX-2 forbids. Reject it
+	// explicitly so an exact-output swap reverts rather than routing unprotected.
+	if params.AmountSpecified.Sign() > 0 {
+		return dexcore.SwapRequest{}, common.Address{}, ErrExactOutputNotSupported
 	}
 	mag := new(big.Int).Abs(params.AmountSpecified)
 	if !mag.IsUint64() || mag.Sign() <= 0 {
@@ -243,6 +249,24 @@ func buildSwapRequest(stateDB StateDB, caller common.Address, key PoolKey, param
 		limitPrice = dexcore.PriceToInt(math.Float64frombits(limitBits))
 	}
 
+	// H3: the taker's min-out floor, decoded from the V4 hookData (DM01). This is the
+	// slippage floor dexcore.enforceProceedsPriceFloor / the MinOut check enforce — so a
+	// realized fill below it reverts the whole swap. A malformed DM01 body reverts here.
+	minOut, _, err := decodeMinOut(hookData)
+	if err != nil {
+		return dexcore.SwapRequest{}, common.Address{}, err
+	}
+
+	// VALUE-PATH SLIPPAGE POLICY (the SELL-side mirror of dexcore's ErrBuyRequiresLimit):
+	// an exact-input market SELL (no price limit) on this public, adversarial surface MUST
+	// carry a min-out floor, else it would sweep the resting book at any price (sandwich
+	// exposure). A SELL with a price limit is already protected (the limit floors price);
+	// a SELL with neither is refused. (A no-limit market BUY is already refused downstream
+	// by dexcore.ErrBuyRequiresLimit, so only the SELL gap is closed here.)
+	if side == lx.Sell && limitPrice <= 0 && minOut == 0 {
+		return dexcore.SwapRequest{}, common.Address{}, ErrSellRequiresProtection
+	}
+
 	req := dexcore.SwapRequest{
 		PoolID:       key.ID(),
 		TakerUser:    accountFromAddress(caller),
@@ -254,7 +278,7 @@ func buildSwapRequest(stateDB StateDB, caller common.Address, key PoolKey, param
 		TimestampN:   blockTimestampNanos(stateDB),
 		LimitPrice:   limitPrice,
 		LimitIsUpper: limitIsUpper,
-		MinOut:       minAmountOutU64(params),
+		MinOut:       minOut,
 		Class:        dexcore.ClassPublicCLOB,
 	}
 	return req, inAddr, nil
@@ -359,13 +383,6 @@ func amountInAssetOf(req dexcore.SwapRequest) dexcore.AssetID {
 	}
 	return req.Base
 }
-
-// minAmountOutU64 returns the V4 exact-input min-out as a uint64 (0 = none). For an
-// exact-input swap the min-out is not in the V4 calldata directly; it is conveyed via
-// the router/hookData in the full integration. The first cut takes 0 (no floor) here
-// and relies on the taker price limit for MEV protection; a min-out floor wires in
-// with the hookData decode.
-func minAmountOutU64(_ SwapParams) uint64 { return 0 }
 
 // deterministicSwapOrderID derives the ephemeral swap order id from block context +
 // a per-block swap counter, so it is unique within the block and identical on every
