@@ -14,22 +14,25 @@ import (
 	"github.com/luxfi/ids"
 )
 
-// asset_resolver.go is the C1 wiring: it injects the AssetRegistry's admission authority
-// into the 0x9999 cEVM value path. The registry (the single source of truth for which
-// assets are REAL, registered, and enabled) lives in chains/dexvm/registry; the value
+// asset_resolver.go is the value-path wiring: it injects the canonical-identity
+// AssetResolver into the 0x9999 cEVM value path. The resolver (which PROVES an asset's
+// canonical identity on the node's bound network — permissionless, not an allowlist) is
+// backed by chains/dexvm/registry as a metadata CACHE + X-chain reality source; the value
 // path lives here in the precompile. The precompile depends only on the dexcore
 // AssetResolver PORT (an abstraction it owns through the shared leaf), never on the
 // registry package — so there is no upward dependency and no cycle. The EVM plugin boot
-// constructs a registry-backed resolver and installs it here exactly like it installs
-// the local D-Chain client (InstallDChainClient).
+// constructs the resolver and installs it here exactly like it installs the local D-Chain
+// client (InstallDChainClient).
 //
-// THE PROPERTY THIS ENFORCES (C1): a market on the value path can be opened ONLY over
-// two registered, enabled real on-chain assets. The left-padded address (assetID) is no
-// longer SUFFICIENT to create a market — a swap whose base is a fabricated/unregistered
-// asset REVERTS at the market-open (OpenMarketChecked -> ErrAssetNotAdmitted). When
-// native value is enabled (the only mode that reaches the synchronous swap path) and no
-// resolver was installed, the path FAILS CLOSED (ErrNoAssetResolver) rather than
-// admitting a synthetic asset.
+// THE PROPERTY THIS ENFORCES (PERMISSIONLESS + PUBLIC): any market over two REAL assets
+// can be opened — permissionlessly. The left-padded address (assetID) NAMES an asset but
+// does not let it TRADE: trading requires the asset to RESOLVE (well-formed canonical
+// identity on the bound network) AND VERIFY ON-CHAIN (real contract code — the
+// authoritative reality check). A swap whose base is a fabricated/synthetic asset RESOLVES
+// to a well-formed id but REVERTS at the live-reality gate (OpenMarketChecked ->
+// ErrAssetNotOnChain), because a synthetic address has no code. When the value path is live
+// and no resolver was installed, the path FAILS CLOSED (ErrNoAssetResolver) rather than
+// admitting an unbound left-padded address.
 
 // installedAssetResolver is the package-level, identity-bound asset resolver the value
 // path consults. nil until the EVM plugin installs one at boot. It is read on the hot
@@ -94,7 +97,7 @@ func AssetResolverInstalled() bool { return installedAssetResolver.Load() != nil
 
 // resolverForRuntime returns the installed resolver IF its bound identity matches the
 // runtime (networkID, cChainID), else an error. A nil installed resolver yields a nil
-// resolver and nil error — the caller (RequireEnabledAsset) maps that to the fail-closed
+// resolver and nil error — the caller (RequireResolvedAsset) maps that to the fail-closed
 // ErrNoAssetResolver. A bound/runtime identity mismatch is a hard refusal.
 func resolverForRuntime(networkID uint32, cChainID ids.ID) (dexcore.AssetResolver, error) {
 	b := installedAssetResolver.Load()
