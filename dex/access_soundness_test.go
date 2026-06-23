@@ -76,7 +76,7 @@ func Test9999_AccessSetKeyParity_HandlerVsPredictor(t *testing.T) {
 		h.registerMarket(t)
 		h.fundCallerNative(1000)
 
-		calldata := h.intentCalldata()
+		calldata := h.intentCalldataWithDeadline(1 << 40) // DI01-tagged -> native SettleSwap seam
 		declared := h.predictSwap(calldata)
 
 		observed, foreign, err := h.runSwapObserved(t, calldata)
@@ -180,7 +180,7 @@ func Test9999_AccessSetKeyParity_HandlerVsPredictor(t *testing.T) {
 		h := newSettleHarness(t)
 		h.registerMarket(t)
 		h.fundCallerNative(1000)
-		swapCalldata := h.intentCalldata()
+		swapCalldata := h.intentCalldataWithDeadline(1 << 40) // DI01-tagged -> native SettleSwap seam
 
 		direct := h.predictSwap(swapCalldata)
 		// PredictWriteSetForCall decodes the swap input itself (DecodeSwapInput), so `input` is
@@ -220,7 +220,7 @@ func Test9999_AccessSetKeyParity_HandlerVsPredictor(t *testing.T) {
 		h := newSettleHarness(t)
 		h.registerMarket(t)
 		h.fundCallerNative(1000)
-		calldata := h.intentCalldata()
+		calldata := h.intentCalldataWithDeadline(1 << 40) // DI01-tagged -> native SettleSwap seam
 
 		declared := h.predictSwap(calldata)
 		observed, _, err := h.runSwapObserved(t, calldata)
@@ -271,7 +271,7 @@ func Test9999_AccessSet_FailClosed_RejectsUndeclaredWrite(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
-	calldata := h.intentCalldata()
+	calldata := h.intentCalldataWithDeadline(1 << 40) // DI01-tagged -> native SettleSwap seam
 
 	err := run(h, map[common.Hash]struct{}{}, calldata)
 	if err == nil {
@@ -286,7 +286,7 @@ func Test9999_AccessSet_FailClosed_RejectsUndeclaredWrite(t *testing.T) {
 	h2 := newSettleHarness(t)
 	h2.registerMarket(t)
 	h2.fundCallerNative(1000)
-	calldata2 := h2.intentCalldata()
+	calldata2 := h2.intentCalldataWithDeadline(1 << 40) // DI01-tagged -> native SettleSwap seam
 	declared := h2.predictSwap(calldata2)
 	if err := run(h2, declared, calldata2); err != nil {
 		t.Fatalf("complete declaration must be ACCEPTED (no false rejection), got: %v", err)
