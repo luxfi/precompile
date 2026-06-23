@@ -101,6 +101,27 @@ const (
 	GasNativeSettlement uint64 = 50_000 // decode + SM get/bind + replay slot + credit + SM remove + DEXFill log (Phase B).
 )
 
+// maxIntentTTL is the FINITE reclaim horizon applied to any value-path swap intent that
+// did NOT name an explicit deadline (a plain swap(), or a DI01 body with deadline 0). It
+// bounds how long a taker's locked principal can sit unsettled before reclaimIntent can
+// refund it. Seven days (in seconds) is generous enough for any honest cross-domain
+// settlement to land yet guarantees the principal is never permanently stranded — the
+// structural fix for the deadline-0 fund-lock. A taker who wants a tighter window passes an
+// explicit DI01 deadline; this is only the floor for those who pass none.
+const maxIntentTTL uint64 = 7 * 24 * 60 * 60 // 604800s = 7 days
+
+// defaultedReclaimDeadline returns the finite deadline to stamp on an intent that supplied
+// none: blockTimestamp + maxIntentTTL, saturating at the uint64 max so the addition can
+// never wrap to a SMALL (already-past) value (which would let reclaim fire immediately, or —
+// worse — a wrapped tiny deadline could let a Phase-B settlement be rejected as "late" right
+// away). Saturation keeps the horizon in the future for every realistic block time.
+func defaultedReclaimDeadline(blockTimestamp uint64) uint64 {
+	if blockTimestamp > math.MaxUint64-maxIntentTTL {
+		return math.MaxUint64
+	}
+	return blockTimestamp + maxIntentTTL
+}
+
 // isNativeAsset reports whether an injective AssetID is native LUX (all-zero).
 func isNativeAsset(id [32]byte) bool { return id == ([32]byte{}) }
 
@@ -242,6 +263,16 @@ func SettleSwap(
 				return nil, gasLeft, derr
 			}
 			deadline, nonce = d, n
+		}
+		// FIX (do-not-ship fund-lock): a plain swap() — and any intent that did not name an
+		// explicit deadline — MUST still carry a FINITE reclaim horizon. Without it the taker's
+		// full input is locked under SubmitSwapIntent with Deadline==0, and reclaimIntent then
+		// PERMANENTLY refuses (ErrReclaimNoDeadline) => the principal can never exit if D never
+		// settles. We default a missing deadline to block.timestamp + maxIntentTTL so EVERY
+		// value-path intent is reclaimable after a bounded wait. An explicit deadline (DI01) is
+		// honored as-is. This is the structural guarantee that swap() can never strand funds.
+		if deadline == 0 {
+			deadline = defaultedReclaimDeadline(blockTimestamp)
 		}
 		req, berr := buildIntentRequest(key, params, caller, deadline, nonce)
 		if berr != nil {
