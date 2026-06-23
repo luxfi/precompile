@@ -269,3 +269,38 @@ func readOrderUser(es *evmStore, poolID [32]byte, orderID uint64) (owner [32]byt
 	}
 	return owner, true
 }
+
+// ---------------------------------------------------------------------------
+// L4: the access-set ROOT BINDING entry for the synchronous value path.
+// ---------------------------------------------------------------------------
+
+// SyncSwapAccessCommitment returns the deterministic AccessCommitment over the EXACT write-set a
+// synchronous swap of (key, params, caller) declares — the SAME set the L2 assertion checks and
+// the SAME set PredictSyncSwapWriteSet returns, derived against the pre-call state. It is the
+// per-call value the block-accept path folds into the execution root via FoldAccessCommitment so
+// the DECLARATION itself is consensus-bound: a validator that declares a DIFFERENT sync write-set
+// for the same block lands on a different folded root and its block is rejected by honest peers
+// who recompute the canonical declaration. This is layer (3) — even if the L2 runtime assertion
+// were bypassed on one node, a mis-declared block cannot reach consensus.
+//
+// The commitment is over the DECLARED set (not the observed writes): the L2 assertion already
+// proves observed ⊆ declared in-Verify (fail-closed), so binding the declaration is exactly the
+// anti-lying primitive — the geth EVM state root already binds the actual writes (every declared
+// key is a real 0x9999 SetState landing in the trie), and this binds the claim about which keys
+// those are. Together: writes bound by the state root, declaration bound by this commitment, and
+// observed ⊆ declared enforced by L2.
+func SyncSwapAccessCommitment(sdb stateKV, key PoolKey, params SwapParams, caller common.Address) AccessCommitment {
+	return NewAccessCommitment(PredictSyncSwapWriteSet(sdb, key, params, caller))
+}
+
+// FoldSyncSwapAccessCommitment is the ONE-LINE host wire site for the block-accept path: it
+// folds a synchronous swap's declared-access commitment into the running execution-root
+// accumulator, exactly as chains/dexvm folds its atomicRequests (vm.go computeStateRoot ->
+// atomic.hashInto). The host threads `acc = FoldSyncSwapAccessCommitment(acc, sdb, key, params,
+// caller)` through each accepted sync swap in deterministic settle order and binds the final
+// accumulator into the state-root input. It is provided here (complete + tested) so the host
+// wire is a single call; the host owns WHERE it folds (the EVM block-accept root / the dexvm
+// computeStateRoot seam), this package owns WHAT is folded (the canonical declaration).
+func FoldSyncSwapAccessCommitment(acc common.Hash, sdb stateKV, key PoolKey, params SwapParams, caller common.Address) common.Hash {
+	return FoldAccessCommitment(acc, SyncSwapAccessCommitment(sdb, key, params, caller))
+}
