@@ -21,11 +21,12 @@ import (
 // "may value move?" into ONE thing: a normal swap() reaches here and the swap's own
 // fail-closed controls — intrinsic to the swap, enforced on EVERY call — decide whether it
 // fills:
-//   - real-asset registry admission (OpenMarketChecked: the installed resolver), which
-//     fails closed (ErrNoAssetResolver) on a node that never wired a resolver, so a node
-//     that cannot prove an asset real simply cannot fill — replacing the old consensus-mode
-//     gate with a structural one;
-//   - the live-code verifier (EXTCODESIZE on the token address);
+//   - permissionless canonical admission (OpenMarketChecked: the installed resolver derives
+//     each side's canonical identity on the bound network — any well-formed real reference
+//     resolves, no allowlist), which fails closed (ErrNoAssetResolver) on a node that never
+//     wired a resolver — replacing the old consensus-mode gate with a structural one;
+//   - the live-code verifier (EXTCODESIZE on the token address) — the AUTHORITATIVE reality
+//     check that admits any real on-chain ERC-20 and refuses a synthetic/code-less one;
 //   - the per-swap min-out / price floor (slippage protection);
 //   - the halt switches (global/market/asset);
 //   - the single non-reentrant custody mutex (an ERC-20 transfer can re-enter).

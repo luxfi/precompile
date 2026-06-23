@@ -4,6 +4,7 @@
 package contract
 
 import (
+	"github.com/luxfi/geth/common"
 	"github.com/luxfi/ids"
 	"github.com/luxfi/vm/chains/atomic"
 )
@@ -50,6 +51,19 @@ type AtomicState interface {
 	// separately so the binding is explicit and survives chains that distinguish
 	// the two.
 	CChainID() ids.ID
+
+	// GovernanceController is the DEX governance authority address — the ONLY caller
+	// permitted to toggle the 0x9999 settlement kill switches (setHaltGlobal/Market/
+	// Asset) and seed the settlement pots. It is a per-NETWORK governance CONTRACT
+	// (Governor/Timelock/multisig) resolved by the host from its deployment topology,
+	// supplied here through the SAME runtime seam as CChainID/DChainID — ZERO per-net
+	// config file. It is NEVER an EOA derivable from a dev mnemonic.
+	//
+	// The zero address means NO governance authority is configured on this network;
+	// the calling precompile MUST then treat every halt/seed call as fail-closed
+	// (revert), so an unset authority can DoS no one — there is no single admin key
+	// that could halt the DEX. A halt is governance, never a hardcoded key.
+	GovernanceController() common.Address
 
 	// DChainID is the D-Chain (dexvm) blockchain id the C<->D atomic seam routes
 	// objects to/from, resolved by the host from the chain topology (the consensus
