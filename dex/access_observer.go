@@ -301,6 +301,15 @@ func (o *observingAccessibleState) CallIndex() uint32 {
 	}
 	return 0
 }
+func (o *observingAccessibleState) GovernanceController() common.Address {
+	if as, ok := o.atomic(); ok {
+		return as.GovernanceController()
+	}
+	// No atomic inner ⇒ no governance authority is observable here; return the zero
+	// address, which the AtomicState contract defines as "fail-closed" (every halt/seed
+	// call must revert). The wrapper never fabricates an authority the inner lacks.
+	return common.Address{}
+}
 
 var (
 	_ contract.AccessibleState = (*observingAccessibleState)(nil)

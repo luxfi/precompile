@@ -128,13 +128,14 @@ func (m *mockState) GetPrecompileEnv() contract.PrecompileEnvironment {
 }
 
 // AtomicState — only reached when atomicAbsent is false.
-func (m *mockState) AtomicMemory() atomic.SharedMemory { return nil }
-func (m *mockState) NetworkID() uint32                 { return m.networkID }
-func (m *mockState) ChainID() ids.ID                   { return m.chainID }
-func (m *mockState) CChainID() ids.ID                  { return m.cChainID }
-func (m *mockState) DChainID() ids.ID                  { return ids.Empty }
-func (m *mockState) TxID() ids.ID                      { return m.txID }
-func (m *mockState) CallIndex() uint32                 { return m.callIndex }
+func (m *mockState) AtomicMemory() atomic.SharedMemory    { return nil }
+func (m *mockState) NetworkID() uint32                    { return m.networkID }
+func (m *mockState) ChainID() ids.ID                      { return m.chainID }
+func (m *mockState) CChainID() ids.ID                     { return m.cChainID }
+func (m *mockState) GovernanceController() common.Address { return common.Address{} } // no DEX governance in this mock (fail-closed)
+func (m *mockState) DChainID() ids.ID                     { return ids.Empty }
+func (m *mockState) TxID() ids.ID                         { return m.txID }
+func (m *mockState) CallIndex() uint32                    { return m.callIndex }
 
 type mockEnv struct{ ro bool }
 
