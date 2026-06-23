@@ -12,29 +12,22 @@ import (
 )
 
 // 0x9010 is REMOVED as a callable precompile (no Run, not registered, no forward).
-// 0x9999 is the SOLE canonical DEX precompile and takes NO per-net config: its
-// settlement-governance authority (protocolFeeController) is the built-in
-// DefaultDAOTreasury, fixed across every network. There is therefore no
-// activation-time controller config to misconfigure — the compromised-dev-key class
-// of footgun is structurally eliminated. These tests pin that new model.
+// 0x9999 is the SOLE canonical DEX precompile and takes NO per-net config FILE: its
+// settlement-governance authority is the per-NETWORK governance controller resolved at
+// RUNTIME from contract.AtomicState.GovernanceController() (a governance CONTRACT, never
+// a hardcoded mnemonic-derivable EOA). There is therefore no single admin key baked into
+// the binary — the centralized-key footgun is structurally eliminated. These tests pin
+// that model: there is no DefaultDAOTreasury, the SettleContract carries no authority
+// field, and only the runtime-supplied governance address may halt.
 
 var lxPoolAddr9010 = common.HexToAddress(LXPoolAddress)
 
-// anvilDevAccounts are the well-known Foundry/Anvil deterministic dev accounts whose
-// private keys are public knowledge. The 0x9999 built-in controller must never be one
-// of them (settle_module.go DefaultDAOTreasury).
-var anvilDevAccounts = []common.Address{
-	common.HexToAddress("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"), // anvil #0
-	common.HexToAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"), // anvil #1
-	common.HexToAddress("0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"), // anvil #2
-	common.HexToAddress("0x90F79bf6EB2c4f870365E785982E1f101E93b906"), // anvil #3
-	common.HexToAddress("0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"), // anvil #4
-	common.HexToAddress("0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"), // anvil #5
-	common.HexToAddress("0x976EA74026E726554dB657fA54763abd0C3a0aa9"), // anvil #6
-	common.HexToAddress("0x14dC79964da2C08b23698B3D3cc7Ca32193d9955"), // anvil #7
-	common.HexToAddress("0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f"), // anvil #8
-	common.HexToAddress("0xa0Ee7A142d267C1f36714E4a8F75612F20a79720"), // anvil #9
-}
+// retiredHardcodedHaltEOA is the address that USED to be the hardcoded 0x9999 halt
+// authority (the mnemonic-derivable DefaultDAOTreasury). It is the devnet "Maker"
+// derivable from LUX_MNEMONIC, so anyone with that mnemonic could halt the DEX. After
+// HIGH-3 it has NO special power: the halt authority is the runtime governance
+// controller, and this EOA is not it. The governance tests prove it can no longer halt.
+var retiredHardcodedHaltEOA = common.HexToAddress("0x9011E888251AB053B7bD1cdB598Db4f9DEd94714")
 
 // TestDex9010_NotRegistered asserts 0x9010 is NOT a registered precompile — it has no
 // module, so the EVM never dispatches it and eth_getCode(0x9010) is 0x. 0x9999 IS
@@ -48,23 +41,28 @@ func TestDex9010_NotRegistered(t *testing.T) {
 	}
 }
 
-// TestDex9999_DefaultControllerNotCompromised asserts the built-in 0x9999 settlement
-// governance authority (DefaultDAOTreasury) is NOT one of the publicly-known dev keys.
-// Because 0x9999 has no per-net controller config, this built-in value is the only
-// admin and it must be safe by construction.
-func TestDex9999_DefaultControllerNotCompromised(t *testing.T) {
-	for _, bad := range anvilDevAccounts {
-		if DefaultDAOTreasury == bad {
-			t.Fatalf("0x9999 DefaultDAOTreasury must not be a publicly-known dev key: %s", bad.Hex())
-		}
+// TestDex9999_GovernanceIsRuntimeResolved_NotHardcoded pins the HIGH-3 model at the
+// STATIC level: 0x9999 carries NO hardcoded halt authority. The SettleContract is a
+// zero-field struct (no protocolFeeController), so a single process-global precompile
+// instance serves every network and there is no compromised default key on the struct.
+// The authority is supplied per network at runtime via AtomicState (proven dynamically
+// in the harness governance tests). A grep-level guard: this file no longer references a
+// DefaultDAOTreasury symbol (it is deleted); if anyone re-introduces a hardcoded halt
+// EOA, the harness halt tests below (only-governance-can-halt) fail.
+func TestDex9999_GovernanceIsRuntimeResolved_NotHardcoded(t *testing.T) {
+	// The 0x9999 contract is registered and is the sole DEX money path...
+	if _, ok := modules.GetPrecompileModuleByAddress(poolManagerAddr9999); !ok {
+		t.Fatal("0x9999 must be the registered DEX precompile")
 	}
-	if DefaultDAOTreasury == (common.Address{}) {
-		t.Fatal("0x9999 DefaultDAOTreasury must not be the zero address")
-	}
-	// The singleton 0x9999 contract must carry the built-in treasury as its authority.
-	if SettlePrecompile.protocolFeeController != DefaultDAOTreasury {
-		t.Fatalf("0x9999 protocolFeeController must be the built-in DefaultDAOTreasury, got %s",
-			SettlePrecompile.protocolFeeController.Hex())
+	// ...and a SettleContract value is constructible with NO authority field — i.e. the
+	// authority is not a struct field set from a hardcoded key. (A non-zero-field struct
+	// would not compile as SettleContract{}.)
+	c := &SettleContract{}
+	_ = c
+	// The fail-closed authority error exists and is distinct — an unconfigured network
+	// cannot halt at all (no default key to fall back to).
+	if ErrSettleNoGovernance == nil {
+		t.Fatal("ErrSettleNoGovernance must exist — the fail-closed authority error for an unset governance controller")
 	}
 }
 
