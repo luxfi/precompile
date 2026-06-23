@@ -138,13 +138,14 @@ func isWord(v *big.Int) bool {
 	return v != nil && v.Sign() >= 0 && v.BitLen() <= 256
 }
 
-// stateDBERC20 resolves the erc20Vault capability for the settle path (prefers a
-// StateDB that directly implements erc20Vault, else the poolStateAdapter bridge).
+// stateDBERC20 resolves the erc20Vault capability for the settle path. The poolStateAdapter
+// is itself a complete erc20Vault (it resolves a genuine in-state vault on its underlying
+// StateDB when present, else moves token value through the EVM Call surface — see
+// poolStateAdapter.erc20VaultBacking), so for the adapter the settle path returns the adapter
+// itself. A non-adapter StateDB that directly implements erc20Vault is used as-is.
 func stateDBERC20(stateDB StateDB) (erc20Vault, bool) {
 	if a, ok := stateDB.(*poolStateAdapter); ok {
-		if under, ok := a.underlyingStateDB().(erc20Vault); ok {
-			return under, true
-		}
+		return a, true
 	}
 	v, ok := stateDB.(erc20Vault)
 	return v, ok
