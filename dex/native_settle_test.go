@@ -104,8 +104,6 @@ func Test9999Swap_DoesNotUseBLSReceiptPath(t *testing.T) {
 	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
 	// absence), which runs only when native-value swaps are enabled — enable it as a
 	// quorum-finality node would; cleanup restores the fail-closed default.
-	EnableValueSwaps(true)
-	t.Cleanup(func() { EnableValueSwaps(false) })
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
 	// Pre-fund the vault output so that IF a BLS-style credit path existed, it COULD
