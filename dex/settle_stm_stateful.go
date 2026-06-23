@@ -482,6 +482,17 @@ func PredictWriteSetForCall(
 			ws.add(custodyGuardKey9999)
 			return ws.set(), true
 		}
+		// Route to the SAME predictor the live dispatch's handler uses (settle_module.go): an
+		// untagged swap is the SYNCHRONOUS router (runSyncSwap, now UNCONDITIONAL — no value
+		// gate), whose write region is the swap counter + dexcore book/index/ledger rows —
+		// declared by PredictSyncSwapWriteSet. A tagged (DI01/DS01) swap is the async SettleSwap
+		// seam — declared by PredictSwapWriteSet. Predicting the WRONG region would make the
+		// runtime assertion either self-DoS (sync handler vs async set) or miss the sync edges
+		// (async set used for a sync call), so the dispatch MUST mirror the handler's own routing
+		// condition exactly.
+		if isUntaggedSwap(hookData) {
+			return PredictSyncSwapWriteSet(sdb, key, params, caller), true
+		}
 		return PredictSwapWriteSet(sdb, networkID, cChainID, dChainID, blockNumber, key, params, caller, hookData), true
 
 	case SelectorReclaimIntent:
