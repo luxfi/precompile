@@ -112,11 +112,38 @@ func (a *poolStateAdapter) callable() callableEnv {
 	return c
 }
 
-// TokenBalanceOf reads owner's balance of token via a balanceOf(address)
-// sub-call. A reverted / malformed return yields 0 (fail-secure: an unreadable
-// balance makes the observed delta non-positive, which refuses the deposit rather
-// than crediting an unverified amount).
+// inStateVault returns a GENUINE in-state erc20Vault ledger reachable on the underlying
+// StateDB, or nil when none is present (the live EVM path, where the token leg moves through
+// the Call surface instead). It unwraps the write-observing decorator(s) to inspect the REAL
+// inner StateDB, because the decorator itself structurally satisfies erc20Vault by FORWARDING
+// to its inner — so a bare type assertion on a.stateDB would always match the decorator and,
+// when that inner is the live registry bridge (which has no vault), dead-end. We therefore
+// peel decorators and only accept an inner that DIRECTLY implements the vault (the test
+// in-state wrapper / a future native vault). The poolStateAdapter is excluded from "direct"
+// (it would recurse). nil here means "no in-state ledger; use the EVM Call surface".
+func (a *poolStateAdapter) inStateVault() erc20Vault {
+	var sdb contract.StateDB = a.stateDB
+	for {
+		if w, ok := sdb.(*writeObservingStateDB); ok {
+			sdb = w.StateDB // peel the observing decorator to its real inner
+			continue
+		}
+		break
+	}
+	if v, ok := sdb.(erc20Vault); ok {
+		return v
+	}
+	return nil
+}
+
+// TokenBalanceOf reads owner's balance of token. It prefers a genuine in-state vault ledger
+// (test / native host); on the live EVM path it reads via a balanceOf(address) sub-call. A
+// reverted / malformed return yields 0 (fail-secure: an unreadable balance makes the observed
+// delta non-positive, which refuses the deposit rather than crediting an unverified amount).
 func (a *poolStateAdapter) TokenBalanceOf(token, owner common.Address) *big.Int {
+	if v := a.inStateVault(); v != nil {
+		return v.TokenBalanceOf(token, owner)
+	}
 	c := a.callable()
 	if c == nil {
 		return big.NewInt(0)
@@ -131,12 +158,15 @@ func (a *poolStateAdapter) TokenBalanceOf(token, owner common.Address) *big.Int 
 	return new(big.Int).SetBytes(ret[:32])
 }
 
-// TransferTokenFrom pulls amount of token from `from` to `to` via a
-// transferFrom(address,address,uint256) sub-call, using the allowance `from`
-// granted to the precompile self (0x9999 on the live settlement path). OZ-safe: a
-// revert OR a false bool return is a FAILED transfer (errors); a no-return-data
-// success (non-compliant tokens that return nothing) is accepted, matching SafeERC20.
+// TransferTokenFrom pulls amount of token from `from` to `to`. It prefers a genuine in-state
+// vault ledger; on the live EVM path it issues a transferFrom(address,address,uint256)
+// sub-call, using the allowance `from` granted to the precompile self (0x9999). OZ-safe: a
+// revert OR a false bool return is a FAILED transfer (errors); a no-return-data success
+// (non-compliant tokens that return nothing) is accepted, matching SafeERC20.
 func (a *poolStateAdapter) TransferTokenFrom(token, from, to common.Address, amount *big.Int) error {
+	if v := a.inStateVault(); v != nil {
+		return v.TransferTokenFrom(token, from, to, amount)
+	}
 	c := a.callable()
 	if c == nil {
 		return ErrERC20VaultUnavailable
@@ -150,10 +180,13 @@ func (a *poolStateAdapter) TransferTokenFrom(token, from, to common.Address, amo
 	return checkERC20Return(ret, err)
 }
 
-// TransferTokenTo pushes amount of token from the vault (the precompile self,
-// 0x9999 on the live settlement path) to `to` via a transfer(address,uint256)
-// sub-call. Same OZ-safe semantics as TransferTokenFrom.
+// TransferTokenTo pushes amount of token from the vault (the precompile self, 0x9999) to
+// `to`. It prefers a genuine in-state vault ledger; on the live EVM path it issues a
+// transfer(address,uint256) sub-call. Same OZ-safe semantics as TransferTokenFrom.
 func (a *poolStateAdapter) TransferTokenTo(token, to common.Address, amount *big.Int) error {
+	if v := a.inStateVault(); v != nil {
+		return v.TransferTokenTo(token, to, amount)
+	}
 	c := a.callable()
 	if c == nil {
 		return ErrERC20VaultUnavailable
