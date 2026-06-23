@@ -171,10 +171,12 @@ func (s *SettleContract) runSwapWithdraw(state contract.AccessibleState, caller 
 // already in the vault (from a prior swapDeposit). Returns the resting order id.
 //
 // Halt-gated (no value-activation gate — the 0x9999 rail is always-on): resting a NEW
-// maker order is refused when the market is halted (checkHalt). Its real-asset safety is
-// the resolver admission run here (OpenMarketChecked: a place over an unregistered/disabled
-// or code-less asset REVERTS), which fails closed (ErrNoAssetResolver) on a node that wired
-// no resolver. The EXIT (runSwapCancel) is NOT gated, so a resting order can always be pulled.
+// maker order is refused when the market is halted (checkHalt). Its real-asset safety is the
+// permissionless admission run here (OpenMarketChecked: a place over a malformed/wrong-network
+// asset REVERTS at the resolve step, and a synthetic/code-less asset REVERTS at the on-chain
+// proof), which fails closed (ErrNoAssetResolver) on a node that wired no resolver. A place
+// over two REAL on-chain assets binds the market permissionlessly. The EXIT (runSwapCancel) is
+// NOT gated, so a resting order can always be pulled.
 func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
@@ -196,13 +198,14 @@ func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller com
 		return nil, gasLeft, herr
 	}
 
-	// C1: a maker RESTING an order BINDS the market, so it must clear the SAME real-asset
-	// admission a taker's swap does — else a maker could bind an arbitrary (currency0,
-	// currency1) market over a fabricated/unregistered/code-less asset and rest "liquidity"
-	// on it. Resolve the runtime-bound registry authority (cross-checked against the chain
-	// the node actually runs) and the live on-chain verifier, then admit BOTH sides through
-	// OpenMarketChecked BEFORE binding. A place over a non-real asset REVERTS
-	// (ErrAssetNotAdmitted / ErrAssetNotOnChain); no resolver/verifier fails closed.
+	// PERMISSIONLESS: a maker RESTING an order BINDS the market, so it must clear the SAME
+	// real-asset admission a taker's swap does — else a maker could bind an arbitrary
+	// (currency0, currency1) market over a fabricated/synthetic/code-less asset and rest
+	// "liquidity" on it. Resolve the runtime-bound canonical-identity resolver (cross-checked
+	// against the chain the node actually runs) and the live on-chain verifier, then admit
+	// BOTH sides through OpenMarketChecked BEFORE binding. A place over a non-real asset
+	// REVERTS (ErrAssetNotResolved / ErrAssetNotOnChain); no resolver/verifier fails closed.
+	// A place over two REAL assets binds permissionlessly (no allowlist).
 	atomicState, ok := state.(contract.AtomicState)
 	if !ok {
 		return nil, gasLeft, ErrSettleNoAtomicState
