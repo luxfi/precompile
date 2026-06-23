@@ -15,12 +15,12 @@ require (
 	github.com/luxfi/corona v0.7.9
 	github.com/luxfi/crypto v1.19.21
 	github.com/luxfi/database v1.20.4
-	github.com/luxfi/dex v0.0.0
+	github.com/luxfi/dex v1.5.16
 	github.com/luxfi/fhe v1.8.2
 	github.com/luxfi/geth v1.17.12
 	github.com/luxfi/lattice/v7 v7.1.4
 	github.com/luxfi/magnetar v1.2.3
-	github.com/luxfi/runtime v1.1.1
+	github.com/luxfi/runtime v1.1.3
 	github.com/luxfi/threshold v1.9.9
 	github.com/luxfi/warp v1.19.5
 	github.com/stretchr/testify v1.11.1
@@ -176,5 +176,3 @@ exclude (
 	github.com/luxfi/precompiles v0.1.10
 	github.com/luxfi/precompiles v0.1.11
 )
-
-replace github.com/luxfi/dex => ../dex
