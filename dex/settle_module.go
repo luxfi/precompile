@@ -211,27 +211,46 @@ func (s *SettleContract) Run(
 
 	switch selector {
 	case SelectorSwap:
-		// THE swap path. Two models share the V4 swap selector, distinguished by the
-		// hookData phase tag:
+		// THE swap path. The 0x9999 precompile is always DISPATCHABLE (a plain swap() reaches
+		// this case), but the SYNCHRONOUS VALUE router runs only when native-value swaps are
+		// ENABLED — which the node does solely after its consensus engine certifies QUORUM
+		// FINALITY (value_gate_boot.go). Dispatchable != value-enabled: on a degraded/K=1/non-
+		// quorum engine a proposer could self-finalize a fabricated fill, so value stays gated.
+		// Two models share the V4 swap selector, distinguished by the hookData phase tag AND,
+		// for the sync route, the value gate:
 		//
-		//   - UNTAGGED swap (the default, empty/opaque hookData): the SYNCHRONOUS on-
-		//     chain smart-order-router (swap_sync.go). One in-process, in-trie, atomic
-		//     transition — route across the native CLOB + the V2/V3 AMM, apply the C
-		//     EVM balance delta AND the D book/fill delta in ONE block. This is the
-		//     normal same-domain swap path. Gated on the node having enabled native-
-		//     value swaps (which it does only on a quorum-finality engine).
-		//   - TAGGED swap (DI01 intent / DS01 settlement hookData): the async cross-
-		//     CHAIN settlement path (settle9999.go SettleSwap), retained ONLY for a
-		//     genuine settlement to a DIFFERENT network. Never the spot-swap path.
+		//   - UNTAGGED swap (empty hookData / a DM01 min-out floor / any opaque hook blob) WITH
+		//     value swaps ENABLED: the SYNCHRONOUS on-chain smart-order-router (swap_sync.go).
+		//     One in-process, in-trie, atomic transition — route across the native CLOB + the
+		//     V2/V3 AMM, apply the C EVM balance delta AND the D book/fill delta in ONE block.
+		//     THE normal same-domain swap path on a value-live node. Its own intrinsic
+		//     fail-closed controls (real-asset admission, live-code verifier, min-out floor,
+		//     halt, custody mutex) decide whether it fills.
+		//   - TAGGED swap (DI01 intent / DS01 settlement hookData), OR an untagged swap while
+		//     value swaps are NOT enabled: the async cross-CHAIN D->C settlement primitive
+		//     (settle9999.go SettleSwap), retained for a genuine settlement to a DIFFERENT
+		//     network. Its own deadline-reclaim guarantees a locked intent can always exit; it
+		//     never settles a synchronous fill, so it is not the self-finalizable-fill surface
+		//     the value gate guards. runSyncSwap ITSELF re-checks the gate (defense in depth).
 		//
-		// We route by peeking the phase: an untagged swap with value-swaps enabled goes
-		// synchronous; everything else (tagged, or value-swaps not yet enabled) falls to
-		// the async handler, which itself reverts cleanly when its cross-chain capability
-		// is absent.
-		if key, params, hookData, derr := DecodeSwapInput(data); derr == nil {
-			if isUntaggedSwap(hookData) && ValueSwapsEnabled() {
-				return runSyncSwap(accessibleState, caller, key, params, suppliedGas, readOnly)
-			}
+		// L2 ACCESS-SET SOUNDNESS (anti-fork): the synchronous route is wrapped in the runtime
+		// write-set assertion. The handler runs against a write-OBSERVING StateDB; if it touches
+		// any 0x9999 conflict key OUTSIDE the declared PredictSyncSwapWriteSet (computed against
+		// the PRE-call state), the call FAILS with ErrAccessSetUndeclaredWrite and the EVM
+		// reverts — so an under-declared write becomes a REJECTED tx in Verify, never a forked
+		// commit. The sync predictor's keys are derived from (poolID, account, asset, orderID,
+		// block-counter) — NONE amount-derived — so a fee-on-transfer ERC-20 (observed-delta
+		// value, same keys) does NOT false-reject (B6: the sync path is fee-on-transfer-safe by
+		// construction; the async/intent path's amount-keyed id divergence is why ONLY the sync
+		// route is L2-wrapped here). A malformed swap input falls through to the async handler.
+		if key, params, hookData, derr := DecodeSwapInput(data); derr == nil && isUntaggedSwap(hookData) && ValueSwapsEnabled() {
+			// Declare the sync write-set against the PRE-call state (the exact state runSyncSwap
+			// reads when it runs), then run the handler under the L2 assertion.
+			declared := PredictSyncSwapWriteSet(newPoolStateAdapter(accessibleState), key, params, caller)
+			return AssertWriteSetWithin(accessibleState, declared,
+				func(s contract.AccessibleState) ([]byte, uint64, error) {
+					return runSyncSwap(s, caller, key, params, hookData, suppliedGas, readOnly)
+				})
 		}
 		return SettleSwap(accessibleState, caller, data, suppliedGas, readOnly)
 
@@ -285,8 +304,8 @@ func (s *SettleContract) Run(
 	// Synchronous on-chain-router custody (swap_custody.go): the maker side of the
 	// in-process router — deposit REAL tokens into the dexcore ledger (vault-backed),
 	// rest/cancel a limit order, withdraw. The "money lives in the order book" model
-	// for the sync swap path. Value-gated (the node enables it only on a quorum-final
-	// engine); deposit/withdraw are not halt-gated so funds can always exit.
+	// for the sync swap path — always-on, like the rest of 0x9999 (no enable gate);
+	// deposit/withdraw are not halt-gated so funds can always exit.
 	case SelectorSwapDeposit:
 		return s.runSwapDeposit(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorSwapWithdraw:
