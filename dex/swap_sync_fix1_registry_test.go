@@ -123,8 +123,6 @@ func Test9999RejectsWrongNetworkAsset(t *testing.T) {
 	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
 	// absence), which runs only when native-value swaps are enabled — enable it as a
 	// quorum-finality node would; cleanup restores the fail-closed default.
-	EnableValueSwaps(true)
-	t.Cleanup(func() { EnableValueSwaps(false) })
 	h.key = e2eMarketKey()
 
 	// Resolver bound to a WRONG C-Chain id (the harness runs cChainID {0xCC}). Replace the
@@ -164,8 +162,6 @@ func Test9999CannotOpenMarketWithoutRegistryApproval(t *testing.T) {
 	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
 	// absence), which runs only when native-value swaps are enabled — enable it as a
 	// quorum-finality node would; cleanup restores the fail-closed default.
-	EnableValueSwaps(true)
-	t.Cleanup(func() { EnableValueSwaps(false) })
 	h.key = e2eMarketKey()
 
 	// Install a resolver that admits ONLY native (NOT LETH/LUSD), so the market's assets are
@@ -201,8 +197,6 @@ func Test9999CannotRouteWithoutRegistryApproval(t *testing.T) {
 	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
 	// absence), which runs only when native-value swaps are enabled — enable it as a
 	// quorum-finality node would; cleanup restores the fail-closed default.
-	EnableValueSwaps(true)
-	t.Cleanup(func() { EnableValueSwaps(false) })
 	h.key = e2eMarketKey()
 
 	// Resolver admits ONLY native — the LETH/LUSD market is unregistered.
