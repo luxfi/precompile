@@ -208,16 +208,17 @@ func (s *SettleContract) runSettleInitialize(
 		return nil, gasLeft, ErrInitSqrtRange
 	}
 
-	// --- C1 PARITY: admit BOTH currencies through the SAME real-asset gate the swap
-	// path uses (resolver registry-admission + live-code verifier) BEFORE writing the
-	// MarketRecord. Without this, initialize would write a phantom market over arbitrary
+	// --- PERMISSIONLESS PARITY: admit BOTH currencies through the SAME real-asset steps
+	// the swap path uses (canonical-identity resolve + live-code verifier) BEFORE writing
+	// the MarketRecord. Without this, initialize would write a phantom market over arbitrary
 	// (currency0, currency1) — a fabricated-asset pair the swap path would later refuse,
 	// but whose stub record + Initialize event still leaked onto C and into the graph.
-	// Gating here refuses a fake-asset initialize outright (not merely ignoring it at swap
-	// time), so a market RECORD can exist only over two registered, enabled, on-chain-real
-	// assets — identical admission, identical fail-closed shape (no resolver ->
-	// ErrNoAssetResolver; unregistered/disabled -> ErrAssetNotAdmitted; no live code ->
-	// ErrAssetNotOnChain). The check is pure and runs before any state write.
+	// Admitting here refuses a fake-asset initialize outright (not merely ignoring it at
+	// swap time), so a market RECORD can exist only over two REAL (resolvable + on-chain-
+	// real) assets — identical admission, identical fail-closed shape (no resolver ->
+	// ErrNoAssetResolver; malformed/wrong-network/disabled -> ErrAssetNotResolved; no live
+	// code -> ErrAssetNotOnChain). Any REAL pair is admitted permissionlessly (no allowlist).
+	// The check is pure and runs before any state write.
 	if err := admitMarketAssets(state, stateDB, key); err != nil {
 		return nil, gasLeft, err
 	}
@@ -259,20 +260,20 @@ func (s *SettleContract) runSettleInitialize(
 	return encodeInt24Word(tick), gasLeft, nil
 }
 
-// admitMarketAssets runs the value-path real-asset admission on BOTH of a market's
-// currencies — the SAME two orthogonal gates the swap path's OpenMarketChecked runs,
-// in the SAME order (resolve base -> resolve quote -> verify base -> verify quote),
-// BEFORE any state write — so an initialize over a fabricated/unregistered/disabled or
-// code-less asset is REFUSED with the identical fail-closed errors a swap would raise.
-// It performs NO state mutation: it is a pure admission check (it does not bind the
-// dexcore book; initialize writes only the C MarketRecord), so a refused initialize
-// leaves C untouched.
+// admitMarketAssets runs the PERMISSIONLESS value-path real-asset admission on BOTH of a
+// market's currencies — the SAME two orthogonal steps the swap path's OpenMarketChecked
+// runs, in the SAME order (resolve base -> resolve quote -> verify base -> verify quote),
+// BEFORE any state write — so an initialize over a fabricated/synthetic or code-less asset
+// is REFUSED with the identical fail-closed errors a swap would raise, while an initialize
+// over two REAL assets is admitted permissionlessly (no allowlist). It performs NO state
+// mutation: it is a pure admission check (it does not bind the dexcore book; initialize
+// writes only the C MarketRecord), so a refused initialize leaves C untouched.
 //
 // Identity discipline (mirrors swap_sync.runSyncSwap exactly): the runtime
 // (networkID, cChainID) come from the consensus-supplied AtomicState capability, and
 // resolverForRuntime cross-checks the installed resolver's bound identity against them
 // (fail-closed on mismatch). A node with no resolver installed yields a nil resolver,
-// which RequireEnabledAsset turns into ErrNoAssetResolver — initialize fails closed,
+// which RequireResolvedAsset turns into ErrNoAssetResolver — initialize fails closed,
 // never admitting a left-padded address as a real asset.
 func admitMarketAssets(state contract.AccessibleState, stateDB StateDB, key PoolKey) error {
 	atomicState, ok := state.(contract.AtomicState)
@@ -288,14 +289,15 @@ func admitMarketAssets(state contract.AccessibleState, stateDB StateDB, key Pool
 	base := assetSideForCurrency(key.Currency0)
 	quote := assetSideForCurrency(key.Currency1)
 
-	// (1) Registry admission (registered + enabled) for both sides.
-	if _, _, err := dexcore.RequireEnabledAsset(resolver, base.Kind, base.Ref); err != nil {
+	// (1) Resolve both sides' canonical identity (permissionless: well-formed real ref on
+	//     the bound network resolves; malformed/wrong-network/disabled/synthetic is refused).
+	if _, _, err := dexcore.RequireResolvedAsset(resolver, base.Kind, base.Ref); err != nil {
 		return err
 	}
-	if _, _, err := dexcore.RequireEnabledAsset(resolver, quote.Kind, quote.Ref); err != nil {
+	if _, _, err := dexcore.RequireResolvedAsset(resolver, quote.Kind, quote.Ref); err != nil {
 		return err
 	}
-	// (2) Live on-chain reality (contract code present) for both sides.
+	// (2) Live on-chain reality (the AUTHORITATIVE check: contract code present) for both.
 	if err := dexcore.RequireRealOnChain(verifier, base.Kind, base.Ref); err != nil {
 		return err
 	}
