@@ -220,3 +220,117 @@ func Test9999_SyncDispatch_RoutesToSyncPredictor(t *testing.T) {
 	}
 	t.Log("dispatch confirmed: a value-enabled untagged swap routes to PredictSyncSwapWriteSet")
 }
+
+// Test9999_SyncAccessSet_FeeOnTransferDoesNotFalseReject is the B6 proof: a FEE-ON-TRANSFER
+// ERC-20 swap (observed delta < requested) does NOT false-reject under the L2 assertion. The
+// async/intent predictor content-addresses the intent by the AMOUNT (DeriveIntentID), so a
+// fee-on-transfer token's observed-vs-requested divergence would yield wrong id-keyed slots and
+// a spurious ErrAccessSetUndeclaredWrite — which is why ONLY the sync route is L2-wrapped. The
+// SYNC predictor's keys are derived from (poolID, account, asset, orderID, block-counter) — NONE
+// amount-derived — so a fee-on-transfer asset changes the VALUES written but not the KEYS. This
+// test drives a real 1%-tax swap through AssertWriteSetWithin(PredictSyncSwapWriteSet) and proves
+// it is ACCEPTED (no false reject), the fence the brief requires.
+func Test9999_SyncAccessSet_FeeOnTransferDoesNotFalseReject(t *testing.T) {
+	h := newE2EHarness(t)
+	EnableValueSwaps(true) // explicit: this test drives value deposits/swaps (self-sufficient)
+	t.Cleanup(func() { EnableValueSwaps(false) })
+	maker, taker := e2eMaker, h.caller
+
+	// Deep maker bid so the whole delivered input fills.
+	h.mint(e2eLUSD, maker, 100_000)
+	h.deposit(t, maker, e2eLUSD, 100_000)
+	h.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 1000)
+
+	// 1% fee-on-transfer: a 100-unit transferFrom delivers 99 — observed delta < requested.
+	h.state.stateDB.feeOnTransferBps = 100
+	t.Cleanup(func() { h.state.stateDB.feeOnTransferBps = 0 })
+	h.mint(e2eLETH, taker, 100)
+
+	params := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-100), SqrtPriceLimitX96: sqrtX96For(1.0)}
+
+	// PREDICT against the pre-call state (the predictor binds the REQUESTED 100; the handler will
+	// route the OBSERVED 99) — yet the declared KEYS must still cover every key the handler writes,
+	// because none is amount-derived.
+	declared := PredictSyncSwapWriteSet(newPoolStateAdapter(h.state), h.key, params, taker)
+
+	// Run the fee-on-transfer swap through the L2 assertion directly (the SAME assertion the
+	// live dispatch applies around runSyncSwap).
+	_, _, err := AssertWriteSetWithin(h.state, declared, func(s contract.AccessibleState) ([]byte, uint64, error) {
+		return runSyncSwap(s, taker, h.key, params, nil, 5_000_000, false)
+	})
+	if err != nil {
+		if _, ok := err.(*ErrAccessSetUndeclaredWrite); ok {
+			t.Fatalf("B6 broken: a fee-on-transfer swap FALSE-REJECTED under L2 (%v) — a sync-path key "+
+				"must not depend on the observed amount", err)
+		}
+		t.Fatalf("fee-on-transfer swap errored unexpectedly: %v", err)
+	}
+	// And the observed-delta fill actually happened (99 routed, not 100) — proving the swap took
+	// the real fee-on-transfer path, not a no-op that would trivially satisfy the assertion.
+	if got := h.dcAvail(maker, e2eLETH); got != 99 {
+		t.Fatalf("maker bought %d LETH, want 99 (the fee-on-transfer swap must have routed the observed 99)", got)
+	}
+	t.Log("B6 confirmed: a fee-on-transfer swap is ACCEPTED under L2 (no amount-derived sync key)")
+}
+
+// Test9999_SyncAccessCommitment_RootBinding is the L4 proof for the synchronous value path: the
+// commitment over a sync swap's DECLARED write-set is deterministic AND discriminating (a
+// DIFFERENT declared set -> a different root), and the fold is order-sensitive — so a validator
+// that mis-declares a sync swap's write-set (or folds in a different settle order) lands on a
+// different execution root and its block is rejected by honest peers. This binds the DECLARATION
+// to consensus, the third anti-fork layer beneath L2 (the runtime assertion) and the EVM state
+// root (which binds the actual writes).
+func Test9999_SyncAccessCommitment_RootBinding(t *testing.T) {
+	h := newE2EHarness(t)
+	EnableValueSwaps(true) // explicit: this test drives value deposits (self-sufficient)
+	t.Cleanup(func() { EnableValueSwaps(false) })
+	maker := e2eMaker
+	h.mint(e2eLUSD, maker, 5000)
+	h.deposit(t, maker, e2eLUSD, 5000)
+	h.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 100)
+
+	params := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-80), SqrtPriceLimitX96: sqrtX96For(1.0)}
+	sdb := newPoolStateAdapter(h.state)
+
+	// DETERMINISM: the commitment over the canonical declared set is stable across calls.
+	c1 := SyncSwapAccessCommitment(sdb, h.key, params, h.caller)
+	c2 := SyncSwapAccessCommitment(sdb, h.key, params, h.caller)
+	if c1.Root() != c2.Root() {
+		t.Fatalf("sync access commitment not deterministic: %s != %s", c1.Root().Hex(), c2.Root().Hex())
+	}
+
+	// DISCRIMINATION: a mis-declared set (one key dropped — the missed-edge case the L2 assertion
+	// rejects in Verify) yields a DIFFERENT root, so a node that lies about its declaration is
+	// caught at the root level even if L2 were bypassed.
+	declared := PredictSyncSwapWriteSet(sdb, h.key, params, h.caller)
+	crippled := cloneKeySet(declared)
+	delete(crippled, swapCounterKey(h.key.ID())) // drop the slot the async predictor also omits
+	if NewAccessCommitment(crippled).Root() == c1.Root() {
+		t.Fatal("dropping a declared sync key did NOT change the root — a mis-declaration would be invisible to peers")
+	}
+
+	// FOLD: folding the sync commitment into an accumulator discriminates a mis-declared block,
+	// and the fold is order-sensitive (the deterministic settle order binds the run).
+	var acc0 common.Hash
+	accGood := FoldSyncSwapAccessCommitment(acc0, sdb, h.key, params, h.caller)
+	accBad := FoldAccessCommitment(acc0, NewAccessCommitment(crippled))
+	if accGood == accBad {
+		t.Fatal("folded accumulator does not discriminate a mis-declared sync swap")
+	}
+	// Folding the SAME commitment twice in different positions yields different accumulators
+	// (order-sensitivity), so a settle-order divergence is visible in the root.
+	cExtra := NewAccessCommitment(mkKeySet(common.HexToHash("0xBEEF")))
+	if FoldAccessCommitment(accGood, cExtra) == FoldSyncSwapAccessCommitment(FoldAccessCommitment(acc0, cExtra), sdb, h.key, params, h.caller) {
+		t.Fatal("sync-commitment fold is order-insensitive — a settle-order divergence would be invisible")
+	}
+	t.Log("L4 confirmed: sync access commitment is deterministic, discriminating, and order-bound")
+}
+
+// mkKeySet is a tiny helper to build a key set from literal keys (for the L4 fold test).
+func mkKeySet(keys ...common.Hash) map[common.Hash]struct{} {
+	m := make(map[common.Hash]struct{}, len(keys))
+	for _, k := range keys {
+		m[k] = struct{}{}
+	}
+	return m
+}
