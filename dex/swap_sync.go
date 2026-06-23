@@ -137,16 +137,19 @@ func syncSwap(stateDB StateDB, resolver dexcore.AssetResolver, caller common.Add
 
 	store := newEVMStore(stateDB)
 
-	// C1: open the market ONLY over two assets that are BOTH (a) registered + enabled in
-	// the registry AND (b) backed by live on-chain code in the executing state. Each side
-	// is admitted through TWO orthogonal gates BEFORE any binding or debit:
-	//   - the injected AssetResolver (the AssetRegistry's authority, repointed onto the
-	//     value path): a fabricated/unregistered/disabled asset REVERTS (ErrAssetNotAdmitted),
-	//     and a node with no resolver installed fails closed (ErrNoAssetResolver);
-	//   - the live-state OnChainAssetVerifier (EXTCODESIZE on the token address): an ERC-20
-	//     whose contract was self-destructed / never deployed REVERTS (ErrAssetNotOnChain),
-	//     and a non-EVM caller (no verifier) fails closed (ErrNoOnChainVerifier).
-	// The left-padded address is no longer sufficient to create a market. Idempotent.
+	// PERMISSIONLESS: open the market over any two REAL assets — each side admitted through
+	// TWO orthogonal steps BEFORE any binding or debit, with NO allowlist:
+	//   - the injected AssetResolver (canonical-identity resolve, permissionless): a
+	//     malformed/wrong-network/explicitly-disabled/synthetic reference REVERTS
+	//     (ErrAssetNotResolved), and a node with no resolver installed fails closed
+	//     (ErrNoAssetResolver); a well-formed real reference always resolves;
+	//   - the live-state OnChainAssetVerifier (EXTCODESIZE on the token address — the
+	//     AUTHORITATIVE reality check): a fabricated/synthetic ERC-20 (an ASCII-ticker
+	//     address, a self-destructed / never-deployed contract) has no code and REVERTS
+	//     (ErrAssetNotOnChain), and a non-EVM caller (no verifier) fails closed
+	//     (ErrNoOnChainVerifier).
+	// The left-padded address NAMES an asset but does not let it TRADE: trading requires the
+	// asset to resolve AND verify on-chain. Any REAL pair opens permissionlessly. Idempotent.
 	verifier := onChainVerifierFor(stateDB)
 	if err := dexcore.OpenMarketChecked(store, resolver, verifier, req.PoolID,
 		assetSideForCurrency(key.Currency0), assetSideForCurrency(key.Currency1)); err != nil {
