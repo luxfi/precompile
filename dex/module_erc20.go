@@ -117,10 +117,11 @@ func (a *poolStateAdapter) callable() callableEnv {
 // the Call surface instead). It unwraps the write-observing decorator(s) to inspect the REAL
 // inner StateDB, because the decorator itself structurally satisfies erc20Vault by FORWARDING
 // to its inner — so a bare type assertion on a.stateDB would always match the decorator and,
-// when that inner is the live registry bridge (which has no vault), dead-end. We therefore
-// peel decorators and only accept an inner that DIRECTLY implements the vault (the test
-// in-state wrapper / a future native vault). The poolStateAdapter is excluded from "direct"
-// (it would recurse). nil here means "no in-state ledger; use the EVM Call surface".
+// when that inner is the live registry stateDBBridge (which has no vault), dead-end. We
+// therefore peel decorators and only accept an inner that DIRECTLY implements the vault (the
+// test in-state wrapper / a future native vault). nil here means "no in-state ledger; use the
+// EVM Call surface" — which is exactly the live registry-bridge case (the bridge is a
+// contract.StateDB that does not implement erc20Vault, so the assertion below is false).
 func (a *poolStateAdapter) inStateVault() erc20Vault {
 	var sdb contract.StateDB = a.stateDB
 	for {
