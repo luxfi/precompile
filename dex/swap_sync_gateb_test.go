@@ -55,7 +55,7 @@ func Test9999SyncSwap_CAndDCommitAtomically(t *testing.T) {
 
 	// Taker swaps SELL 80 LETH -> LUSD.
 	h.mint(e2eLETH, taker, 80)
-	out, err := h.swap(t, taker, true, 80, nil)
+	out, err := h.swap(t, taker, true, 80, sqrtX96For(1.0))
 	if err != nil {
 		t.Fatalf("swap: %v", err)
 	}
@@ -105,7 +105,7 @@ func Test9999SyncSwap_ValidatorReplayNoLiveZAP(t *testing.T) {
 		h.deposit(t, maker, e2eLUSD, 5000)
 		h.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 100)
 		h.mint(e2eLETH, taker, 80)
-		if _, err := h.swap(t, taker, true, 80, nil); err != nil {
+		if _, err := h.swap(t, taker, true, 80, sqrtX96For(1.0)); err != nil {
 			t.Fatalf("swap: %v", err)
 		}
 		// dexcore execution root over the resulting book (the cross-validator witness).
@@ -157,7 +157,7 @@ func Test9999SyncSwap_FakeProposerFillRejected(t *testing.T) {
 	h.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 100)
 	h.mint(e2eLETH, taker, 80)
 
-	out, err := h.swap(t, taker, true, 80, nil)
+	out, err := h.swap(t, taker, true, 80, sqrtX96For(1.0))
 	if err != nil {
 		t.Fatalf("swap: %v", err)
 	}
@@ -203,7 +203,7 @@ func Test9999SyncSwap_TradeVisibleInDStateAndCEvents(t *testing.T) {
 	h.mint(e2eLETH, taker, 80)
 
 	logsBefore := len(h.state.stateDB.Logs())
-	if _, err := h.swap(t, taker, true, 80, nil); err != nil {
+	if _, err := h.swap(t, taker, true, 80, sqrtX96For(1.0)); err != nil {
 		t.Fatalf("swap: %v", err)
 	}
 
@@ -256,7 +256,7 @@ func Test9999SyncSwap_ERC20ObservedDelta(t *testing.T) {
 
 	// Taker SELLs 100 LETH. Only 99 ARRIVE in the vault (the 1% transfer tax), so the
 	// router fills 99 LETH — the OBSERVED DELTA, not the requested 100.
-	if _, err := h.swap(t, taker, true, 100, nil); err != nil {
+	if _, err := h.swap(t, taker, true, 100, sqrtX96For(1.0)); err != nil {
 		t.Fatalf("swap: %v", err)
 	}
 
@@ -342,7 +342,7 @@ func Test9999RoutesCLOBWhenDepth(t *testing.T) {
 	h.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 1000)
 	h.mint(e2eLETH, taker, 80)
 
-	out, err := h.swap(t, taker, true, 80, nil)
+	out, err := h.swap(t, taker, true, 80, sqrtX96For(1.0))
 	if err != nil {
 		t.Fatalf("swap: %v", err)
 	}
@@ -426,7 +426,7 @@ func Test9999SyncSwap_TakerPriorDepositPreserved(t *testing.T) {
 
 	// Now the taker SELLs 80 LETH -> LUSD through 0x9999. Proceeds = 4000 LUSD (to EVM).
 	h.mint(e2eLETH, taker, 80)
-	if _, err := h.swap(t, taker, true, 80, nil); err != nil {
+	if _, err := h.swap(t, taker, true, 80, sqrtX96For(1.0)); err != nil {
 		t.Fatalf("swap: %v", err)
 	}
 
@@ -473,7 +473,7 @@ func Test9999SyncSwap_AMMLegMovesRealERC20EndToEnd(t *testing.T) {
 
 	// Taker SELLs 100 LETH -> LUSD through the FULL 0x9999 Run.
 	h.mint(e2eLETH, taker, 100)
-	out, err := h.swap(t, taker, true, 100, nil)
+	out, err := h.swap(t, taker, true, 100, sqrtX96For(1.0))
 	if err != nil {
 		t.Fatalf("AMM-leg swap through 0x9999: %v", err)
 	}
@@ -606,7 +606,7 @@ func TestHFTAndEVMUseSameBookSameState(t *testing.T) {
 
 	// Taker enters via the EVM 0x9999 swap and crosses the SAME native-placed order.
 	h.mint(e2eLETH, taker, 80)
-	if _, err := h.swap(t, taker, true, 80, nil); err != nil {
+	if _, err := h.swap(t, taker, true, 80, sqrtX96For(1.0)); err != nil {
 		t.Fatalf("EVM swap: %v", err)
 	}
 
@@ -633,7 +633,7 @@ func TestNativeMakerEVMTakerSameState(t *testing.T) {
 	h.deposit(t, maker, e2eLUSD, 5000)
 	h.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 100) // native maker
 	h.mint(e2eLETH, taker, 80)
-	if _, err := h.swap(t, taker, true, 80, nil); err != nil { // EVM taker
+	if _, err := h.swap(t, taker, true, 80, sqrtX96For(1.0)); err != nil { // EVM taker
 		t.Fatalf("EVM taker swap: %v", err)
 	}
 
@@ -720,7 +720,7 @@ func TestNoLiveZAPSettlement(t *testing.T) {
 	// No ZAP endpoint, no venue, no keeper is wired in the harness — the swap settles
 	// purely in-process. If the value path secretly needed a live ZAP, this would hang
 	// or fail; it succeeds and credits real proceeds.
-	if _, err := h.swap(t, taker, true, 80, nil); err != nil {
+	if _, err := h.swap(t, taker, true, 80, sqrtX96For(1.0)); err != nil {
 		t.Fatalf("in-process swap failed (a live-ZAP dependency would surface here): %v", err)
 	}
 	if got := h.ercBal(e2eLUSD, taker); got != 4000 {
@@ -743,7 +743,7 @@ func TestNoKeeperSettlementPath(t *testing.T) {
 
 	lethBefore := h.ercBal(e2eLETH, taker)
 	// ONE call. No keeper, no second tx.
-	if _, err := h.swap(t, taker, true, 80, nil); err != nil {
+	if _, err := h.swap(t, taker, true, 80, sqrtX96For(1.0)); err != nil {
 		t.Fatalf("swap: %v", err)
 	}
 	// Proceeds are credited IMMEDIATELY in the same call — not pending a keeper settle.
@@ -767,7 +767,7 @@ func TestNoVenueFallback(t *testing.T) {
 	h.mint(e2eLETH, taker, 80)
 	takerLETHBefore := h.ercBal(e2eLETH, taker)
 
-	_, err := h.swap(t, taker, true, 80, nil)
+	_, err := h.swap(t, taker, true, 80, sqrtX96For(1.0))
 	if err == nil {
 		t.Fatal("a swap with no on-chain liquidity must REVERT (no external-venue fallback)")
 	}
