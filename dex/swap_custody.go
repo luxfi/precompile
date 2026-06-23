@@ -196,13 +196,14 @@ func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller com
 		return nil, gasLeft, herr
 	}
 
-	// C1: a maker RESTING an order BINDS the market, so it must clear the SAME real-asset
-	// admission a taker's swap does — else a maker could bind an arbitrary (currency0,
-	// currency1) market over a fabricated/unregistered/code-less asset and rest "liquidity"
-	// on it. Resolve the runtime-bound registry authority (cross-checked against the chain
-	// the node actually runs) and the live on-chain verifier, then admit BOTH sides through
-	// OpenMarketChecked BEFORE binding. A place over a non-real asset REVERTS
-	// (ErrAssetNotAdmitted / ErrAssetNotOnChain); no resolver/verifier fails closed.
+	// PERMISSIONLESS: a maker RESTING an order BINDS the market, so it must clear the SAME
+	// real-asset admission a taker's swap does — else a maker could bind an arbitrary
+	// (currency0, currency1) market over a fabricated/synthetic/code-less asset and rest
+	// "liquidity" on it. Resolve the runtime-bound canonical-identity resolver (cross-checked
+	// against the chain the node actually runs) and the live on-chain verifier, then admit
+	// BOTH sides through OpenMarketChecked BEFORE binding. A place over a non-real asset
+	// REVERTS (ErrAssetNotResolved / ErrAssetNotOnChain); no resolver/verifier fails closed.
+	// A place over two REAL assets binds permissionlessly (no allowlist).
 	atomicState, ok := state.(contract.AtomicState)
 	if !ok {
 		return nil, gasLeft, ErrSettleNoAtomicState

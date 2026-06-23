@@ -160,22 +160,21 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 	return h
 }
 
-// installDefaultMarketResolver installs a resolver admitting the shared harness market's two
-// sides (native currency0 + currency1, with live code at the token) and restores the prior
-// global on cleanup. It is the harness analog of a populated on-chain registry, so the C1
-// admission gate passes for the legitimate harness market in EVERY test by default. Tests that
-// probe admission failure install their own (restrictive/absent) resolver, overriding this.
+// installDefaultMarketResolver installs the PERMISSIONLESS resolver and gives the shared
+// harness market's two sides live on-chain code (native needs none; each ERC-20 token gets
+// code) and restores the prior global on cleanup. Under permissionless admission, code presence
+// — not membership — is what admits an asset, so seeding code is the harness analog of two real
+// deployed tokens. The admission gate then passes for the legitimate harness market in EVERY
+// test by default. Tests that probe admission failure install their own resolver and leave the
+// probed asset WITHOUT code (so the on-chain proof refuses it).
 func (h *settleHarness) installDefaultMarketResolver(t testing.TB) {
 	t.Helper()
-	r := newTestAssetResolver(h.networkID, h.cChainID)
-	r.admitNative(t, 18)
+	r := newTestAssetResolver(h.networkID, h.cChainID).boundToHarness(h)
 	if h.key.Currency1.Address != (common.Address{}) {
-		r.admitERC20(t, h.key.Currency1.Address, 18)
-		h.state.stateDB.SetCodeSize(h.key.Currency1.Address, 1)
+		r.admitERC20(t, h.key.Currency1.Address, 18) // seeds live on-chain code
 	}
 	if h.key.Currency0.Address != (common.Address{}) {
-		r.admitERC20(t, h.key.Currency0.Address, 18)
-		h.state.stateDB.SetCodeSize(h.key.Currency0.Address, 1)
+		r.admitERC20(t, h.key.Currency0.Address, 18) // seeds live on-chain code
 	}
 	prev := installedAssetResolver.Load()
 	if err := InstallAssetResolver(r, h.networkID, h.cChainID); err != nil {
