@@ -768,8 +768,22 @@ func (w *contractStateDBWrapper) TransferTokenTo(token, to common.Address, amoun
 	return w.TransferTokenFrom(token, poolManagerAddr9999, to, amount)
 }
 
-// mintTestToken seeds a token balance for a holder (test setup only).
+// GetCodeSize forwards the EXTCODESIZE-equivalent to the inner mock under the SAME method
+// name the production geth StateDB exposes, so the value-path on-chain asset verifier
+// (poolStateAdapter.CodeSizeOf type-asserts GetCodeSize on the underlying StateDB) reads it.
+func (w *contractStateDBWrapper) GetCodeSize(addr common.Address) int {
+	return w.inner.CodeSizeOf(addr)
+}
+
+// mintTestToken seeds a token balance for a holder (test setup only). It also marks the
+// token address as a deployed CONTRACT (non-zero code size) so the value-path
+// OnChainAssetVerifier treats it as a real on-chain token — a minted test token IS a real
+// ERC-20. A test that wants to model a self-destructed / never-deployed token sets the
+// code size to 0 explicitly via inner.SetCodeSize after minting.
 func (w *contractStateDBWrapper) mintTestToken(token, holder common.Address, amount *big.Int) {
 	cur := w.ercBal(token, holder)
 	w.inner.tokenBalances[token][holder] = new(big.Int).Add(cur, amount)
+	if w.inner.CodeSizeOf(token) == 0 {
+		w.inner.SetCodeSize(token, 1) // a real deployed token has code
+	}
 }
