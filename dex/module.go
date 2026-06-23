@@ -232,6 +232,23 @@ func newPoolStateAdapter(state contract.AccessibleState) *poolStateAdapter {
 // over the adapter's EVM sub-call bridge. Used by stateDBERC20.
 func (a *poolStateAdapter) underlyingStateDB() contract.StateDB { return a.stateDB }
 
+// CodeSizeOf forwards the EXTCODESIZE primitive (the C1 live-on-chain asset proof) to the
+// underlying geth StateDB. The narrow contract.StateDB interface does not declare a code
+// accessor (it stays minimal for the many mocks), so the production geth-backed StateDB
+// exposes GetCodeSize as an OPTIONAL capability the adapter type-asserts here — exactly as
+// the ERC-20 vault is an optional capability. When the underlying StateDB cannot report code
+// size (a non-EVM host / minimal mock), the adapter reports -1 so codeStaterFor treats the
+// adapter as NOT code-capable and the value path falls back to the fail-closed
+// ErrNoOnChainVerifier rather than admitting an asset it cannot prove is backed by code.
+func (a *poolStateAdapter) CodeSizeOf(addr common.Address) int {
+	if cs, ok := a.stateDB.(interface {
+		GetCodeSize(common.Address) int
+	}); ok {
+		return cs.GetCodeSize(addr)
+	}
+	return -1
+}
+
 func (a *poolStateAdapter) GetState(addr common.Address, key common.Hash) common.Hash {
 	return a.stateDB.GetState(addr, key)
 }

@@ -45,8 +45,9 @@ func e2eMarketKey() PoolKey {
 	}
 }
 
-// e2eHarness wraps the shared settle harness with the value-swap gate enabled and the
-// real-ERC-20 token-balance helpers. It restores the gate on cleanup.
+// e2eHarness wraps the shared settle harness with the real-ERC-20 token-balance helpers
+// and the real-asset registry installed. The 0x9999 DEX is always-on (no value gate), so
+// there is nothing to enable — every swap routes through the synchronous on-chain router.
 type e2eHarness struct {
 	*settleHarness
 	key PoolKey
@@ -56,8 +57,10 @@ func newE2EHarness(t *testing.T) *e2eHarness {
 	t.Helper()
 	h := newSettleHarness(t)
 	h.key = e2eMarketKey()
-	EnableValueSwaps(true)
-	t.Cleanup(func() { EnableValueSwaps(false) })
+	// C1: install the real-asset resolver, admitting this market's real ERC-20s (LETH,
+	// LUSD) and the native coin, so the value path's admission gate passes for the
+	// legitimate market. A fabricated asset is NOT admitted (see the C1 redteam test).
+	h.installAssetResolverFor(t, e2eLETH, e2eLUSD)
 	return &e2eHarness{settleHarness: h, key: e2eMarketKey()}
 }
 
@@ -113,12 +116,32 @@ func (h *e2eHarness) swap(t *testing.T, taker common.Address, zeroForOne bool, a
 	if sqrtLimit == nil {
 		params.SqrtPriceLimitX96 = big.NewInt(0)
 	}
-	calldata := buildSwapCalldata(h.key, params, nil) // nil hookData -> untagged -> sync router
+	// h.swap is the RAW value-path swap: it passes EMPTY hookData (no declared min-out
+	// floor), so an unprotected no-limit market SELL is refused by the H3 value-path policy
+	// (ErrSellRequiresProtection) — exactly what the min-out redteam asserts. Tests that
+	// want a protected SELL (the conservation/atomicity suites) use swapMinOut /
+	// swapWithMinOut, which declare a floor via the DM01 hookData.
+	calldata := buildSwapCalldata(h.key, params, nil) // raw: no floor -> sync router
 	// Drive through the taker (msg.sender) over the EVM atomicity boundary: the
 	// production EVM snapshots before the precompile CALL and reverts on error, so a
 	// failed swap rolls back BOTH the C balances and the D book. runWithEVMSnapshot
 	// reproduces that boundary exactly (see swap_sync_snapshot_test.go), so a revert
 	// here is observably atomic in the mock — as it is in production.
+	out, _, err := runWithEVMSnapshot(h.c, h.state, taker, poolManagerAddr9999, prependSelector(SelectorSwap, calldata), 5_000_000, false)
+	return out, err
+}
+
+// swapMinOut drives a market SELL (no price limit) that declares an EXPLICIT min-out
+// floor via the DM01 hookData — the real taker-slippage path. A realized fill below
+// minOut reverts the whole swap (the MEV floor). Used by the sync-rail MEV redteam suite.
+func (h *e2eHarness) swapMinOut(t *testing.T, taker common.Address, amountIn int64, minOut uint64) ([]byte, error) {
+	t.Helper()
+	params := SwapParams{
+		ZeroForOne:        true, // SELL base for quote
+		AmountSpecified:   big.NewInt(-amountIn),
+		SqrtPriceLimitX96: big.NewInt(0), // no price limit: the min-out IS the protection
+	}
+	calldata := buildSwapCalldata(h.key, params, EncodeMinOutHookData(minOut))
 	out, _, err := runWithEVMSnapshot(h.c, h.state, taker, poolManagerAddr9999, prependSelector(SelectorSwap, calldata), 5_000_000, false)
 	return out, err
 }
@@ -171,9 +194,11 @@ func TestE2E_SyncSwap_MakerRestsTakerSwaps(t *testing.T) {
 		t.Fatalf("maker dexcore locked LUSD = %d, want 5000", got)
 	}
 
-	// Taker has 80 real LETH; swaps (SELL 80 LETH -> LUSD) through 0x9999.
+	// Taker has 80 real LETH; swaps (SELL 80 LETH -> LUSD) through 0x9999 with a permissive
+	// price floor (>= 1.0 quote/base) so the H3 value-path SELL-protection policy is
+	// satisfied; the fair fill at 50 is well above it.
 	h.mint(e2eLETH, taker, 80)
-	out, err := h.swap(t, taker, true, 80, nil)
+	out, err := h.swap(t, taker, true, 80, sqrtX96For(1.0))
 	if err != nil {
 		t.Fatalf("taker swap: %v", err)
 	}
@@ -288,59 +313,58 @@ func Test9999SyncSwap_RevertRollsBackCAndD(t *testing.T) {
 	}
 }
 
-// Test9999SyncSwap_ValueGateFailsClosed asserts the SYNCHRONOUS value router does NOT
-// execute when native-value swaps are disabled (the node has not verified quorum
-// finality). The fail-closed property is precise: NO synchronous settlement occurs —
-// the taker receives NO proceeds and the maker's resting order is NOT crossed. (With
-// the gate off and an empty hookData, the dispatch routes to the async cross-chain
-// intent path, which legitimately LOCKS the taker's input as a recoverable C->D
-// intent — that lock is not a synchronous fill and is governed by the async rail's
-// own atomic-object settlement + deadline reclaim, so it is NOT the thing this gate
-// guards. What this gate guards is that no swap SETTLES synchronously off a self-
-// finalizable proposer fill, which is what we assert here.)
-func Test9999SyncSwap_ValueGateFailsClosed(t *testing.T) {
-	h := newSettleHarness(t)
-	h.key = e2eMarketKey()
-	wrap := &e2eHarness{settleHarness: h, key: e2eMarketKey()}
+// Test9999PlainSwapIsSynchronous is the one-path proof: a plain swap() against a resting
+// maker SETTLES SYNCHRONOUSLY in-process — the taker's real balances move, the maker's book
+// updates, the V4 BalanceDelta is returned in the same call — and it creates NO async intent
+// record. There is no value gate: the 0x9999 DEX is always-on, so the swap goes straight
+// through the synchronous on-chain router. (A normal swap() can therefore NEVER mint a
+// Deadline=0 locked intent — there is no async fork for it to take.)
+func Test9999PlainSwapIsSynchronous(t *testing.T) {
+	h := newE2EHarness(t)
+	maker, taker := e2eMaker, e2eTaker
 
-	// First, with the gate ENABLED, rest a real-funded maker BID so a synchronous fill
-	// WOULD have a counterparty to cross. Then disable the gate and swap; if the sync
-	// router were to run it would cross this bid — so an unfilled bid proves it did not.
-	EnableValueSwaps(true)
-	maker := e2eMaker
-	wrap.mint(e2eLUSD, maker, 5000)
-	wrap.deposit(t, maker, e2eLUSD, 5000)
-	wrap.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 100) // BID 100 LETH @ 50
-	makerLUSDLockedBefore := wrap.dcLocked(maker, e2eLUSD)
-	makerLETHBefore := wrap.dcAvail(maker, e2eLETH)
+	// A real maker BID rests (100 LETH @ 50, 5000 LUSD locked).
+	h.mint(e2eLUSD, maker, 5000)
+	h.deposit(t, maker, e2eLUSD, 5000)
+	h.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 100)
 
-	// Now turn the gate OFF and attempt the swap.
-	EnableValueSwaps(false)
-	taker := e2eTaker
-	wrap.mint(e2eLETH, taker, 80)
-
-	// (a) DIRECT unit proof: runSyncSwap itself fails closed with the gate off.
-	directParams := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-80), SqrtPriceLimitX96: big.NewInt(0)}
-	if _, _, derr := runSyncSwap(h.state, taker, wrap.key, directParams, 5_000_000, false); !errors.Is(derr, ErrValueSwapsNotEnabled) {
-		t.Fatalf("runSyncSwap with gate off: err=%v, want ErrValueSwapsNotEnabled", derr)
+	// A plain swap() (empty SwapParams hookData beyond the SELL floor) settles in ONE call.
+	// We carry a permissive price floor so the SELL-protection policy is satisfied (the
+	// fair fill at 50 is well above 1.0); the point is the swap returns a fill RIGHT NOW,
+	// not an intent id.
+	h.mint(e2eLETH, taker, 80)
+	out, err := h.swap(t, taker, true, 80, sqrtX96For(1.0))
+	if err != nil {
+		t.Fatalf("plain swap() must settle synchronously: %v", err)
 	}
 
-	// (b) DISPATCH proof: a full Run swap with the gate off must NOT settle synchronously.
-	params := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-80), SqrtPriceLimitX96: big.NewInt(0)}
-	calldata := buildSwapCalldata(wrap.key, params, nil)
-	_, _, _ = runWithEVMSnapshot(h.c, h.state, taker, poolManagerAddr9999, prependSelector(SelectorSwap, calldata), 5_000_000, false)
+	// SYNCHRONOUS RESULT: the return value is the V4 BalanceDelta (16+16 bytes), NOT a
+	// 32-byte async intent id. amount0 = -80 (LETH paid), amount1 = +4000 (LUSD received).
+	a0, a1 := UnpackBalanceDelta(out)
+	if a0.Int64() != -80 || a1.Int64() != 4000 {
+		t.Fatalf("synchronous BalanceDelta = (%s,%s), want (-80,4000) — swap did not settle in-process", a0, a1)
+	}
+	// REAL balances moved IN THE SAME CALL (a synchronous fill, not a deferred intent).
+	if got := h.ercBal(e2eLETH, taker); got != 0 {
+		t.Fatalf("taker LETH = %d, want 0 (sold synchronously)", got)
+	}
+	if got := h.ercBal(e2eLUSD, taker); got != 4000 {
+		t.Fatalf("taker LUSD = %d, want 4000 (proceeds received synchronously)", got)
+	}
+	// The maker's book updated in the same block (bought 80 LETH).
+	if got := h.dcAvail(maker, e2eLETH); got != 80 {
+		t.Fatalf("maker LETH available = %d, want 80 (synchronous cross)", got)
+	}
 
-	// NO SYNCHRONOUS FILL: the taker received ZERO proceeds (no LUSD) and the maker's
-	// resting BID is untouched (still fully locked, no LETH bought). Whether the async
-	// rail locked the taker's LETH as an intent is orthogonal (and recoverable).
-	if got := wrap.ercBal(e2eLUSD, taker); got != 0 {
-		t.Fatalf("taker received %d LUSD with value swaps disabled — sync router must not settle", got)
-	}
-	if got := wrap.dcLocked(maker, e2eLUSD); got != makerLUSDLockedBefore {
-		t.Fatalf("maker LUSD lock changed (%d -> %d) with value swaps disabled — no sync fill must occur", makerLUSDLockedBefore, got)
-	}
-	if got := wrap.dcAvail(maker, e2eLETH); got != makerLETHBefore {
-		t.Fatalf("maker bought %d LETH with value swaps disabled — no sync fill must occur", got)
+	// NO ASYNC INTENT was created: the swap rail's intent record for THIS swap does not
+	// exist (a synchronous swap never calls SubmitSwapIntent). We confirm structurally that
+	// the synchronous path returned a BalanceDelta, not an intent id — a 32-byte return
+	// would be an async intent id (the async path's signature). The BalanceDelta is two
+	// 16-byte halves = 32 bytes total, so we additionally assert the high half decodes as a
+	// signed delta (negative for the SELL leg), which an intent id (a random 32-byte hash)
+	// would not reliably do; the balance/book assertions above are the decisive proof.
+	if a0.Sign() >= 0 {
+		t.Fatalf("the SELL leg (amount0) must be negative in a synchronous BalanceDelta, got %s", a0)
 	}
 }
 

@@ -92,11 +92,13 @@ func Test9999Swap_CreatesCToDAtomicIntent(t *testing.T) {
 	}
 }
 
-// Test9999Swap_DoesNotUseBLSReceiptPath — a hookData shaped like the OLD BLS
-// settlement envelope ("D991" tag) must NOT settle a fill. In the native model
-// that tag is just opaque bytes (Phase A treats it as an intent), so it locks
-// input + creates an intent — it can NEVER credit an output from a "cert". This
-// proves the BLS receipt path is gone from the value path.
+// Test9999Swap_DoesNotUseBLSReceiptPath — a hookData shaped like the OLD BLS settlement
+// envelope ("D991" tag) must NOT settle a fill from a "cert". After the decomplect that tag
+// is neither DI01 nor DS01, so isUntaggedSwap treats it as a NORMAL swap routed through the
+// synchronous on-chain router — there is no BLS cert/receipt credit path to take. With the
+// harness's native market carrying no on-chain liquidity, that synchronous swap reverts (no
+// liquidity); the decisive property is that the caller is NEVER credited an output from a
+// fabricated cert. The BLS receipt path is gone from the value path.
 func Test9999Swap_DoesNotUseBLSReceiptPath(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
@@ -110,18 +112,17 @@ func Test9999Swap_DoesNotUseBLSReceiptPath(t *testing.T) {
 		callerOutBefore = big.NewInt(0)
 	}
 
-	// A blob with the legacy BLS envelope tag + garbage. In the native model this is
-	// opaque Phase-A body; it must NOT be interpreted as a cert/receipt.
+	// A blob with the legacy BLS envelope tag + garbage. It is NOT a recognized cross-chain
+	// tag, so it routes to the synchronous router as a normal swap. With no resolver/liquidity
+	// it reverts — and crucially never credits an output off a "cert".
 	blsLike := append([]byte("D991"), bytes.Repeat([]byte{0xAB}, 200)...)
-	out, err := h.runSwap(t, buildSwapCalldata(h.key, h.params, blsLike), false)
-	if err != nil {
-		t.Fatalf("swap with BLS-like hookData should be a benign intent, got: %v", err)
+	out, _, err := runWithEVMSnapshot(h.c, h.state, h.caller, poolManagerAddr9999,
+		prependSelector(SelectorSwap, buildSwapCalldata(h.key, h.params, blsLike)), 5_000_000, false)
+	if err == nil {
+		t.Fatalf("a BLS-like (untagged) swap must NOT settle a cert fill; got success out=%x", out)
 	}
-	// It returned an intent id (Phase A), not a settled fill.
-	if len(out) != 32 {
-		t.Fatalf("expected a 32-byte intent id (Phase A), got %d bytes", len(out))
-	}
-	// The caller received NO output token (no cert path credited anything).
+	// The caller received NO output token (no cert path credited anything), and the swap
+	// rolled back atomically.
 	callerOutAfter := h.wrapper().inner.tokenBalances[h.outToken()][h.caller]
 	if callerOutAfter == nil {
 		callerOutAfter = big.NewInt(0)
