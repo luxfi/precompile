@@ -58,6 +58,10 @@ func newE2EHarness(t *testing.T) *e2eHarness {
 	h.key = e2eMarketKey()
 	EnableValueSwaps(true)
 	t.Cleanup(func() { EnableValueSwaps(false) })
+	// C1: install the real-asset resolver, admitting this market's real ERC-20s (LETH,
+	// LUSD) and the native coin, so the value path's admission gate passes for the
+	// legitimate market. A fabricated asset is NOT admitted (see the C1 redteam test).
+	h.installAssetResolverFor(t, e2eLETH, e2eLUSD)
 	return &e2eHarness{settleHarness: h, key: e2eMarketKey()}
 }
 
@@ -113,12 +117,32 @@ func (h *e2eHarness) swap(t *testing.T, taker common.Address, zeroForOne bool, a
 	if sqrtLimit == nil {
 		params.SqrtPriceLimitX96 = big.NewInt(0)
 	}
-	calldata := buildSwapCalldata(h.key, params, nil) // nil hookData -> untagged -> sync router
+	// h.swap is the RAW value-path swap: it passes EMPTY hookData (no declared min-out
+	// floor), so an unprotected no-limit market SELL is refused by the H3 value-path policy
+	// (ErrSellRequiresProtection) — exactly what the min-out redteam asserts. Tests that
+	// want a protected SELL (the conservation/atomicity suites) use swapMinOut /
+	// swapWithMinOut, which declare a floor via the DM01 hookData.
+	calldata := buildSwapCalldata(h.key, params, nil) // raw: no floor -> sync router
 	// Drive through the taker (msg.sender) over the EVM atomicity boundary: the
 	// production EVM snapshots before the precompile CALL and reverts on error, so a
 	// failed swap rolls back BOTH the C balances and the D book. runWithEVMSnapshot
 	// reproduces that boundary exactly (see swap_sync_snapshot_test.go), so a revert
 	// here is observably atomic in the mock — as it is in production.
+	out, _, err := runWithEVMSnapshot(h.c, h.state, taker, poolManagerAddr9999, prependSelector(SelectorSwap, calldata), 5_000_000, false)
+	return out, err
+}
+
+// swapMinOut drives a market SELL (no price limit) that declares an EXPLICIT min-out
+// floor via the DM01 hookData — the real taker-slippage path. A realized fill below
+// minOut reverts the whole swap (the MEV floor). Used by the sync-rail MEV redteam suite.
+func (h *e2eHarness) swapMinOut(t *testing.T, taker common.Address, amountIn int64, minOut uint64) ([]byte, error) {
+	t.Helper()
+	params := SwapParams{
+		ZeroForOne:        true, // SELL base for quote
+		AmountSpecified:   big.NewInt(-amountIn),
+		SqrtPriceLimitX96: big.NewInt(0), // no price limit: the min-out IS the protection
+	}
+	calldata := buildSwapCalldata(h.key, params, EncodeMinOutHookData(minOut))
 	out, _, err := runWithEVMSnapshot(h.c, h.state, taker, poolManagerAddr9999, prependSelector(SelectorSwap, calldata), 5_000_000, false)
 	return out, err
 }
@@ -171,9 +195,11 @@ func TestE2E_SyncSwap_MakerRestsTakerSwaps(t *testing.T) {
 		t.Fatalf("maker dexcore locked LUSD = %d, want 5000", got)
 	}
 
-	// Taker has 80 real LETH; swaps (SELL 80 LETH -> LUSD) through 0x9999.
+	// Taker has 80 real LETH; swaps (SELL 80 LETH -> LUSD) through 0x9999 with a permissive
+	// price floor (>= 1.0 quote/base) so the H3 value-path SELL-protection policy is
+	// satisfied; the fair fill at 50 is well above it.
 	h.mint(e2eLETH, taker, 80)
-	out, err := h.swap(t, taker, true, 80, nil)
+	out, err := h.swap(t, taker, true, 80, sqrtX96For(1.0))
 	if err != nil {
 		t.Fatalf("taker swap: %v", err)
 	}
@@ -302,6 +328,10 @@ func Test9999SyncSwap_ValueGateFailsClosed(t *testing.T) {
 	h := newSettleHarness(t)
 	h.key = e2eMarketKey()
 	wrap := &e2eHarness{settleHarness: h, key: e2eMarketKey()}
+	// The real-asset registry is wired (both market tokens registered + code-backed) so the
+	// maker's legitimate order rests; the property under test is the VALUE-SWAP gate, which
+	// is orthogonal to (and downstream of) real-asset admission.
+	h.installAssetResolverFor(t, e2eLETH, e2eLUSD)
 
 	// First, with the gate ENABLED, rest a real-funded maker BID so a synchronous fill
 	// WOULD have a counterparty to cross. Then disable the gate and swap; if the sync
@@ -321,7 +351,7 @@ func Test9999SyncSwap_ValueGateFailsClosed(t *testing.T) {
 
 	// (a) DIRECT unit proof: runSyncSwap itself fails closed with the gate off.
 	directParams := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-80), SqrtPriceLimitX96: big.NewInt(0)}
-	if _, _, derr := runSyncSwap(h.state, taker, wrap.key, directParams, 5_000_000, false); !errors.Is(derr, ErrValueSwapsNotEnabled) {
+	if _, _, derr := runSyncSwap(h.state, taker, wrap.key, directParams, nil, 5_000_000, false); !errors.Is(derr, ErrValueSwapsNotEnabled) {
 		t.Fatalf("runSyncSwap with gate off: err=%v, want ErrValueSwapsNotEnabled", derr)
 	}
 

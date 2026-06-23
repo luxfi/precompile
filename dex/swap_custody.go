@@ -74,9 +74,6 @@ func (s *SettleContract) runSwapDeposit(state contract.AccessibleState, caller c
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
 	}
-	if !valueSwapsEnabled.Load() {
-		return nil, gas, ErrValueSwapsNotEnabled
-	}
 	if gas < GasDeposit {
 		return nil, 0, errors.New("dex: out of gas")
 	}
@@ -117,9 +114,6 @@ func (s *SettleContract) runSwapDeposit(state contract.AccessibleState, caller c
 func (s *SettleContract) runSwapWithdraw(state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
-	}
-	if !valueSwapsEnabled.Load() {
-		return nil, gas, ErrValueSwapsNotEnabled
 	}
 	if gas < GasWithdraw {
 		return nil, 0, errors.New("dex: out of gas")
@@ -171,9 +165,6 @@ func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller com
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
 	}
-	if !valueSwapsEnabled.Load() {
-		return nil, gas, ErrValueSwapsNotEnabled
-	}
 	if gas < GasSwap {
 		return nil, 0, errors.New("dex: out of gas")
 	}
@@ -190,15 +181,32 @@ func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller com
 	if herr := checkHalt(stateDB, key, SwapParams{}); herr != nil {
 		return nil, gasLeft, herr
 	}
+
+	// C1: a maker RESTING an order BINDS the market, so it must clear the SAME real-asset
+	// admission a taker's swap does — else a maker could bind an arbitrary (currency0,
+	// currency1) market over a fabricated/unregistered/code-less asset and rest "liquidity"
+	// on it. Resolve the runtime-bound registry authority (cross-checked against the chain
+	// the node actually runs) and the live on-chain verifier, then admit BOTH sides through
+	// OpenMarketChecked BEFORE binding. A place over a non-real asset REVERTS
+	// (ErrAssetNotAdmitted / ErrAssetNotOnChain); no resolver/verifier fails closed.
+	atomicState, ok := state.(contract.AtomicState)
+	if !ok {
+		return nil, gasLeft, ErrSettleNoAtomicState
+	}
+	resolver, rerr := resolverForRuntime(atomicState.NetworkID(), atomicState.CChainID())
+	if rerr != nil {
+		return nil, gasLeft, rerr
+	}
+
 	if !enterCustodyKV(stateDB) {
 		return nil, gasLeft, ErrCustodyReentrant
 	}
 	defer exitCustodyKV(stateDB)
 
 	store := newEVMStore(stateDB)
-	base := assetID(key.Currency0)
-	quote := assetID(key.Currency1)
-	if oerr := dexcore.OpenMarket(store, key.ID(), base, quote); oerr != nil {
+	verifier := onChainVerifierFor(stateDB)
+	if oerr := dexcore.OpenMarketChecked(store, resolver, verifier, key.ID(),
+		assetSideForCurrency(key.Currency0), assetSideForCurrency(key.Currency1)); oerr != nil {
 		return nil, gasLeft, oerr
 	}
 
@@ -229,9 +237,6 @@ func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller com
 func (s *SettleContract) runSwapCancel(state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
-	}
-	if !valueSwapsEnabled.Load() {
-		return nil, gas, ErrValueSwapsNotEnabled
 	}
 	if gas < GasSwap {
 		return nil, 0, errors.New("dex: out of gas")
