@@ -1,0 +1,395 @@
+// Copyright (C) 2025-2026, Lux Industries Inc. All rights reserved.
+// See the file LICENSE for licensing terms.
+
+package dex
+
+import (
+	"errors"
+	"math"
+	"math/big"
+	"sync/atomic"
+
+	"github.com/luxfi/dex/pkg/dexcore"
+	"github.com/luxfi/dex/pkg/lx"
+	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
+)
+
+// valueSwapsEnabled is the FAIL-CLOSED activation gate for the synchronous on-chain
+// router. It is OFF by default: the precompile ships with native-value swaps DISABLED,
+// and only the node may enable them — and only AFTER it has verified the consensus
+// engine is in quorum-finality mode (RequireQuorumFinalityForValueDEX). A node on a
+// single-validator or non-quorum engine never enables it, so no value swap can run
+// where a proposer could self-finalize a fabricated fill. This is the precompile-side
+// half of the launch rule; the node-side half (the actual engine.Mode() check) lives
+// in the EVM plugin boot, which calls EnableValueSwaps(true) only when the gate
+// passes. See consensus/engine/chain/quorum_guard.go.
+var valueSwapsEnabled atomic.Bool
+
+// EnableValueSwaps is the node's switch to activate (or deactivate) the synchronous
+// native-value router. The EVM plugin calls EnableValueSwaps(true) at boot ONLY after
+// engine.RequireQuorumFinalityForValueDEX(true) returns nil — i.e. the engine is K>1
+// with a verified alpha-of-K cert path. Until then native-value swaps revert
+// (ErrValueSwapsNotEnabled), fail-closed.
+func EnableValueSwaps(on bool) { valueSwapsEnabled.Store(on) }
+
+// ValueSwapsEnabled reports whether the synchronous native-value router is active.
+func ValueSwapsEnabled() bool { return valueSwapsEnabled.Load() }
+
+// ErrValueSwapsNotEnabled is returned when a synchronous value swap is attempted on a
+// node that has not enabled the router (the engine is not in quorum-finality mode, or
+// the node has not yet activated value trading). Fail-closed.
+var ErrValueSwapsNotEnabled = errors.New("dex: native-value swaps are not enabled on this node (requires quorum-finality consensus)")
+
+// runSyncSwap is the 0x9999 dispatch entry for a SYNCHRONOUS (untagged) V4 swap — the
+// on-chain smart-order-router path. It mirrors SettleSwap's guards (read-only reject,
+// value-enabled gate, gas, the global non-reentrant custody mutex, the halt gate) but
+// needs NO cross-chain atomic capability: the whole swap is one in-process, in-trie
+// transition. Returns the V4 BalanceDelta and the remaining gas.
+func runSyncSwap(state contract.AccessibleState, caller common.Address, key PoolKey, params SwapParams, suppliedGas uint64, readOnly bool) ([]byte, uint64, error) {
+	if readOnly {
+		return nil, suppliedGas, errors.New("dex: cannot swap in read-only mode")
+	}
+	// FAIL-CLOSED value gate: no native-value swap unless the node enabled it (which it
+	// does only on a quorum-finality engine).
+	if !valueSwapsEnabled.Load() {
+		return nil, suppliedGas, ErrValueSwapsNotEnabled
+	}
+	if suppliedGas < GasSwap {
+		return nil, 0, errors.New("dex: out of gas")
+	}
+	gasLeft := suppliedGas - GasSwap
+
+	stateDB := newPoolStateAdapter(state)
+
+	// Halt gate (global/market/asset) — refuse a swap on a halted market/asset.
+	if herr := checkHalt(stateDB, key, params); herr != nil {
+		return nil, gasLeft, herr
+	}
+
+	// GLOBAL non-reentrant guard: the swap moves real value through the seam reserve and
+	// an ERC-20 transfer can hand control to a malicious token that re-enters any 0x9999
+	// entrypoint. The single mutex makes the whole money surface single-in-flight.
+	if !enterCustodyKV(stateDB) {
+		return nil, gasLeft, ErrCustodyReentrant
+	}
+	defer exitCustodyKV(stateDB)
+
+	// The block timestamp gates the consensus-visible DEXFill log (the activation-fork
+	// replay guard). It comes from the AccessibleState's block context (the StateDB
+	// adapter exposes only the number); the sync handler reads it here and threads it
+	// into syncSwap so the fill log fires on the SAME dated fork the async path uses.
+	blockTimestamp := state.GetBlockContext().Timestamp()
+
+	out, err := syncSwap(stateDB, caller, key, params, blockTimestamp)
+	if err != nil {
+		return nil, gasLeft, err
+	}
+	return out, gasLeft, nil
+}
+
+// swap_sync.go is the SYNCHRONOUS in-process 0x9999 swap path — 0x9999 as the
+// on-chain SMART-ORDER-ROUTER. It decodes the V4 swap (PoolKey/SwapParams) into a
+// dexcore.SwapRequest and routes it across the on-chain liquidity sources, in one
+// EVM call, deterministically, atomically:
+//
+//   1. V4 native CLOB first (the in-process matcher over 0x9999 storage rows).
+//   2. Fall through to the V2/V3 AMM pools in the SAME cEVM when the CLOB lacks depth.
+//   3. Best-execution across V4 + AMM, splitting when that beats either alone.
+//
+// The C-Chain EVM balance delta AND the D book/fill (or AMM pool) delta land in ONE
+// JOINT JOURNAL committed in a SINGLE cEVM block's state root:
+//
+//   - The D side (book rows, fills, custody ledger) is written DIRECTLY to 0x9999
+//     storage by dexcore over the evmStore adapter — every write is a 0x9999 StateDB
+//     write, already part of the block's state root.
+//   - The C side (the taker's real EVM token/native balance) is moved through the
+//     proven 0x9999 vault primitives (lockIntentInput / creditSettlementOutput),
+//     applied from the journal's recorded C-deltas in the SAME call.
+//
+// One EVM snapshot covers the lock + the routing + the credit, so a revert anywhere
+// (no liquidity, price-limit breach, min-out breach) rolls back BOTH surfaces — both-
+// or-neither. There is NO async C->D->C, NO live ZAP in Verify: the proposer builds
+// the swap with the same pure function every validator REPLAYS from block bytes +
+// prior state, and the EVM state root commits the route.
+//
+// REAL ASSETS ONLY: an asset's identity is its real on-chain token ADDRESS (assetID
+// = left-pad of the 20-byte address); native LUX is the zero address. The 0x9999
+// vault holds the REAL tokens. There are NO synthetic ticker ids on this path.
+
+// syncSwap is the synchronous 0x9999 swap handler. It is the in-process router
+// replacing the async intent path for a normal same-domain swap. Returns the V4
+// BalanceDelta bytes (amount0, amount1) or an error (the caller reverts).
+//
+// PRECONDITIONS the caller (the 0x9999 dispatch) guarantees:
+//   - the global non-reentrant custody guard is held (an ERC-20 transfer can re-enter);
+//   - the market exists / is openable (the maker-seed / OpenMarket path bound assets);
+//   - read-only callers are rejected before here (a swap mutates).
+//
+// blockTimestamp gates the DEXFill C-event: a consensus-visible log must not enter a
+// receipt root before the activation boundary (dexLogsActive), or a node re-syncing
+// from before the boundary would compute a divergent root. On the relaunched chain
+// every swap is at/after the boundary, so every filled swap emits the fill log.
+func syncSwap(stateDB StateDB, caller common.Address, key PoolKey, params SwapParams, blockTimestamp uint64) ([]byte, error) {
+	// Decode the V4 swap into the real-asset routing request.
+	req, inAssetAddr, err := buildSwapRequest(stateDB, caller, key, params)
+	if err != nil {
+		return nil, err
+	}
+
+	store := newEVMStore(stateDB)
+
+	// Ensure the market's (base,quote) binding exists in the dexcore ledger. The
+	// market is the V4 pool; its assets are currency0 (base) / currency1 (quote),
+	// identified by their REAL token addresses (assetID). Idempotent.
+	if err := dexcore.OpenMarket(store, req.PoolID, req.Base, req.Quote); err != nil {
+		return nil, err
+	}
+
+	// (C-side lock) Debit the taker's REAL input asset from their EVM balance into the
+	// 0x9999 vault (seamReserve), observed-delta (fee-on-transfer safe). This is the C
+	// leg of the journal's DebitTakerInput; we perform it here because dexcore records
+	// the intent but cannot touch EVM balances. The locked amount becomes the taker's
+	// dexcore-ledger AVAILABLE input the router spends.
+	locked, err := lockIntentInput(stateDB, caller, amountInAssetOf(req), inAssetAddr, req.AmountIn)
+	if err != nil {
+		return nil, err
+	}
+	// Credit the taker's dexcore-ledger available with EXACTLY what the vault locked
+	// (observed delta), so the router draws from real, backed funds.
+	if err := dexcore.Deposit(store, req.TakerUser, amountInAssetOf(req), locked); err != nil {
+		return nil, err
+	}
+	// If a fee-on-transfer token delivered less than requested, route only what arrived.
+	req.AmountIn = locked
+
+	// Build the router: CLOB first, then the AMM fallthrough (active only when a real
+	// pool is bound for this market).
+	router := buildRouter(stateDB, req.PoolID)
+
+	// (Route) Best-execution across the sources. dexcore writes the D-side effects to
+	// 0x9999 storage and records the C-side proceeds/refund in the journal. The
+	// taker's dexcore lock is consumed per fill; the unspent remainder is unlocked.
+	res, err := dexcore.ExecuteSwap(store, router, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// (C-side apply) Mirror the journal's recorded C-deltas onto REAL EVM balances:
+	//   - CreditTakerOutput: release the output asset from the vault to the taker.
+	//   - RefundTakerInput:  release the unspent input from the vault to the taker.
+	// Both draw ONLY on the seam reserve (creditSettlementOutput is no-mint,
+	// conservation-checked), so a proceeds/refund can never pay out of a depositor's
+	// or maker's pot. The DebitTakerInput leg was already applied by lockIntentInput.
+	if err := applyJournalC(stateDB, caller, res.Journal); err != nil {
+		return nil, err
+	}
+
+	// The taker's dexcore-ledger proceeds are now redundant with the EVM credit (the
+	// ledger credited the taker's available; the C apply released the real token). For
+	// a swap (IOC, never rests), the taker holds no resting dexcore position, so the
+	// ledger proceeds must be DRAINED back out so the dexcore ledger nets to zero for
+	// the taker (the real value lives on the EVM side, not the dexcore ledger). Drain
+	// the taker's dexcore available for both assets to zero — they were transient
+	// accounting for the in-block settlement.
+	if err := drainTakerLedger(store, req.TakerUser, req.Base, req.Quote); err != nil {
+		return nil, err
+	}
+
+	// (C event) Emit the DEXFill log so the trade is visible in C events — the SAME
+	// indexable native-CLOB settlement signal the async Phase-B path emits, now fired
+	// on the SYNCHRONOUS money path. The graph indexer / lux.exchange scope CLOB fills
+	// to 0x9999 by this log. Gated on the activation fork (dexLogsActive) for replay
+	// safety, and only when the route actually produced output. amountOut is the
+	// taker's realized proceeds; poolId + taker are the indexed topics.
+	if res.AmountOut > 0 && dexLogsActive(blockTimestamp) {
+		emitDEXFillEvent(stateDB, req.PoolID, caller, new(big.Int).SetUint64(res.AmountOut), stateDB.GetBlockNumber())
+	}
+
+	// Return the V4 BalanceDelta (amount0 = base leg, amount1 = quote leg).
+	return swapBalanceDelta(req, res), nil
+}
+
+// buildSwapRequest decodes the V4 swap into a dexcore.SwapRequest over REAL assets.
+// currency0 is the base, currency1 is the quote (the V4 sorted-currency convention).
+// zeroForOne (sell currency0 for currency1) is a SELL of base; !zeroForOne is a BUY.
+// The taker is the caller; its dexcore identity is the left-16-bytes of its address
+// (the wallet axis), matching the settlement-identity fold. Returns the request and
+// the input asset's real token address (for the vault lock).
+func buildSwapRequest(stateDB StateDB, caller common.Address, key PoolKey, params SwapParams) (dexcore.SwapRequest, common.Address, error) {
+	if params.AmountSpecified == nil || params.AmountSpecified.Sign() == 0 {
+		return dexcore.SwapRequest{}, common.Address{}, ErrInvalidAmount
+	}
+	mag := new(big.Int).Abs(params.AmountSpecified)
+	if !mag.IsUint64() || mag.Sign() <= 0 {
+		return dexcore.SwapRequest{}, common.Address{}, ErrInvalidAmount
+	}
+
+	base := assetID(key.Currency0)  // REAL: left-pad of currency0's token address
+	quote := assetID(key.Currency1) // REAL: left-pad of currency1's token address
+	side := lx.Sell
+	inAddr := key.Currency0.Address
+	if !params.ZeroForOne {
+		side = lx.Buy
+		inAddr = key.Currency1.Address
+	}
+
+	// Price limit: the V4 SqrtPriceLimitX96 -> CLOB quote-per-base, as a PriceInt grid
+	// value (the matcher's price domain), plus which side it bounds.
+	limitBits, limitIsUpper := priceLimitToCLOB(params)
+	var limitPrice lx.PriceInt
+	if limitBits != 0 {
+		limitPrice = dexcore.PriceToInt(math.Float64frombits(limitBits))
+	}
+
+	req := dexcore.SwapRequest{
+		PoolID:       key.ID(),
+		TakerUser:    accountFromAddress(caller),
+		Side:         side,
+		Base:         base,
+		Quote:        quote,
+		AmountIn:     mag.Uint64(),
+		OrderID:      deterministicSwapOrderID(stateDB, key.ID()),
+		TimestampN:   blockTimestampNanos(stateDB),
+		LimitPrice:   limitPrice,
+		LimitIsUpper: limitIsUpper,
+		MinOut:       minAmountOutU64(params),
+		Class:        dexcore.ClassPublicCLOB,
+	}
+	return req, inAddr, nil
+}
+
+// accountFromAddress maps a 20-byte EVM address to the 32-byte dexcore settlement
+// identity by left-padding (12 zero bytes + the 20 address bytes) — INJECTIVE, so no
+// two distinct addresses ever collide as accounts (the cross-user-drain guard, sound
+// for 20-byte addresses that a narrower identity could alias). It is the account-axis
+// analog of assetID's left-pad on the asset axis.
+func accountFromAddress(a common.Address) dexcore.AccountID {
+	return dexcore.AccountFromBytes(a.Bytes())
+}
+
+// applyJournalC applies the C-surface deltas dexcore recorded onto REAL EVM balances
+// via the proven vault primitives. The DebitTakerInput leg was applied by
+// lockIntentInput before routing (it needed the observed delta), so here we apply
+// only the credit (proceeds) and refund (unspent input) legs.
+func applyJournalC(stateDB StateDB, caller common.Address, j *dexcore.Journal) error {
+	for _, d := range j.CDeltas() {
+		switch d.Kind {
+		case dexcore.CTakerCreditOutput, dexcore.CTakerRefundInput:
+			if !d.Amount.IsUint64() {
+				return ErrNativeBadAmount
+			}
+			if err := creditSettlementOutput(stateDB, caller, d.Asset, d.Amount.Uint64()); err != nil {
+				return err
+			}
+		case dexcore.CTakerDebitInput:
+			// Already applied by lockIntentInput (observed-delta lock). Skip.
+		}
+	}
+	return nil
+}
+
+// drainTakerLedger zeroes the taker's transient dexcore available for the market's
+// two assets after a swap. The swap is IOC — the taker holds no resting dexcore
+// position, so the proceeds the ledger credited were a transient in-block accounting
+// leg whose real value was released to the taker's EVM balance by applyJournalC. We
+// debit them back out so the dexcore ledger nets to zero for the taker (no phantom
+// ledger balance survives the swap). Maker balances are untouched.
+func drainTakerLedger(store dexcore.Store, taker dexcore.AccountID, base, quote dexcore.AssetID) error {
+	for _, asset := range [2]dexcore.AssetID{base, quote} {
+		avail, err := dexcore.GetAvailable(store, taker, asset)
+		if err != nil {
+			return err
+		}
+		if avail > 0 {
+			if err := dexcore.DebitAvailable(store, taker, asset, avail); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// swapBalanceDelta builds the V4 BalanceDelta (amount0, amount1) for the routed swap.
+// amount0 is the base (currency0) leg, amount1 is the quote (currency1) leg. A SELL
+// pays base (amount0 negative) and receives quote (amount1 positive); a BUY is the
+// mirror. The magnitudes are the realized AmountIn/AmountOut.
+func swapBalanceDelta(req dexcore.SwapRequest, res *dexcore.SwapResult) []byte {
+	var amount0, amount1 *big.Int
+	in := new(big.Int).SetUint64(res.AmountIn)
+	out := new(big.Int).SetUint64(res.AmountOut)
+	if req.Side == lx.Sell {
+		// Paid base, received quote.
+		amount0 = new(big.Int).Neg(in)
+		amount1 = out
+	} else {
+		// Paid quote, received base.
+		amount0 = out
+		amount1 = new(big.Int).Neg(in)
+	}
+	return PackBalanceDelta(amount0, amount1)
+}
+
+// req.AmountInAsset returns the swap's spend asset id (quote for a BUY, base for a
+// SELL). A small method-style helper on the request for the lock/deposit legs.
+func amountInAssetOf(req dexcore.SwapRequest) dexcore.AssetID {
+	if req.Side == lx.Buy {
+		return req.Quote
+	}
+	return req.Base
+}
+
+// minAmountOutU64 returns the V4 exact-input min-out as a uint64 (0 = none). For an
+// exact-input swap the min-out is not in the V4 calldata directly; it is conveyed via
+// the router/hookData in the full integration. The first cut takes 0 (no floor) here
+// and relies on the taker price limit for MEV protection; a min-out floor wires in
+// with the hookData decode.
+func minAmountOutU64(_ SwapParams) uint64 { return 0 }
+
+// deterministicSwapOrderID derives the ephemeral swap order id from block context +
+// a per-block swap counter, so it is unique within the block and identical on every
+// validator (the matcher's id discipline). The IOC order never rests, so the id only
+// needs in-block uniqueness; (blockNumber<<32 | counter)+1 gives it, never zero.
+func deterministicSwapOrderID(stateDB StateDB, poolID [32]byte) uint64 {
+	n := stateDB.GetBlockNumber()
+	c := nextSwapCounter(stateDB, poolID)
+	return (n << 32) | (c & 0xffffffff)
+}
+
+// swapCounterPrefix keys a per-(block,market) ephemeral swap counter so multiple
+// swaps in one block on one market get distinct ids.
+var swapCounterPrefix = []byte(coreStoreNamespace + "swcnt.")
+
+func swapCounterKey(poolID [32]byte) common.Hash {
+	return makeStorageKey(swapCounterPrefix, poolID[:])
+}
+
+// nextSwapCounter returns and advances the per-market swap counter for this block. It
+// resets each block by encoding the block number alongside the count, so a new block
+// starts fresh; within a block it monotonically increases.
+func nextSwapCounter(stateDB StateDB, poolID [32]byte) uint64 {
+	w := stateDB.GetState(poolManagerAddr9999, swapCounterKey(poolID))
+	storedBlock := bytesToU64(w[0:8])
+	count := bytesToU64(w[24:32])
+	cur := stateDB.GetBlockNumber()
+	if storedBlock != cur {
+		count = 0
+	}
+	count++
+	var nw common.Hash
+	putU64(nw[0:8], cur)
+	putU64(nw[24:32], count)
+	stateDB.SetState(poolManagerAddr9999, swapCounterKey(poolID), nw)
+	return count
+}
+
+// blockTimestampNanos returns the block timestamp in nanoseconds for the ephemeral
+// order's timestamp. The precompile StateDB exposes the block NUMBER but not the
+// timestamp directly; the ephemeral IOC order's timestamp never participates in
+// resting price-time priority (it never rests), so a block-number-derived monotone
+// value is a deterministic, validator-identical stand-in. Using the block number as
+// the nanosecond seed keeps it deterministic without a clock.
+func blockTimestampNanos(stateDB StateDB) int64 {
+	return int64(stateDB.GetBlockNumber())
+}
+
