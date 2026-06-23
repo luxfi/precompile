@@ -13,15 +13,18 @@ import (
 	"github.com/luxfi/precompile/precompileconfig"
 )
 
-// DefaultDAOTreasury is the built-in canonical governance address for 0x9999 — the
-// Lux DAO treasury. It is the protocolFeeController that gates the settlement kill
-// switches (setHaltGlobal/Market/Asset) and the operator-gated pot seeding
-// (seedSeamReserve / creditPositionFee). It is hard-coded (NOT per-network config)
-// because 0x9999 is always-on with zero per-net configuration and DEX governance is
-// the same DAO across every Lux network. It is deliberately NOT one of the publicly-
-// known compromised dev keys (compromisedDevControllers), so it is a safe default
-// admin from genesis. Forward-perfect: one canonical governance authority, one way.
-var DefaultDAOTreasury = common.HexToAddress("0x9011E888251AB053B7bD1cdB598Db4f9DEd94714")
+// 0x9999 settlement governance (setHaltGlobal/Market/Asset, seedSeamReserve,
+// creditPositionFee) is gated to the per-NETWORK DEX GOVERNANCE CONTROLLER, resolved
+// at RUNTIME from contract.AtomicState.GovernanceController() (the SAME runtime seam
+// networkID/cChainID/dChainID flow through) — see governanceController in halt9999.go.
+//
+// There is NO hardcoded governance address. A single hardcoded EOA (the prior
+// DefaultDAOTreasury) was mnemonic-derivable, so anyone with that mnemonic could halt
+// an asset (censor) or halt globally (DoS the whole DEX). The authority is now a
+// per-network governance CONTRACT (Governor/Timelock/multisig), configured by the host
+// from its deployment topology, NEVER a dev-mnemonic EOA. When a network has not
+// configured a governance controller, the halt/seed ops are fail-closed (uncallable) —
+// strictly safer than a default key, and permissionless/decentralized by construction.
 
 // settle_module.go registers 0x9999 — THE production DEX settlement precompile —
 // as its own module (orthogonal: a new primitive at its own address, not bolted
@@ -31,8 +34,8 @@ var DefaultDAOTreasury = common.HexToAddress("0x9011E888251AB053B7bD1cdB598Db4f9
 //     ABI is byte-for-byte unchanged; web/mobile change only the config address.
 //   - the existing custody/admin selectors (deposit/withdraw/balanceOf, pause/
 //     freeze) so a node serving 0x9999 has the full surface in one place.
-//   - settlement governance: register a validator set, set halt layers (gated on
-//     the same protocolFeeController authority as the existing pause controls).
+//   - settlement governance: set halt layers + seed pots (gated on the per-network
+//     DEX governance controller resolved from the runtime AtomicState, not a key).
 //
 // 0x9010 was removed; 0x9999 is the sole DEX precompile — one money path, one
 // replay namespace (dex.precompile.v1.9999.*), never two.
@@ -56,12 +59,13 @@ var settleConfigKey = "dexSettleConfig"
 // (both bind self = 0x9999) pass.
 var ErrSettleWrongContext = errors.New("dex: 0x9999 must be entered with self == 0x9999 (CALL/CALLCODE); DELEGATECALL from a delegating contract is rejected")
 
-// SettleContract is the 0x9999 stateful precompile. It holds the same
-// protocolFeeController authority value as the 0x9010 contract (set at Configure)
-// so halt/registry governance is gated identically.
-type SettleContract struct {
-	protocolFeeController common.Address
-}
+// SettleContract is the 0x9999 stateful precompile. It is STATELESS with respect to
+// the governance authority: halt/seed governance is gated to the per-network DEX
+// governance controller resolved at RUNTIME from contract.AtomicState (see
+// governanceController in halt9999.go), never a field set from config or a hardcoded
+// key. So a single process-global SettlePrecompile serves every network correctly and
+// no compromised default key exists on the struct.
+type SettleContract struct{}
 
 var _ contract.StatefulPrecompiledContract = (*SettleContract)(nil)
 
@@ -101,7 +105,9 @@ var (
 // with ZERO per-net configuration. There is exactly ONE activation way and this is it.
 //
 // All parameters 0x9999 needs are resolved at RUNTIME, not from config:
-//   - protocolFeeController: the built-in DefaultDAOTreasury (set in init below).
+//   - governanceController: the per-network DEX governance CONTRACT, resolved from the
+//     host's atomic capability (contract.AtomicState.GovernanceController()). There is
+//     NO hardcoded default; an unconfigured network is fail-closed (halt/seed revert).
 //   - networkID / cChainID / dChainID: from the host's atomic capability
 //     (contract.AtomicState, sourced from the consensus context — see
 //     native_dchain_client.go). dChainID is the dexvm "D" alias resolved by the host;
@@ -130,10 +136,11 @@ func init() {
 	SelectorSeedSeamReserve = keccak4("seedSeamReserve(address,uint256)")
 	SelectorCreditPositionFee = keccak4("creditPositionFee(bytes32,address,uint256)")
 
-	// The settlement governance authority is the built-in DAO treasury — fixed across
-	// every network (always-on, zero per-net config). This is the SOLE source of
-	// s.protocolFeeController; there is no Configure step that could set it from genesis.
-	SettlePrecompile.protocolFeeController = DefaultDAOTreasury
+	// No governance authority is set here: it is NOT a hardcoded key. The settlement
+	// governance authority is the per-network DEX governance controller, resolved at
+	// runtime from contract.AtomicState.GovernanceController() (see governanceController
+	// in halt9999.go). A single process-global SettlePrecompile thus serves every network
+	// correctly, with no compromised default key on the struct.
 
 	if err := modules.RegisterModule(SettleModule); err != nil {
 		panic(err)
@@ -144,10 +151,10 @@ func (*settleConfigurator) MakeConfig() precompileconfig.Config { return &Settle
 
 // Configure is a no-op for the always-on 0x9999 precompile. It is never invoked by the
 // host (an AlwaysOn module has no activating config), and 0x9999 takes no per-net
-// parameters — protocolFeeController is the built-in DAO treasury (set in init) and the
-// chain identity is resolved at runtime from the atomic capability. The method exists
-// solely to satisfy the contract.Configurator interface. It validates the config type
-// so a misuse surfaces loudly rather than silently.
+// parameters — the governance controller and chain identity are both resolved at runtime
+// from the atomic capability (contract.AtomicState). The method exists solely to satisfy
+// the contract.Configurator interface. It validates the config type so a misuse surfaces
+// loudly rather than silently.
 func (s *settleConfigurator) Configure(
 	_ precompileconfig.ChainConfig,
 	cfg precompileconfig.Config,
@@ -182,7 +189,7 @@ func (c *SettleConfig) Equal(cfg precompileconfig.Config) bool {
 
 // Run dispatches the 0x9999 surface. The swap selector is the money path
 // (SettleSwap); custody/admin selectors reuse the 0x9010 handlers via the shared
-// pool manager; governance selectors gate on protocolFeeController.
+// pool manager; governance selectors gate on the runtime governance controller.
 func (s *SettleContract) Run(
 	accessibleState contract.AccessibleState,
 	caller common.Address,
@@ -313,9 +320,10 @@ func (s *SettleContract) Run(
 	case SelectorSwapCancel:
 		return s.runSwapCancel(accessibleState, caller, data, suppliedGas, readOnly)
 
-	// Settlement governance (protocolFeeController-gated). Only the real kill
-	// switches remain (global / market / asset); the BLS-era validator-set rotation
-	// and cert-type halt are gone with the cert value path.
+	// Settlement governance (governance-controller-gated, resolved from runtime
+	// AtomicState — never a hardcoded key). Only the real kill switches remain
+	// (global / market / asset); the BLS-era validator-set rotation and cert-type
+	// halt are gone with the cert value path.
 	case SelectorSetHaltGlobal:
 		return s.runSetHaltGlobal(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorSetHaltMarket:
@@ -323,7 +331,7 @@ func (s *SettleContract) Run(
 	case SelectorSetHaltAsset:
 		return s.runSetHaltScoped(accessibleState, caller, data, suppliedGas, readOnly, SetHaltAsset)
 
-	// Operator funding of the settlement pots (protocolFeeController-gated). The swap
+	// Operator funding of the settlement pots (governance-controller-gated). The swap
 	// rail's seamReserve counterparty seed (FIX-4 liveness: a market's first matched
 	// swap settles without manual state-poking) and the LP rail's per-owner fee credit.
 	case SelectorSeedSeamReserve:
@@ -338,7 +346,10 @@ func (s *SettleContract) Run(
 
 const gasHaltAdmin uint64 = 25_000
 
-// runSetHaltGlobal toggles the global halt (governance only).
+// runSetHaltGlobal toggles the global halt. Authority is the per-network DEX
+// governance controller resolved from the runtime AtomicState (governanceController),
+// NOT a hardcoded key: only the configured Governor/Timelock/multisig CONTRACT may
+// halt. Fail-closed when no governance controller is configured (ErrSettleNoGovernance).
 func (s *SettleContract) runSetHaltGlobal(
 	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
 ) ([]byte, uint64, error) {
@@ -348,7 +359,11 @@ func (s *SettleContract) runSetHaltGlobal(
 	if gas < gasHaltAdmin {
 		return nil, 0, errors.New("dex: out of gas")
 	}
-	if caller != s.protocolFeeController {
+	gov, gerr := governanceController(state)
+	if gerr != nil {
+		return nil, gas - gasHaltAdmin, gerr
+	}
+	if caller != gov {
 		return nil, gas - gasHaltAdmin, ErrUnauthorized
 	}
 	if len(data) < 32 {
@@ -359,7 +374,9 @@ func (s *SettleContract) runSetHaltGlobal(
 	return nil, gas - gasHaltAdmin, nil
 }
 
-// runSetHaltScoped toggles a [32]byte-scoped halt (market/asset/validatorSet).
+// runSetHaltScoped toggles a [32]byte-scoped halt (market/asset). Authority is the
+// per-network DEX governance controller (governanceController), never a hardcoded key
+// — the same decentralized gate as the global halt; fail-closed when unset.
 func (s *SettleContract) runSetHaltScoped(
 	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
 	apply func(stateKV, [32]byte, bool),
@@ -370,7 +387,11 @@ func (s *SettleContract) runSetHaltScoped(
 	if gas < gasHaltAdmin {
 		return nil, 0, errors.New("dex: out of gas")
 	}
-	if caller != s.protocolFeeController {
+	gov, gerr := governanceController(state)
+	if gerr != nil {
+		return nil, gas - gasHaltAdmin, gerr
+	}
+	if caller != gov {
 		return nil, gas - gasHaltAdmin, ErrUnauthorized
 	}
 	if len(data) < 64 {
