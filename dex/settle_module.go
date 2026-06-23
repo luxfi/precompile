@@ -211,9 +211,28 @@ func (s *SettleContract) Run(
 
 	switch selector {
 	case SelectorSwap:
-		// THE money path: native C<->D two-phase atomic settlement (no matcher, no
-		// cert). Phase A locks input + creates a C->D object; Phase B consumes a D->C
-		// object + credits. See settle9999.go SettleSwap.
+		// THE swap path. Two models share the V4 swap selector, distinguished by the
+		// hookData phase tag:
+		//
+		//   - UNTAGGED swap (the default, empty/opaque hookData): the SYNCHRONOUS on-
+		//     chain smart-order-router (swap_sync.go). One in-process, in-trie, atomic
+		//     transition — route across the native CLOB + the V2/V3 AMM, apply the C
+		//     EVM balance delta AND the D book/fill delta in ONE block. This is the
+		//     normal same-domain swap path. Gated on the node having enabled native-
+		//     value swaps (which it does only on a quorum-finality engine).
+		//   - TAGGED swap (DI01 intent / DS01 settlement hookData): the async cross-
+		//     CHAIN settlement path (settle9999.go SettleSwap), retained ONLY for a
+		//     genuine settlement to a DIFFERENT network. Never the spot-swap path.
+		//
+		// We route by peeking the phase: an untagged swap with value-swaps enabled goes
+		// synchronous; everything else (tagged, or value-swaps not yet enabled) falls to
+		// the async handler, which itself reverts cleanly when its cross-chain capability
+		// is absent.
+		if key, params, hookData, derr := DecodeSwapInput(data); derr == nil {
+			if isUntaggedSwap(hookData) && ValueSwapsEnabled() {
+				return runSyncSwap(accessibleState, caller, key, params, suppliedGas, readOnly)
+			}
+		}
 		return SettleSwap(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// Market creation — C-AUTHORITATIVE registry (settle_market.go). Computes the
@@ -262,6 +281,20 @@ func (s *SettleContract) Run(
 		return s.runSettleWithdraw(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorBalanceOf:
 		return s.runSettleBalanceOf(accessibleState, data, suppliedGas)
+
+	// Synchronous on-chain-router custody (swap_custody.go): the maker side of the
+	// in-process router — deposit REAL tokens into the dexcore ledger (vault-backed),
+	// rest/cancel a limit order, withdraw. The "money lives in the order book" model
+	// for the sync swap path. Value-gated (the node enables it only on a quorum-final
+	// engine); deposit/withdraw are not halt-gated so funds can always exit.
+	case SelectorSwapDeposit:
+		return s.runSwapDeposit(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorSwapWithdraw:
+		return s.runSwapWithdraw(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorSwapPlace:
+		return s.runSwapPlace(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorSwapCancel:
+		return s.runSwapCancel(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// Settlement governance (protocolFeeController-gated). Only the real kill
 	// switches remain (global / market / asset); the BLS-era validator-set rotation
