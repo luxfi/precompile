@@ -185,14 +185,15 @@ func syncSwap(stateDB StateDB, caller common.Address, key PoolKey, params SwapPa
 		return nil, err
 	}
 
-	// The taker's dexcore-ledger proceeds are now redundant with the EVM credit (the
-	// ledger credited the taker's available; the C apply released the real token). For
-	// a swap (IOC, never rests), the taker holds no resting dexcore position, so the
-	// ledger proceeds must be DRAINED back out so the dexcore ledger nets to zero for
-	// the taker (the real value lives on the EVM side, not the dexcore ledger). Drain
-	// the taker's dexcore available for both assets to zero — they were transient
-	// accounting for the in-block settlement.
-	if err := drainTakerLedger(store, req.TakerUser, req.Base, req.Quote); err != nil {
+	// The taker's dexcore-ledger proceeds/refund are now redundant with the EVM credit
+	// (the ledger credited the taker's available during routing; applyJournalC released
+	// the real token). For a swap (IOC, never rests), the taker holds no resting position
+	// FROM THIS SWAP, so the TRANSIENT amount the swap added to the taker's dexcore
+	// available must be DRAINED back out. We drain EXACTLY what the journal released
+	// (proceeds + refund) per asset — NOT the taker's whole available — so a PRIOR
+	// dexcore deposit the taker holds (a maker-then-taker multi-role user) is preserved
+	// and not stranded (its vault backing stays claimed).
+	if err := drainTakerLedger(store, req.TakerUser, res.Journal); err != nil {
 		return nil, err
 	}
 
@@ -289,22 +290,42 @@ func applyJournalC(stateDB StateDB, caller common.Address, j *dexcore.Journal) e
 	return nil
 }
 
-// drainTakerLedger zeroes the taker's transient dexcore available for the market's
-// two assets after a swap. The swap is IOC — the taker holds no resting dexcore
-// position, so the proceeds the ledger credited were a transient in-block accounting
-// leg whose real value was released to the taker's EVM balance by applyJournalC. We
-// debit them back out so the dexcore ledger nets to zero for the taker (no phantom
-// ledger balance survives the swap). Maker balances are untouched.
-func drainTakerLedger(store dexcore.Store, taker dexcore.AccountID, base, quote dexcore.AssetID) error {
-	for _, asset := range [2]dexcore.AssetID{base, quote} {
-		avail, err := dexcore.GetAvailable(store, taker, asset)
-		if err != nil {
-			return err
-		}
-		if avail > 0 {
-			if err := dexcore.DebitAvailable(store, taker, asset, avail); err != nil {
-				return err
+// drainTakerLedger debits the TRANSIENT amount this swap added to the taker's dexcore
+// available — exactly the journal's released proceeds (CTakerCreditOutput) plus the
+// unspent-input refund (CTakerRefundInput) — and NOTHING more. Those amounts were
+// credited to the taker's dexcore available during routing and their real value was
+// released to the taker's EVM balance by applyJournalC, so they must be debited back so
+// the swap leaves NO phantom dexcore balance. The swap's input-deposit leg already nets
+// to zero in available (deposited -> locked -> spent), so it is not drained here.
+//
+// Crucially we drain ONLY the per-asset transient sum, NOT the taker's whole available:
+// a taker that holds a PRIOR dexcore deposit of the market's base/quote (a multi-role
+// maker-then-taker) keeps that deposit and its vault backing — draining-to-zero would
+// strand it. Maker balances are untouched.
+func drainTakerLedger(store dexcore.Store, taker dexcore.AccountID, j *dexcore.Journal) error {
+	// Per-asset transient = sum of the journal's output credits + refund credits.
+	transient := map[dexcore.AssetID]uint64{}
+	for _, d := range j.CDeltas() {
+		switch d.Kind {
+		case dexcore.CTakerCreditOutput, dexcore.CTakerRefundInput:
+			if !d.Amount.IsUint64() {
+				return ErrNativeBadAmount
 			}
+			transient[d.Asset] += d.Amount.Uint64()
+		case dexcore.CTakerDebitInput:
+			// The debit (input lock) is mirrored by the dexcore Deposit->Lock->Spend, which
+			// nets to zero in available; not part of the transient available to drain.
+		}
+	}
+	for asset, amt := range transient {
+		if amt == 0 {
+			continue
+		}
+		// Debit exactly the transient. DebitAvailable fails closed if the available is
+		// somehow short (a regression), never underflows — so we can never drain into a
+		// prior deposit beyond the transient we credited.
+		if err := dexcore.DebitAvailable(store, taker, asset, amt); err != nil {
+			return err
 		}
 	}
 	return nil
