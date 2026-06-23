@@ -200,6 +200,29 @@ func (w *writeObservingStateDB) CodeSizeOf(addr common.Address) int {
 	return -1
 }
 
+// GetCodeSize forwards the geth-shaped code-size capability (EXTCODESIZE). This is the EXACT
+// method the poolStateAdapter type-asserts for (module.go: `GetCodeSize(common.Address) int`),
+// so when a poolStateAdapter wraps THIS observer — as it does on the synchronous value path
+// (runSyncSwap -> newPoolStateAdapter(observingAccessibleState) -> onChainVerifierFor) — the
+// adapter stays code-capable and the C1 on-chain-asset verifier resolves. Without this
+// forwarder the adapter's GetCodeSize probe would miss (the observer only exposes CodeSizeOf),
+// the verifier would fail closed (ErrNoOnChainVerifier), and a perfectly real swap would revert
+// under observation — masking the access-set check. The capability is read-only (no conflict
+// write), so forwarding records nothing; it only preserves the verifier the handler needs. We
+// forward from whichever shape the inner StateDB exposes (GetCodeSize on the geth/test wrapper,
+// or CodeSizeOf on a poolStateAdapter inner), so the decorator is capability-transparent either way.
+func (w *writeObservingStateDB) GetCodeSize(addr common.Address) int {
+	if cs, ok := w.StateDB.(interface {
+		GetCodeSize(common.Address) int
+	}); ok {
+		return cs.GetCodeSize(addr)
+	}
+	if c, ok := w.StateDB.(codeStater); ok {
+		return c.CodeSizeOf(addr)
+	}
+	return -1
+}
+
 // observingAccessibleState wraps a contract.AccessibleState so that GetStateDB() returns
 // the write-observing decorator instead of the raw StateDB. Every other capability
 // (block context, atomic state, consensus context) forwards unchanged, so a handler run

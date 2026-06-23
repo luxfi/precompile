@@ -59,18 +59,42 @@ func pmLifecycleCalldata(sel uint32, key PoolKey, tickLower, tickUpper int24, de
 	return prependSelector(sel, args)
 }
 
-// registerMarket initializes the harness pool at price 1.0 (sqrtP = 2^96).
+// registerMarket initializes the harness pool at price 1.0 (sqrtP = 2^96). Initialize is
+// now real-asset-gated (C1 parity with the swap path), so it first installs a resolver that
+// admits the key's currencies — exactly as a value-live node carries a registry. A test that
+// wants to prove a FABRICATED market is refused installs its own (partial/wrong) resolver
+// before calling Initialize directly, not via this helper.
 func (h *settleHarness) registerMarket(t testing.TB) {
 	t.Helper()
+	h.admitMarketKey(t)
 	if _, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999, initCalldata(h.key, new(big.Int).Set(Q96)), 5_000_000, false); err != nil {
 		t.Fatalf("registerMarket: %v", err)
 	}
+}
+
+// admitMarketKey installs a resolver that admits the harness key's two currencies (the
+// native coin plus any non-zero ERC-20 address, which it also gives live on-chain code so
+// the EXTCODESIZE verifier passes) — the test-side equivalent of a node's registry carrying
+// this market's real assets. It is idempotent: re-installing for the SAME identity is allowed
+// (installAssetResolverFor saves/restores the prior resolver on cleanup). Used by the market-
+// creating helpers so a legitimate Initialize / maker-seed passes the C1 admission gate.
+func (h *settleHarness) admitMarketKey(t testing.TB) {
+	t.Helper()
+	var tokens []common.Address
+	if h.key.Currency0.Address != (common.Address{}) {
+		tokens = append(tokens, h.key.Currency0.Address)
+	}
+	if h.key.Currency1.Address != (common.Address{}) {
+		tokens = append(tokens, h.key.Currency1.Address)
+	}
+	h.installAssetResolverFor(t, tokens...)
 }
 
 // ── 0x9999 initialize ────────────────────────────────────────────────────────
 
 func TestInitialize_CreateReinitBadParams(t *testing.T) {
 	h := newSettleHarness(t)
+	h.admitMarketKey(t) // Initialize is real-asset-gated; admit the key's assets so the CREATE succeeds.
 
 	// CREATE: a fresh pool at price 1.0 registers and returns tick 0 (sqrtP=2^96).
 	out, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999, initCalldata(h.key, new(big.Int).Set(Q96)), 5_000_000, false)
@@ -137,6 +161,10 @@ func TestInitialize_Deterministic(t *testing.T) {
 
 	h1 := newSettleHarness(t)
 	h2 := newSettleHarness(t)
+	// Initialize is real-asset-gated; both "validators" carry the same registry (same fixed
+	// harness identity) and each needs the ERC-20's code in its OWN stateDB for the verifier.
+	h1.admitMarketKey(t)
+	h2.admitMarketKey(t)
 	out1, _, err1 := h1.c.Run(h1.state, h1.caller, poolManagerAddr9999, initCalldata(h1.key, price), 5_000_000, false)
 	out2, _, err2 := h2.c.Run(h2.state, h2.caller, poolManagerAddr9999, initCalldata(h2.key, price), 5_000_000, false)
 	if err1 != nil || err2 != nil {
