@@ -144,7 +144,44 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 	// supplied at RUNTIME by the host via the AtomicState capability (nativeAtomicState
 	// above) — there is NO per-net config to seed. This mirrors production exactly:
 	// 0x9999 is always-on and resolves its chain topology from the consensus context.
+
+	// C1 admission (the value path's real-asset gate, repointed onto 0x9999): every
+	// market open / swap / settle now resolves both sides through the AssetResolver, so
+	// the SHARED harness installs a default resolver admitting ITS OWN market assets — the
+	// native coin (currency0) and currency1 (0x..02), with live code at the token address —
+	// exactly as a real chain's registry is populated. Without this, registerMarket
+	// (SelectorInitialize) and every settle path fail closed ("no asset resolver
+	// configured"), and tests would depend on a process-global resolver leaking from
+	// another test (an order-dependent, non-hermetic green). A test that needs a DIFFERENT
+	// admission policy (the C1 redteam: a restrictive or absent resolver) overrides the
+	// global via InstallAssetResolver / Store; t.Cleanup restores the prior state LIFO so
+	// nothing leaks. This is the ONE place the harness's market is admitted.
+	h.installDefaultMarketResolver(t)
 	return h
+}
+
+// installDefaultMarketResolver installs a resolver admitting the shared harness market's two
+// sides (native currency0 + currency1, with live code at the token) and restores the prior
+// global on cleanup. It is the harness analog of a populated on-chain registry, so the C1
+// admission gate passes for the legitimate harness market in EVERY test by default. Tests that
+// probe admission failure install their own (restrictive/absent) resolver, overriding this.
+func (h *settleHarness) installDefaultMarketResolver(t testing.TB) {
+	t.Helper()
+	r := newTestAssetResolver(h.networkID, h.cChainID)
+	r.admitNative(t, 18)
+	if h.key.Currency1.Address != (common.Address{}) {
+		r.admitERC20(t, h.key.Currency1.Address, 18)
+		h.state.stateDB.SetCodeSize(h.key.Currency1.Address, 1)
+	}
+	if h.key.Currency0.Address != (common.Address{}) {
+		r.admitERC20(t, h.key.Currency0.Address, 18)
+		h.state.stateDB.SetCodeSize(h.key.Currency0.Address, 1)
+	}
+	prev := installedAssetResolver.Load()
+	if err := InstallAssetResolver(r, h.networkID, h.cChainID); err != nil {
+		t.Fatalf("installDefaultMarketResolver: %v", err)
+	}
+	t.Cleanup(func() { installedAssetResolver.Store(prev) })
 }
 
 // outToken is the harness pool's currency1 (the swap output for ZeroForOne).
@@ -355,10 +392,14 @@ func (h *settleHarness) settlementCalldataFor(outputID ids.ID, amount uint64, in
 	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, amount, intentID))
 }
 
-// intentCalldata builds a Phase-A swap calldata (empty hookData => intent, no deadline,
-// nonce 0).
+// intentCalldata builds a Phase-A async swap calldata. After the decomplect a plain
+// (empty-hookData) swap settles SYNCHRONOUSLY through the on-chain router; the async C->D
+// intent primitive is reached ONLY by the EXPLICIT DI01 tag. So the canonical "intent" swap
+// the async-seam tests drive is DI01-tagged (deadline 0 => defaulted to a finite horizon,
+// nonce 0). This keeps every async-rail test exercising the genuine cross-chain primitive,
+// not the synchronous path.
 func (h *settleHarness) intentCalldata() []byte {
-	return buildSwapCalldata(h.key, h.params, nil)
+	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(0, 0))
 }
 
 // intentCalldataWithDeadline builds a Phase-A swap calldata carrying an explicit
