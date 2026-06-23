@@ -69,12 +69,17 @@ func registerSwapCustodySelectors() {
 // token, backing it in the 0x9999 vault. Native (asset==0) requires the host frame to
 // have moved msg.value==amount into 0x9999; ERC-20 pulls via transferFrom (observed
 // delta). Mirrors the locked amount into the dexcore ledger so the ledger claim is
-// exactly the vault backing. Not halt-gated (funds must always be able to enter/exit).
+// exactly the vault backing. The 0x9999 rail is ALWAYS-ON (no value-activation gate);
+// the deposit's safety is the intrinsic controls — the observed-delta lock (fee-on-
+// transfer safe), the non-reentrant custody mutex, and conservation — not a consensus-
+// mode switch. The matching EXIT (runSwapWithdraw) stays ungated so value can always leave.
 func (s *SettleContract) runSwapDeposit(state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
 	}
-	if !valueSwapsEnabled.Load() {
+	// FAIL-CLOSED VALUE GATE (A2): funding the trade rail is a value-IN move; refuse it when
+	// the value router is not enabled (non-quorum engine). The withdraw exit is ungated.
+	if !ValueSwapsEnabled() {
 		return nil, gas, ErrValueSwapsNotEnabled
 	}
 	if gas < GasDeposit {
@@ -112,14 +117,16 @@ func (s *SettleContract) runSwapDeposit(state contract.AccessibleState, caller c
 }
 
 // runSwapWithdraw burns the caller's dexcore available for an asset and releases the
-// REAL token from the vault. Clamped to the caller's available (no over-withdraw). Not
-// halt-gated.
+// REAL token from the vault. Clamped to the caller's available (no over-withdraw).
+//
+// FAIL-SECURE EXIT — deliberately NEITHER halt-gated NOR value-gated. A withdraw returns
+// the caller's OWN funds; gating it would STRAND value when the rail is halted or value
+// swaps are not enabled. This mirrors the canonical rule (TestHaltBlocksNewTradingAllowsCancel
+// / SelectorWithdraw|Reclaim|Collect are all exit-always): the value gate fences value-IN
+// (deposit/place/swap), never value-OUT. Funds that entered the rail can ALWAYS leave.
 func (s *SettleContract) runSwapWithdraw(state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
-	}
-	if !valueSwapsEnabled.Load() {
-		return nil, gas, ErrValueSwapsNotEnabled
 	}
 	if gas < GasWithdraw {
 		return nil, 0, errors.New("dex: out of gas")
@@ -167,11 +174,19 @@ func (s *SettleContract) runSwapWithdraw(state contract.AccessibleState, caller 
 // currency0/currency1 (REAL token addresses). isBid -> BUY (locks quote), else SELL
 // (locks base). The lock draws the caller's dexcore available; the real token is
 // already in the vault (from a prior swapDeposit). Returns the resting order id.
+//
+// Halt-gated (no value-activation gate — the 0x9999 rail is always-on): resting a NEW
+// maker order is refused when the market is halted (checkHalt). Its real-asset safety is
+// the resolver admission run here (OpenMarketChecked: a place over an unregistered/disabled
+// or code-less asset REVERTS), which fails closed (ErrNoAssetResolver) on a node that wired
+// no resolver. The EXIT (runSwapCancel) is NOT gated, so a resting order can always be pulled.
 func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
 	}
-	if !valueSwapsEnabled.Load() {
+	// FAIL-CLOSED VALUE GATE (A2): a place adds tradeable liquidity (new trading); refuse it
+	// when the value router is not enabled. The cancel exit is ungated.
+	if !ValueSwapsEnabled() {
 		return nil, gas, ErrValueSwapsNotEnabled
 	}
 	if gas < GasSwap {
@@ -190,15 +205,32 @@ func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller com
 	if herr := checkHalt(stateDB, key, SwapParams{}); herr != nil {
 		return nil, gasLeft, herr
 	}
+
+	// C1: a maker RESTING an order BINDS the market, so it must clear the SAME real-asset
+	// admission a taker's swap does — else a maker could bind an arbitrary (currency0,
+	// currency1) market over a fabricated/unregistered/code-less asset and rest "liquidity"
+	// on it. Resolve the runtime-bound registry authority (cross-checked against the chain
+	// the node actually runs) and the live on-chain verifier, then admit BOTH sides through
+	// OpenMarketChecked BEFORE binding. A place over a non-real asset REVERTS
+	// (ErrAssetNotAdmitted / ErrAssetNotOnChain); no resolver/verifier fails closed.
+	atomicState, ok := state.(contract.AtomicState)
+	if !ok {
+		return nil, gasLeft, ErrSettleNoAtomicState
+	}
+	resolver, rerr := resolverForRuntime(atomicState.NetworkID(), atomicState.CChainID())
+	if rerr != nil {
+		return nil, gasLeft, rerr
+	}
+
 	if !enterCustodyKV(stateDB) {
 		return nil, gasLeft, ErrCustodyReentrant
 	}
 	defer exitCustodyKV(stateDB)
 
 	store := newEVMStore(stateDB)
-	base := assetID(key.Currency0)
-	quote := assetID(key.Currency1)
-	if oerr := dexcore.OpenMarket(store, key.ID(), base, quote); oerr != nil {
+	verifier := onChainVerifierFor(stateDB)
+	if oerr := dexcore.OpenMarketChecked(store, resolver, verifier, key.ID(),
+		assetSideForCurrency(key.Currency0), assetSideForCurrency(key.Currency1)); oerr != nil {
 		return nil, gasLeft, oerr
 	}
 
@@ -226,12 +258,15 @@ func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller com
 // runSwapCancel cancels a resting order, unlocking its remaining reserve to the
 // owner's dexcore available (fail-closed on a missing identity row). The real token
 // stays in the vault; a subsequent swapWithdraw pulls it out.
+//
+// FAIL-SECURE EXIT — deliberately NEITHER halt-gated NOR value-gated, the cancel half of
+// the canonical "halt blocks new trading, ALWAYS allows cancel" rule. A maker must be able
+// to pull resting liquidity even on a halted or non-value-enabled node; gating cancel would
+// trap the maker's locked funds (can't cancel -> can't withdraw). The value gate fences
+// placing NEW orders (runSwapPlace), never cancelling existing ones.
 func (s *SettleContract) runSwapCancel(state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, gas, ErrSwapCustodyReadOnly
-	}
-	if !valueSwapsEnabled.Load() {
-		return nil, gas, ErrValueSwapsNotEnabled
 	}
 	if gas < GasSwap {
 		return nil, 0, errors.New("dex: out of gas")
