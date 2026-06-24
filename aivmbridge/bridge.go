@@ -35,6 +35,12 @@ const (
 	// verifyInferenceReceipt(bytes receiptBytes, bytes proofBytes)
 	//   -> (bytes32 intentID, bytes32 canonicalOutputHash, uint8 status)
 	SelectorVerifyInferenceReceipt uint32 = 0x11000000
+
+	// verifyComputeProof(bytes openingWire) -> bytes32 verdict
+	//   the NATIVE proof-of-inference check: decode a beacon-selected matmul opening and return
+	//   (included | freivaldsOK<<1) so the gate can tell a genuine opening from a fraud. See
+	//   computeproof.go. The opening wire is crypto/poi.EncodeOpening.
+	SelectorVerifyComputeProof uint32 = 0x12000000
 )
 
 // MaxFanout bounds N so a single intent cannot request an unbounded provider fan-out
@@ -71,6 +77,9 @@ func runBridge(
 		return submitIntent(accessibleState, caller, args, suppliedGas, readOnly)
 	case SelectorVerifyInferenceReceipt:
 		return verifyReceipt(accessibleState, args, suppliedGas, readOnly)
+	case SelectorVerifyComputeProof:
+		// pure verification — no state, so readOnly is fine.
+		return verifyComputeProof(args, suppliedGas)
 	default:
 		return nil, suppliedGas, fmt.Errorf("aivmbridge: unknown selector %#x", selector)
 	}
