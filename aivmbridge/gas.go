@@ -22,6 +22,16 @@ const (
 
 	// GasVerifyPerProofNode is charged per merkle path node hashed during verify.
 	GasVerifyPerProofNode uint64 = 1_000
+
+	// GasVerifyComputeProofBase is the base for a native proof-of-inference opening check: the
+	// wire decode + the Merkle inclusion of the opened matmul. The Freivalds re-execution adds
+	// the per-field-op price below.
+	GasVerifyComputeProofBase uint64 = 30_000
+
+	// GasVerifyComputeProofPerFieldOp prices each F_p mul-add of the Freivalds check
+	// (O(tk+kn+tn) per challenge vector). Sized so a 256-wide slice costs ~1M gas and a whole
+	// 4096-wide layer is unaffordable — which forces a challenger to open a bounded SLICE.
+	GasVerifyComputeProofPerFieldOp uint64 = 2
 )
 
 // verifyGas returns the total gas for a VerifyInferenceReceipt call given the
