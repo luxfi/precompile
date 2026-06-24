@@ -126,6 +126,8 @@ func (c *BridgeContract) RequiredGas(input []byte) uint64 {
 			return GasVerifyInferenceReceiptBase
 		}
 		return verifyGas(pathLen)
+	case SelectorVerifyComputeProof:
+		return computeProofRequiredGas(input[4:])
 	default:
 		return GasVerifyInferenceReceiptBase
 	}
