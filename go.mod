@@ -13,7 +13,7 @@ require (
 	github.com/luxfi/ai v0.1.0
 	github.com/luxfi/chains v1.3.18
 	github.com/luxfi/corona v0.7.9
-	github.com/luxfi/crypto v1.19.22
+	github.com/luxfi/crypto v1.19.24
 	github.com/luxfi/database v1.20.4
 	github.com/luxfi/dex v1.5.16
 	github.com/luxfi/fhe v1.8.2
@@ -78,7 +78,6 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/luxfi/age v1.5.0 // indirect
-	github.com/luxfi/bft v0.1.5 // indirect
 	github.com/luxfi/mdns v0.1.1 // indirect
 	github.com/luxfi/node v1.30.6 // indirect
 	github.com/luxfi/timer v1.0.2 // indirect
