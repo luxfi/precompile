@@ -76,7 +76,7 @@ var DoSAuditTable = []DoSAuditRow{
 	{Precompile: "vrf/verify", GasPerOp: 50_000, PerOpMs: 1, SafeAt12M: true},
 	// HQC encapsulate — KEM, fast.
 	{Precompile: "hqc/encapsulate", GasPerOp: 25_000, PerOpMs: 1, SafeAt12M: true},
-	// P3Q verify — STARK, ~1ms on M1 Pro per memory record.
+	// P3Q verify — rollup-commit PQ (ML-DSA) signature verify, ~1ms on M1 Pro per memory record.
 	{Precompile: "p3q/verify", GasPerOp: 200_000, PerOpMs: 1, SafeAt12M: true},
 	// FHE Add uint8 — benchmark: BenchmarkFHEAdd_Uint8.
 	//
