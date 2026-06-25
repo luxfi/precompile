@@ -35,18 +35,25 @@ import (
 //   P=7 → LP-7xxx (AI)
 //   P=9 → LP-9xxx (DEX/Markets)
 //
-// C nibble = Chain slot:
-//   C=0 → P-Chain
-//   C=1 → X-Chain
-//   C=2 → C-Chain (main EVM)
-//   C=3 → Q-Chain
-//   C=4 → A-Chain
-//   C=5 → B-Chain
-//   C=6 → Z-Chain
-//   C=7 → M-Chain (reserved)
-//   C=8 → Zoo
-//   C=9 → Hanzo
-//   C=A → SPC
+// C nibble = Chain slot (4-bit address-routing index). The primary-
+// network chain letters are the authoritative set in
+// node/genesis/builder/registry.go (P/X/C/D/Q/A/B/T/Z/G/K/I/O/R).
+// This nibble can only address 16 slots, so it enumerates the chains
+// that host C-nibble-routed precompiles plus the sovereign-L1 EVM
+// targets that reuse the C-Chain EVM precompile surface:
+//   C=0 → P-Chain   (platform)
+//   C=1 → X-Chain   (avm)
+//   C=2 → C-Chain   (evm, main EVM)
+//   C=3 → D-Chain   (dexvm — DEX/CLOB)
+//   C=4 → A-Chain   (aivm — AI / attestation)
+//   C=5 → B-Chain   (bridgevm — bridge)
+//   C=6 → Z-Chain   (zkvm — zk-rollup / privacy)
+//   C=7 → Q-Chain   (quantumvm — PQ consensus signing)
+//   C=8 → Zoo       (sovereign L1 EVM, white-label)
+//   C=9 → Hanzo     (sovereign L1 EVM, white-label)
+//   C=A → SPC       (sovereign L1 EVM, white-label)
+// T/G/K/I/O/R primary-network chains do not register C-nibble-routed
+// precompiles; they address by full chain ID, not by this nibble.
 //
 // Example: FROST on C-Chain = P=5 (Threshold), C=2 (C-Chain), II=00
 //          Address = 0x0000000000000000000000000000000000005200 (LP-5200)
