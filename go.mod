@@ -13,9 +13,9 @@ require (
 	github.com/luxfi/ai v0.1.0
 	github.com/luxfi/chains v1.3.18
 	github.com/luxfi/corona v0.7.9
-	github.com/luxfi/crypto v1.19.24
+	github.com/luxfi/crypto v1.19.26
 	github.com/luxfi/database v1.20.4
-	github.com/luxfi/dex v1.5.16
+	github.com/luxfi/dex v1.5.20
 	github.com/luxfi/fhe v1.8.2
 	github.com/luxfi/geth v1.17.12
 	github.com/luxfi/lattice/v7 v7.1.4
@@ -131,7 +131,7 @@ require (
 	github.com/luxfi/cache v1.2.1 // indirect
 	github.com/luxfi/compress v0.0.5 // indirect
 	github.com/luxfi/concurrent v0.0.3 // indirect
-	github.com/luxfi/consensus v1.25.21 // indirect
+	github.com/luxfi/consensus v1.25.29 // indirect
 	github.com/luxfi/constants v1.5.8 // indirect
 	github.com/luxfi/container v0.0.4 // indirect
 	github.com/luxfi/crypto/ipa v1.2.4 // indirect
