@@ -13,14 +13,29 @@ import (
 	ethtypes "github.com/luxfi/geth/core/types"
 )
 
-// memStateDB is a minimal contract.StateDB implementation backed by a map.
-// It implements only the surface SeedRegistry and stateRegistry exercise.
+// memStateDB is a minimal contract.StateDB implementation backed by a map. It is
+// the shared bridge-test state: GetState/SetState are map-backed, and
+// Snapshot/RevertToSnapshot clone the map so the money-path tests can observe the
+// EVM atomicity boundary (a reverted completion un-flips the request status).
 type memStateDB struct {
 	store map[common.Address]map[common.Hash]common.Hash
+	snaps []map[common.Address]map[common.Hash]common.Hash
 }
 
 func newMemStateDB() *memStateDB {
 	return &memStateDB{store: make(map[common.Address]map[common.Hash]common.Hash)}
+}
+
+func cloneStore(in map[common.Address]map[common.Hash]common.Hash) map[common.Address]map[common.Hash]common.Hash {
+	out := make(map[common.Address]map[common.Hash]common.Hash, len(in))
+	for a, s := range in {
+		cp := make(map[common.Hash]common.Hash, len(s))
+		for k, v := range s {
+			cp[k] = v
+		}
+		out[a] = cp
+	}
+	return out
 }
 
 func (m *memStateDB) GetState(a common.Address, k common.Hash) common.Hash {
@@ -72,9 +87,21 @@ func (*memStateDB) Logs() []*ethtypes.Log        { panic("not implemented") }
 func (*memStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) {
 	panic("not implemented")
 }
-func (*memStateDB) TxHash() common.Hash  { panic("not implemented") }
-func (*memStateDB) Snapshot() int        { panic("not implemented") }
-func (*memStateDB) RevertToSnapshot(int) { panic("not implemented") }
+func (*memStateDB) TxHash() common.Hash { panic("not implemented") }
+
+func (m *memStateDB) Snapshot() int {
+	id := len(m.snaps)
+	m.snaps = append(m.snaps, cloneStore(m.store))
+	return id
+}
+
+func (m *memStateDB) RevertToSnapshot(id int) {
+	if id < 0 || id >= len(m.snaps) {
+		return
+	}
+	m.store = cloneStore(m.snaps[id])
+	m.snaps = m.snaps[:id]
+}
 
 func TestStaticRegistry_GetAndAll(t *testing.T) {
 	r := NewStatic(DefaultSeed())

@@ -4,375 +4,117 @@
 package bridge
 
 import (
-	"crypto/sha256"
-	"errors"
-	"fmt"
+	"bytes"
 	"math/big"
-	"sync"
-	"time"
 
+	"github.com/luxfi/crypto"
+	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/geth/common"
+
+	"github.com/luxfi/precompile/contract"
 )
 
-// BridgeSigner provides the interface to B-Chain MPC signing
-// This precompile at 0x0445 allows EVM contracts to request MPC signatures
-type BridgeSigner struct {
-	// Signer set management
-	SignerSet    *SignerSet
-	PendingSigns map[[32]byte]*SigningSession
+// signer.go is the completion-quorum verifier: it decides whether a set of member
+// signatures over a completion digest meets the committee's ⅔-weight threshold.
+// It reads the committee EXCLUSIVELY from StateDB (committee_state.go) — public
+// keys are never taken from the relayer's calldata — and it FAILS CLOSED when no
+// committee is set. There is exactly one verification path; the old in-memory
+// length-only stub (which accepted any non-empty byte slice) is gone.
 
-	// B-Chain connection (in production, would be cross-chain call)
-	BChainEndpoint string
-
-	// Configuration
-	SignTimeout     time.Duration
-	MaxPendingSigns int
-
-	mu sync.RWMutex
-}
-
-// SigningSession represents an active signing request
-type SigningSession struct {
-	SessionID    [32]byte
-	MessageHash  [32]byte
-	RequestedBy  common.Address
-	RequestedAt  uint64
-	ExpiresAt    uint64
-	Status       SigningStatus
-	Signatures   map[[20]byte][]byte // NodeID -> signature
-	FinalSig     []byte              // Combined threshold signature
-	CallbackAddr common.Address      // Contract to call when done
-	CallbackData []byte              // Data for callback
-}
-
-// SigningStatus represents the status of a signing session
-type SigningStatus uint8
-
-const (
-	SigningPending SigningStatus = iota
-	SigningInProgress
-	SigningComplete
-	SigningFailed
-	SigningExpired
-)
-
-// NewBridgeSigner creates a new bridge signer interface
-func NewBridgeSigner() *BridgeSigner {
-	return &BridgeSigner{
-		SignerSet: &SignerSet{
-			Signers:   make([]*SignerInfo, 0),
-			Waitlist:  make([][20]byte, 0),
-			Threshold: 67,
-		},
-		PendingSigns:    make(map[[32]byte]*SigningSession),
-		SignTimeout:     5 * time.Minute,
-		MaxPendingSigns: 1000,
-	}
-}
-
-// RequestSignature requests an MPC signature from the signer set
-func (bs *BridgeSigner) RequestSignature(
-	requester common.Address,
-	messageHash [32]byte,
-	callbackAddr common.Address,
-	callbackData []byte,
-) ([32]byte, error) {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-
-	if len(bs.PendingSigns) >= bs.MaxPendingSigns {
-		return [32]byte{}, errors.New("too many pending signing requests")
-	}
-
-	if len(bs.SignerSet.Signers) == 0 {
-		return [32]byte{}, errors.New("no active signers")
-	}
-
-	// Generate session ID
-	now := uint64(time.Now().Unix())
-	sessionData := append(messageHash[:], requester.Bytes()...)
-	sessionData = append(sessionData, big.NewInt(int64(now)).Bytes()...)
-	sessionID := sha256.Sum256(sessionData)
-
-	session := &SigningSession{
-		SessionID:    sessionID,
-		MessageHash:  messageHash,
-		RequestedBy:  requester,
-		RequestedAt:  now,
-		ExpiresAt:    now + uint64(bs.SignTimeout.Seconds()),
-		Status:       SigningPending,
-		Signatures:   make(map[[20]byte][]byte),
-		CallbackAddr: callbackAddr,
-		CallbackData: callbackData,
-	}
-
-	bs.PendingSigns[sessionID] = session
-
-	// In production, this would send a message to B-Chain
-	// to initiate MPC signing protocol
-	go bs.initiateSigningProtocol(session)
-
-	return sessionID, nil
-}
-
-// GetSignature retrieves a completed signature
-func (bs *BridgeSigner) GetSignature(sessionID [32]byte) ([]byte, SigningStatus, error) {
-	bs.mu.RLock()
-	defer bs.mu.RUnlock()
-
-	session := bs.PendingSigns[sessionID]
-	if session == nil {
-		return nil, 0, errors.New("signing session not found")
-	}
-
-	return session.FinalSig, session.Status, nil
-}
-
-// SubmitPartialSignature allows a signer to submit their signature share
-func (bs *BridgeSigner) SubmitPartialSignature(
-	sessionID [32]byte,
-	signerNodeID [20]byte,
-	signature []byte,
+// VerifyCompletionQuorum reports nil iff a ⅔-weight quorum of distinct, valid
+// committee members signed digest. Each signer references a committee index; the
+// member (scheme, weight, key) is loaded from STATE at that index and the
+// signature is checked against the stored key. The weight rule is exact 256-bit
+// integer cross-multiplication (no division, no rounding):
+//
+//	Σ weight(distinct valid signer) * quorumDen  >=  totalWeight * quorumNum
+//
+// with (quorumNum, quorumDen) = (2, 3) for a ⅔ threshold.
+//
+// Fail-closed properties:
+//   - no committee set            -> ErrCommitteeUnset (loadCommitteeHeader)
+//   - signer index out of range   -> ErrSignerIndexRange
+//   - duplicate signer index      -> ErrDuplicateSigner (no double-counting weight)
+//   - an invalid signature        -> does not count toward the weight
+//   - valid weight below quorum    -> ErrSignatureThreshold
+//
+// A junk proof (e.g. a single 1-byte signature) contributes zero valid weight and
+// is rejected by the threshold check; an empty/absent committee is rejected before
+// any signature is examined.
+func VerifyCompletionQuorum(
+	state contract.StateDB,
+	gwAddr common.Address,
+	digest [32]byte,
+	signers []SignerSig,
 ) error {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-
-	session := bs.PendingSigns[sessionID]
-	if session == nil {
-		return errors.New("signing session not found")
+	h, err := loadCommitteeHeader(state, gwAddr)
+	if err != nil {
+		return err // ErrCommitteeUnset — fail closed, never a threshold of one
 	}
 
-	if session.Status != SigningPending && session.Status != SigningInProgress {
-		return errors.New("signing session not accepting signatures")
-	}
+	seen := make(map[uint16]bool, len(signers))
+	seenKey := make(map[[20]byte]bool, len(signers))
+	sumWeight := new(big.Int)
+	for _, s := range signers {
+		if seen[s.Index] {
+			return ErrDuplicateSignerIndex
+		}
+		seen[s.Index] = true
 
-	if uint64(time.Now().Unix()) > session.ExpiresAt {
-		session.Status = SigningExpired
-		return errors.New("signing session expired")
-	}
-
-	// Verify signer is in the active set
-	if !bs.isActiveSigner(signerNodeID) {
-		return ErrUnauthorizedSigner
-	}
-
-	// Store partial signature
-	session.Signatures[signerNodeID] = signature
-	session.Status = SigningInProgress
-
-	// Check if we have enough signatures
-	threshold := bs.getThreshold()
-	if uint32(len(session.Signatures)) >= threshold {
-		// Combine signatures
-		finalSig, err := bs.combineSignatures(session)
+		m, err := loadMember(state, gwAddr, h, s.Index)
 		if err != nil {
-			session.Status = SigningFailed
-			return err
+			return err // ErrSignerIndexRange — a member that does not exist
 		}
-
-		session.FinalSig = finalSig
-		session.Status = SigningComplete
-
-		// Execute callback if specified
-		if session.CallbackAddr != (common.Address{}) {
-			go bs.executeCallback(session)
-		}
-	}
-
-	return nil
-}
-
-// GetSignerSet returns the current signer set information
-func (bs *BridgeSigner) GetSignerSet() (*SignerSet, error) {
-	bs.mu.RLock()
-	defer bs.mu.RUnlock()
-
-	return bs.SignerSet, nil
-}
-
-// GetPublicKey returns the combined threshold public key
-func (bs *BridgeSigner) GetPublicKey() ([]byte, error) {
-	bs.mu.RLock()
-	defer bs.mu.RUnlock()
-
-	if bs.SignerSet == nil || len(bs.SignerSet.PublicKey) == 0 {
-		return nil, errors.New("no public key available")
-	}
-
-	return bs.SignerSet.PublicKey, nil
-}
-
-// RegisterSigner registers a new signer (implements LP-333 opt-in model)
-func (bs *BridgeSigner) RegisterSigner(
-	nodeID [20]byte,
-	evmAddress common.Address,
-	publicKeyShare []byte,
-	bond *big.Int,
-) error {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-
-	// Check minimum bond
-	if bond.Cmp(MinSignerBond) < 0 {
-		return ErrInsufficientBond
-	}
-
-	// Check if already a signer
-	for _, signer := range bs.SignerSet.Signers {
-		if signer.NodeID == nodeID {
-			return ErrAlreadySigner
-		}
-	}
-
-	signer := &SignerInfo{
-		NodeID:     nodeID,
-		Address:    evmAddress,
-		PublicKey:  publicKeyShare,
-		Bond:       bond,
-		JoinedAt:   uint64(time.Now().Unix()),
-		LastActive: uint64(time.Now().Unix()),
-		SignCount:  0,
-		SlashCount: 0,
-		Status:     SignerActive,
-	}
-
-	// First 100 validators join without reshare (LP-333)
-	if len(bs.SignerSet.Signers) < MaxSigners {
-		bs.SignerSet.Signers = append(bs.SignerSet.Signers, signer)
-		bs.updateThreshold()
-	} else {
-		// Add to waitlist
-		signer.Status = SignerWaitlist
-		bs.SignerSet.Waitlist = append(bs.SignerSet.Waitlist, nodeID)
-	}
-
-	return nil
-}
-
-// RemoveSigner removes a signer from the set
-func (bs *BridgeSigner) RemoveSigner(nodeID [20]byte) error {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-
-	found := false
-	newSigners := make([]*SignerInfo, 0, len(bs.SignerSet.Signers))
-
-	for _, signer := range bs.SignerSet.Signers {
-		if signer.NodeID != nodeID {
-			newSigners = append(newSigners, signer)
-		} else {
-			found = true
-		}
-	}
-
-	if !found {
-		return ErrSignerNotFound
-	}
-
-	bs.SignerSet.Signers = newSigners
-	bs.updateThreshold()
-
-	// Promote from waitlist if available
-	if len(bs.SignerSet.Waitlist) > 0 {
-		// This would trigger a reshare in production
-		bs.SignerSet.Epoch++
-		bs.SignerSet.LastReshare = uint64(time.Now().Unix())
-	}
-
-	return nil
-}
-
-// SlashSigner reduces a signer's bond due to misbehavior
-func (bs *BridgeSigner) SlashSigner(nodeID [20]byte, slashPercent uint32) error {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-
-	for _, signer := range bs.SignerSet.Signers {
-		if signer.NodeID == nodeID {
-			// Calculate slash amount
-			slashAmount := new(big.Int).Mul(signer.Bond, big.NewInt(int64(slashPercent)))
-			slashAmount.Div(slashAmount, big.NewInt(100))
-
-			// Reduce bond
-			signer.Bond.Sub(signer.Bond, slashAmount)
-			signer.SlashCount++
-
-			// Remove if bond drops below minimum
-			if signer.Bond.Cmp(MinSignerBond) < 0 {
-				signer.Status = SignerSlashed
-				return bs.RemoveSigner(nodeID)
+		if verifyMemberSig(m, digest, s.Sig) {
+			// A physical key counts ONCE toward quorum, even if the committee
+			// was (mis)seeded with the same KeyID at multiple indices. Quorum is
+			// ⅔ of distinct KEYS, not ⅔ of distinct indices — otherwise one key
+			// signing at N duplicate slots could reach threshold alone. Defense
+			// in depth: SeedCommittee also rejects duplicate KeyIDs at construction.
+			if seenKey[m.KeyID] {
+				continue
 			}
-
-			return nil
+			seenKey[m.KeyID] = true
+			sumWeight.Add(sumWeight, new(big.Int).SetUint64(m.Weight))
 		}
+		// An invalid signature simply does not count — only valid distinct
+		// members add weight (so a 1-byte junk signature reaches no quorum).
 	}
 
-	return ErrSignerNotFound
+	lhs := new(big.Int).Mul(sumWeight, new(big.Int).SetUint64(uint64(h.quorumDen)))
+	rhs := new(big.Int).Mul(h.totalWeight, new(big.Int).SetUint64(uint64(h.quorumNum)))
+	if lhs.Cmp(rhs) < 0 {
+		return ErrSignatureThreshold
+	}
+	return nil
 }
 
-// Helper functions
-
-func (bs *BridgeSigner) isActiveSigner(nodeID [20]byte) bool {
-	for _, signer := range bs.SignerSet.Signers {
-		if signer.NodeID == nodeID && signer.Status == SignerActive {
-			return true
+// verifyMemberSig verifies one member's signature over digest against the key the
+// committee was seeded with. secp256k1 recovers the EVM address and compares it to
+// the member's keyID; ML-DSA-65 verifies against the state-resident public key
+// with the completion domain bound as the FIPS 204 context.
+func verifyMemberSig(m CommitteeMember, digest [32]byte, sig []byte) bool {
+	switch m.Scheme {
+	case SchemeSecp256k1:
+		if len(sig) != 65 {
+			return false
 		}
+		pub, err := crypto.Ecrecover(digest[:], sig)
+		if err != nil || len(pub) != 65 {
+			return false
+		}
+		// Drop the 0x04 prefix, keccak the 64-byte key, take the low 20 bytes.
+		addr := crypto.Keccak256(pub[1:])[12:]
+		return bytes.Equal(addr, m.KeyID[:])
+
+	case SchemeMLDSA65:
+		pk, err := mldsa.PublicKeyFromBytes(m.PubKey, mldsa.MLDSA65)
+		if err != nil {
+			return false
+		}
+		return pk.VerifySignatureCtx(digest[:], sig, []byte(completionDomain))
+
+	default:
+		return false
 	}
-	return false
-}
-
-func (bs *BridgeSigner) getThreshold() uint32 {
-	if len(bs.SignerSet.Signers) == 0 {
-		return 1
-	}
-	// 2/3 + 1 of active signers
-	return (uint32(len(bs.SignerSet.Signers)) * 2 / 3) + 1
-}
-
-func (bs *BridgeSigner) updateThreshold() {
-	bs.SignerSet.Threshold = bs.getThreshold()
-}
-
-func (bs *BridgeSigner) initiateSigningProtocol(session *SigningSession) {
-	// Signing protocol initiation is handled by the Warp messaging layer.
-	// This method is called for side effects (session state update) and
-	// the actual cross-chain MPC coordination happens in the B-Chain's
-	// threshold coordinator via luxfi/threshold protocols.
-}
-
-func (bs *BridgeSigner) combineSignatures(session *SigningSession) ([]byte, error) {
-	// Concatenate signature shares for the threshold coordinator to combine.
-	// The actual FROST/CGGMP21/Corona combination is performed by the
-	// B-Chain's MPC coordinator in luxfi/threshold.
-	if len(session.Signatures) == 0 {
-		return nil, fmt.Errorf("no signatures to combine")
-	}
-	var combined []byte
-	for _, sig := range session.Signatures {
-		combined = append(combined, sig...)
-	}
-
-	return combined, nil
-}
-
-func (bs *BridgeSigner) executeCallback(session *SigningSession) {
-	// In production, this would call the callback contract
-	// with the signature result
-}
-
-// VerifyThresholdSignature verifies a threshold signature against the public key
-func (bs *BridgeSigner) VerifyThresholdSignature(
-	messageHash [32]byte,
-	signature []byte,
-) (bool, error) {
-	bs.mu.RLock()
-	defer bs.mu.RUnlock()
-
-	if len(bs.SignerSet.PublicKey) == 0 {
-		return false, errors.New("no public key available")
-	}
-
-	// In production, verify using the appropriate threshold scheme
-	// This would call into lux/threshold package
-	return len(signature) > 0, nil
 }
