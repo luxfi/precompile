@@ -28,10 +28,12 @@ import {IERC20Minimal} from "../dex/IERC20Minimal.sol";
 ///        - state changes happen BEFORE the external pay-out (effects-before-
 ///          interaction) under a non-reentrant guard.
 ///
-///      Unlike the precompile, this contract CAN custody the chain-native asset
-///      (`asset == address(0)`, amount delivered as `msg.value`) — a Solidity
-///      contract has the call-value seam the precompile still lacks
-///      (`ErrNativeUnsupported`).
+///      Both legs custody the chain-native asset (`asset == address(0)`)
+///      symmetrically: here the amount is delivered as `msg.value`; on the
+///      precompile the EVM moves the value into the precompile address before Run
+///      and the lock measures it as an observed balance delta (the native analog
+///      of the ERC-20 transferFrom delta). Native and ERC-20 behave identically on
+///      both sides — no leg mints.
 contract LXSwapHTLC {
     // --- types ---------------------------------------------------------------
 
