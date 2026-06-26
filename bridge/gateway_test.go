@@ -4,652 +4,512 @@
 package bridge
 
 import (
+	"crypto/ecdsa"
+	"crypto/rand"
 	"math/big"
 	"testing"
-	"time"
 
+	"github.com/luxfi/crypto"
+	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/ids"
+
+	"github.com/luxfi/precompile/contract"
 )
 
-// Helper functions for large big.Int values (avoid overflow in big.NewInt)
-func bigExp(base, exp int64) *big.Int {
-	result := big.NewInt(1)
-	b := big.NewInt(base)
-	for range exp {
-		result.Mul(result, b)
-	}
-	return result
+// gateway_test.go is the bridge money-path acceptance gate. It exercises the
+// StateDB-resident request FSM and the real ⅔-weight committee verifier directly
+// (the DEX composite is tested in dex/intent_settle_test.go). Every test drives
+// BLOCK time explicitly — there is no wall clock on the money path. The shared
+// snapshot-capable contract.StateDB (memStateDB) lives in registry_test.go.
+
+// --- test committee ----------------------------------------------------------
+
+const (
+	testNetworkID uint32 = 1
+	testEpoch     uint64 = 7
+)
+
+var testChainID = ids.ID{0xC, 0xC}
+
+// committee bundles signing keys with the on-state member set so a test can both
+// seed the committee and produce real signatures over a completion digest.
+type committee struct {
+	secp    map[uint16]*ecdsa.PrivateKey
+	pq      map[uint16]*mldsa.PrivateKey
+	members []CommitteeMember
 }
 
-// e19 returns 10^19
-func e19() *big.Int { return bigExp(10, 19) }
-
-// e20 returns 10^20
-func e20() *big.Int { return bigExp(10, 20) }
-
-// e21 returns 10^21
-func e21() *big.Int { return bigExp(10, 21) }
-
-// e24 returns 10^24
-func e24() *big.Int { return bigExp(10, 24) }
-
-// e25 returns 10^25
-func e25() *big.Int { return bigExp(10, 25) }
-
-// e22 returns 10^22
-func e22() *big.Int { return bigExp(10, 22) }
-
-// e30 returns 10^30
-func e30() *big.Int { return bigExp(10, 30) }
-
-// fiveE19 returns 5 * 10^19
-func fiveE19() *big.Int { return new(big.Int).Mul(big.NewInt(5), e19()) }
-
-// TestNewBridgeGateway tests gateway creation
-func TestNewBridgeGateway(t *testing.T) {
-	gw := NewBridgeGateway()
-	if gw == nil {
-		t.Fatal("Expected non-nil BridgeGateway")
-	}
-
-	if gw.Requests == nil {
-		t.Error("Expected Requests map to be initialized")
-	}
-	if gw.Nonces == nil {
-		t.Error("Expected Nonces map to be initialized")
-	}
-	if gw.SupportedTokens == nil {
-		t.Error("Expected SupportedTokens map to be initialized")
-	}
-	if gw.SupportedChains == nil {
-		t.Error("Expected SupportedChains map to be initialized")
-	}
-	if gw.Pools == nil {
-		t.Error("Expected Pools map to be initialized")
-	}
-	if gw.SignerSet == nil {
-		t.Error("Expected SignerSet to be initialized")
-	}
-	if gw.Config == nil {
-		t.Error("Expected Config to be initialized")
-	}
-	if !gw.Enabled {
-		t.Error("Expected gateway to be enabled")
-	}
-}
-
-// TestSupportedChains tests chain support initialization
-func TestSupportedChains(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	expectedChains := []uint32{
-		ChainLux, ChainLuxTest,
-		ChainHanzo, ChainHanzoTest,
-		ChainZoo, ChainZooTest,
-		ChainSPC, ChainSPCTest,
-		ChainEthereum, ChainArbitrum, ChainOptimism,
-		ChainBase, ChainPolygon, ChainBSC, ChainAvalanche,
-	}
-
-	for _, chainID := range expectedChains {
-		if !gw.SupportedChains[chainID] {
-			t.Errorf("Expected chain %d to be supported", chainID)
+func newSecpCommittee(t *testing.T, weights ...uint64) *committee {
+	t.Helper()
+	c := &committee{secp: map[uint16]*ecdsa.PrivateKey{}, pq: map[uint16]*mldsa.PrivateKey{}}
+	for i, w := range weights {
+		k, err := crypto.GenerateKey()
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
 		}
+		var keyID [20]byte
+		copy(keyID[:], crypto.Keccak256(crypto.FromECDSAPub(&k.PublicKey)[1:])[12:])
+		c.secp[uint16(i)] = k
+		c.members = append(c.members, CommitteeMember{Scheme: SchemeSecp256k1, Weight: w, KeyID: keyID})
 	}
-
-	// Verify unsupported chain
-	if gw.SupportedChains[99999] {
-		t.Error("Chain 99999 should not be supported")
-	}
+	return c
 }
 
-// TestRegisterToken tests token registration
-func TestRegisterToken(t *testing.T) {
-	gw := NewBridgeGateway()
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-
-	err := gw.RegisterToken(
-		token,
-		18,
-		"TEST",
-		"Test Token",
-		big.NewInt(1e17), // min bridge
-		new(big.Int).Mul(big.NewInt(1e12), big.NewInt(1e12)), // max bridge (1e24)
-		new(big.Int).Mul(big.NewInt(1e13), big.NewInt(1e12)), // daily limit (1e25)
-	)
-
+// addMLDSA appends an ML-DSA-65 member and returns its index.
+func (c *committee) addMLDSA(t *testing.T, weight uint64) uint16 {
+	t.Helper()
+	priv, err := mldsa.GenerateKey(rand.Reader, mldsa.MLDSA65)
 	if err != nil {
-		t.Fatalf("RegisterToken failed: %v", err)
+		t.Fatalf("mldsa GenerateKey: %v", err)
 	}
+	idx := uint16(len(c.members))
+	var keyID [20]byte
+	copy(keyID[:], crypto.Keccak256(priv.PublicKey.Bytes())[12:])
+	c.pq[idx] = priv
+	c.members = append(c.members, CommitteeMember{
+		Scheme: SchemeMLDSA65, Weight: weight, KeyID: keyID, PubKey: priv.PublicKey.Bytes(),
+	})
+	return idx
+}
 
-	// Verify token was registered
-	tokenInfo := gw.SupportedTokens[token]
-	if tokenInfo == nil {
-		t.Fatal("Token not stored")
+// sign produces a member's signature over d for the given committee index.
+func (c *committee) sign(t *testing.T, idx uint16, d [32]byte) []byte {
+	t.Helper()
+	if k, ok := c.secp[idx]; ok {
+		sig, err := crypto.Sign(d[:], k)
+		if err != nil {
+			t.Fatalf("secp sign: %v", err)
+		}
+		return sig
 	}
-	if tokenInfo.Symbol != "TEST" {
-		t.Errorf("Expected symbol TEST, got %s", tokenInfo.Symbol)
+	if priv, ok := c.pq[idx]; ok {
+		sig, err := priv.SignCtx(rand.Reader, d[:], []byte(completionDomain))
+		if err != nil {
+			t.Fatalf("mldsa sign: %v", err)
+		}
+		return sig
 	}
-	if tokenInfo.Decimals != 18 {
-		t.Errorf("Expected decimals 18, got %d", tokenInfo.Decimals)
+	t.Fatalf("no key for index %d", idx)
+	return nil
+}
+
+// quorum signs d with the given member indices.
+func (c *committee) quorum(t *testing.T, d [32]byte, idxs ...uint16) []SignerSig {
+	t.Helper()
+	out := make([]SignerSig, 0, len(idxs))
+	for _, i := range idxs {
+		out = append(out, SignerSig{Index: i, Sig: c.sign(t, i, d)})
 	}
-	if !tokenInfo.Enabled {
-		t.Error("Expected token to be enabled")
+	return out
+}
+
+// gwAddr is where the committee + requests live (the bridge gateway, 0x0440).
+var gwAddr = BridgeGatewayCanonicalAddress
+
+// newRequest builds a Pending-shaped request (not yet stored).
+func newRequest(amount int64, deadline uint64) *BridgeRequest {
+	var id [32]byte
+	_, _ = rand.Read(id[:])
+	return &BridgeRequest{
+		ID:            id,
+		SourceNetwork: testNetworkID,
+		SourceChain:   ChainEthereum,
+		DestNetwork:   testNetworkID,
+		DestChain:     ChainLux,
+		Nonce:         1,
+		Deadline:      deadline,
+		Recipient:     common.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Token:         common.Address{},
+		Amount:        big.NewInt(amount),
 	}
 }
 
-// TestRegisterTokenDuplicate tests duplicate token registration
-func TestRegisterTokenDuplicate(t *testing.T) {
-	gw := NewBridgeGateway()
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-
-	// First registration
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1), e24(), e25())
-
-	// Duplicate registration
-	err := gw.RegisterToken(token, 18, "TEST2", "Test2", big.NewInt(1), e24(), e25())
-	if err == nil {
-		t.Error("Expected error for duplicate token registration")
+// recordPending seeds a 2-of-3 secp committee and records r as Pending, returning
+// the committee and a valid completion proof (quorum over D).
+func recordPending(t *testing.T, st contract.StateDB, r *BridgeRequest) (*committee, []SignerSig) {
+	t.Helper()
+	c := newSecpCommittee(t, 1, 1, 1)
+	if err := SeedCommittee(st, gwAddr, testEpoch, c.members, 2, 3); err != nil {
+		t.Fatalf("SeedCommittee: %v", err)
 	}
+	d := CompletionDigest(testNetworkID, testChainID, r)
+	signers := c.quorum(t, d, 0, 1)
+	if err := RecordInbound(st, gwAddr, testNetworkID, testChainID, r, signers); err != nil {
+		t.Fatalf("RecordInbound: %v", err)
+	}
+	return c, signers
 }
 
-// TestInitiateBridge tests bridge initiation
-func TestInitiateBridge(t *testing.T) {
-	gw := NewBridgeGateway()
+// --- SeedCommittee validation (acceptance #5) --------------------------------
 
-	// Setup token
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
-
-	// Add liquidity on destination chain
-	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21())
-
-	// Initiate bridge
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	recipient := common.HexToAddress("0xABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD")
-	amount := big.NewInt(1e18)
-
-	request, err := gw.InitiateBridge(
-		sender,
-		recipient,
-		token,
-		amount,
-		ChainLux,
-		ChainEthereum,
-		uint64(time.Now().Add(time.Hour).Unix()),
-		nil,
-	)
-
-	if err != nil {
-		t.Fatalf("InitiateBridge failed: %v", err)
+func TestSeedCommittee_RejectsZeroTotalWeight(t *testing.T) {
+	st := newMemStateDB()
+	// A single zero-weight member => total weight 0 => rejected.
+	c := newSecpCommittee(t, 0)
+	if err := SeedCommittee(st, gwAddr, testEpoch, c.members, 2, 3); err != ErrInvalidCommittee {
+		t.Fatalf("zero-weight committee must reject with ErrInvalidCommittee, got %v", err)
 	}
-
-	if request == nil {
-		t.Fatal("Expected non-nil request")
+	// Empty committee => rejected.
+	if err := SeedCommittee(st, gwAddr, testEpoch, nil, 2, 3); err != ErrInvalidCommittee {
+		t.Fatalf("empty committee must reject with ErrInvalidCommittee, got %v", err)
 	}
-	if request.ID == [32]byte{} {
-		t.Error("Expected non-zero request ID")
-	}
-	if request.Sender != sender {
-		t.Error("Sender mismatch")
-	}
-	if request.Recipient != recipient {
-		t.Error("Recipient mismatch")
-	}
-	if request.Status != StatusPending {
-		t.Errorf("Expected pending status, got %v", request.Status)
-	}
-
-	// Verify nonce incremented
-	if gw.Nonces[sender] != 1 {
-		t.Errorf("Expected nonce 1, got %d", gw.Nonces[sender])
-	}
-}
-
-// TestInitiateBridgeDisabled tests bridging when gateway is disabled
-func TestInitiateBridgeDisabled(t *testing.T) {
-	gw := NewBridgeGateway()
-	gw.Enabled = false
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, common.Address{}, big.NewInt(1), 1, 2, 0, nil)
-	if err != ErrBridgeDisabled {
-		t.Errorf("Expected ErrBridgeDisabled, got %v", err)
-	}
-}
-
-// TestInitiateBridgePaused tests bridging when gateway is paused
-func TestInitiateBridgePaused(t *testing.T) {
-	gw := NewBridgeGateway()
-	gw.Paused = true
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, common.Address{}, big.NewInt(1), 1, 2, 0, nil)
-	if err != ErrBridgeDisabled {
-		t.Errorf("Expected ErrBridgeDisabled, got %v", err)
-	}
-}
-
-// TestInitiateBridgeChainNotSupported tests unsupported destination chain
-func TestInitiateBridgeChainNotSupported(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, common.Address{}, big.NewInt(1), ChainLux, 99999, 0, nil)
-	if err != ErrChainNotSupported {
-		t.Errorf("Expected ErrChainNotSupported, got %v", err)
-	}
-}
-
-// TestInitiateBridgeTokenNotSupported tests unsupported token
-func TestInitiateBridgeTokenNotSupported(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	unsupportedToken := common.HexToAddress("0xDEADDEADDEADDEADDEADDEADDEADDEADDEADDEAD")
-
-	_, err := gw.InitiateBridge(sender, sender, unsupportedToken, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
-	if err != ErrTokenNotSupported {
-		t.Errorf("Expected ErrTokenNotSupported, got %v", err)
-	}
-}
-
-// TestInitiateBridgeAmountTooLow tests minimum amount validation
-func TestInitiateBridgeAmountTooLow(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, token, big.NewInt(1e16), ChainLux, ChainEthereum, 0, nil) // Below min
-	if err != ErrAmountTooLow {
-		t.Errorf("Expected ErrAmountTooLow, got %v", err)
-	}
-}
-
-// TestInitiateBridgeAmountTooHigh tests maximum amount validation
-func TestInitiateBridgeAmountTooHigh(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e20(), e25()) // Max 100 tokens
-
-	// Add liquidity
-	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e24())
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, token, e21(), ChainLux, ChainEthereum, 0, nil) // Above max
-	if err != ErrAmountTooHigh {
-		t.Errorf("Expected ErrAmountTooHigh, got %v", err)
-	}
-}
-
-// TestInitiateBridgeInsufficientLiquidity tests liquidity check
-func TestInitiateBridgeInsufficientLiquidity(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
-
-	// No liquidity added
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
-	if err != ErrInsufficientLiquidity {
-		t.Errorf("Expected ErrInsufficientLiquidity, got %v", err)
-	}
-}
-
-// TestInitiateBridgeDailyLimitExceeded tests daily limit
-func TestInitiateBridgeDailyLimitExceeded(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e19()) // Daily limit 10 tokens
-
-	// Add liquidity
-	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e24())
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	_, err := gw.InitiateBridge(sender, sender, token, e20(), ChainLux, ChainEthereum, 0, nil) // Exceeds daily limit
-	if err != ErrDailyLimitExceeded {
-		t.Errorf("Expected ErrDailyLimitExceeded, got %v", err)
-	}
-}
-
-// TestCompleteBridge tests bridge completion
-func TestCompleteBridge(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	// Setup
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
-	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21())
-
-	// Initiate
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
-
-	// Complete with signatures
-	signatures := [][]byte{[]byte("sig1")}
-	err := gw.CompleteBridge(request.ID, signatures)
-	if err != nil {
-		t.Fatalf("CompleteBridge failed: %v", err)
-	}
-
-	// Verify status
-	completedRequest, _ := gw.GetRequest(request.ID)
-	if completedRequest.Status != StatusCompleted {
-		t.Errorf("Expected completed status, got %v", completedRequest.Status)
-	}
-	if completedRequest.CompletedAt == 0 {
-		t.Error("Expected non-zero CompletedAt")
-	}
-}
-
-// TestCompleteBridgeNotFound tests error for non-existent request
-func TestCompleteBridgeNotFound(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	nonExistent := [32]byte{0xFF}
-	err := gw.CompleteBridge(nonExistent, [][]byte{[]byte("sig")})
-	if err != ErrRequestNotFound {
-		t.Errorf("Expected ErrRequestNotFound, got %v", err)
-	}
-}
-
-// TestCompleteBridgeAlreadyDone tests double completion
-func TestCompleteBridgeAlreadyDone(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	// Setup and complete
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
-	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21())
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
-	_ = gw.CompleteBridge(request.ID, [][]byte{[]byte("sig")})
-
-	// Try to complete again
-	err := gw.CompleteBridge(request.ID, [][]byte{[]byte("sig")})
-	if err != ErrRequestAlreadyDone {
-		t.Errorf("Expected ErrRequestAlreadyDone, got %v", err)
-	}
-}
-
-// TestCompleteBridgeExpired tests expired request
-func TestCompleteBridgeExpired(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	// Setup
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
-	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21())
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 1, nil) // Already expired
-
-	err := gw.CompleteBridge(request.ID, [][]byte{[]byte("sig")})
-	if err != ErrRequestExpired {
-		t.Errorf("Expected ErrRequestExpired, got %v", err)
-	}
-}
-
-// TestRefundExpired tests refunding expired requests
-func TestRefundExpired(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	// Setup
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
-	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e21())
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	request, _ := gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 1, nil) // Already expired
-
-	err := gw.RefundExpired(request.ID)
-	if err != nil {
-		t.Fatalf("RefundExpired failed: %v", err)
-	}
-
-	// Verify status
-	refundedRequest, _ := gw.GetRequest(request.ID)
-	if refundedRequest.Status != StatusRefunded {
-		t.Errorf("Expected refunded status, got %v", refundedRequest.Status)
-	}
-}
-
-// TestAddLiquidity tests adding liquidity
-func TestAddLiquidity(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	provider := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	amount := e20()
-
-	position, err := gw.AddLiquidity(provider, token, ChainEthereum, amount)
-	if err != nil {
-		t.Fatalf("AddLiquidity failed: %v", err)
-	}
-
-	if position == nil {
-		t.Fatal("Expected non-nil position")
-	}
-	if position.Provider != provider {
-		t.Error("Provider mismatch")
-	}
-	if position.Amount.Cmp(amount) != 0 {
-		t.Errorf("Expected amount %v, got %v", amount, position.Amount)
-	}
-
-	// Verify pool state
-	pool := gw.Pools[ChainEthereum][token]
-	if pool == nil {
-		t.Fatal("Pool not created")
-	}
-	if pool.TotalLiq.Cmp(amount) != 0 {
-		t.Errorf("Expected total liquidity %v, got %v", amount, pool.TotalLiq)
-	}
-	if pool.Available.Cmp(amount) != 0 {
-		t.Errorf("Expected available %v, got %v", amount, pool.Available)
-	}
-}
-
-// TestAddLiquidityChainNotSupported tests error for unsupported chain
-func TestAddLiquidityChainNotSupported(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	provider := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-
-	_, err := gw.AddLiquidity(provider, token, 99999, big.NewInt(1e18))
-	if err != ErrChainNotSupported {
-		t.Errorf("Expected ErrChainNotSupported, got %v", err)
-	}
-}
-
-// TestAddLiquidityMultiple tests adding liquidity multiple times
-func TestAddLiquidityMultiple(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	provider := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e20())
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e20())
-
-	pool := gw.Pools[ChainEthereum][token]
-	expected := new(big.Int).Mul(big.NewInt(2), e20())
-	if pool.TotalLiq.Cmp(expected) != 0 {
-		t.Errorf("Expected total %v, got %v", expected, pool.TotalLiq)
-	}
-}
-
-// TestRemoveLiquidity tests removing liquidity
-func TestRemoveLiquidity(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	provider := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e20())
-
-	total, err := gw.RemoveLiquidity(provider, token, ChainEthereum, fiveE19())
-	if err != nil {
-		t.Fatalf("RemoveLiquidity failed: %v", err)
-	}
-
-	// Should return amount + fees
-	if total.Cmp(fiveE19()) < 0 {
-		t.Errorf("Expected at least %v, got %v", fiveE19(), total)
-	}
-
-	// Verify pool updated
-	pool := gw.Pools[ChainEthereum][token]
-	if pool.TotalLiq.Cmp(fiveE19()) != 0 {
-		t.Errorf("Expected remaining %v, got %v", fiveE19(), pool.TotalLiq)
-	}
-}
-
-// TestRemoveLiquidityInsufficientBalance tests removing more than deposited
-func TestRemoveLiquidityInsufficientBalance(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	provider := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, big.NewInt(1e18))
-
-	_, err := gw.RemoveLiquidity(provider, token, ChainEthereum, e20()) // More than deposited
-	if err != ErrInsufficientLiquidity {
-		t.Errorf("Expected ErrInsufficientLiquidity, got %v", err)
-	}
-}
-
-// TestGetRequest tests request retrieval
-func TestGetRequest(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	nonExistent := [32]byte{0xFF}
-	_, err := gw.GetRequest(nonExistent)
-	if err != ErrRequestNotFound {
-		t.Errorf("Expected ErrRequestNotFound, got %v", err)
-	}
-}
-
-// TestCalculateFee tests fee calculation
-func TestCalculateFee(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	tests := []struct {
-		name   string
-		amount *big.Int
-		minFee *big.Int
-	}{
-		{"Small amount", big.NewInt(1e17), gw.Config.MinFee}, // Fee would be below min
-		{"Large amount", e22(), gw.Config.MaxFee},            // Fee would exceed max
-		{"Medium amount", e19(), nil},                        // Normal calculation
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fee := gw.calculateFee(tt.amount)
-			if fee.Sign() <= 0 {
-				t.Error("Expected positive fee")
-			}
-			if gw.Config.MinFee.Sign() > 0 && fee.Cmp(gw.Config.MinFee) < 0 {
-				t.Errorf("Fee %v below minimum %v", fee, gw.Config.MinFee)
-			}
-			if gw.Config.MaxFee.Sign() > 0 && fee.Cmp(gw.Config.MaxFee) > 0 {
-				t.Errorf("Fee %v above maximum %v", fee, gw.Config.MaxFee)
-			}
-		})
-	}
-}
-
-// TestNonceIncrement tests nonce handling
-func TestNonceIncrement(t *testing.T) {
-	gw := NewBridgeGateway()
-
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e25())
-	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, e24())
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-
-	for i := range uint64(5) {
-		_, _ = gw.InitiateBridge(sender, sender, token, big.NewInt(1e18), ChainLux, ChainEthereum, 0, nil)
-		if gw.Nonces[sender] != i+1 {
-			t.Errorf("Expected nonce %d, got %d", i+1, gw.Nonces[sender])
+	// Malformed quorum fractions => rejected.
+	good := newSecpCommittee(t, 1, 1, 1)
+	for _, q := range []struct{ n, d uint16 }{{0, 3}, {3, 0}, {4, 3}} {
+		if err := SeedCommittee(st, gwAddr, testEpoch, good.members, q.n, q.d); err != ErrInvalidCommittee {
+			t.Fatalf("quorum %d/%d must reject, got %v", q.n, q.d, err)
 		}
 	}
 }
 
-// TestSignerThreshold tests threshold calculation
-func TestSignerThreshold(t *testing.T) {
-	gw := NewBridgeGateway()
+// --- A-CLOSURE: real verify, fail-closed, ⅔ weight ---------------------------
 
-	// No signers
-	threshold := gw.getThreshold()
-	if threshold != 1 {
-		t.Errorf("Expected threshold 1 with no signers, got %d", threshold)
+func TestQuorum_UnsetCommitteeFailsClosed(t *testing.T) {
+	st := newMemStateDB()
+	// No committee seeded — verification must fail closed (NOT a threshold of one).
+	if _, err := loadCommitteeHeader(st, gwAddr); err != ErrCommitteeUnset {
+		t.Fatalf("loadCommitteeHeader on empty state must be ErrCommitteeUnset, got %v", err)
 	}
-
-	// Add signers
-	gw.SignerSet.Signers = make([]*SignerInfo, 10)
-	threshold = gw.getThreshold()
-	expected := uint32((10 * 2 / 3) + 1) // 2/3 + 1 = 7
-	if threshold != expected {
-		t.Errorf("Expected threshold %d, got %d", expected, threshold)
+	var d [32]byte
+	if err := VerifyCompletionQuorum(st, gwAddr, d, []SignerSig{{Index: 0, Sig: []byte{0x01}}}); err != ErrCommitteeUnset {
+		t.Fatalf("quorum on unset committee must be ErrCommitteeUnset, got %v", err)
 	}
 }
 
-// Benchmark tests
+func TestQuorum_JunkSignatureRejected(t *testing.T) {
+	st := newMemStateDB()
+	c := newSecpCommittee(t, 1, 1, 1)
+	if err := SeedCommittee(st, gwAddr, testEpoch, c.members, 2, 3); err != nil {
+		t.Fatalf("SeedCommittee: %v", err)
+	}
+	r := newRequest(80, 0)
+	d := CompletionDigest(testNetworkID, testChainID, r)
 
-func BenchmarkInitiateBridge(b *testing.B) {
-	gw := NewBridgeGateway()
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	_ = gw.RegisterToken(token, 18, "TEST", "Test", big.NewInt(1e17), e24(), e30())
-	provider := common.HexToAddress("0x1111111111111111111111111111111111111111")
-	_, _ = gw.AddLiquidity(provider, token, ChainEthereum, new(big.Int).Mul(e24(), big.NewInt(int64(b.N)+1)))
-
-	sender := common.HexToAddress("0x1234567890123456789012345678901234567890")
-	amount := big.NewInt(1e18)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = gw.InitiateBridge(sender, sender, token, amount, ChainLux, ChainEthereum, 0, nil)
+	// A 1-byte junk signature contributes zero valid weight => threshold not met.
+	if err := VerifyCompletionQuorum(st, gwAddr, d, []SignerSig{{Index: 0, Sig: []byte{0x01}}}); err != ErrSignatureThreshold {
+		t.Fatalf("junk proof must reject with ErrSignatureThreshold, got %v", err)
+	}
+	// Three junk signatures at distinct indices still meet no valid weight.
+	junk := []SignerSig{{Index: 0, Sig: []byte{0x01}}, {Index: 1, Sig: []byte{0x02}}, {Index: 2, Sig: []byte{0x03}}}
+	if err := VerifyCompletionQuorum(st, gwAddr, d, junk); err != ErrSignatureThreshold {
+		t.Fatalf("all-junk proof must reject with ErrSignatureThreshold, got %v", err)
 	}
 }
 
-func BenchmarkCalculateFee(b *testing.B) {
-	gw := NewBridgeGateway()
-	amount := e20()
+func TestQuorum_SubThresholdFails(t *testing.T) {
+	st := newMemStateDB()
+	c := newSecpCommittee(t, 1, 1, 1)
+	if err := SeedCommittee(st, gwAddr, testEpoch, c.members, 2, 3); err != nil {
+		t.Fatalf("SeedCommittee: %v", err)
+	}
+	r := newRequest(80, 0)
+	d := CompletionDigest(testNetworkID, testChainID, r)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = gw.calculateFee(amount)
+	// 1 of 3 (weight 1 of total 3): 1*3 = 3 < 3*2 = 6 => below ⅔.
+	if err := VerifyCompletionQuorum(st, gwAddr, d, c.quorum(t, d, 0)); err != ErrSignatureThreshold {
+		t.Fatalf("1-of-3 must reject with ErrSignatureThreshold, got %v", err)
+	}
+	// 2 of 3: 2*3 = 6 >= 6 => exactly ⅔ => accept.
+	if err := VerifyCompletionQuorum(st, gwAddr, d, c.quorum(t, d, 0, 1)); err != nil {
+		t.Fatalf("2-of-3 must meet ⅔ quorum, got %v", err)
+	}
+	// 3 of 3 => accept.
+	if err := VerifyCompletionQuorum(st, gwAddr, d, c.quorum(t, d, 0, 1, 2)); err != nil {
+		t.Fatalf("3-of-3 must accept, got %v", err)
 	}
 }
 
-func BenchmarkAddLiquidity(b *testing.B) {
-	gw := NewBridgeGateway()
-	token := common.HexToAddress("0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
-	amount := big.NewInt(1e18)
+func TestQuorum_DuplicateIndexRejected(t *testing.T) {
+	st := newMemStateDB()
+	c := newSecpCommittee(t, 1, 1, 1)
+	if err := SeedCommittee(st, gwAddr, testEpoch, c.members, 2, 3); err != nil {
+		t.Fatalf("SeedCommittee: %v", err)
+	}
+	r := newRequest(80, 0)
+	d := CompletionDigest(testNetworkID, testChainID, r)
+	// The same valid member submitted twice must NOT count as ⅔ — distinct-index only.
+	sig0 := c.sign(t, 0, d)
+	dup := []SignerSig{{Index: 0, Sig: sig0}, {Index: 0, Sig: sig0}}
+	if err := VerifyCompletionQuorum(st, gwAddr, d, dup); err != ErrDuplicateSignerIndex {
+		t.Fatalf("duplicate index must reject with ErrDuplicateSignerIndex, got %v", err)
+	}
+}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		provider := common.BigToAddress(big.NewInt(int64(i)))
-		_, _ = gw.AddLiquidity(provider, token, ChainEthereum, amount)
+func TestQuorum_OutOfRangeIndexRejected(t *testing.T) {
+	st := newMemStateDB()
+	c := newSecpCommittee(t, 1, 1, 1)
+	if err := SeedCommittee(st, gwAddr, testEpoch, c.members, 2, 3); err != nil {
+		t.Fatalf("SeedCommittee: %v", err)
+	}
+	r := newRequest(80, 0)
+	d := CompletionDigest(testNetworkID, testChainID, r)
+	if err := VerifyCompletionQuorum(st, gwAddr, d, []SignerSig{{Index: 99, Sig: c.sign(t, 0, d)}}); err != ErrSignerIndexRange {
+		t.Fatalf("out-of-range index must reject with ErrSignerIndexRange, got %v", err)
+	}
+}
+
+func TestQuorum_WrongDigestRejected(t *testing.T) {
+	st := newMemStateDB()
+	c := newSecpCommittee(t, 1, 1, 1)
+	if err := SeedCommittee(st, gwAddr, testEpoch, c.members, 2, 3); err != nil {
+		t.Fatalf("SeedCommittee: %v", err)
+	}
+	d := CompletionDigest(testNetworkID, testChainID, newRequest(80, 0))
+	other := CompletionDigest(testNetworkID, testChainID, newRequest(81, 0))
+	// Signatures over `other` do not verify against `d` => no valid weight.
+	if err := VerifyCompletionQuorum(st, gwAddr, d, c.quorum(t, other, 0, 1)); err != ErrSignatureThreshold {
+		t.Fatalf("signatures over a different digest must not count, got %v", err)
+	}
+}
+
+// ML-DSA-65 (post-quantum) member: the public key is read from STATE and the
+// signature verifies with the completion domain bound as the FIPS 204 context.
+func TestQuorum_MLDSAMemberVerifies(t *testing.T) {
+	st := newMemStateDB()
+	c := &committee{secp: map[uint16]*ecdsa.PrivateKey{}, pq: map[uint16]*mldsa.PrivateKey{}}
+	// Mixed committee: one secp (idx 0), one ML-DSA-65 (idx 1), one secp (idx 2).
+	s0, m0 := func() (*ecdsa.PrivateKey, CommitteeMember) {
+		k, _ := crypto.GenerateKey()
+		var id [20]byte
+		copy(id[:], crypto.Keccak256(crypto.FromECDSAPub(&k.PublicKey)[1:])[12:])
+		return k, CommitteeMember{Scheme: SchemeSecp256k1, Weight: 1, KeyID: id}
+	}()
+	c.secp[0] = s0
+	c.members = append(c.members, m0)
+	pqIdx := c.addMLDSA(t, 1)
+	s2, m2 := func() (*ecdsa.PrivateKey, CommitteeMember) {
+		k, _ := crypto.GenerateKey()
+		var id [20]byte
+		copy(id[:], crypto.Keccak256(crypto.FromECDSAPub(&k.PublicKey)[1:])[12:])
+		return k, CommitteeMember{Scheme: SchemeSecp256k1, Weight: 1, KeyID: id}
+	}()
+	c.secp[2] = s2
+	c.members = append(c.members, m2)
+
+	if err := SeedCommittee(st, gwAddr, testEpoch, c.members, 2, 3); err != nil {
+		t.Fatalf("SeedCommittee: %v", err)
+	}
+	d := CompletionDigest(testNetworkID, testChainID, newRequest(80, 0))
+
+	// The ML-DSA-65 member + one secp member make a ⅔ quorum, exercising the PQ path.
+	if err := VerifyCompletionQuorum(st, gwAddr, d, c.quorum(t, d, pqIdx, 0)); err != nil {
+		t.Fatalf("ML-DSA-65 + secp ⅔ quorum must accept, got %v", err)
+	}
+	// A corrupted ML-DSA signature does not count.
+	badSig := c.sign(t, pqIdx, d)
+	badSig[0] ^= 0xff
+	if err := VerifyCompletionQuorum(st, gwAddr, d, []SignerSig{{Index: pqIdx, Sig: badSig}, {Index: 0, Sig: c.sign(t, 0, d)}}); err != ErrSignatureThreshold {
+		t.Fatalf("corrupt ML-DSA sig must not count (sub-⅔), got %v", err)
+	}
+}
+
+// Weighted committee: a single heavy member can carry ⅔, a light minority cannot.
+func TestQuorum_WeightedThreshold(t *testing.T) {
+	st := newMemStateDB()
+	c := newSecpCommittee(t, 7, 1, 1, 1) // total weight 10; ⅔ => weight*3 >= 20 => weight >= 7 (ceil 6.67)
+	if err := SeedCommittee(st, gwAddr, testEpoch, c.members, 2, 3); err != nil {
+		t.Fatalf("SeedCommittee: %v", err)
+	}
+	d := CompletionDigest(testNetworkID, testChainID, newRequest(80, 0))
+	// Heavy member alone: 7*3 = 21 >= 20 => accept.
+	if err := VerifyCompletionQuorum(st, gwAddr, d, c.quorum(t, d, 0)); err != nil {
+		t.Fatalf("heavy member alone must meet ⅔, got %v", err)
+	}
+	// Three light members: 3*3 = 9 < 20 => reject.
+	if err := VerifyCompletionQuorum(st, gwAddr, d, c.quorum(t, d, 1, 2, 3)); err != ErrSignatureThreshold {
+		t.Fatalf("light minority must fail ⅔, got %v", err)
+	}
+}
+
+// --- Request lifecycle FSM ---------------------------------------------------
+
+func TestLifecycle_RecordVerifyComplete(t *testing.T) {
+	st := newMemStateDB()
+	gw := NewBridgeGateway()
+	r := newRequest(80, 0)
+	_, signers := recordPending(t, st, r)
+
+	got, err := gw.GetRequest(st, gwAddr, r.ID)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if got.Status != StatusPending {
+		t.Fatalf("recorded status = %d, want Pending", got.Status)
+	}
+	// Every digest field round-trips through StateDB (else the proof would fail).
+	if got.Amount.Int64() != 80 || got.SourceChain != ChainEthereum || got.DestChain != ChainLux || got.Recipient != r.Recipient {
+		t.Fatalf("request did not round-trip: %+v", got)
+	}
+
+	if err := gw.VerifyCompletion(st, gwAddr, testNetworkID, testChainID, 1000, r.ID, signers); err != nil {
+		t.Fatalf("VerifyCompletion: %v", err)
+	}
+	if err := gw.CompleteBridge(st, gwAddr, testNetworkID, testChainID, 1000, r.ID, signers); err != nil {
+		t.Fatalf("CompleteBridge: %v", err)
+	}
+	done, _ := gw.GetRequest(st, gwAddr, r.ID)
+	if done.Status != StatusCompleted {
+		t.Fatalf("status after complete = %d, want Completed", done.Status)
+	}
+	if done.CompletedAt != 1000 {
+		t.Fatalf("completedAt = %d, want 1000 (block time)", done.CompletedAt)
+	}
+	// Terminal: a second completion and a refund both reject.
+	if err := gw.CompleteBridge(st, gwAddr, testNetworkID, testChainID, 1000, r.ID, signers); err != ErrRequestAlreadyDone {
+		t.Fatalf("double complete must reject, got %v", err)
+	}
+	if err := gw.RefundExpired(st, gwAddr, 2000, r.ID); err != ErrRequestAlreadyDone {
+		t.Fatalf("refund of consumed request must reject, got %v", err)
+	}
+}
+
+func TestLifecycle_RefundExpired(t *testing.T) {
+	st := newMemStateDB()
+	gw := NewBridgeGateway()
+	r := newRequest(80, 500) // deadline 500
+	recordPending(t, st, r)
+
+	// Before the deadline: refund refused.
+	if err := gw.RefundExpired(st, gwAddr, 500, r.ID); err != ErrRequestNotExpired {
+		t.Fatalf("refund at bt==deadline must reject with ErrRequestNotExpired, got %v", err)
+	}
+	// After the deadline: refunded.
+	if err := gw.RefundExpired(st, gwAddr, 501, r.ID); err != nil {
+		t.Fatalf("refund past deadline: %v", err)
+	}
+	got, _ := gw.GetRequest(st, gwAddr, r.ID)
+	if got.Status != StatusRefunded {
+		t.Fatalf("status after refund = %d, want Refunded", got.Status)
+	}
+}
+
+func TestLifecycle_RecordInboundGuards(t *testing.T) {
+	st := newMemStateDB()
+	r := newRequest(80, 0)
+	c, signers := recordPending(t, st, r)
+	// Re-recording the same id is refused (a recorded id is immutable).
+	if err := RecordInbound(st, gwAddr, testNetworkID, testChainID, r, signers); err != ErrRequestExists {
+		t.Fatalf("re-record must reject with ErrRequestExists, got %v", err)
+	}
+	// A request whose digest the committee did NOT sign cannot be planted as Pending.
+	r2 := newRequest(80, 0)
+	dOther := CompletionDigest(testNetworkID, testChainID, newRequest(80, 0))
+	if err := RecordInbound(st, gwAddr, testNetworkID, testChainID, r2, c.quorum(t, dOther, 0, 1)); err != ErrSignatureThreshold {
+		t.Fatalf("recording with a non-matching quorum must reject, got %v", err)
+	}
+	if _, err := ReadRequest(st, gwAddr, r2.ID); err != ErrRequestNotFound {
+		t.Fatalf("a rejected RecordInbound must NOT plant a Pending record, got %v", err)
+	}
+	// A non-positive amount is rejected.
+	bad := newRequest(0, 0)
+	if err := RecordInbound(st, gwAddr, testNetworkID, testChainID, bad, signers); err != ErrInvalidRequest {
+		t.Fatalf("non-positive amount must reject with ErrInvalidRequest, got %v", err)
+	}
+}
+
+func TestLifecycle_UnknownRequest(t *testing.T) {
+	st := newMemStateDB()
+	gw := NewBridgeGateway()
+	var unknown [32]byte
+	unknown[0] = 0xFE
+	if _, err := gw.GetRequest(st, gwAddr, unknown); err != ErrRequestNotFound {
+		t.Fatalf("GetRequest(unknown) must be ErrRequestNotFound, got %v", err)
+	}
+	if err := gw.VerifyCompletion(st, gwAddr, testNetworkID, testChainID, 1, unknown, nil); err != ErrRequestNotFound {
+		t.Fatalf("VerifyCompletion(unknown) must be ErrRequestNotFound, got %v", err)
+	}
+}
+
+// --- B-CLOSURE: deadline is judged by BLOCK time, deterministically ----------
+
+func TestBlockTime_DeadlineDeterministic(t *testing.T) {
+	gw := NewBridgeGateway()
+	const deadline = 1000
+
+	// Build the SAME request+committee+state and verify at two block times. The
+	// outcome depends ONLY on the block time passed in — never on the wall clock.
+	run := func(bt uint64) error {
+		st := newMemStateDB()
+		r := newRequest(80, deadline)
+		_, signers := recordPending(t, st, r)
+		return gw.VerifyCompletion(st, gwAddr, testNetworkID, testChainID, bt, r.ID, signers)
+	}
+	if err := run(deadline); err != nil { // bt == deadline => within deadline
+		t.Fatalf("bt==deadline must verify, got %v", err)
+	}
+	if err := run(deadline + 1); err != ErrRequestExpired { // bt > deadline => expired
+		t.Fatalf("bt>deadline must be ErrRequestExpired, got %v", err)
+	}
+	// Determinism: same block time, same outcome, regardless of when the test runs.
+	for i := 0; i < 3; i++ {
+		if err := run(deadline); err != nil {
+			t.Fatalf("repeat %d at bt==deadline diverged: %v", i, err)
+		}
+		if err := run(deadline + 1); err != ErrRequestExpired {
+			t.Fatalf("repeat %d at bt>deadline diverged: %v", i, err)
+		}
+	}
+}
+
+// --- 14-CLOSURE: StateDB FSM under snapshot + restart ------------------------
+
+func TestStateDB_RevertUnflipsStatus(t *testing.T) {
+	st := newMemStateDB()
+	gw := NewBridgeGateway()
+	r := newRequest(80, 0)
+	_, signers := recordPending(t, st, r)
+
+	snap := st.Snapshot()
+	if err := gw.CompleteBridge(st, gwAddr, testNetworkID, testChainID, 1000, r.ID, signers); err != nil {
+		t.Fatalf("CompleteBridge: %v", err)
+	}
+	if got, _ := gw.GetRequest(st, gwAddr, r.ID); got.Status != StatusCompleted {
+		t.Fatalf("status before revert = %d, want Completed", got.Status)
+	}
+	// A revert un-flips the status: the consume is atomic with the surrounding tx.
+	st.RevertToSnapshot(snap)
+	if got, _ := gw.GetRequest(st, gwAddr, r.ID); got.Status != StatusPending {
+		t.Fatalf("status after revert = %d, want Pending (un-flipped)", got.Status)
+	}
+}
+
+func TestStateDB_RestartDeterministic(t *testing.T) {
+	st := newMemStateDB()
+	r := newRequest(80, 0)
+	_, signers := recordPending(t, st, r)
+
+	// "Restart": a brand-new gateway over the SAME StateDB re-reads the committed
+	// request deterministically (not Absent) — no in-memory map to strand.
+	fresh := NewBridgeGateway()
+	got, err := fresh.GetRequest(st, gwAddr, r.ID)
+	if err != nil {
+		t.Fatalf("fresh gateway GetRequest: %v", err)
+	}
+	if got.Status != StatusPending {
+		t.Fatalf("restart status = %d, want Pending", got.Status)
+	}
+
+	// The fresh gateway completes against the SAME state-resident committee, reusing
+	// the attestation that recorded the inbound; a THIRD gateway then sees Completed.
+	if err := fresh.CompleteBridge(st, gwAddr, testNetworkID, testChainID, 1000, r.ID, signers); err != nil {
+		t.Fatalf("CompleteBridge on fresh gateway: %v", err)
+	}
+	if got, _ := NewBridgeGateway().GetRequest(st, gwAddr, r.ID); got.Status != StatusCompleted {
+		t.Fatalf("third gateway status = %d, want Completed", got.Status)
+	}
+}
+
+// --- registry-driven gateway (retained surface) ------------------------------
+
+func TestNewBridgeGateway_DefaultChains(t *testing.T) {
+	gw := NewBridgeGateway()
+	for _, id := range []uint32{ChainLux, ChainEthereum, ChainBase, ChainAvalanche} {
+		if !gw.Supports(id) {
+			t.Fatalf("expected chain %d supported", id)
+		}
+	}
+	if gw.Supports(99999) {
+		t.Fatal("chain 99999 must not be supported")
 	}
 }

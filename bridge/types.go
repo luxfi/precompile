@@ -10,28 +10,9 @@ import (
 	"github.com/luxfi/geth/common"
 )
 
-// Precompile addresses for B-Chain bridge operations
-const (
-	// Bridge core operations
-	BridgeGatewayAddress    = "0x0440" // Main bridge gateway
-	BridgeRouterAddress     = "0x0441" // Cross-chain routing
-	BridgeVerifierAddress   = "0x0442" // Message verification
-	BridgeLiquidityAddress  = "0x0443" // Liquidity pools
-	BridgeFeeManagerAddress = "0x0444" // Fee management
-	BridgeSignerAddress     = "0x0445" // MPC signer interface
-
-	// Gas costs
-	GasBridgeInitiate    = uint64(100000) // Initiate bridge transfer
-	GasBridgeComplete    = uint64(50000)  // Complete bridge on destination
-	GasBridgeVerify      = uint64(25000)  // Verify bridge message
-	GasBridgeGetStatus   = uint64(5000)   // Query bridge status
-	GasBridgeAddLiq      = uint64(75000)  // Add liquidity
-	GasBridgeRemoveLiq   = uint64(75000)  // Remove liquidity
-	GasSignerGetPubKey   = uint64(10000)  // Get MPC public key
-	GasSignerRequestSign = uint64(150000) // Request MPC signature
-)
-
-// Supported chain IDs
+// Supported chain IDs. The canonical numeric ids for the ecosystem and the
+// external chains the bridge tracks. Virtual ids (>= 900_000) name non-EVM
+// chains for bookkeeping only.
 const (
 	ChainLux       uint32 = 96369  // Lux mainnet C-Chain
 	ChainLuxTest   uint32 = 96368  // Lux testnet
@@ -51,179 +32,94 @@ const (
 	ChainPars      uint32 = 6133   // Pars Network mainnet
 	ChainParsTest  uint32 = 6132   // Pars Network testnet
 
-	// Non-EVM chains (use virtual chain IDs for bridge tracking)
-	// These don't have native EVM chain IDs but are tracked by the bridge
+	// Non-EVM chains (virtual ids for bridge tracking).
 	ChainSolana  uint32 = 900001 // Solana mainnet
 	ChainBitcoin uint32 = 900002 // Bitcoin mainnet
 	ChainXRP     uint32 = 900003 // XRP Ledger mainnet
 	ChainTON     uint32 = 900004 // TON mainnet
 )
 
-// BridgeRequest represents a cross-chain transfer request
-type BridgeRequest struct {
-	ID           [32]byte       // Unique request ID
-	Sender       common.Address // Source chain sender
-	Recipient    common.Address // Destination chain recipient
-	Token        common.Address // Token address (address(0) for native)
-	Amount       *big.Int       // Amount to bridge
-	SourceChain  uint32         // Source chain ID
-	DestChain    uint32         // Destination chain ID
-	Nonce        uint64         // Sender nonce for replay protection
-	Deadline     uint64         // Timestamp deadline
-	Data         []byte         // Optional calldata for recipient
-	Status       BridgeStatus   // Current status
-	SourceTxHash common.Hash    // Source chain transaction hash
-	DestTxHash   common.Hash    // Destination chain transaction hash
-	Signatures   [][]byte       // MPC signatures
-	CreatedAt    uint64         // Creation timestamp
-	CompletedAt  uint64         // Completion timestamp
-}
-
-// BridgeStatus represents the status of a bridge request
+// BridgeStatus is the on-state lifecycle of a bridge request. The numeric value
+// IS the byte persisted in StateDB (request_state.go word 0, byte 0), so the
+// enum and the storage layout are one and the same — there is no second mapping.
+//
+// StatusAbsent (0) is the implicit value of an unwritten slot: a request that
+// was never recorded reads back as Absent, which ReadRequest reports as
+// ErrRequestNotFound. Every recorded request is Pending until it reaches exactly
+// one terminal state (Completed / Refunded / Expired / Failed).
 type BridgeStatus uint8
 
 const (
-	StatusPending BridgeStatus = iota
-	StatusSigning
-	StatusSigned
-	StatusRelaying
-	StatusCompleted
-	StatusFailed
-	StatusExpired
-	StatusRefunded
+	StatusAbsent    BridgeStatus = 0 // slot never written (== not found)
+	StatusPending   BridgeStatus = 1 // recorded, awaiting completion or refund
+	StatusCompleted BridgeStatus = 2 // consumed by a quorum-verified completion (terminal)
+	StatusRefunded  BridgeStatus = 3 // released after the deadline (terminal)
+	StatusExpired   BridgeStatus = 4 // marked expired (terminal)
+	StatusFailed    BridgeStatus = 5 // marked failed (terminal)
 )
 
-// BridgedToken represents a token that can be bridged
-type BridgedToken struct {
-	LocalAddress  common.Address            // Address on this chain
-	RemoteAddress map[uint32]common.Address // Address on remote chains
-	Decimals      uint8                     // Token decimals
-	Symbol        string                    // Token symbol
-	Name          string                    // Token name
-	MinBridge     *big.Int                  // Minimum bridge amount
-	MaxBridge     *big.Int                  // Maximum bridge amount (per tx)
-	DailyLimit    *big.Int                  // Daily bridge limit
-	BridgedToday  *big.Int                  // Amount bridged today
-	LastReset     uint64                    // Last daily reset timestamp
-	Enabled       bool                      // Whether bridging is enabled
+// BridgeRequest is a cross-chain transfer the gateway settles on this chain. It
+// is the in-memory view of the StateDB-resident record (request_state.go); every
+// field round-trips through storage so the completion digest recomputed at verify
+// time is identical to the one the MPC committee attested at record time.
+type BridgeRequest struct {
+	ID            [32]byte       // unique request id (the StateDB key)
+	Status        BridgeStatus   // on-state lifecycle status
+	SourceNetwork uint32         // originating network id
+	SourceChain   uint32         // originating chain id
+	DestNetwork   uint32         // destination network id (this network)
+	DestChain     uint32         // destination chain id (this chain)
+	Nonce         uint64         // source replay nonce
+	Deadline      uint64         // unix-seconds completion deadline (0 => none)
+	Recipient     common.Address // destination recipient
+	Token         common.Address // asset address (zero => native)
+	Amount        *big.Int       // amount to deliver
+	CreatedAt     uint64         // block time the request was recorded
+	CompletedAt   uint64         // block time the request was resolved
 }
 
-// LiquidityPool represents a bridge liquidity pool
-type LiquidityPool struct {
-	Token     common.Address // Pool token
-	ChainID   uint32         // Chain ID
-	TotalLiq  *big.Int       // Total liquidity
-	Available *big.Int       // Available liquidity (not in transit)
-	Providers map[common.Address]*LPPosition
-	FeeRate   uint32   // Fee in basis points (100 = 1%)
-	TotalFees *big.Int // Total fees collected
-}
-
-// LPPosition represents a liquidity provider position
-type LPPosition struct {
-	Provider    common.Address
-	Amount      *big.Int
-	ShareRatio  *big.Int // Share of pool (scaled by 1e18)
-	DepositTime uint64
-	PendingFees *big.Int
-}
-
-// BridgeMessage is the message format for cross-chain communication
-type BridgeMessage struct {
-	Version     uint8          // Message version
-	MessageType uint8          // Type of message
-	SourceChain uint32         // Source chain ID
-	DestChain   uint32         // Destination chain ID
-	Nonce       uint64         // Message nonce
-	Sender      common.Address // Original sender
-	Recipient   common.Address // Destination recipient
-	Token       common.Address // Token address
-	Amount      *big.Int       // Amount
-	Data        []byte         // Additional data
-	Timestamp   uint64         // Message timestamp
-}
-
-// MessageType constants
+// Signature schemes a committee member may use. The scheme byte is stored in the
+// member descriptor (committee_state.go) and selects the per-member verifier.
 const (
-	MsgTypeTransfer   uint8 = 1 // Token transfer
-	MsgTypeMint       uint8 = 2 // Mint wrapped token
-	MsgTypeBurn       uint8 = 3 // Burn wrapped token
-	MsgTypeUnlock     uint8 = 4 // Unlock native token
-	MsgTypeLiquidity  uint8 = 5 // Liquidity operation
-	MsgTypeGovernance uint8 = 6 // Governance message
-	MsgTypeEmergency  uint8 = 7 // Emergency pause/unpause
+	SchemeSecp256k1 byte = 1 // geth-style ECDSA recover; keyID is the EVM address
+	SchemeMLDSA65   byte = 2 // ML-DSA-65 (FIPS 204); pubkey blob stored in state
 )
 
-// SignerInfo represents an MPC signer in the bridge set
-type SignerInfo struct {
-	NodeID     [20]byte       // Validator node ID
-	Address    common.Address // EVM address
-	PublicKey  []byte         // MPC public key share
-	Bond       *big.Int       // Staked bond (min 100M LUX)
-	JoinedAt   uint64         // When joined signer set
-	LastActive uint64         // Last activity timestamp
-	SignCount  uint64         // Total signatures produced
-	SlashCount uint32         // Times slashed
-	Status     SignerStatus
+// CommitteeMember is one signer in the state-resident completion committee. For
+// secp256k1, KeyID is the member's EVM address and PubKey is empty (the address
+// is recovered from the signature). For ML-DSA-65, PubKey holds the 1952-byte
+// public key (read from StateDB at verify time, NEVER from calldata) and KeyID
+// is an opaque 20-byte fingerprint.
+type CommitteeMember struct {
+	Scheme byte
+	Weight uint64
+	KeyID  [20]byte
+	PubKey []byte
 }
 
-// SignerStatus represents MPC signer status
-type SignerStatus uint8
-
-const (
-	SignerActive SignerStatus = iota
-	SignerWaitlist
-	SignerSlashed
-	SignerExited
-)
-
-// SignerSet represents the current MPC signer set
-type SignerSet struct {
-	Signers     []*SignerInfo // Active signers (max 100)
-	Waitlist    [][20]byte    // Waitlisted node IDs
-	Threshold   uint32        // Required signatures (2/3 of signers)
-	Epoch       uint64        // Current epoch
-	PublicKey   []byte        // Combined threshold public key
-	LastReshare uint64        // Last reshare timestamp
+// SignerSig is one member's attestation in a completion proof. Index selects the
+// member from the on-state committee snapshot — the public key is read from
+// STATE at that index, never supplied by the relayer. This makes a forged-key
+// attack impossible: the relayer chooses only which committee members signed, and
+// each signature is checked against the key the committee was seeded with.
+type SignerSig struct {
+	Index uint16
+	Sig   []byte
 }
 
-// BridgeFeeConfig represents fee configuration
-type BridgeFeeConfig struct {
-	BaseFee          *big.Int // Base fee per bridge
-	PercentFee       uint32   // Fee percentage (basis points)
-	MinFee           *big.Int // Minimum fee
-	MaxFee           *big.Int // Maximum fee
-	LiquidityFee     uint32   // Fee to liquidity providers (basis points)
-	ProtocolFee      uint32   // Protocol fee (basis points)
-	EmergencyPenalty uint32   // Emergency withdrawal penalty (basis points)
-}
-
-// Bridge errors
+// Bridge errors.
 var (
-	ErrBridgeDisabled        = errors.New("bridge is disabled")
-	ErrTokenNotSupported     = errors.New("token not supported for bridging")
-	ErrChainNotSupported     = errors.New("destination chain not supported")
-	ErrAmountTooLow          = errors.New("amount below minimum")
-	ErrAmountTooHigh         = errors.New("amount exceeds maximum")
-	ErrDailyLimitExceeded    = errors.New("daily bridge limit exceeded")
-	ErrInsufficientLiquidity = errors.New("insufficient bridge liquidity")
-	ErrInvalidSignature      = errors.New("invalid bridge signature")
-	ErrSignatureThreshold    = errors.New("signature threshold not met")
-	ErrRequestNotFound       = errors.New("bridge request not found")
-	ErrRequestExpired        = errors.New("bridge request expired")
-	ErrRequestAlreadyDone    = errors.New("bridge request already completed")
-	ErrInvalidMessage        = errors.New("invalid bridge message")
-	ErrUnauthorizedSigner    = errors.New("unauthorized signer")
-	ErrSignerNotFound        = errors.New("signer not found")
-	ErrInsufficientBond      = errors.New("insufficient signer bond")
-	ErrAlreadySigner         = errors.New("already in signer set")
-	ErrSignerSetFull         = errors.New("signer set is full")
-	ErrInvalidNonce          = errors.New("invalid nonce")
-	ErrReplayAttack          = errors.New("replay attack detected")
+	ErrRequestNotFound      = errors.New("bridge: request not found")
+	ErrRequestExpired       = errors.New("bridge: request expired")
+	ErrRequestAlreadyDone   = errors.New("bridge: request already resolved")
+	ErrRequestNotExpired    = errors.New("bridge: request not yet expired")
+	ErrRequestExists        = errors.New("bridge: request already recorded")
+	ErrInvalidRequest       = errors.New("bridge: invalid request")
+	ErrInvalidSignature     = errors.New("bridge: invalid completion signature")
+	ErrSignatureThreshold   = errors.New("bridge: completion quorum not met")
+	ErrCommitteeUnset       = errors.New("bridge: completion committee not set")
+	ErrInvalidCommittee     = errors.New("bridge: invalid committee configuration")
+	ErrInvalidScheme        = errors.New("bridge: unknown signature scheme")
+	ErrDuplicateSignerIndex = errors.New("bridge: duplicate signer index")
+	ErrSignerIndexRange     = errors.New("bridge: signer index out of committee range")
 )
-
-// MinSignerBond is the minimum bond required to be a signer (100M LUX)
-var MinSignerBond = new(big.Int).Mul(big.NewInt(100_000_000), big.NewInt(1e18))
-
-// MaxSigners is the maximum number of active signers
-const MaxSigners = 100
