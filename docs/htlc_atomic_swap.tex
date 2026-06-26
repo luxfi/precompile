@@ -1,0 +1,485 @@
+% Copyright (C) 2026, Lux Industries Inc. All rights reserved.
+% Lux DEX cross-chain HTLC atomic-swap settlement — construction, precompile
+% interface, and threat model. Replaces the custodial lock-and-mint bridge and
+% the dexvm custodial proxy. This document is normative: implement from it.
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\lstset{basicstyle=\ttfamily\small,breaklines=true,columns=fullflexible,
+  keywordstyle=\color{blue!60!black},commentstyle=\color{green!40!black}}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{definition}{Definition}
+\newtheorem{invariant}{Invariant}
+
+\title{\textbf{Lux DEX Cross-Chain Atomic Settlement}\\
+\large Hash Time-Locked Contracts for Non-Custodial RFQ Settlement of Real BTC/ETH}
+\author{Lux Cryptography}
+\date{2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We replace the Lux DEX custodial lock-and-mint bridge and the \texttt{dexvm}
+custodial atomic proxy with a genuine two-chain \emph{hash time-locked contract}
+(HTLC) atomic swap. The settlement venue degenerates to a pure RFQ
+\emph{coordinator}: it matches a user (taker) to a CEX-backed filler (maker),
+relays a hashlock and on-chain lock proofs, and \emph{never holds keys, never
+holds funds, and is never a recipient or refund party of any lock}. Settlement
+either completes in full on both chains or both legs refund to their original
+owners; no third party can mint, seize, or strand funds. We give the protocol,
+the explicit timeout-ordering rule that guarantees atomicity, the on-Lux HTLC
+precompile interface (selector ABI, state layout, events, per-function
+verification), the Bitcoin~/~EVM counterparty-leg scripts, a threat model with
+mitigations for every classical atomic-swap attack (free option, griefing,
+preimage front-running, dust/fee griefing, reorg), and the migration that makes
+every custodial mint path unreachable.
+\end{abstract}
+
+\section{Threat Model and Goals}
+
+\paragraph{Adversary.} Any subset of: the venue/sequencer, the maker, a
+network-level observer/front-runner, a chain reorg adversary bounded by $k$
+blocks, and a malicious validator. The adversary is computationally bounded and
+cannot break SHA-256 (preimage / collision resistance) or the signature schemes
+of the two settlement chains (ECDSA/secp256k1 on Bitcoin and Lux~C-Chain).
+
+\paragraph{Security goals.}
+\begin{enumerate}[label=(G\arabic*),leftmargin=3.5em]
+  \item \textbf{Non-custody.} No party other than the asset's owner can move it.
+        The venue holds no key and appears in no lock as recipient or refund
+        address.
+  \item \textbf{Atomicity.} For an honest party that follows the protocol and is
+        online within its claim window, the swap either completes on both legs
+        or refunds on both legs. An honest party never ends with strictly less
+        than it started (modulo agreed swap terms and gas).
+  \item \textbf{No mint.} No wrapped asset is created; every unit paid out on
+        either leg was locked by its owner on that same leg. There is no
+        cross-chain supply.
+  \item \textbf{Censorship/strand resistance.} Neither counterparty nor the
+        venue can lock the other's funds indefinitely; every lock has an
+        unconditional refund after its timeout.
+\end{enumerate}
+
+\section{Roles and the RFQ Flow}
+
+\begin{definition}[Parties]
+\textbf{$M$ (maker / filler)}: a CEX-backed market maker holding inventory on
+both chains, who answers RFQ quotes and hedges on a centralized venue.
+\textbf{$U$ (user / taker)}: holds the asset to be sold on one chain and wants
+the asset on the other. \textbf{$V$ (venue)}: RFQ coordinator; matches, relays
+messages and lock proofs; holds no funds, no keys, no preimage.
+\end{definition}
+
+We swap $M$'s asset on chain $A$ for $U$'s asset on chain $B$ (e.g. $A=$
+Lux~C-Chain USDC, $B=$ Bitcoin). The assignment is deliberate (\S\ref{sec:to}):
+\textbf{the maker locks first; the user generates the secret and is the
+secret-holder.} This puts \emph{all} structural optionality on the professional
+maker (who prices it into the quote) and gives the retail user the protected
+position.
+
+\begin{enumerate}[leftmargin=2.2em]
+  \item \textbf{Quote.} $V$ publishes fill options (aggregated CEX prices /
+        oracle). $U$ requests a quote for size $q$. $M$ returns a firm quote
+        $(\text{rate}, \text{amount}_A, \text{amount}_B)$ valid for a short
+        window $w$ (e.g. $w=30$\,s), signed by $M$.
+  \item \textbf{Commit hashlock.} $U$ draws a uniform secret
+        $s \xleftarrow{\$} \{0,1\}^{256}$, computes $h=\mathrm{SHA256}(s)$, and
+        sends $h$ (with the accepted quote) to $M$ via $V$. $s$ never leaves
+        $U$ until the claim.
+  \item \textbf{Leg~A lock (maker first).} $M$ locks on chain $A$:
+        $\mathrm{HTLC}_A(h,\ \text{recipient}=U,\ \text{refund}=M,\
+        \text{asset}_A,\ \text{amount}_A,\ T_A)$. $M$ publishes the lock
+        proof (tx id) to $V$; $V$ relays to $U$.
+  \item \textbf{Verify + Leg~B lock (taker second).} $U$ waits for
+        $K_A$ confirmations of $\mathrm{HTLC}_A$, checks $h$, amount, recipient
+        $=U$, and $T_A$. If anything is wrong, $U$ does nothing and $M$ refunds
+        at $T_A$. Else $U$ locks on chain $B$:
+        $\mathrm{HTLC}_B(h,\ \text{recipient}=M,\ \text{refund}=U,\
+        \text{asset}_B,\ \text{amount}_B,\ T_B)$ with $T_B > T_A + \Delta$
+        (\S\ref{sec:to}). $U$ publishes the proof.
+  \item \textbf{Claim (reveals $s$).} $U$ claims $\mathrm{HTLC}_A$ on chain $A$
+        with $\mathrm{claim}(s)$, receiving $\text{amount}_A$. This publishes
+        $s$ on chain $A$. $U$ must claim before $T_A$.
+  \item \textbf{Counter-claim.} $M$ reads $s$ from chain $A$ (the
+        \texttt{Claimed} event / witness) and claims $\mathrm{HTLC}_B$ on chain
+        $B$ with $\mathrm{claim}(s)$ before $T_B$, receiving $\text{amount}_B$.
+  \item \textbf{Refund (only off the happy path).} If $U$ never reveals $s$,
+        $\mathrm{HTLC}_A$ refunds to $M$ at $T_A$ and $\mathrm{HTLC}_B$ refunds
+        to $U$ at $T_B$. Both sides whole.
+\end{enumerate}
+
+After step~3 the venue is irrelevant to safety: steps 4--7 are peer-to-peer
+on-chain operations that $U$, $M$, or their watchtowers execute directly. $V$
+crashing or lying can only deny service or relay a stale quote --- never move
+funds.
+
+\section{The Timeout-Ordering Rule (atomicity invariant)}
+\label{sec:to}
+
+\begin{definition}[Secret-holder]
+The secret-holder is the party that generates $s$ and whose claim first
+publishes $s$. Here it is the user $U$.
+\end{definition}
+
+\begin{theorem}[Timeout ordering]
+\label{thm:to}
+Let the secret-holder claim the lock with the \emph{earlier} timeout and let the
+counterparty claim the lock with the \emph{later} timeout. Atomicity (G2) holds
+for online honest parties iff
+\[
+  T_{\text{late}} \;>\; T_{\text{early}} + \Delta,
+  \qquad
+  \Delta \;\ge\; R_{\text{late}} + C_{\text{late}},
+\]
+where $R_{\text{late}}$ is the reorg-safety depth (expressed in time) of the
+chain holding the later-expiry leg and $C_{\text{late}}$ is the worst-case time
+to confirm a claim there.
+\end{theorem}
+
+In our assignment the secret-holder $U$ claims $\mathrm{HTLC}_A$ (timeout $T_A$,
+earlier) and the counterparty $M$ claims $\mathrm{HTLC}_B$ (timeout $T_B$,
+later). Hence the normative rule:
+\begin{center}\fbox{\parbox{0.92\linewidth}{\centering
+\textbf{Maker's leg expires first; user's leg expires last:}\quad
+$T_B > T_A + \Delta$.\\
+The secret-holder's claim target ($\mathrm{HTLC}_A$) has the shorter timeout;
+the counterparty's claim target ($\mathrm{HTLC}_B$) has the longer timeout.}}
+\end{center}
+
+\begin{proof}[Atomicity sketch]
+Two outcomes only.
+\emph{(i) $U$ reveals $s$ before $T_A$.} Then $s$ is public on chain $A$ at some
+$t^\ast < T_A < T_B-\Delta$. $M$, online, claims $\mathrm{HTLC}_B$ in
+$[t^\ast, T_B)$; the window has length $> \Delta \ge R_{\text{late}} +
+C_{\text{late}}$, so even under a $k$-block reorg of chain $B$ the claim
+confirms before $T_B$. Both legs claimed: complete.
+\emph{(ii) $U$ does not reveal $s$ before $T_A$.} $\mathrm{HTLC}_A$ refunds to
+$M$ at $T_A$. Since $s$ is unknown to $M$ (SHA-256 preimage resistance) and to
+everyone else, $\mathrm{HTLC}_B$ cannot be claimed and refunds to $U$ at $T_B$.
+Both legs refunded: rollback.
+A reorg that removes $U$'s revealing claim on chain $A$ does \emph{not}
+un-reveal $s$: once observed, $s$ is known, so $M$ can still claim
+$\mathrm{HTLC}_B$. Recipient binding (\S\ref{sec:precompile}) ensures the
+revealed $s$ enables payment only to the fixed recipients, never to a
+front-runner.
+\end{proof}
+
+\paragraph{Concrete parameters.}
+With $A=$ Lux (sub-second deterministic finality, $R_A\approx 0$) and $B=$
+Bitcoin: set $K_A=$ Lux-finalized (1 block), $K_B=6$ confirmations,
+$T_A = t_0 + 40\text{ min}$, $\Delta \ge 2\text{ h}$ (covering a 6-block BTC
+reorg $\approx 60$\,min plus claim confirmation), $T_B = T_A + \Delta =
+t_0 + 2\text{h}\,40\text{m}$. Bitcoin timeouts use \texttt{OP\_CHECKLOCKTIMEVERIFY}
+on median-time-past; Lux timeouts use block timestamp. When both legs are EVM,
+$\Delta$ shrinks to a few minutes.
+
+\section{On-Lux HTLC Precompile (LP-90A0, \texttt{0x{\dots}90A0})}
+\label{sec:precompile}
+
+The HTLC is an \emph{orthogonal new primitive} with its own slot, not bolted
+onto the AMM (\texttt{0x9010}) or CLOB (\texttt{0x9020}). It lives in a new
+package \texttt{github.com/luxfi/precompile/swap} registered at
+\texttt{0x0000{\dots}90A0} (\texttt{LXSwapAddress}, ``LP-90A0 LXSwap''), the next
+free address after LP-9090 (LXSettlement). It reuses the proven-safe
+\texttt{transferFrom}-delta custody idiom from \texttt{erc20\_vault.go} and the
+standard \texttt{contract.StatefulPrecompiledContract} \texttt{Run} dispatch.
+
+\subsection{Hash function: SHA-256 (cross-chain, not keccak)}
+The hashlock MUST be $\mathrm{SHA256}$, matching Bitcoin's \texttt{OP\_SHA256}
+and the EVM \texttt{0x02} precompile, so a single preimage $s$ unlocks both
+legs. The preimage is fixed at exactly 32 bytes (Bitcoin witness compatibility).
+\emph{The keccak commit--reveal in \texttt{hooks.go} is for the same-chain MEV
+hook and is NOT reused here.}
+
+\subsection{Selectors and Go interface}
+\begin{lstlisting}[language=Go]
+// Package swap is the Lux DEX cross-chain HTLC atomic-swap settlement
+// precompile at LP-90A0. Non-custodial: funds move only to the recipient or
+// refund address fixed at lock time; no owner, no pause, no upgrade.
+package swap
+
+const LXSwapAddress = "0x00000000000000000000000000000000000090A0"
+
+// 4-byte selectors = BigEndian uint32 of keccak256(sig)[:4].
+const (
+    SelectorLock    uint32 = 0x........ // lock(bytes32,address,address,address,uint256,uint64)
+    SelectorClaim   uint32 = 0x........ // claim(bytes32,bytes32)
+    SelectorRefund  uint32 = 0x........ // refund(bytes32)
+    SelectorGetSwap uint32 = 0x........ // getSwap(bytes32) view
+    SelectorGetPreimage uint32 = 0x.... // getPreimage(bytes32) view  (hashlock -> s)
+)
+
+type SwapContract struct{} // holds NO mutable Go state; all state in StateDB.
+
+func (c *SwapContract) Run(
+    accessibleState contract.AccessibleState,
+    caller  common.Address,
+    addr    common.Address,
+    input   []byte,
+    suppliedGas uint64,
+    readOnly bool,
+) (ret []byte, remainingGas uint64, err error)
+\end{lstlisting}
+
+Internal handlers (mirroring the \texttt{0x9010} pattern):
+\begin{lstlisting}[language=Go]
+// lock(hashlock, recipient, refund, asset, amount, timeout) -> swapId
+//   asset == common.Address{} (zero) means native LUX.
+//   For native, requires the call-value seam (see Prerequisite below):
+//   accessibleState.GetCallValue() == amount. For ERC20, performs a real
+//   transferFrom and credits the OBSERVED balance delta (== amount), exactly
+//   as erc20_vault.go safeTransferTokenFrom.
+func (c *SwapContract) runLock(st contract.AccessibleState, caller common.Address,
+    data []byte, gas uint64, readOnly bool) (swapId [32]byte, ret []byte, rem uint64, err error)
+
+// claim(swapId, preimage) -> bool ; pays the STORED recipient (caller-agnostic).
+func (c *SwapContract) runClaim(st contract.AccessibleState, caller common.Address,
+    data []byte, gas uint64, readOnly bool) (ret []byte, rem uint64, err error)
+
+// refund(swapId) -> bool ; pays the STORED refund address after timeout.
+func (c *SwapContract) runRefund(st contract.AccessibleState, caller common.Address,
+    data []byte, gas uint64, readOnly bool) (ret []byte, rem uint64, err error)
+\end{lstlisting}
+
+\subsection{State layout (StateDB on the precompile address)}
+All persistent state lives in the EVM trie under \texttt{0x{\dots}90A0} using the
+mapping-slot idiom $\textsf{slot}(id,f)=\mathrm{keccak256}(id \,\|\, f)$:
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Field & Slot key & Contents \\
+\midrule
+status      & $\mathrm{keccak}(\text{swapId}\,\|\,0)$ & 0 None / 1 Locked / 2 Claimed / 3 Refunded \\
+hashlock    & $\mathrm{keccak}(\text{swapId}\,\|\,1)$ & $h=\mathrm{SHA256}(s)$ \\
+recipient   & $\mathrm{keccak}(\text{swapId}\,\|\,2)$ & payout address on claim \\
+refund      & $\mathrm{keccak}(\text{swapId}\,\|\,3)$ & payout address on refund \\
+asset       & $\mathrm{keccak}(\text{swapId}\,\|\,4)$ & ERC20 addr, or $0$ for native \\
+amount      & $\mathrm{keccak}(\text{swapId}\,\|\,5)$ & uint256 \\
+timeout     & $\mathrm{keccak}(\text{swapId}\,\|\,6)$ & uint64 unix seconds \\
+preimage    & $\mathrm{keccak}(\text{swapId}\,\|\,7)$ & $s$, zero until claimed \\
+preimageIdx & $\mathrm{keccak}(\texttt{"pre"}\,\|\,h)$ & $s$ keyed by hashlock (cross-leg lookup) \\
+reserve     & $\mathrm{keccak}(\texttt{"res"}\,\|\,\text{asset})$ & $\sum$ live locked amount for asset \\
+nonce       & $\mathrm{keccak}(\texttt{"nonce"})$ & monotonic lock counter \\
+\bottomrule
+\end{tabular}
+\end{center}
+\[
+  \text{swapId}=\mathrm{keccak256}\big(h \,\|\, \text{recipient} \,\|\,
+  \text{refund} \,\|\, \text{asset} \,\|\, \text{amount} \,\|\, \text{timeout}
+  \,\|\, \text{caller} \,\|\, \text{nonce}\big).
+\]
+
+\begin{invariant}[Reserve / conservation]
+\label{inv:res}
+For every asset, $\mathrm{balanceOf}(\texttt{0x{\dots}90A0}) \ge
+\sum_{\text{Locked swaps of asset}} \text{amount} = \textsf{reserve}[\text{asset}]$.
+Each \texttt{lock} increments \textsf{reserve} by the \emph{observed} inbound
+delta; each \texttt{claim}/\texttt{refund} decrements it by exactly the swap's
+amount and pays out the same amount. No code path mints.
+\end{invariant}
+
+\subsection{Per-function verification (normative)}
+\textbf{lock:}
+\begin{enumerate}[noitemsep,leftmargin=2em]
+  \item \texttt{!readOnly}; else revert.
+  \item $h\neq 0$; recipient $\neq 0$; refund $\neq 0$.
+  \item $\text{amount} \ge \textsf{MinSwapAmount}$ (dust guard, per asset).
+  \item $T_{0}+\textsf{MinTimeout} \le \text{timeout} \le T_{0}+\textsf{MaxTimeout}$,
+        where $T_0=$ block timestamp. (Absolute sanity bounds; the relative
+        $T_B>T_A+\Delta$ ordering is chosen by the parties off-chain and
+        enforced by each party's own verification before locking.)
+  \item Move funds in: native $\Rightarrow$ \texttt{GetCallValue()}$=$amount;
+        ERC20 $\Rightarrow$ \texttt{transferFrom(caller,this,amount)} and require
+        observed $\Delta\mathrm{balanceOf}=$ amount (fee-on-transfer safe).
+  \item $\textsf{status}[\text{swapId}]=\text{None}$ (no collision); set fields;
+        $\textsf{reserve}[\text{asset}]\mathrel{+}=$ amount; \texttt{nonce}{+}{+};
+        emit \texttt{Locked}.
+\end{enumerate}
+\textbf{claim:}
+\begin{enumerate}[noitemsep,leftmargin=2em]
+  \item \texttt{!readOnly}; load swap; require $\textsf{status}=\text{Locked}$.
+  \item require $T_0 < \text{timeout}$ (not expired).
+  \item require $\mathrm{len}(\text{preimage})=32$ and
+        $\mathrm{SHA256}(\text{preimage})=h$.
+  \item pay the \emph{stored} recipient (caller-agnostic: a watchtower may
+        submit); $\textsf{reserve}\mathrel{-}=$ amount; store preimage and
+        $\textsf{preimageIdx}[h]$; $\textsf{status}=\text{Claimed}$; emit
+        \texttt{Claimed}(swapId, $h$, preimage, recipient, amount).
+\end{enumerate}
+\textbf{refund:}
+\begin{enumerate}[noitemsep,leftmargin=2em]
+  \item \texttt{!readOnly}; load; require $\textsf{status}=\text{Locked}$.
+  \item require $T_0 \ge \text{timeout}$.
+  \item pay the \emph{stored} refund address; $\textsf{reserve}\mathrel{-}=$
+        amount; $\textsf{status}=\text{Refunded}$; emit \texttt{Refunded}.
+\end{enumerate}
+The boundary is clean and disjoint: \texttt{claim} requires
+$T_0<\text{timeout}$, \texttt{refund} requires $T_0\ge\text{timeout}$; a swap is
+never both claimable and refundable, and (status$=$Locked once) never twice.
+
+\paragraph{Events.}
+\texttt{Locked(bytes32 indexed swapId, bytes32 indexed hashlock, address
+recipient, address refund, address asset, uint256 amount, uint64 timeout)};
+\texttt{Claimed(bytes32 indexed swapId, bytes32 indexed hashlock, bytes32
+preimage, address recipient, uint256 amount)};
+\texttt{Refunded(bytes32 indexed swapId, address refund, uint256 amount)}.
+The \texttt{Claimed} event is the on-chain secret-relay: the counterparty's
+watchtower subscribes by \texttt{hashlock} and reads \texttt{preimage}.
+
+\paragraph{No admin surface.} \texttt{0x{\dots}90A0} has \emph{no} owner, pause,
+freeze, upgrade, or set-balance selector. The only state transitions are
+lock~$\to$~claim and lock~$\to$~refund, both permissionless and bounded by the
+timeout. This is what makes (G1) and (G4) structural rather than policy.
+
+\paragraph{Prerequisite (call-value seam).} Native-LUX locks require the
+precompile to observe the EVM call value. The current
+\texttt{StatefulPrecompiledContract.Run} signature carries no value (this is the
+root of the \texttt{0x9010} native unbacked-mint finding). Add
+\texttt{AccessibleState.GetCallValue() *big.Int} (or pass value into \texttt{Run})
+in \texttt{contract/interfaces.go}, wired from the EVM call frame. Until that
+lands, support ERC20/wrapped assets only (the \texttt{transferFrom}-delta path is
+already value-safe).
+
+\section{Counterparty-Leg Scripts}
+
+\subsection{Bitcoin (P2WSH HTLC)}
+\begin{lstlisting}
+OP_IF
+    OP_SHA256 <h> OP_EQUALVERIFY
+    <recipient_pubkey> OP_CHECKSIG          ; claim path: witness = <sig> <s> 1
+OP_ELSE
+    <T_locktime> OP_CHECKLOCKTIMEVERIFY OP_DROP
+    <refund_pubkey> OP_CHECKSIG             ; refund path: witness = <sig> 0
+OP_ENDIF
+\end{lstlisting}
+$h=\mathrm{SHA256}(s)$, $|s|=32$. Timeout via absolute \texttt{OP\_CLTV}
+(median-time-past). The refund spend sets \texttt{nLockTime}$\ge T$ and a
+non-final sequence. Require $K_B=6$ confirmations before acting on a seen lock
+and before treating a claim as final.
+
+\subsection{EVM counterparty (Ethereum / another L2)}
+Deploy the same HTLC logic as a Solidity contract (or this precompile on a
+Lux-derived chain). Hashlock uses the \texttt{0x02} SHA-256 precompile, never
+keccak, to remain preimage-compatible with the Bitcoin and Lux legs.
+
+\section{Threat Model: Attacks and Mitigations}
+
+\begin{center}\small
+\begin{tabular}{@{}p{0.235\linewidth}p{0.715\linewidth}@{}}
+\toprule
+Attack & Mitigation \\
+\midrule
+\textbf{Free option / optionality.} Some party can wait and walk if price moves.
+& Unavoidable in 2-of-2 HTLC; we \emph{allocate} it to the professional maker.
+Maker locks first for a \emph{short} $T_A$ (e.g. 40\,min) and is the committed
+party; the maker prices the option premium into the RFQ spread (it hedges on a
+CEX). The user (taker) holds the option and the last-look --- the protected
+side. Firm-quote window $w$ is seconds, bounding price drift. \\[2pt]
+\textbf{Maker griefing / capital lockup.} A spam taker makes many makers lock,
+then never proceeds, freezing maker capital until $T_A$.
+& Bounded by the short $T_A$ (auto-refund). Venue-level rate-limiting and maker
+reputation on takers. Optional hardening: taker posts the hashlock plus a small
+slashable dust bond on the Lux leg \emph{before} the maker locks; the bond is
+forfeit only if the taker fails to lock leg~B after the maker locks. The bond is
+$\ll$ trade size, so it grants the maker no real option over the user. \\[2pt]
+\textbf{Preimage front-running / observation.} An observer copies $s$ from the
+mempool/witness when $U$ claims.
+& Harmless: every HTLC binds payout to a \emph{fixed} recipient
+(\texttt{CHECKSIG} to a specific pubkey on BTC; stored \texttt{recipient} on
+Lux). Knowing $s$ lets one pay only the predetermined recipients, so a
+front-runner at most completes the swap \emph{for} an honest party. Theft via
+preimage requires an unbound ``anyone-with-$s$'' recipient, which we never use. \\[2pt]
+\textbf{Fee / dust griefing.} A lock so small that the claim gas/fee exceeds the
+output makes claiming irrational, stranding value.
+& \textsf{MinSwapAmount} per asset on the Lux leg; Bitcoin outputs kept above
+the dust limit and sized so $\text{amount}\gg$ claim fee. Refund is likewise
+always economically rational. \\[2pt]
+\textbf{Reorg on BTC/ETH leg.} A lock or claim is reorged out.
+& Wait $K_A,K_B$ confirmations before treating a lock as real or a claim as
+final; the safety buffer $\Delta \ge R_{\text{late}}+C_{\text{late}}$
+(Thm.~\ref{thm:to}) covers a $k$-block reorg of the later-expiry leg. A reorg of
+the secret-revealing claim does not un-reveal $s$. \\[2pt]
+\textbf{Venue compromise / lying coordinator.} $V$ is malicious or offline.
+& $V$ holds no key, no funds, and is no lock's recipient/refund. Worst case:
+denial of service or a stale/bad quote (which the user can reject before
+locking). Once both legs are locked, settlement is peer-to-peer; $V$ cannot move
+funds. \\[2pt]
+\textbf{Wrong-asset / amount / recipient in a lock.} Maker locks the wrong terms.
+& The taker verifies $h$, asset, amount, recipient$=U$, and $T_A$ on-chain
+\emph{before} locking leg~B (step~4). On mismatch the taker never locks; the
+maker's lock simply refunds. \\[2pt]
+\textbf{Hash-function mismatch across chains.} keccak vs SHA-256.
+& Normative: SHA-256 hashlock on \emph{every} leg, $|s|=32$. The keccak
+commit--reveal in \texttt{hooks.go} is a separate same-chain primitive and is
+not used. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{theorem}[Non-custody]
+Under the protocol, no party other than an asset's owner can transfer it, and
+the venue can never transfer any asset.
+\end{theorem}
+\begin{proof}
+Each unit sits in exactly one HTLC whose only exits are \texttt{claim} (to the
+fixed recipient, gated by knowledge of $s$ with $\mathrm{SHA256}(s)=h$) and
+\texttt{refund} (to the fixed refund address, gated by $T_0\ge T$). $V$ is
+neither recipient nor refund of any HTLC and never learns $s$ before it is
+public, so $V$ can call only \texttt{claim} with a public $s$ (paying the honest
+recipient) or \texttt{refund} (paying the honest refund address) --- in both
+cases value flows to the owner-designated address, not to $V$. The maker can
+claim leg~B only after $U$ has already claimed leg~A (which revealed $s$),
+i.e. only after $U$ received its side; by Invariant~\ref{inv:res} no path mints.
+\end{proof}
+
+\section{Migration: Removing Every Custodial Mint Path}
+
+The audit found four reachable custodial/mint vectors. Each is removed or gated:
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{Bridge lock-and-mint (\texttt{precompile/bridge}).} Delete /
+        disable \texttt{gateway.go} \texttt{CompleteBridge}, \texttt{InitiateBridge}
+        and the liquidity pools (the mint-on-no-op-signature path). Remove the
+        no-op verifiers \texttt{gateway.go:verifySignature} and
+        \texttt{signer.go:VerifyThresholdSignature}. The MPC signer set is
+        retained, if at all, only for non-custodial coordination (it can sign
+        \emph{advisory} RFQ attestations but holds no mint authority).
+  \item \textbf{\texttt{dexvm} custodial proxy (\texttt{luxfi/chains/dexvm}).}
+        Reject client-submitted \texttt{TxImport}/\texttt{TxExport} at admission
+        (\texttt{chainvm.go:SubmitTx}~/~\texttt{feegate.go:gateUserTxBytes}) and
+        in \texttt{vm.go:processTx}; the atomic shared-memory export leg
+        (\texttt{atomic.go:executeExport}) is no longer a settlement path.
+        Trades settle via the HTLC precompile between user and filler directly.
+  \item \textbf{EVM custody native-mint (\texttt{precompile/dex/pool\_manager.go}).}
+        Retire the custodial \texttt{deposit}/\texttt{withdraw} ZAP-credit rail
+        (the \texttt{0x9010} native-balance unbacked-mint at
+        \texttt{pool\_manager.go:1396}). The CLOB/RFQ venue keeps matching; final
+        asset settlement moves to \texttt{0x{\dots}90A0}.
+  \item \textbf{Stubbed light clients (\texttt{node/vms/chainadapter}).} No
+        longer on any settlement path: the HTLC legs are verified by each party's
+        own full node, not by the in-process stubs. Remove from the mint path;
+        if retained for watchtower convenience they must do real SPV before any
+        reliance.
+\end{enumerate}
+After migration the only cross-chain value movement is the HTLC pair; grepping
+for a reachable mint (\texttt{AddBalance} not backed by an observed inbound
+transfer, or a shared-memory \texttt{PutRequest} from client input) returns
+nothing in the settlement path.
+
+\section{Conclusion}
+The construction makes non-custody (G1) and strand-resistance (G4) structural
+properties of the on-chain HTLCs rather than policies enforced by a trusted
+operator, and reduces atomicity (G2) and no-mint (G3) to SHA-256 preimage
+resistance plus the timeout-ordering rule $T_B > T_A + \Delta$. The venue is
+demoted to a coordinator that can delay or misquote but never steal, freeze, or
+mint. This is the minimal trusted-computing base for real-asset DEX settlement.
+
+\end{document}
