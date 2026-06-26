@@ -33,11 +33,11 @@ import (
 // The lifecycle FSM (driven from gateway.go):
 //
 //	Absent --RecordInbound(quorum)--> Pending
-//	Pending --CompleteBridge(quorum, bt<=deadline)--> Completed   (terminal)
-//	Pending --RefundExpired(bt>deadline)--> Refunded              (terminal)
+//	Pending --CompleteBridge(quorum, bt<=deadline)--> Completed         (terminal)
+//	Pending --Refund(owner anytime | other bt>deadline)--> Refunded     (terminal)
 //
 // Terminal states are terminal: a consumed request can never be re-settled or
-// refunded (the status guard in VerifyCompletion/RefundExpired enforces it).
+// refunded (the status guard in VerifyCompletion/Refund enforces it).
 var reqNS = []byte("lux.bridge.req")
 
 // reqBase is the base slot for the request with the given id.

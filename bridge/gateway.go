@@ -197,27 +197,20 @@ func (gw *BridgeGateway) CompleteBridge(
 	return nil
 }
 
-// RefundExpired releases a Pending request whose deadline has passed (or which has
-// no deadline), flipping Pending -> Refunded. A consumed (terminal) request can
-// never be refunded. The expiry decision is driven by blockTime — never wall
-// clock — so every validator agrees.
+// Refund releases a Pending request, flipping Pending -> Refunded. A consumed
+// (terminal) request can never be refunded. Expiry is judged by blockTime — never
+// wall clock — so every validator agrees.
 //
-// KNOWN SHARP EDGE (red finding 9, open): for a deadline==0 ("no expiry") inbound
-// this refund is permissionless and immediate, while CompleteBridge treats
-// deadline==0 as completable-forever — so a third party could refund a no-deadline
-// inbound out from under a quorum-valid completion (a liveness grief). The recovery
-// path (N5) deliberately relies on immediate refundability, so the correct fix is
-// NOT to forbid deadline==0 refunds (that strands the recovery path) but to make a
-// PRE-DEADLINE refund caller-authorized: the request's recipient/refundAddress may
-// refund anytime, third parties only AFTER a real deadline. That needs the caller
-// threaded from the precompile dispatch into RefundExpired (a signature change) and
-// is left for the settlement-authorization pass. MITIGATION TODAY: production bridge
-// inbounds for swaps carry a real deadline (> 0), under which this guard already
-// refuses a third-party pre-expiry refund — the grief is only reachable for
-// deadline==0 inbounds, which production should not mint.
-func (gw *BridgeGateway) RefundExpired(
+// Authorization (closes red finding 9): the inbound's recipient (its owner) may
+// refund ANYTIME; anyone else may refund only AFTER a real deadline has passed
+// (deadline > 0 && blockTime > deadline). So a third party can never refund a
+// no-deadline inbound out from under a quorum-valid completion (the deadline==0
+// liveness grief), while the owner's recovery path stays immediate — one rule,
+// both needs met.
+func (gw *BridgeGateway) Refund(
 	state contract.StateDB,
 	gwAddr common.Address,
+	caller common.Address,
 	blockTime uint64,
 	requestID [32]byte,
 ) error {
@@ -228,7 +221,7 @@ func (gw *BridgeGateway) RefundExpired(
 	if r.Status != StatusPending {
 		return ErrRequestAlreadyDone
 	}
-	if r.Deadline > 0 && blockTime <= r.Deadline {
+	if caller != r.Recipient && (r.Deadline == 0 || blockTime <= r.Deadline) {
 		return ErrRequestNotExpired
 	}
 	setRequestStatus(state, gwAddr, requestID, StatusRefunded, 0)

@@ -31,24 +31,29 @@ import (
 //
 //   - bridge.VerifyCompletion / bridge.CompleteBridge  (the B-Chain MPC bridge-in proof)
 //   - runSyncSwap                                       (the 0x9999 synchronous atomic settle)
-//   - bridge.RefundExpired                              (the permissionless timeout refund)
+//   - bridge.Refund                                     (the owner/timeout recovery)
+//
+// ONE PRIMITIVE: fill. The SIGNED intent decides the path — a CONVERSION (desired != source)
+// swaps; a BRIDGE-IN (desired == source) delivers the wrapped inbound directly. The relayer
+// never chooses; it only carries a route, which fill ignores on the bridge-in path.
 //
 // ATOMIC-OR-REFUND (same-tx atomic-or-nothing). The bridge-in credit (the recipient's
-// spendable native balance), the intent nonce-burn, and the 0x9999 synchronous swap ALL
-// execute on the SAME C-Chain EVM StateDB in the SAME transaction. A SINGLE StateDB snapshot
-// makes them one unit: if the swap cannot fill, RevertToSnapshot rolls back the mint AND the
-// nonce-burn, and the bridge object is NEVER consumed (CompleteBridge is the LAST mutation,
-// run only after the swap fills). On failure nothing was minted, nothing burned, nothing
-// consumed — the inbound stays Pending and the user recovers it permissionlessly via
-// bridge.RefundExpired once the bridge deadline passes.
+// spendable native balance), the intent nonce-burn, and the optional 0x9999 swap ALL execute
+// on the SAME C-Chain EVM StateDB in the SAME transaction. A SINGLE StateDB snapshot makes them
+// one unit: if a conversion cannot fully fill, RevertToSnapshot rolls back the mint AND the
+// nonce-burn, and the bridge object is NEVER consumed (CompleteBridge is the LAST mutation, run
+// only after the swap fills). On failure nothing was minted, nothing burned, nothing consumed —
+// the inbound stays Pending and the user recovers it via bridge.Refund (owner anytime; anyone
+// after the deadline).
 //
 // NON-CUSTODIAL TOTALITY. Every inbound ends in exactly one of two terminal states and NO
-// other: (a) FILLED — the user holds the DesiredOutputAsset (>= the signed MinOut) and the
-// bridge object is Completed; or (b) REFUNDABLE — nothing was credited/burned/consumed, the
-// object is still Pending, recoverable by ANYONE via RefundExpired after the deadline. There
-// is no operator custody and no path that strands or seizes value. The ONLY way to end up
-// holding the intermediate wrapped asset is to explicitly call bridgeInOnly — the composite
-// never leaves a user holding wrapped-after-failed-swap.
+// other: (a) FILLED — the user holds the signed asset (the DesiredOutputAsset >= the signed
+// MinOut for a conversion, or the wrapped inbound for a bridge-in) and the bridge object is
+// Completed; or (b) REFUNDABLE — nothing was credited/burned/consumed, the object is still
+// Pending, recoverable via bridge.Refund (owner anytime; anyone after the deadline). There is
+// no operator custody and no path that strands or seizes value. A user only ever holds the
+// wrapped asset when they SIGNED a bridge-in (desired == source); a conversion never leaves a
+// user holding wrapped-after-failed-swap.
 //
 // THE BRIDGE-IN CREDIT IS THE NATIVE-BALANCE MINT, backed 1:1 by the external asset the MPC
 // locked on the source chain; CompleteBridge is the authority that authorizes it. It is the
@@ -92,12 +97,12 @@ type Swap struct {
 }
 
 // Result is the terminal report: FILLED xor REFUNDABLE — never both, never neither. Filled
-// carries the V4 BalanceDelta (empty for bridgeInOnly); Refundable carries the reason the
-// settlement could not proceed (the inbound was left untouched, recoverable via RefundExpired).
+// carries the V4 BalanceDelta (nil for a bridge-in); Refundable carries the reason the
+// settlement could not proceed (the inbound was left untouched, recoverable via bridge.Refund).
 type Result struct {
 	Filled       bool   // value delivered (swap >= MinOut, or bridge-in credited)
-	BalanceDelta []byte // V4 BalanceDelta bytes (composite fill only)
-	Refundable   bool   // could not proceed; nothing credited/burned/consumed; recover via RefundExpired
+	BalanceDelta []byte // V4 BalanceDelta bytes (conversion only; nil for a bridge-in)
+	Refundable   bool   // could not proceed; nothing credited/burned/consumed; recover via bridge.Refund
 	Reason       error  // why it could not proceed (Refundable only)
 }
 
@@ -143,15 +148,15 @@ var (
 
 	// ErrIntentDeadline is the (soft, refundable) reason reported when the signed intent has
 	// expired: settlement is refused, nothing is minted/burned/consumed, the inbound stays
-	// recoverable via RefundExpired.
-	ErrIntentDeadline = errors.New("dex: intent deadline passed; inbound recoverable via RefundExpired")
+	// recoverable via Refund.
+	ErrIntentDeadline = errors.New("dex: intent deadline passed; inbound recoverable via Refund")
 
 	// ErrIntentPartialFill is the (soft, refundable) reason reported when the swap could only
 	// fill part of the inbound. The default is FULL-FILL-OR-REFUND: a partial fill would leave
-	// the user holding the unspent inbound as wrapped native (forbidden — bridgeInOnly is the
-	// only intermediate-custody path), so a shortfall reverts and the whole inbound is
-	// recoverable. The Intent carries no opt-in partial flag, so this is unconditional.
-	ErrIntentPartialFill = errors.New("dex: swap filled only part of the inbound; full-fill-or-refund -> reverted, inbound recoverable via RefundExpired")
+	// the user holding the unspent inbound as wrapped native (only a bridge-in, desired==source,
+	// may leave wrapped value), so a shortfall reverts and the whole inbound is recoverable. The
+	// Intent carries no opt-in partial flag, so this is unconditional.
+	ErrIntentPartialFill = errors.New("dex: swap filled only part of the inbound; full-fill-or-refund -> reverted, inbound recoverable via Refund")
 
 	// ErrIntentSwapAssetMismatch is returned when the relayer-supplied pool does not sell the
 	// signed SourceAsset for the signed DesiredOutputAsset. The relayer routes; it never picks
@@ -159,19 +164,9 @@ var (
 	ErrIntentSwapAssetMismatch = errors.New("dex: swap pool sides do not match the signed SourceAsset/DesiredOutputAsset")
 
 	// ErrIntentNonNativeIn is returned when the inbound (SourceAsset) is not the native side.
-	// The composite credits the inbound via the native-balance mint (the only revertible
-	// credit), so the inbound must be native.
+	// fill credits the inbound via the native-balance mint (the only revertible credit), so the
+	// inbound must be native.
 	ErrIntentNonNativeIn = errors.New("dex: intent settlement credits the inbound via the native-balance mint; SourceAsset must be native")
-
-	// ErrIntentNotSwap is returned when bridgeInAndSwapOrRefund is called with an intent whose
-	// DesiredOutputAsset == SourceAsset (a pure bridge-in). Such an intent belongs to
-	// bridgeInOnly — the relayer cannot reinterpret one signed-intent kind as the other.
-	ErrIntentNotSwap = errors.New("dex: intent has DesiredOutputAsset == SourceAsset (a bridge-in); use bridgeInOnly")
-
-	// ErrIntentNotBridgeOnly is returned when bridgeInOnly is called with an intent whose
-	// DesiredOutputAsset != SourceAsset (a conversion). Such an intent belongs to
-	// bridgeInAndSwapOrRefund.
-	ErrIntentNotBridgeOnly = errors.New("dex: intent has DesiredOutputAsset != SourceAsset (a conversion); use bridgeInAndSwapOrRefund")
 
 	// ErrIntentNoAtomicState is returned when the host did not wire the AtomicState capability:
 	// the digest binds NetworkID+ChainID, so without the chain identity the intent cannot be
@@ -179,27 +174,29 @@ var (
 	ErrIntentNoAtomicState = errors.New("dex: host exposes no chain identity (AtomicState) to bind the intent signature")
 )
 
-// bridgeInAndSwapOrRefund is THE cross-chain intent settlement primitive: external value
-// becomes the SIGNED desired asset, or nothing happened.
+// fill settles a signed cross-chain intent: external bridged value becomes the SIGNED desired
+// asset, or nothing happened. There is ONE entry; the SIGNED intent alone decides the path —
+// the relayer never chooses it:
 //
-// Execution order (exact, all within one C-Chain tx):
-//  1. Verify the bridge proof / MPC quorum WITHOUT consuming it (VerifyCompletion-style).
-//  2. Verify the intent signature (-> recipient), nonce (unused), deadline (now <= deadline),
-//     and bind the signed intent to the attested inbound (network/asset/amount/recipient).
-//  3. Snapshot, then materialize the inbound value (native mint of the wrapped SourceAsset).
-//  4. Call the 0x9999 swap enforcing the SIGNED MinOut + DesiredOutputAsset; the relayer's
-//     pool is validated against the intent (wrong/worse asset or fill => revert, not a silent
-//     different fill).
-//  5. Swap SUCCEEDS -> burn the nonce and consume the object (CompleteBridge — the LAST
-//     mutation), commit; the output is held by intent.Recipient.
-//  6. Swap FAILS -> RevertToSnapshot: mint undone, nonce un-burned, object NOT consumed,
-//     refund to intent.RefundAddress via RefundExpired remains valid.
+//   - CONVERSION (desired != source): mint the wrapped inbound, swap it to the desired asset
+//     enforcing the signed MinOut, full-fill-or-refund; consume the object iff it filled.
+//   - BRIDGE-IN (desired == source): deliver the wrapped inbound directly, no swap. The
+//     relayer's `swap` route is unused — it cannot force a conversion the user never signed.
+//
+// Execution (exact, one C-Chain tx, one snapshot):
+//  1. Verify the bridge proof / MPC quorum WITHOUT consuming it, and verify the signed intent
+//     (sig -> recipient, nonce unused, deadline, network/asset/amount bind).
+//  2. Snapshot; materialize the inbound (native mint of the wrapped SourceAsset).
+//  3. CONVERSION: 0x9999 swap @ the signed MinOut; non-fill / partial / sub-MinOut reverts the
+//     whole unit (Refundable). BRIDGE-IN: skip the swap.
+//  4. Burn the per-recipient nonce and consume the object (CompleteBridge — the LAST mutation).
+//     Any failure reverts the whole unit; the inbound stays Pending, recoverable via Refund.
 //
 // A non-nil error is a hard refusal of a malformed/unauthorized call (no state changed). A
 // Refundable result is a clean "could not fill, your inbound is safe" receipt (the primitive
 // reverted its own writes, so it holds even when invoked outside an EVM frame). The trailing
 // uint64 is the remaining gas (precompile plumbing, orthogonal to the money semantics).
-func bridgeInAndSwapOrRefund(
+func fill(
 	gw *bridge.BridgeGateway,
 	state contract.AccessibleState,
 	intent Intent,
@@ -208,16 +205,8 @@ func bridgeInAndSwapOrRefund(
 	swap Swap,
 	suppliedGas uint64,
 ) (Result, uint64, error) {
-	// This entry settles a CONVERSION intent: external value MUST become a DIFFERENT asset. A
-	// desired==source intent is a pure bridge-in — it belongs to bridgeInOnly (the ONLY
-	// intermediate-custody path) — so it is refused here (a relayer cannot reinterpret one
-	// signed-intent kind as the other).
-	if intent.DesiredOutputAsset == intent.SourceAsset {
-		return Result{}, suppliedGas, ErrIntentNotSwap
-	}
-
-	// 1-2. Verify the proof (no consume) and the signed intent. Soft reasons (expired intent /
-	//       expired bridge) are refundable; everything else is a hard refusal.
+	// 1. Verify the proof (no consume) and the signed intent. Soft reasons (expired intent /
+	//    expired bridge) are refundable; everything else is a hard refusal.
 	req, amt256, err := verifyIntent(state, gw, intent, intentSig, proof)
 	if err != nil {
 		if isRefundable(err) {
@@ -225,62 +214,73 @@ func bridgeInAndSwapOrRefund(
 		}
 		return Result{}, suppliedGas, err
 	}
-
-	// The relayer-supplied routing is VALIDATED against the SIGNED intent: the pool must sell
-	// the SourceAsset (credited via the native mint) for the DesiredOutputAsset. A pool that
-	// sells/yields any other asset REVERTS — the relayer picks the route, never the assets.
-	if assetID(Currency{Address: swapTokenIn(swap)}) != intent.SourceAsset ||
-		assetID(Currency{Address: swapTokenOut(swap)}) != intent.DesiredOutputAsset {
-		return Result{}, suppliedGas, ErrIntentSwapAssetMismatch
-	}
+	// fill credits the inbound via the native-balance mint (the only revertible credit), so
+	// the SourceAsset must be native — true for both paths.
 	if !isNativeAsset(intent.SourceAsset) {
 		return Result{}, suppliedGas, ErrIntentNonNativeIn
 	}
 
-	// 3. ATOMIC unit: ONE snapshot covers the mint, the swap, and the nonce-burn.
+	// The SIGNED intent decides whether a conversion happens; the relayer never picks the path.
+	convert := intent.DesiredOutputAsset != intent.SourceAsset
+	if convert {
+		// The relayer-supplied routing is VALIDATED against the SIGNED intent: the pool must
+		// sell the SourceAsset (credited via the native mint) for the DesiredOutputAsset. A pool
+		// that sells/yields any other asset REVERTS — the relayer picks the route, never the
+		// assets.
+		if assetID(Currency{Address: swapTokenIn(swap)}) != intent.SourceAsset ||
+			assetID(Currency{Address: swapTokenOut(swap)}) != intent.DesiredOutputAsset {
+			return Result{}, suppliedGas, ErrIntentSwapAssetMismatch
+		}
+	}
+
+	// 2. ATOMIC unit: ONE snapshot covers the mint, the (optional) swap, and the nonce-burn.
 	cdb := state.GetStateDB()
 	snap := cdb.Snapshot()
-
-	// 3a. Materialize the inbound ONLY inside the tx scope: mint the wrapped SourceAsset to the
-	//     recipient's native balance, backed 1:1 by the MPC-locked external asset. Reverted with
-	//     the snapshot on a failed swap (no wrapped value survives a failure).
-	newPoolStateAdapter(state).AddBalance(intent.Recipient, amt256)
-
-	// 4. The 0x9999 atomic swap, enforcing the SIGNED MinOut (never a relayer value) via the
-	//    DM01 hookData. syncSwap is both-or-neither and refunds unspent input; an unbacked /
-	//    unfillable / min-out-breached swap returns an error and the whole unit is reverted.
-	params := SwapParams{
-		ZeroForOne:        swap.ZeroForOne,
-		AmountSpecified:   new(big.Int).Neg(req.Amount), // negative => exact-input magnitude
-		SqrtPriceLimitX96: big.NewInt(0),                // no price limit; MinOut is the floor
-	}
-	out, gasLeft, swapErr := runSyncSwap(state, intent.Recipient, swap.Pool, params, EncodeMinOutHookData(intent.MinOut), suppliedGas, false)
-	if swapErr != nil {
-		// 6. RELEASE BACK: undo the mint + any partial swap writes; the nonce is NOT burned
-		//    (never reached) and the object is NOT consumed -> recoverable via RefundExpired.
-		cdb.RevertToSnapshot(snap)
-		return Result{Refundable: true, Reason: swapErr}, gasLeft, nil
-	}
-
-	// 4a. FULL-FILL-OR-REFUND: the WHOLE inbound must convert. A partial fill (book/AMM shallower
-	//     than SourceAmount) would refund the unspent input as wrapped native — leaving the user
-	//     holding wrapped-after-swap, which only bridgeInOnly may do. The Intent has no opt-in
-	//     partial flag, so a shortfall reverts the entire unit (mint + partial swap undone) and
-	//     the inbound stays fully recoverable.
-	if !fullyConverted(out, swap.ZeroForOne, intent.SourceAmount) {
-		cdb.RevertToSnapshot(snap)
-		return Result{Refundable: true, Reason: ErrIntentPartialFill}, gasLeft, nil
-	}
-
-	// 5. SWAP FILLED (>= MinOut, full amount): burn the per-recipient nonce (one-shot) INSIDE the snapshot,
-	//    then consume the object. CompleteBridge is the LAST mutation, so the object is consumed
-	//    IFF the swap filled — and because the status flip is in StateDB under the same snapshot,
-	//    a revert un-flips it (the bridge status matches the atomic EVM outcome).
 	as, ok := state.(contract.AtomicState)
 	if !ok { // unreachable: verifyIntent already required AtomicState. Fail SECURE.
 		cdb.RevertToSnapshot(snap)
-		return Result{}, gasLeft, ErrIntentNoAtomicState
+		return Result{}, suppliedGas, ErrIntentNoAtomicState
 	}
+
+	// 2a. Materialize the inbound ONLY inside the tx scope: mint the wrapped SourceAsset to the
+	//     recipient's native balance, backed 1:1 by the MPC-locked external asset. Reverted with
+	//     the snapshot on any failure (no wrapped value survives a failure).
+	newPoolStateAdapter(state).AddBalance(intent.Recipient, amt256)
+
+	gasLeft := suppliedGas
+	var out []byte
+	if convert {
+		// 3. The 0x9999 atomic swap, enforcing the SIGNED MinOut (never a relayer value) via the
+		//    DM01 hookData. syncSwap is both-or-neither and refunds unspent input; an unbacked /
+		//    unfillable / min-out-breached swap returns an error and the whole unit is reverted.
+		params := SwapParams{
+			ZeroForOne:        swap.ZeroForOne,
+			AmountSpecified:   new(big.Int).Neg(req.Amount), // negative => exact-input magnitude
+			SqrtPriceLimitX96: big.NewInt(0),                // no price limit; MinOut is the floor
+		}
+		var swapErr error
+		out, gasLeft, swapErr = runSyncSwap(state, intent.Recipient, swap.Pool, params, EncodeMinOutHookData(intent.MinOut), suppliedGas, false)
+		if swapErr != nil {
+			// RELEASE BACK: undo the mint + any partial swap writes; the nonce is NOT burned
+			//    (never reached) and the object is NOT consumed -> recoverable via Refund.
+			cdb.RevertToSnapshot(snap)
+			return Result{Refundable: true, Reason: swapErr}, gasLeft, nil
+		}
+		// FULL-FILL-OR-REFUND: the WHOLE inbound must convert. A partial fill (book/AMM shallower
+		// than SourceAmount) would leave the user holding wrapped-after-swap, which only a
+		// bridge-in (desired==source) may do. A conversion intent has no opt-in partial flag, so
+		// a shortfall reverts the entire unit and the inbound stays fully recoverable.
+		if !fullyConverted(out, swap.ZeroForOne, intent.SourceAmount) {
+			cdb.RevertToSnapshot(snap)
+			return Result{Refundable: true, Reason: ErrIntentPartialFill}, gasLeft, nil
+		}
+	}
+
+	// 4. FILLED (bridge-in delivered, or swap >= MinOut for the full amount): burn the
+	//    per-recipient nonce (one-shot) INSIDE the snapshot, then consume the object.
+	//    CompleteBridge is the LAST mutation, so the object is consumed IFF every prior step
+	//    succeeded — and because the status flip is in StateDB under the same snapshot, a revert
+	//    un-flips it (the bridge status matches the atomic EVM outcome).
 	markIntentNonceUsed(state, intent.Recipient, intent.Nonce)
 	if cerr := gw.CompleteBridge(cdb, bridge.BridgeGatewayCanonicalAddress, as.NetworkID(), as.ChainID(), state.GetBlockContext().Timestamp(), proof.RequestID, proof.Signers); cerr != nil {
 		// Unreachable under single-tx execution (pre-verified, nothing mutates the request
@@ -289,56 +289,6 @@ func bridgeInAndSwapOrRefund(
 		return Result{}, gasLeft, cerr
 	}
 	return Result{Filled: true, BalanceDelta: out}, gasLeft, nil
-}
-
-// bridgeInOnly is the EXPLICIT bridge-in entry — the ONLY path that leaves a user holding the
-// intermediate wrapped asset. It settles a PURE bridge-in intent (the user signed
-// DesiredOutputAsset == SourceAsset: "deliver the wrapped asset, no swap"). A conversion intent
-// (desired != source) belongs to bridgeInAndSwapOrRefund and is refused here, so a relayer can
-// never downgrade a signed swap-intent into a bridge-only delivery.
-//
-// It verifies the SAME proof + intent (sig -> recipient, nonce, deadline, network/source bind),
-// then credits the wrapped SourceAsset to intent.Recipient and consumes the object — under one
-// snapshot so a fail-secure consume strands nothing.
-func bridgeInOnly(
-	gw *bridge.BridgeGateway,
-	state contract.AccessibleState,
-	intent Intent,
-	intentSig []byte,
-	proof Proof,
-	suppliedGas uint64,
-) (Result, uint64, error) {
-	if intent.DesiredOutputAsset != intent.SourceAsset {
-		return Result{}, suppliedGas, ErrIntentNotBridgeOnly
-	}
-	if !isNativeAsset(intent.SourceAsset) {
-		return Result{}, suppliedGas, ErrIntentNonNativeIn
-	}
-
-	_, amt256, err := verifyIntent(state, gw, intent, intentSig, proof)
-	if err != nil {
-		if isRefundable(err) {
-			return Result{Refundable: true, Reason: err}, suppliedGas, nil
-		}
-		return Result{}, suppliedGas, err
-	}
-
-	// One snapshot over the credit + nonce-burn so a fail-secure consume reverts both.
-	cdb := state.GetStateDB()
-	snap := cdb.Snapshot()
-	as, ok := state.(contract.AtomicState)
-	if !ok { // unreachable: verifyIntent already required AtomicState. Fail SECURE.
-		cdb.RevertToSnapshot(snap)
-		return Result{}, suppliedGas, ErrIntentNoAtomicState
-	}
-	newPoolStateAdapter(state).AddBalance(intent.Recipient, amt256)
-	markIntentNonceUsed(state, intent.Recipient, intent.Nonce)
-	if cerr := gw.CompleteBridge(cdb, bridge.BridgeGatewayCanonicalAddress, as.NetworkID(), as.ChainID(), state.GetBlockContext().Timestamp(), proof.RequestID, proof.Signers); cerr != nil {
-		cdb.RevertToSnapshot(snap)
-		return Result{}, suppliedGas, cerr
-	}
-	// The user holds the wrapped SourceAsset (delivered) and the object is consumed once.
-	return Result{Filled: true}, suppliedGas, nil
 }
 
 // verifyIntent is the shared, MUTATION-FREE verification for both entries. It resolves the
@@ -438,7 +388,7 @@ func verifyIntent(
 
 // isRefundable reports whether a verifyIntent / swap error is a SOFT "the inbound is safe and
 // recoverable" reason (vs a hard refusal). Soft reasons leave the object Pending so the user
-// recovers it via RefundExpired.
+// recovers it via bridge.Refund.
 func isRefundable(err error) bool {
 	return err == ErrIntentDeadline || err == bridge.ErrRequestExpired
 }
