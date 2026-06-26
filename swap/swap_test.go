@@ -257,7 +257,6 @@ func TestLockValidation(t *testing.T) {
 		{"dust", h, user, maker, usdc, big.NewInt(0), timeout, ErrDustAmount},
 		{"timeout_too_soon", h, user, maker, usdc, amt, t0 + MinTimeout - 1, ErrTimeoutBounds},
 		{"timeout_too_late", h, user, maker, usdc, amt, t0 + MaxTimeout + 1, ErrTimeoutBounds},
-		{"native_gated", h, user, maker, common.Address{}, amt, timeout, ErrNativeUnsupported},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -284,16 +283,74 @@ func TestClaimRefundNonexistent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Native (asset == 0) is gated, NOT minted: no reserve, no vault balance.
+// Native (asset == address(0)) is a first-class asset, symmetric to ERC-20: its
+// inbound delta is the value the EVM moved into swapAddr before Run (observed,
+// never minted), and pay-out is a real SubBalance/AddBalance pair.
 // ---------------------------------------------------------------------------
 
-func TestNativeLockNotMinted(t *testing.T) {
+var native = common.Address{} // the native-LUX asset id
+
+func TestNativeLockThenClaim(t *testing.T) {
 	e := newEnv(t0)
-	h := hashOf(preimageOf(0x77))
-	_, _, err := e.lock(maker, h, user, maker, common.Address{}, big.NewInt(1e9), timeout, false)
-	require.ErrorIs(t, err, ErrNativeUnsupported)
-	eqBig(t, big.NewInt(0), e.reserve(common.Address{}))
-	eqBig(t, big.NewInt(0), e.db().bal(common.Address{}, swapAddr))
+	amt := big.NewInt(1_000_000_000)
+	pre := preimageOf(0x77)
+	h := hashOf(pre)
+
+	// The EVM moved msg.value into swapAddr before Run.
+	e.db().fundNative(swapAddr, amt)
+
+	id, _, err := e.lock(maker, h, user, maker, native, amt, timeout, false)
+	require.NoError(t, err)
+	require.NotEqual(t, common.Hash{}, id)
+
+	// Value sits in the vault, reserve credited by the observed delta.
+	eqBig(t, amt, e.db().nativeBal(swapAddr))
+	eqBig(t, amt, e.reserve(native))
+	require.Equal(t, StatusLocked, loadStatus(e.db(), id))
+
+	// A watchtower (not the recipient) submits the claim — caller-agnostic.
+	ret, err := e.claim(watcher, id, pre, false)
+	require.NoError(t, err)
+	require.Equal(t, boolWord(true), ret)
+
+	// Recipient paid exactly amount; vault drained; reserve zeroed.
+	eqBig(t, amt, e.db().nativeBal(user))
+	eqBig(t, big.NewInt(0), e.db().nativeBal(swapAddr))
+	eqBig(t, big.NewInt(0), e.reserve(native))
+	require.Equal(t, StatusClaimed, loadStatus(e.db(), id))
+}
+
+func TestNativeLockThenRefundAfterTimeout(t *testing.T) {
+	e := newEnv(t0)
+	amt := big.NewInt(500)
+	h := hashOf(preimageOf(0x78))
+
+	e.db().fundNative(swapAddr, amt)
+	id, _, err := e.lock(maker, h, user, maker, native, amt, timeout, false)
+	require.NoError(t, err)
+
+	// At/after timeout, refund pays the stored refund address (maker).
+	e.setNow(timeout)
+	ret, err := e.refund(watcher, id, false)
+	require.NoError(t, err)
+	require.Equal(t, boolWord(true), ret)
+	eqBig(t, amt, e.db().nativeBal(maker))
+	eqBig(t, big.NewInt(0), e.db().nativeBal(swapAddr))
+	eqBig(t, big.NewInt(0), e.reserve(native))
+	require.Equal(t, StatusRefunded, loadStatus(e.db(), id))
+}
+
+func TestNativeShortDeliveryRejected(t *testing.T) {
+	e := newEnv(t0)
+	amt := big.NewInt(1_000)
+	h := hashOf(preimageOf(0x79))
+
+	// EVM delivered one less than the lock requests — exact-delta rejects it (the
+	// same holds for value==0 or an over-delivering call: delivered != amount).
+	e.db().fundNative(swapAddr, new(big.Int).Sub(amt, big.NewInt(1)))
+	_, _, err := e.lock(maker, h, user, maker, native, amt, timeout, false)
+	require.ErrorIs(t, err, ErrDeltaMismatch)
+	eqBig(t, big.NewInt(0), e.reserve(native))
 }
 
 // ---------------------------------------------------------------------------
