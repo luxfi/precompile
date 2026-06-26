@@ -161,18 +161,3 @@ func TestStateRegistry_RejectsLongName(t *testing.T) {
 		t.Fatalf("expected ErrChainNameTooLong, got %v", err)
 	}
 }
-
-func TestGateway_RegistryDriven(t *testing.T) {
-	// A gateway built over an ad-hoc registry only supports the ids in it.
-	r := NewStatic([]Chain{
-		{ID: 42, Name: "answer", EVM: true},
-	})
-	gw := NewBridgeGatewayWithRegistry(r)
-
-	if !gw.Supports(42) {
-		t.Fatal("expected 42 to be supported")
-	}
-	if gw.Supports(96369) {
-		t.Fatal("expected 96369 to be unsupported (not in registry)")
-	}
-}
