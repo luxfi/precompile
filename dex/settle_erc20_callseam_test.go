@@ -310,7 +310,7 @@ func TestERC20Settle_CallSeam_DepositWithdrawConserves(t *testing.T) {
 	state := &callSeamState{
 		sdb:       &callSeamStateDB{inner: NewMockStateDB()},
 		env:       env,
-		timestamp: DexSettleActivationTime, // live-chain era (0x9999 logs active)
+		timestamp: harnessBlockTime, // 0x9999 logs AlwaysOn (active from genesis)
 	}
 	// Load-bearing: the StateDB must NOT be an erc20Vault, forcing the Call seam.
 	assertNotERC20Vault(t, state.GetStateDB())
@@ -434,7 +434,7 @@ func TestERC20Settle_CallSeam_RejectsDelegatecall(t *testing.T) {
 	state := &callSeamState{
 		sdb:       &callSeamStateDB{inner: NewMockStateDB()},
 		env:       env,
-		timestamp: DexSettleActivationTime,
+		timestamp: harnessBlockTime,
 	}
 	c := &SettleContract{} // deposit/withdraw are custody ops, not governance-gated
 	aid := assetID(Currency{Address: token})
@@ -493,7 +493,7 @@ func TestERC20Settle_NoEnv_RefusesFailSecure(t *testing.T) {
 	state := &callSeamState{
 		sdb:       &callSeamStateDB{inner: NewMockStateDB()},
 		env:       nil, // NO env — GetPrecompileEnv() returns a typed-nil *callSeamEnv? guard below
-		timestamp: DexSettleActivationTime,
+		timestamp: harnessBlockTime,
 	}
 	// Guard against the typed-nil trap: GetPrecompileEnv must return an untyped nil so
 	// the precompile's nil check fires. callSeamState returns m.env directly; a nil
