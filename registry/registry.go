@@ -320,6 +320,7 @@ const (
 	LXLiquid   = "0x0000000000000000000000000000000000009060" // LP-9060 LXLiquid (self-repaying loans)
 	Liquidator = "0x0000000000000000000000000000000000009070" // LP-9070 Liquidator (position liquidation)
 	LiquidFX   = "0x0000000000000000000000000000000000009080" // LP-9080 LiquidFX (transmuter)
+	LXSwap     = "0x00000000000000000000000000000000000090A0" // LP-90A0 LXSwap (cross-chain HTLC atomic swap)
 )
 
 // PrecompileAddress calculates address from (P, C, II) nibbles
@@ -413,7 +414,7 @@ var ChainPrecompiles = map[string][]string{
 		// AI (P=7)
 		GPUAttestCChain, TEEVerifyCChain, InferenceCChain, SessionCChain,
 		// DEX (LP-9xxx)
-		LXPool, LXRouter, LXHooks, LXFlash, LXOracle, LXBook, LXVault, LXFeed, LXLend, LXLiquid, Liquidator, LiquidFX,
+		LXPool, LXRouter, LXHooks, LXFlash, LXOracle, LXBook, LXVault, LXFeed, LXLend, LXLiquid, Liquidator, LiquidFX, LXSwap,
 	},
 
 	// Q-Chain (Quantum) - PQ and Threshold focused
@@ -457,7 +458,7 @@ var ChainPrecompiles = map[string][]string{
 	// Zoo - DEX focused (same precompile addresses)
 	"Zoo": {
 		// DEX (LP-9xxx) - same addresses as C-Chain
-		LXPool, LXRouter, LXHooks, LXFlash, LXOracle, LXBook, LXVault, LXFeed, LXLend, LXLiquid, Liquidator, LiquidFX,
+		LXPool, LXRouter, LXHooks, LXFlash, LXOracle, LXBook, LXVault, LXFeed, LXLend, LXLiquid, Liquidator, LiquidFX, LXSwap,
 		// Bridges for cross-chain trading
 		WarpSendCChain, WarpReceiveCChain,
 	},
@@ -562,6 +563,7 @@ var AllPrecompiles = []PrecompileInfo{
 	{LXLiquid, "LX_LIQUID", "Self-repaying loans (Alchemix-style)", 30000, []string{"C", "Zoo"}, "LP-9060"},
 	{Liquidator, "LIQUIDATOR", "Position liquidation engine", 50000, []string{"C", "Zoo"}, "LP-9070"},
 	{LiquidFX, "LIQUID_FX", "Transmuter (liquid token conversion)", 25000, []string{"C", "Zoo"}, "LP-9080"},
+	{LXSwap, "LX_SWAP", "Cross-chain HTLC atomic swap (non-custodial settlement)", 60000, []string{"C", "Zoo"}, "LP-90A0"},
 }
 
 // GetPrecompileAddress returns the address for a precompile by name
