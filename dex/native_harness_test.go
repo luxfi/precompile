@@ -98,6 +98,11 @@ type settleHarness struct {
 	memdbBacking *memdb.Database // shared-memory backing db (for batch tests)
 }
 
+// harnessBlockTime is an arbitrary post-genesis block timestamp for harness state.
+// 0x9999 and its logs are AlwaysOn (active from genesis), so the exact value carries no
+// protocol meaning — any block time exercises the live settlement path.
+const harnessBlockTime uint64 = 1_700_000_000 // 2023-11-14T22:13:20Z, a normal block time
+
 func newSettleHarness(t testing.TB) *settleHarness {
 	return newSettleHarnessN(t, 3)
 }
@@ -124,10 +129,10 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 		governance: testGovernance, // the per-network governance controller the host supplies via AtomicState
 		txID:       ids.ID{0x7A},   // a fixed tx id for the harness; tests vary callIndex/txID
 		callIndex:  0,
-		// Default to the activation boundary so settlement/init tests exercise the
-		// live-chain path where 0x9999's DEXFill + Initialize logs are active. A test
-		// that needs a pre-activation block sets state.blockTimestamp explicitly.
-		blockTimestamp: DexSettleActivationTime,
+		// 0x9999 and its DEXFill + Initialize logs are AlwaysOn (active from genesis,
+		// no dated fork), so the harness block time carries no protocol meaning — any
+		// value exercises the live path. A test that wants genesis sets blockTimestamp=0.
+		blockTimestamp: harnessBlockTime,
 	}
 	h := &settleHarness{
 		c:            &SettleContract{},
