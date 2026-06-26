@@ -19,43 +19,46 @@ import (
 )
 
 // ============================================================================
-// OPEN (9), MITIGATED: deadline==0 FSM asymmetry. A no-deadline inbound is both
-// completable-forever AND permissionlessly refundable, so a third party can refund
-// it out from under a quorum-valid completion (a liveness grief). The recovery path
-// (N5) relies on immediate refundability, so the fix is caller-authorized pre-deadline
-// refund (owner anytime, others after a real deadline) — a signature change left to
-// the settlement-authorization pass. This test pins (a) the open behavior for
-// deadline==0 and (b) the production MITIGATION: a deadline>0 inbound is NOT griefable
-// before expiry, which is the only shape production mints.
+// CLOSED (9): deadline==0 refund grief. A no-deadline inbound is completable-forever,
+// so a permissionless refund would let a third party yank it out from under a
+// quorum-valid completion. Refund is caller-authorized: the OWNER (recipient) refunds
+// anytime; a THIRD PARTY only after a real deadline. So a deadline==0 inbound is NOT
+// third-party refundable (grief closed) while the owner's recovery (N5) stays immediate.
 // ============================================================================
-func TestRed_Deadline0_PermissionlessRefundGriefsCompletion(t *testing.T) {
+func TestRed_Deadline0_RefundIsCallerAuthorized(t *testing.T) {
 	st := newMemStateDB()
 	gw := NewBridgeGateway()
+	thirdParty := common.HexToAddress("0x00000000000000000000000000000000000000ff")
 
-	// (a) OPEN: a deadline==0 inbound is permissionlessly refundable at any block time.
+	// Control: a deadline==0 inbound is completable at any block time.
 	r := newRequest(80, 0)
 	_, signers := recordPending(t, st, r)
 	if err := gw.VerifyCompletion(st, gwAddr, testNetworkID, testChainID, 1<<40, r.ID, signers); err != nil {
 		t.Fatalf("control: deadline==0 must be completable at any bt, got %v", err)
 	}
-	if err := gw.RefundExpired(st, gwAddr, 1, r.ID); err != nil {
-		t.Fatalf("documented open behavior: deadline==0 refund currently succeeds, got %v", err)
-	}
-	t.Logf("OPEN(9): deadline==0 is permissionlessly refundable — fix = caller-authorized refund (settlement-auth pass).")
 
-	// (b) MITIGATION: a deadline>0 inbound is NOT refundable before expiry — no third-party
-	// pre-deadline grief window. Production swap inbounds always carry a real deadline, and
-	// the quorum-valid completion succeeds before that deadline.
+	// (a) CLOSED: a THIRD PARTY cannot refund the no-deadline inbound — no grief window.
+	if err := gw.Refund(st, gwAddr, thirdParty, 1, r.ID); err != ErrRequestNotExpired {
+		t.Fatalf("third-party refund of a deadline==0 inbound must be refused, got %v", err)
+	}
+	// (b) RECOVERY PRESERVED: the OWNER refunds the same inbound immediately.
+	if err := gw.Refund(st, gwAddr, r.Recipient, 1, r.ID); err != nil {
+		t.Fatalf("owner refund of a deadline==0 inbound must succeed, got %v", err)
+	}
+	t.Logf("CLOSED(9): deadline==0 third-party refund refused; owner recovery immediate — grief closed, N5 preserved.")
+
+	// (c) deadline>0: a third party still cannot refund before expiry, and a quorum-valid
+	//     completion succeeds before the deadline.
 	st2 := newMemStateDB()
 	r2 := newRequest(80, 500)
 	_, signers2 := recordPending(t, st2, r2)
-	if err := gw.RefundExpired(st2, gwAddr, 499, r2.ID); err != ErrRequestNotExpired {
-		t.Fatalf("MITIGATION: deadline>0 pre-expiry refund must be refused, got %v", err)
+	if err := gw.Refund(st2, gwAddr, thirdParty, 499, r2.ID); err != ErrRequestNotExpired {
+		t.Fatalf("deadline>0 pre-expiry third-party refund must be refused, got %v", err)
 	}
 	if err := gw.CompleteBridge(st2, gwAddr, testNetworkID, testChainID, 400, r2.ID, signers2); err != nil {
-		t.Fatalf("MITIGATION: quorum-valid completion before deadline must succeed, got %v", err)
+		t.Fatalf("quorum-valid completion before deadline must succeed, got %v", err)
 	}
-	t.Logf("MITIGATION: deadline=500 refuses pre-expiry refund (bt=499) and completion succeeds (bt=400) — grief closed for deadline>0.")
+	t.Logf("deadline>0: pre-expiry third-party refund refused (bt=499), completion succeeds (bt=400).")
 }
 
 // ============================================================================
