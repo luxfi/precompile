@@ -226,15 +226,10 @@ func SettleSwap(
 		accrueVolume(stateDB, key.ID(), creditedAmt, blockNumber)
 		// Indexable settled-fill signal for the DEX graph / lux.exchange. Emitted
 		// on the money path (Phase-B credit) so eth_getLogs surfaces native-CLOB
-		// fills. accrueVolume is sharded state (not a log); this is the log. Gated on
-		// the SAME dated fork as 0x9999 dispatch (defense in depth — see dexLogsActive):
-		// a consensus-visible log MUST NOT enter a receipt root before the activation
-		// boundary, or a re-syncing node that did not emit it would compute a different
-		// root. On the relaunched chain every settlement is at/after the boundary, so
-		// every settlement emits the log — no ungated window.
-		if dexLogsActive(blockTimestamp) {
-			emitDEXFillEvent(stateDB, key.ID(), caller, creditedAmt, blockNumber)
-		}
+		// fills. accrueVolume is sharded state (not a log); this is the log. 0x9999 is
+		// AlwaysOn (active from genesis, no dated fork), so the log is emitted
+		// unconditionally — every settlement that executes emits it, from block 0.
+		emitDEXFillEvent(stateDB, key.ID(), caller, creditedAmt, blockNumber)
 		// V4 return: the taker received `credited` of the output asset. Map to the
 		// BalanceDelta direction (output paid out to taker = negative to pool).
 		delta := balanceDeltaForOutput(params, new(big.Int).SetUint64(credited))

@@ -11,41 +11,14 @@ import (
 	ethtypes "github.com/luxfi/geth/core/types"
 )
 
-// DexSettleActivationTime is the layer-local mirror of the canonical 0x9999 DEX
-// settlement activation boundary — unix 1766704800, i.e. 2025-12-25T23:20:00Z.
-//
-// DO NOT "round" this to midnight: the value (not the prose date) is the protocol
-// constant. It is ALREADY LIVE — it gates 0x9999 dispatch on a settling devnet — so
-// changing the number would move an activation boundary that historical receipts were
-// already built against and FORK every chain that crossed it. Only the human-readable
-// instant is annotated here; the number is authoritative.
-//
-// The CANONICAL definition lives in luxfi/evm params/extras.DexSettleActivationTime;
-// that is the single source of truth the EVM dispatch gate and marker-installing
-// state transition reference. This package (luxfi/precompile) sits BELOW evm in the
-// import graph (evm imports precompile, never the reverse), so it cannot import the
-// extras constant — it mirrors the value here. Drift between the two copies is a
-// consensus bug, so an equality guard test in the evm layer (which imports BOTH)
-// asserts dex.DexSettleActivationTime == extras.DexSettleActivationTime and fails CI
-// if either moves. The value is a protocol constant (one decision), not config.
-//
-// Why the precompile gates on this AT ALL, given the EVM overrider already withholds
-// 0x9999 from the enabled set pre-activation: defense in depth. The dispatch gate is
-// in the high (evm) layer; a new consensus-visible log (one that changes the receipt
-// root + bloom) is emitted in this low (precompile) layer. If any host dispatches
-// SettleSwap at a pre-activation timestamp — a buggy overrider, a non-Lux EVM that
-// integrates the precompile without the dated-fork gate, a future direct-call path —
-// an ungated log would split the chain (a re-syncing node that did NOT emit the log
-// would compute a different receipt root). Gating the log on the SAME timestamp the
-// dispatch uses means: on every chain, every settlement that ever executes also emits
-// the log, and no execution before the boundary ever can. No settlement-without-log
-// window, no log-without-settlement window.
-const DexSettleActivationTime uint64 = 1766704800 // 2025-12-25T23:20:00Z; canonical: evm extras.DexSettleActivationTime
-
-// dexLogsActive reports whether 0x9999's new consensus-visible logs (DEXFill, and the
-// V4 Initialize the native registry emits) may be written at blockTimestamp. It is the
-// ONE policy predicate gating those logs; the emit functions stay pure log-builders.
-func dexLogsActive(blockTimestamp uint64) bool { return blockTimestamp >= DexSettleActivationTime }
+// The DEX settlement money path 0x9999 is a FIRST-RUN, no-legacy system precompile: it
+// is ACTIVE FROM GENESIS, and so are its consensus-visible logs (DEXFill, and the V4
+// Initialize the native registry emits). There is no activation boundary and no
+// pre-activation history, so there is no log gate — every settlement that executes emits
+// its log, from block 0. The emit functions below are pure log-builders, called
+// unconditionally on the settlement money path. The dispatch side (the EVM overrider that
+// injects 0x9999 into the enabled set) is likewise unconditional in luxfi/evm, so there
+// is no settlement-without-log or log-without-settlement window on any chain.
 
 // Event signature hashes (topic0) matching standard Uniswap V4 events.
 // Computed as keccak256 of the canonical event signature string.
