@@ -4,99 +4,50 @@
 package bridge
 
 import (
-	"crypto/sha256"
-	"errors"
+	"encoding/binary"
 	"math/big"
-	"sync"
-	"time"
 
+	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/ids"
+
+	"github.com/luxfi/precompile/contract"
 )
 
-// BridgeGateway is the main bridge interface for cross-chain transfers
-// This precompile at 0x0440 handles bridge initiation and completion
+// BridgeGateway is the bridge completion authority. Its request lifecycle and
+// signer committee live entirely in StateDB (request_state.go / committee_state.go)
+// so they survive reorg/restart and revert atomically with the settling
+// transaction. The struct itself holds only the supported-chain configuration
+// (a deterministic mirror of the on-chain registry, NOT value state); every
+// money-path method takes (state, gwAddr) and reads/writes StateDB.
+//
+// Completion is authorized by a ⅔-weight quorum of the state-resident committee
+// over the canonical CompletionDigest — never by a length check, never against a
+// key supplied in calldata.
 type BridgeGateway struct {
-	// State
-	Requests        map[[32]byte]*BridgeRequest
-	Nonces          map[common.Address]uint64 // Per-address nonces
-	SupportedTokens map[common.Address]*BridgedToken
+	// SupportedChains is the chain-id set this gateway recognizes. It is benign
+	// configuration (no balances, no requests) seeded from the registry; it is
+	// NOT the fund-bearing request state, which lives in StateDB.
 	SupportedChains map[uint32]bool
-
-	// Liquidity pools
-	Pools map[uint32]map[common.Address]*LiquidityPool // ChainID -> Token -> Pool
-
-	// Signer set (interface to B-Chain)
-	SignerSet *SignerSet
-
-	// Configuration
-	Config  *BridgeFeeConfig
-	Enabled bool
-	Paused  bool
-
-	mu sync.RWMutex
 }
 
-// NewBridgeGateway creates a new bridge gateway
+// completionDomain domain-separates the completion digest and is bound as the
+// ML-DSA-65 signing context. A signature over a completion can never be replayed
+// as any other message kind, and a classical recover is bound to the same bytes.
+const completionDomain = "lux.bridge.complete.v1"
+
+// NewBridgeGateway builds a gateway with the default ecosystem chain set.
 func NewBridgeGateway() *BridgeGateway {
-	gw := &BridgeGateway{
-		Requests:        make(map[[32]byte]*BridgeRequest),
-		Nonces:          make(map[common.Address]uint64),
-		SupportedTokens: make(map[common.Address]*BridgedToken),
-		SupportedChains: make(map[uint32]bool),
-		Pools:           make(map[uint32]map[common.Address]*LiquidityPool),
-		SignerSet: &SignerSet{
-			Signers:   make([]*SignerInfo, 0),
-			Waitlist:  make([][20]byte, 0),
-			Threshold: 67, // 2/3 default
-		},
-		Config: &BridgeFeeConfig{
-			BaseFee:      big.NewInt(1e15),                                    // 0.001 token
-			PercentFee:   30,                                                  // 0.3%
-			MinFee:       big.NewInt(1e15),                                    // 0.001 token
-			MaxFee:       new(big.Int).Mul(big.NewInt(1e18), big.NewInt(100)), // 100 tokens
-			LiquidityFee: 20,                                                  // 0.2% to LPs
-			ProtocolFee:  10,                                                  // 0.1% protocol
-		},
-		Enabled: true,
-		Paused:  false,
-	}
-
-	// Initialize supported chains
+	gw := &BridgeGateway{SupportedChains: make(map[uint32]bool)}
 	gw.initSupportedChains()
-
 	return gw
 }
 
-// NewBridgeGatewayWithRegistry constructs a gateway whose supported-chain set
-// is sourced from r. Used in tests and on networks that want to pin the set to
-// a curated list rather than the hard-coded ecosystem defaults.
-//
-// The gateway's SupportedChains map mirrors r.All() at construction time.
-// Live updates to r are not reflected; callers that need dynamic membership
-// should use a state-backed registry behind the precompile entry point.
+// NewBridgeGatewayWithRegistry builds a gateway whose supported-chain set mirrors
+// r at construction time. Used in tests and on networks that pin the set to a
+// curated registry rather than the hard-coded defaults.
 func NewBridgeGatewayWithRegistry(r Registry) *BridgeGateway {
-	gw := &BridgeGateway{
-		Requests:        make(map[[32]byte]*BridgeRequest),
-		Nonces:          make(map[common.Address]uint64),
-		SupportedTokens: make(map[common.Address]*BridgedToken),
-		SupportedChains: make(map[uint32]bool),
-		Pools:           make(map[uint32]map[common.Address]*LiquidityPool),
-		SignerSet: &SignerSet{
-			Signers:   make([]*SignerInfo, 0),
-			Waitlist:  make([][20]byte, 0),
-			Threshold: 67,
-		},
-		Config: &BridgeFeeConfig{
-			BaseFee:      big.NewInt(1e15),
-			PercentFee:   30,
-			MinFee:       big.NewInt(1e15),
-			MaxFee:       new(big.Int).Mul(big.NewInt(1e18), big.NewInt(100)),
-			LiquidityFee: 20,
-			ProtocolFee:  10,
-		},
-		Enabled: true,
-		Paused:  false,
-	}
+	gw := &BridgeGateway{SupportedChains: make(map[uint32]bool)}
 	for _, c := range r.All() {
 		gw.SupportedChains[uint32(c.ID)] = true
 	}
@@ -105,453 +56,219 @@ func NewBridgeGatewayWithRegistry(r Registry) *BridgeGateway {
 
 // Supports reports whether id is in the gateway's supported-chain set.
 func (gw *BridgeGateway) Supports(id uint32) bool {
-	gw.mu.RLock()
-	defer gw.mu.RUnlock()
 	return gw.SupportedChains[id]
 }
 
 func (gw *BridgeGateway) initSupportedChains() {
-	// Lux ecosystem
-	gw.SupportedChains[ChainLux] = true
-	gw.SupportedChains[ChainLuxTest] = true
-	gw.SupportedChains[ChainHanzo] = true
-	gw.SupportedChains[ChainHanzoTest] = true
-	gw.SupportedChains[ChainZoo] = true
-	gw.SupportedChains[ChainZooTest] = true
-	gw.SupportedChains[ChainSPC] = true
-	gw.SupportedChains[ChainSPCTest] = true
-
-	// External chains
-	gw.SupportedChains[ChainEthereum] = true
-	gw.SupportedChains[ChainArbitrum] = true
-	gw.SupportedChains[ChainOptimism] = true
-	gw.SupportedChains[ChainBase] = true
-	gw.SupportedChains[ChainPolygon] = true
-	gw.SupportedChains[ChainBSC] = true
-	gw.SupportedChains[ChainAvalanche] = true
+	for _, id := range []uint32{
+		ChainLux, ChainLuxTest,
+		ChainHanzo, ChainHanzoTest,
+		ChainZoo, ChainZooTest,
+		ChainSPC, ChainSPCTest,
+		ChainEthereum, ChainArbitrum, ChainOptimism,
+		ChainBase, ChainPolygon, ChainBSC, ChainAvalanche,
+	} {
+		gw.SupportedChains[id] = true
+	}
 }
 
-// InitiateBridge starts a cross-chain transfer
-func (gw *BridgeGateway) InitiateBridge(
-	sender common.Address,
-	recipient common.Address,
-	token common.Address,
-	amount *big.Int,
-	sourceChain uint32,
-	destChain uint32,
-	deadline uint64,
-	data []byte,
-) (*BridgeRequest, error) {
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
+// CompletionDigest is the canonical 32-byte message the MPC committee attests to
+// authorize a bridge completion. It binds the LIVE chain identity (networkID +
+// chainID) and EVERY value-affecting field of the request, so a digest is valid
+// on exactly one chain and for exactly one request — no cross-chain, cross-asset,
+// or amount substitution is possible. The off-chain signer MUST produce the same
+// 207-byte preimage:
+//
+//	"lux.bridge.complete.v1"(22) | version=0x01(1) |
+//	networkID(u32) | chainID(32) |
+//	srcNetwork(u32) | srcChain(u32) | destNetwork(u32) | destChain(u32) |
+//	requestID(32) | sourceAsset(32) | amount(uint256 BE 32) |
+//	recipient(20) | deadline(u64) | nonce(u64)
+//
+// sourceAsset uses the SAME canonical asset id the DEX uses (the token address
+// left-padded into 32 bytes; native == all-zero), so it agrees with the signed
+// intent's SourceAsset.
+func CompletionDigest(networkID uint32, chainID ids.ID, r *BridgeRequest) [32]byte {
+	buf := make([]byte, 0, 207)
+	buf = append(buf, []byte(completionDomain)...)
+	buf = append(buf, 0x01)
+	buf = appendU32(buf, networkID)
+	buf = append(buf, chainID[:]...)
+	buf = appendU32(buf, r.SourceNetwork)
+	buf = appendU32(buf, r.SourceChain)
+	buf = appendU32(buf, r.DestNetwork)
+	buf = appendU32(buf, r.DestChain)
+	buf = append(buf, r.ID[:]...)
+	buf = append(buf, sourceAssetID(r.Token)...)
+	buf = appendAmount32(buf, r.Amount)
+	buf = append(buf, r.Recipient.Bytes()...)
+	buf = appendU64(buf, r.Deadline)
+	buf = appendU64(buf, r.Nonce)
 
-	// Validations
-	if !gw.Enabled || gw.Paused {
-		return nil, ErrBridgeDisabled
-	}
-
-	if !gw.SupportedChains[destChain] {
-		return nil, ErrChainNotSupported
-	}
-
-	// Check token is supported
-	tokenInfo := gw.SupportedTokens[token]
-	if tokenInfo == nil || !tokenInfo.Enabled {
-		return nil, ErrTokenNotSupported
-	}
-
-	// Check amount limits
-	if amount.Cmp(tokenInfo.MinBridge) < 0 {
-		return nil, ErrAmountTooLow
-	}
-	if tokenInfo.MaxBridge.Sign() > 0 && amount.Cmp(tokenInfo.MaxBridge) > 0 {
-		return nil, ErrAmountTooHigh
-	}
-
-	// Check daily limit
-	gw.resetDailyLimitIfNeeded(tokenInfo)
-	newTotal := new(big.Int).Add(tokenInfo.BridgedToday, amount)
-	if tokenInfo.DailyLimit.Sign() > 0 && newTotal.Cmp(tokenInfo.DailyLimit) > 0 {
-		return nil, ErrDailyLimitExceeded
-	}
-
-	// Check liquidity on destination chain
-	pool := gw.getPool(destChain, token)
-	if pool == nil || pool.Available.Cmp(amount) < 0 {
-		return nil, ErrInsufficientLiquidity
-	}
-
-	// Generate request ID
-	nonce := gw.Nonces[sender]
-	gw.Nonces[sender] = nonce + 1
-
-	requestID := gw.generateRequestID(sender, recipient, token, amount, sourceChain, destChain, nonce)
-
-	// Calculate fee
-	fee := gw.calculateFee(amount)
-
-	// Create request
-	request := &BridgeRequest{
-		ID:          requestID,
-		Sender:      sender,
-		Recipient:   recipient,
-		Token:       token,
-		Amount:      new(big.Int).Sub(amount, fee), // Amount after fee
-		SourceChain: sourceChain,
-		DestChain:   destChain,
-		Nonce:       nonce,
-		Deadline:    deadline,
-		Data:        data,
-		Status:      StatusPending,
-		Signatures:  make([][]byte, 0),
-		CreatedAt:   uint64(time.Now().Unix()),
-	}
-
-	// Update state
-	gw.Requests[requestID] = request
-	tokenInfo.BridgedToday.Add(tokenInfo.BridgedToday, amount)
-
-	// Reserve liquidity on destination
-	pool.Available.Sub(pool.Available, request.Amount)
-
-	return request, nil
+	var d [32]byte
+	copy(d[:], crypto.Keccak256(buf))
+	return d
 }
 
-// CompleteBridge completes a bridge on the destination chain
-func (gw *BridgeGateway) CompleteBridge(
-	requestID [32]byte,
-	signatures [][]byte,
+// RecordInbound records a quorum-attested inbound as Pending. The committee must
+// sign the request's CompletionDigest, so an attacker cannot plant a fake Pending
+// record: the same quorum that authorizes completion authorizes recording. It
+// refuses to overwrite an existing record (a recorded id is immutable) and
+// validates the amount fits the storage word.
+//
+// This is the host/relayer INGEST path (B-Chain MPC -> StateDB), the analog of
+// SeedCommittee/SeedGovernance; the DEX consumer never calls it.
+func RecordInbound(
+	state contract.StateDB,
+	gwAddr common.Address,
+	networkID uint32,
+	chainID ids.ID,
+	r *BridgeRequest,
+	signers []SignerSig,
 ) error {
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
-
-	request := gw.Requests[requestID]
-	if request == nil {
-		return ErrRequestNotFound
+	if r == nil || r.Amount == nil || r.Amount.Sign() <= 0 || r.Amount.BitLen() > 256 {
+		return ErrInvalidRequest
 	}
+	if _, err := ReadRequest(state, gwAddr, r.ID); err == nil {
+		return ErrRequestExists
+	} else if err != ErrRequestNotFound {
+		return err
+	}
+	if err := VerifyCompletionQuorum(state, gwAddr, CompletionDigest(networkID, chainID, r), signers); err != nil {
+		return err
+	}
+	r.CreatedAt = 0 // createdAt is set by an attested record path if needed; not on the verify path
+	writeRequest(state, gwAddr, r)
+	return nil
+}
 
-	if request.Status == StatusCompleted {
+// GetRequest returns the StateDB-resident request, or ErrRequestNotFound when no
+// record exists at requestID.
+func (gw *BridgeGateway) GetRequest(state contract.StateDB, gwAddr common.Address, requestID [32]byte) (*BridgeRequest, error) {
+	return ReadRequest(state, gwAddr, requestID)
+}
+
+// VerifyCompletion runs every completion precondition WITHOUT mutating state: the
+// request exists and is Pending, the block time is within the deadline, and a
+// ⅔-weight quorum of the state-resident committee signed the CompletionDigest. It
+// is the read-only half of CompleteBridge, exposed so a composite (the DEX intent
+// settlement) can verify a proof up front, perform its atomic swap, and consume
+// the request via CompleteBridge ONLY on success — one verification, one place.
+func (gw *BridgeGateway) VerifyCompletion(
+	state contract.StateDB,
+	gwAddr common.Address,
+	networkID uint32,
+	chainID ids.ID,
+	blockTime uint64,
+	requestID [32]byte,
+	signers []SignerSig,
+) error {
+	r, err := ReadRequest(state, gwAddr, requestID)
+	if err != nil {
+		return err
+	}
+	if r.Status != StatusPending {
 		return ErrRequestAlreadyDone
 	}
-
-	if request.Deadline > 0 && uint64(time.Now().Unix()) > request.Deadline {
-		request.Status = StatusExpired
+	if r.Deadline > 0 && blockTime > r.Deadline {
 		return ErrRequestExpired
 	}
+	return VerifyCompletionQuorum(state, gwAddr, CompletionDigest(networkID, chainID, r), signers)
+}
 
-	// Verify signatures meet threshold
-	if uint32(len(signatures)) < gw.getThreshold() {
-		return ErrSignatureThreshold
+// CompleteBridge consumes a Pending request: it re-runs the full VerifyCompletion
+// check (DRY) and then, only on success, flips the on-state status Pending ->
+// Completed. This status flip is the LAST mutation of a settling transaction, so
+// a StateDB revert un-flips it — the request is consumed IFF the surrounding work
+// committed.
+func (gw *BridgeGateway) CompleteBridge(
+	state contract.StateDB,
+	gwAddr common.Address,
+	networkID uint32,
+	chainID ids.ID,
+	blockTime uint64,
+	requestID [32]byte,
+	signers []SignerSig,
+) error {
+	if err := gw.VerifyCompletion(state, gwAddr, networkID, chainID, blockTime, requestID, signers); err != nil {
+		return err
 	}
-
-	// Verify each signature
-	message := gw.encodeMessage(request)
-	for _, sig := range signatures {
-		if !gw.verifySignature(message, sig) {
-			return ErrInvalidSignature
-		}
-	}
-
-	// Mark completed
-	request.Status = StatusCompleted
-	request.Signatures = signatures
-	request.CompletedAt = uint64(time.Now().Unix())
-
+	setRequestStatus(state, gwAddr, requestID, StatusCompleted, blockTime)
 	return nil
 }
 
-// GetRequest returns a bridge request by ID
-func (gw *BridgeGateway) GetRequest(requestID [32]byte) (*BridgeRequest, error) {
-	gw.mu.RLock()
-	defer gw.mu.RUnlock()
-
-	request := gw.Requests[requestID]
-	if request == nil {
-		return nil, ErrRequestNotFound
+// RefundExpired releases a Pending request whose deadline has passed (or which has
+// no deadline), flipping Pending -> Refunded. A consumed (terminal) request can
+// never be refunded. The expiry decision is driven by blockTime — never wall
+// clock — so every validator agrees.
+//
+// KNOWN SHARP EDGE (red finding 9, open): for a deadline==0 ("no expiry") inbound
+// this refund is permissionless and immediate, while CompleteBridge treats
+// deadline==0 as completable-forever — so a third party could refund a no-deadline
+// inbound out from under a quorum-valid completion (a liveness grief). The recovery
+// path (N5) deliberately relies on immediate refundability, so the correct fix is
+// NOT to forbid deadline==0 refunds (that strands the recovery path) but to make a
+// PRE-DEADLINE refund caller-authorized: the request's recipient/refundAddress may
+// refund anytime, third parties only AFTER a real deadline. That needs the caller
+// threaded from the precompile dispatch into RefundExpired (a signature change) and
+// is left for the settlement-authorization pass. MITIGATION TODAY: production bridge
+// inbounds for swaps carry a real deadline (> 0), under which this guard already
+// refuses a third-party pre-expiry refund — the grief is only reachable for
+// deadline==0 inbounds, which production should not mint.
+func (gw *BridgeGateway) RefundExpired(
+	state contract.StateDB,
+	gwAddr common.Address,
+	blockTime uint64,
+	requestID [32]byte,
+) error {
+	r, err := ReadRequest(state, gwAddr, requestID)
+	if err != nil {
+		return err
 	}
-
-	return request, nil
-}
-
-// RefundExpired refunds an expired bridge request
-func (gw *BridgeGateway) RefundExpired(requestID [32]byte) error {
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
-
-	request := gw.Requests[requestID]
-	if request == nil {
-		return ErrRequestNotFound
-	}
-
-	if request.Status == StatusCompleted || request.Status == StatusRefunded {
+	if r.Status != StatusPending {
 		return ErrRequestAlreadyDone
 	}
-
-	if request.Deadline > 0 && uint64(time.Now().Unix()) <= request.Deadline {
-		return errors.New("request not yet expired")
+	if r.Deadline > 0 && blockTime <= r.Deadline {
+		return ErrRequestNotExpired
 	}
-
-	// Return liquidity to pool
-	pool := gw.getPool(request.DestChain, request.Token)
-	if pool != nil {
-		pool.Available.Add(pool.Available, request.Amount)
-	}
-
-	request.Status = StatusRefunded
+	setRequestStatus(state, gwAddr, requestID, StatusRefunded, 0)
 	return nil
 }
 
-// AddLiquidity adds liquidity to a bridge pool
-func (gw *BridgeGateway) AddLiquidity(
-	provider common.Address,
-	token common.Address,
-	chainID uint32,
-	amount *big.Int,
-) (*LPPosition, error) {
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
+// sourceAssetID maps a token address to the DEX canonical 32-byte asset id (the
+// 20-byte address left-padded with 12 zero bytes; native == all-zero). It MUST
+// match dex.assetID so the completion digest's sourceAsset equals the signed
+// intent's SourceAsset.
+func sourceAssetID(token common.Address) []byte {
+	id := make([]byte, 32)
+	copy(id[12:], token.Bytes())
+	return id
+}
 
-	if !gw.SupportedChains[chainID] {
-		return nil, ErrChainNotSupported
-	}
+// appendU32 / appendU64 append a big-endian fixed-width integer to the digest
+// preimage; appendAmount32 appends a non-negative amount as a 32-byte big-endian
+// uint256 (allocation-bounded, never panics for an in-range amount).
+func appendU32(b []byte, v uint32) []byte {
+	var x [4]byte
+	binary.BigEndian.PutUint32(x[:], v)
+	return append(b, x[:]...)
+}
 
-	pool := gw.getOrCreatePool(chainID, token)
+func appendU64(b []byte, v uint64) []byte {
+	var x [8]byte
+	binary.BigEndian.PutUint64(x[:], v)
+	return append(b, x[:]...)
+}
 
-	// Calculate share ratio
-	var shareRatio *big.Int
-	if pool.TotalLiq.Sign() == 0 {
-		shareRatio = new(big.Int).Mul(amount, big.NewInt(1e18))
-	} else {
-		shareRatio = new(big.Int).Mul(amount, big.NewInt(1e18))
-		shareRatio.Div(shareRatio, pool.TotalLiq)
-	}
-
-	// Update or create position
-	position := pool.Providers[provider]
-	if position == nil {
-		position = &LPPosition{
-			Provider:    provider,
-			Amount:      big.NewInt(0),
-			ShareRatio:  big.NewInt(0),
-			DepositTime: uint64(time.Now().Unix()),
-			PendingFees: big.NewInt(0),
+func appendAmount32(b []byte, amount *big.Int) []byte {
+	var x [32]byte
+	if amount != nil && amount.Sign() > 0 {
+		ab := amount.Bytes()
+		if len(ab) <= 32 {
+			copy(x[32-len(ab):], ab)
+		} else {
+			copy(x[:], ab[len(ab)-32:])
 		}
-		pool.Providers[provider] = position
 	}
-
-	position.Amount.Add(position.Amount, amount)
-	position.ShareRatio.Add(position.ShareRatio, shareRatio)
-
-	// Update pool totals
-	pool.TotalLiq.Add(pool.TotalLiq, amount)
-	pool.Available.Add(pool.Available, amount)
-
-	return position, nil
-}
-
-// RemoveLiquidity removes liquidity from a bridge pool
-func (gw *BridgeGateway) RemoveLiquidity(
-	provider common.Address,
-	token common.Address,
-	chainID uint32,
-	amount *big.Int,
-) (*big.Int, error) {
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
-
-	pool := gw.getPool(chainID, token)
-	if pool == nil {
-		return nil, ErrInsufficientLiquidity
-	}
-
-	position := pool.Providers[provider]
-	if position == nil || position.Amount.Cmp(amount) < 0 {
-		return nil, ErrInsufficientLiquidity
-	}
-
-	if pool.Available.Cmp(amount) < 0 {
-		return nil, errors.New("liquidity currently in use")
-	}
-
-	// Calculate fees earned
-	fees := gw.calculateLPFees(pool, position)
-
-	// Update position
-	position.Amount.Sub(position.Amount, amount)
-	if position.Amount.Sign() == 0 {
-		delete(pool.Providers, provider)
-	}
-
-	// Update pool totals
-	pool.TotalLiq.Sub(pool.TotalLiq, amount)
-	pool.Available.Sub(pool.Available, amount)
-
-	// Return amount + fees
-	total := new(big.Int).Add(amount, fees)
-	return total, nil
-}
-
-// RegisterToken registers a new token for bridging
-func (gw *BridgeGateway) RegisterToken(
-	localAddress common.Address,
-	decimals uint8,
-	symbol string,
-	name string,
-	minBridge *big.Int,
-	maxBridge *big.Int,
-	dailyLimit *big.Int,
-) error {
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
-
-	if gw.SupportedTokens[localAddress] != nil {
-		return errors.New("token already registered")
-	}
-
-	gw.SupportedTokens[localAddress] = &BridgedToken{
-		LocalAddress:  localAddress,
-		RemoteAddress: make(map[uint32]common.Address),
-		Decimals:      decimals,
-		Symbol:        symbol,
-		Name:          name,
-		MinBridge:     minBridge,
-		MaxBridge:     maxBridge,
-		DailyLimit:    dailyLimit,
-		BridgedToday:  big.NewInt(0),
-		LastReset:     uint64(time.Now().Unix()),
-		Enabled:       true,
-	}
-
-	return nil
-}
-
-// Helper functions
-
-func (gw *BridgeGateway) generateRequestID(
-	sender, recipient common.Address,
-	token common.Address,
-	amount *big.Int,
-	sourceChain, destChain uint32,
-	nonce uint64,
-) [32]byte {
-	data := append(sender.Bytes(), recipient.Bytes()...)
-	data = append(data, token.Bytes()...)
-	data = append(data, amount.Bytes()...)
-	data = append(data, big.NewInt(int64(sourceChain)).Bytes()...)
-	data = append(data, big.NewInt(int64(destChain)).Bytes()...)
-	data = append(data, big.NewInt(int64(nonce)).Bytes()...)
-	return sha256.Sum256(data)
-}
-
-func (gw *BridgeGateway) calculateFee(amount *big.Int) *big.Int {
-	// Percent fee
-	fee := new(big.Int).Mul(amount, big.NewInt(int64(gw.Config.PercentFee)))
-	fee.Div(fee, big.NewInt(10000))
-
-	// Add base fee
-	fee.Add(fee, gw.Config.BaseFee)
-
-	// Apply min/max
-	if fee.Cmp(gw.Config.MinFee) < 0 {
-		fee.Set(gw.Config.MinFee)
-	}
-	if gw.Config.MaxFee.Sign() > 0 && fee.Cmp(gw.Config.MaxFee) > 0 {
-		fee.Set(gw.Config.MaxFee)
-	}
-
-	return fee
-}
-
-func (gw *BridgeGateway) getPool(chainID uint32, token common.Address) *LiquidityPool {
-	chainPools := gw.Pools[chainID]
-	if chainPools == nil {
-		return nil
-	}
-	return chainPools[token]
-}
-
-func (gw *BridgeGateway) getOrCreatePool(chainID uint32, token common.Address) *LiquidityPool {
-	if gw.Pools[chainID] == nil {
-		gw.Pools[chainID] = make(map[common.Address]*LiquidityPool)
-	}
-
-	pool := gw.Pools[chainID][token]
-	if pool == nil {
-		pool = &LiquidityPool{
-			Token:     token,
-			ChainID:   chainID,
-			TotalLiq:  big.NewInt(0),
-			Available: big.NewInt(0),
-			Providers: make(map[common.Address]*LPPosition),
-			FeeRate:   gw.Config.LiquidityFee,
-			TotalFees: big.NewInt(0),
-		}
-		gw.Pools[chainID][token] = pool
-	}
-
-	return pool
-}
-
-func (gw *BridgeGateway) resetDailyLimitIfNeeded(token *BridgedToken) {
-	now := uint64(time.Now().Unix())
-	daySeconds := uint64(86400)
-	if now-token.LastReset >= daySeconds {
-		token.BridgedToday = big.NewInt(0)
-		token.LastReset = now
-	}
-}
-
-func (gw *BridgeGateway) getThreshold() uint32 {
-	if gw.SignerSet == nil || len(gw.SignerSet.Signers) == 0 {
-		return 1
-	}
-	// 2/3 + 1 of active signers
-	return (uint32(len(gw.SignerSet.Signers)) * 2 / 3) + 1
-}
-
-func (gw *BridgeGateway) encodeMessage(request *BridgeRequest) []byte {
-	msg := &BridgeMessage{
-		Version:     1,
-		MessageType: MsgTypeTransfer,
-		SourceChain: request.SourceChain,
-		DestChain:   request.DestChain,
-		Nonce:       request.Nonce,
-		Sender:      request.Sender,
-		Recipient:   request.Recipient,
-		Token:       request.Token,
-		Amount:      request.Amount,
-		Data:        request.Data,
-		Timestamp:   request.CreatedAt,
-	}
-
-	// Encode message (simplified - would use proper encoding)
-	data := []byte{msg.Version, msg.MessageType}
-	data = append(data, big.NewInt(int64(msg.SourceChain)).Bytes()...)
-	data = append(data, big.NewInt(int64(msg.DestChain)).Bytes()...)
-	data = append(data, big.NewInt(int64(msg.Nonce)).Bytes()...)
-	data = append(data, msg.Sender.Bytes()...)
-	data = append(data, msg.Recipient.Bytes()...)
-	data = append(data, msg.Token.Bytes()...)
-	data = append(data, msg.Amount.Bytes()...)
-	data = append(data, msg.Data...)
-
-	return data
-}
-
-func (gw *BridgeGateway) verifySignature(message []byte, signature []byte) bool {
-	// In production, verify against signer set public keys
-	// This would call into B-Chain's MPC verification
-	return len(signature) > 0
-}
-
-func (gw *BridgeGateway) calculateLPFees(pool *LiquidityPool, position *LPPosition) *big.Int {
-	if pool.TotalFees.Sign() == 0 || position.ShareRatio.Sign() == 0 {
-		return big.NewInt(0)
-	}
-
-	// fees = totalFees * shareRatio / 1e18
-	fees := new(big.Int).Mul(pool.TotalFees, position.ShareRatio)
-	fees.Div(fees, big.NewInt(1e18))
-
-	return fees
+	return append(b, x[:]...)
 }
