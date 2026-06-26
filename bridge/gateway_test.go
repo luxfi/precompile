@@ -359,24 +359,34 @@ func TestLifecycle_RecordVerifyComplete(t *testing.T) {
 	if err := gw.CompleteBridge(st, gwAddr, testNetworkID, testChainID, 1000, r.ID, signers); err != ErrRequestAlreadyDone {
 		t.Fatalf("double complete must reject, got %v", err)
 	}
-	if err := gw.RefundExpired(st, gwAddr, 2000, r.ID); err != ErrRequestAlreadyDone {
+	if err := gw.Refund(st, gwAddr, r.Recipient, 2000, r.ID); err != ErrRequestAlreadyDone {
 		t.Fatalf("refund of consumed request must reject, got %v", err)
 	}
 }
 
-func TestLifecycle_RefundExpired(t *testing.T) {
+func TestLifecycle_Refund(t *testing.T) {
 	st := newMemStateDB()
 	gw := NewBridgeGateway()
+	thirdParty := common.HexToAddress("0x00000000000000000000000000000000000000ff")
+
+	// The owner (the inbound's recipient) may refund ANYTIME — even before the deadline.
+	owned := newRequest(80, 500) // deadline 500
+	recordPending(t, st, owned)
+	if err := gw.Refund(st, gwAddr, owned.Recipient, 1, owned.ID); err != nil {
+		t.Fatalf("owner refund before deadline must succeed, got %v", err)
+	}
+	if got, _ := gw.GetRequest(st, gwAddr, owned.ID); got.Status != StatusRefunded {
+		t.Fatalf("owner refund: status = %d, want Refunded", got.Status)
+	}
+
+	// A third party may refund only AFTER a real deadline.
 	r := newRequest(80, 500) // deadline 500
 	recordPending(t, st, r)
-
-	// Before the deadline: refund refused.
-	if err := gw.RefundExpired(st, gwAddr, 500, r.ID); err != ErrRequestNotExpired {
-		t.Fatalf("refund at bt==deadline must reject with ErrRequestNotExpired, got %v", err)
+	if err := gw.Refund(st, gwAddr, thirdParty, 500, r.ID); err != ErrRequestNotExpired {
+		t.Fatalf("third-party refund at bt==deadline must reject with ErrRequestNotExpired, got %v", err)
 	}
-	// After the deadline: refunded.
-	if err := gw.RefundExpired(st, gwAddr, 501, r.ID); err != nil {
-		t.Fatalf("refund past deadline: %v", err)
+	if err := gw.Refund(st, gwAddr, thirdParty, 501, r.ID); err != nil {
+		t.Fatalf("third-party refund past deadline: %v", err)
 	}
 	got, _ := gw.GetRequest(st, gwAddr, r.ID)
 	if got.Status != StatusRefunded {
