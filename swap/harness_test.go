@@ -33,6 +33,8 @@ type mockState struct {
 	logs    []*ethtypes.Log
 	// token -> owner -> balance
 	tokens map[common.Address]map[common.Address]*big.Int
+	// addr -> native LUX balance (the EVM balance ledger)
+	native map[common.Address]*big.Int
 
 	// negative-test knobs:
 	failTransfer map[common.Address]bool // tokens whose transfer always fails
@@ -44,6 +46,7 @@ func newMockState() *mockState {
 	return &mockState{
 		storage:      make(map[stateKey]common.Hash),
 		tokens:       make(map[common.Address]map[common.Address]*big.Int),
+		native:       make(map[common.Address]*big.Int),
 		failTransfer: make(map[common.Address]bool),
 		feeBps:       make(map[common.Address]int),
 	}
@@ -68,6 +71,23 @@ func (m *mockState) setBal(token, owner common.Address, v *big.Int) {
 
 func (m *mockState) fund(token, owner common.Address, amt *big.Int) {
 	m.setBal(token, owner, new(big.Int).Add(m.bal(token, owner), amt))
+}
+
+// --- native LUX ledger ---
+
+func (m *mockState) nativeBal(a common.Address) *big.Int {
+	if v := m.native[a]; v != nil {
+		return v
+	}
+	return big.NewInt(0)
+}
+
+func (m *mockState) setNative(a common.Address, v *big.Int) { m.native[a] = v }
+
+// fundNative simulates the EVM moving msg.value into `a` BEFORE Run — the seam a
+// native lock observes as its inbound delta.
+func (m *mockState) fundNative(a common.Address, amt *big.Int) {
+	m.setNative(a, new(big.Int).Add(m.nativeBal(a), amt))
 }
 
 // --- erc20Vault capability ---
@@ -133,12 +153,20 @@ func (m *mockState) GetNonce(common.Address) uint64 { return 0 }
 
 func (m *mockState) SetNonce(common.Address, uint64, tracing.NonceChangeReason) {}
 
-func (m *mockState) GetBalance(common.Address) *uint256.Int { return uint256.NewInt(0) }
-func (m *mockState) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
-	return uint256.Int{}
+func (m *mockState) GetBalance(a common.Address) *uint256.Int {
+	return uint256.MustFromBig(m.nativeBal(a))
 }
-func (m *mockState) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
-	return uint256.Int{}
+
+func (m *mockState) AddBalance(a common.Address, amt *uint256.Int, _ tracing.BalanceChangeReason) uint256.Int {
+	prior := m.nativeBal(a)
+	m.setNative(a, new(big.Int).Add(prior, amt.ToBig()))
+	return *uint256.MustFromBig(prior)
+}
+
+func (m *mockState) SubBalance(a common.Address, amt *uint256.Int, _ tracing.BalanceChangeReason) uint256.Int {
+	prior := m.nativeBal(a)
+	m.setNative(a, new(big.Int).Sub(prior, amt.ToBig()))
+	return *uint256.MustFromBig(prior)
 }
 func (m *mockState) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int  { return big.NewInt(0) }
 func (m *mockState) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int) {}

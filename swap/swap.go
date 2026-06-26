@@ -8,8 +8,12 @@
 // address fixed at lock time (after the timeout). There is no owner, no pause, no
 // freeze, no upgrade, and no set-balance selector — non-custody (G1) and
 // strand-resistance (G4) are STRUCTURAL, not policy. No code path mints: every
-// unit paid out was locked by its owner via a real ERC-20 transferFrom whose
+// unit paid out was locked by its owner — an ERC-20 via a real transferFrom, or
+// native LUX via the msg.value the EVM moved into swapAddr before Run — whose
 // OBSERVED inbound delta backs the per-asset reserve ledger (Invariant: reserve).
+// Native is a first-class asset (asset == address(0)): its inbound delta is read
+// from the real balance (balanceOf(swapAddr) − reserve[native]) and its pay-out is
+// a real SubBalance/AddBalance pair, exactly symmetric to the ERC-20 path.
 //
 // Hashlock is SHA-256 (matching Bitcoin OP_SHA256 and the EVM 0x02 precompile),
 // NOT keccak — a single 32-byte preimage unlocks both legs of a cross-chain swap.
@@ -116,7 +120,6 @@ var (
 	ErrDustAmount        = errors.New("swap: amount below MinSwapAmount")
 	ErrTimeoutBounds     = errors.New("swap: timeout outside [T0+MinTimeout, T0+MaxTimeout]")
 	ErrSwapExists        = errors.New("swap: swapId already in use")
-	ErrNativeUnsupported = errors.New("swap: native-LUX locks unsupported until the call-value seam lands; use a wrapped/ERC-20 asset")
 
 	ErrNotLocked        = errors.New("swap: swap is not in the Locked state")
 	ErrExpired          = errors.New("swap: timeout passed; claim window closed (refund instead)")
@@ -234,10 +237,6 @@ func (c *SwapContract) runLock(
 	if timeout < t0+MinTimeout || timeout > t0+MaxTimeout {
 		return nil, gas, fmt.Errorf("%w: T0=%d timeout=%d", ErrTimeoutBounds, t0, timeout)
 	}
-	// Native is gated until the call-value seam lands — NEVER minted.
-	if asset == (common.Address{}) {
-		return nil, gas, ErrNativeUnsupported
-	}
 
 	db := st.GetStateDB()
 
@@ -252,17 +251,29 @@ func (c *SwapContract) runLock(
 		return nil, gas, ErrSwapExists
 	}
 
-	// (5) Move funds IN via the transferFrom-delta idiom and REQUIRE the observed
-	// inbound delta to equal the requested amount exactly: an HTLC must lock the
-	// precise agreed amount the counterparty verified, so a fee-on-transfer /
-	// short-delivering token is rejected rather than silently locking less.
-	vault, ok := db.(erc20Vault)
-	if !ok {
-		return nil, gas, ErrVaultUnavailable
-	}
-	delta, err := pullExact(vault, asset, caller, swapAddr, amount)
-	if err != nil {
-		return nil, gas, err
+	// (5) Move funds IN via the OBSERVED-delta idiom and REQUIRE the inbound delta
+	// to equal the requested amount exactly: an HTLC must lock the precise agreed
+	// amount the counterparty verified, so a fee-on-transfer / short-delivering
+	// token — or a native call carrying the wrong value — is rejected rather than
+	// silently locking less. Native (asset == 0) measures the value the EVM already
+	// moved into swapAddr (delta = balanceOf − reserve); an ERC-20 pulls via
+	// transferFrom. Both yield `delta`, the amount actually delivered.
+	var delta *big.Int
+	if asset == (common.Address{}) {
+		if err := pullExactNative(db, loadReserve(db, asset), amount); err != nil {
+			return nil, gas, err
+		}
+		delta = amount
+	} else {
+		vault, ok := db.(erc20Vault)
+		if !ok {
+			return nil, gas, ErrVaultUnavailable
+		}
+		d, err := pullExact(vault, asset, caller, swapAddr, amount)
+		if err != nil {
+			return nil, gas, err
+		}
+		delta = d
 	}
 
 	// (6, second half) persist the swap, bump the per-asset reserve by the OBSERVED
@@ -341,13 +352,10 @@ func (c *SwapContract) runClaim(
 	emitClaimed(db, swapId, hashlock, preimage, recipient, amount)
 
 	// INTERACTION: pay the STORED recipient (caller-agnostic — a watchtower may
-	// submit). On failure the precompile returns an error and the EVM reverts the
-	// whole frame, including every effect above.
-	vault, ok := db.(erc20Vault)
-	if !ok {
-		return nil, gas, ErrVaultUnavailable
-	}
-	if err := pushOut(vault, asset, recipient, amount); err != nil {
+	// submit) via the single asset-kind-agnostic pay-out dispatcher. On failure the
+	// precompile returns an error and the EVM reverts the whole frame, including
+	// every effect above.
+	if err := payOut(db, asset, recipient, amount); err != nil {
 		return nil, gas, err
 	}
 
@@ -398,12 +406,8 @@ func (c *SwapContract) runRefund(
 	storeStatus(db, swapId, StatusRefunded)
 	emitRefunded(db, swapId, refund, amount)
 
-	// INTERACTION: pay the STORED refund address.
-	vault, ok := db.(erc20Vault)
-	if !ok {
-		return nil, gas, ErrVaultUnavailable
-	}
-	if err := pushOut(vault, asset, refund, amount); err != nil {
+	// INTERACTION: pay the STORED refund address via the single pay-out dispatcher.
+	if err := payOut(db, asset, refund, amount); err != nil {
 		return nil, gas, err
 	}
 
