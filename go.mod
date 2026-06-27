@@ -22,7 +22,7 @@ require (
 	github.com/luxfi/magnetar v1.2.3
 	github.com/luxfi/runtime v1.1.3
 	github.com/luxfi/threshold v1.9.9
-	github.com/luxfi/warp v1.21.0
+	github.com/luxfi/warp v1.22.0
 	github.com/stretchr/testify v1.11.1
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.52.0
