@@ -171,20 +171,20 @@ func argmaxI8(logits []int8, n uint32) int32 {
 
 // ModelConfig mirrors aivm::tiny_llm::Config (the transformer dims + requant shifts).
 type ModelConfig struct {
-	Vocab, Dim, Hidden, NLayers                                           uint32
+	Vocab, Dim, Hidden, NLayers                                                    uint32
 	GemmShift, GemmShiftH, LmShift, RmsMult, RmsEps, QkShift, OvShift, SwigluShift int32
 }
 
 // Weights are int8 row-major; per-layer arrays concatenated by layer.
 type Weights struct {
-	Embed                       []int8 // [vocab*dim]
-	Rms1                        []int8 // [n_layers*dim]
-	Wq, Wk, Wv, Wo              []int8 // [n_layers*dim*dim]
-	Rms2                        []int8 // [n_layers*dim]
-	Wgate, Wup                  []int8 // [n_layers*hidden*dim]
-	Wdown                       []int8 // [n_layers*dim*hidden]
-	Rmsf                        []int8 // [dim]
-	Wlm                         []int8 // [vocab*dim]
+	Embed          []int8 // [vocab*dim]
+	Rms1           []int8 // [n_layers*dim]
+	Wq, Wk, Wv, Wo []int8 // [n_layers*dim*dim]
+	Rms2           []int8 // [n_layers*dim]
+	Wgate, Wup     []int8 // [n_layers*hidden*dim]
+	Wdown          []int8 // [n_layers*dim*hidden]
+	Rmsf           []int8 // [dim]
+	Wlm            []int8 // [vocab*dim]
 }
 
 // Model is a deterministic int8 transformer (no KV cache; recomputes the prefix).

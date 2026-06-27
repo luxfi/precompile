@@ -114,12 +114,12 @@ var (
 	ErrNoBlockContext  = errors.New("swap: block context unavailable")
 	ErrOutOfGas        = errors.New("swap: out of gas")
 
-	ErrZeroHashlock      = errors.New("swap: hashlock must be non-zero")
-	ErrZeroRecipient     = errors.New("swap: recipient must be non-zero")
-	ErrZeroRefund        = errors.New("swap: refund address must be non-zero")
-	ErrDustAmount        = errors.New("swap: amount below MinSwapAmount")
-	ErrTimeoutBounds     = errors.New("swap: timeout outside [T0+MinTimeout, T0+MaxTimeout]")
-	ErrSwapExists        = errors.New("swap: swapId already in use")
+	ErrZeroHashlock  = errors.New("swap: hashlock must be non-zero")
+	ErrZeroRecipient = errors.New("swap: recipient must be non-zero")
+	ErrZeroRefund    = errors.New("swap: refund address must be non-zero")
+	ErrDustAmount    = errors.New("swap: amount below MinSwapAmount")
+	ErrTimeoutBounds = errors.New("swap: timeout outside [T0+MinTimeout, T0+MaxTimeout]")
+	ErrSwapExists    = errors.New("swap: swapId already in use")
 
 	ErrNotLocked        = errors.New("swap: swap is not in the Locked state")
 	ErrExpired          = errors.New("swap: timeout passed; claim window closed (refund instead)")

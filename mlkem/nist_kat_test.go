@@ -141,7 +141,8 @@ func publicKeyFromKeygenSeed(t *testing.T, mode byte, seed []byte) (pk []byte, d
 }
 
 // buildEncapInput frames a precompile encapsulate call:
-//   op(0x01) || mode || seed(32) || publicKey
+//
+//	op(0x01) || mode || seed(32) || publicKey
 func buildEncapInput(mode byte, seed, pk []byte) []byte {
 	out := make([]byte, 0, 2+SeedSize+len(pk))
 	out = append(out, OpEncapsulate)
@@ -154,20 +155,20 @@ func buildEncapInput(mode byte, seed, pk []byte) []byte {
 // TestNISTKAT_MLKEM_PublicKeyAndPrecompileDeterminism is the combined KAT
 // driver. For each FIPS 203 parameter set it:
 //
-//   1. Reconstructs the public key from the canonical 64-byte keygen seed
-//      and pins pk[:32] against the JSON record.
-//   2. Calls the precompile twice with identical (caller, seed, pubkey) and
-//      asserts byte-identical output.
-//   3. Splits the output into ciphertext + shared_secret per the documented
-//      precompile layout, and asserts that the off-line decapsulate of that
-//      ciphertext using the test's private key recovers the precompile's
-//      shared secret. This is the ML-KEM correctness equation -- if it
-//      fails the precompile is producing ciphertexts no honest receiver
-//      can decapsulate, which is the §1.7 silent-failure mode.
-//   4. Calls the precompile with a tampered ciphertext-side input does not
-//      apply (the precompile is encaps-only; decaps is off-chain). We
-//      instead tamper with the SEED and assert the output ciphertext
-//      changes -- the determinism is keyed on seed, not pubkey alone.
+//  1. Reconstructs the public key from the canonical 64-byte keygen seed
+//     and pins pk[:32] against the JSON record.
+//  2. Calls the precompile twice with identical (caller, seed, pubkey) and
+//     asserts byte-identical output.
+//  3. Splits the output into ciphertext + shared_secret per the documented
+//     precompile layout, and asserts that the off-line decapsulate of that
+//     ciphertext using the test's private key recovers the precompile's
+//     shared secret. This is the ML-KEM correctness equation -- if it
+//     fails the precompile is producing ciphertexts no honest receiver
+//     can decapsulate, which is the §1.7 silent-failure mode.
+//  4. Calls the precompile with a tampered ciphertext-side input does not
+//     apply (the precompile is encaps-only; decaps is off-chain). We
+//     instead tamper with the SEED and assert the output ciphertext
+//     changes -- the determinism is keyed on seed, not pubkey alone.
 func TestNISTKAT_MLKEM_PublicKeyAndPrecompileDeterminism(t *testing.T) {
 	vectors := loadMLKEMNISTVectors(t)
 

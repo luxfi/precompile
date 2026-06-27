@@ -23,7 +23,7 @@ const computeProofK = 2
 
 // Result bits in the returned word's last byte.
 const (
-	resultIncluded   = 1 // the operands are committed under the transcript root (Merkle inclusion)
+	resultIncluded    = 1 // the operands are committed under the transcript root (Merkle inclusion)
 	resultFreivaldsOK = 2 // C == A·B (the matmul is genuine)
 )
 

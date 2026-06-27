@@ -54,7 +54,7 @@ func TestRED_C1_SyncSwap_SyntheticBaseRevertsViaOnChainProof(t *testing.T) {
 	// REAL quote tradeable by seeding its on-chain code; the synthetic base is deliberately
 	// left WITHOUT code, so the on-chain proof — the authoritative reality gate — refuses it.
 	r := newTestAssetResolver(h.networkID, h.cChainID).boundToHarness(h)
-	r.admitERC20(t, c1RealQuote, 6)            // real quote: code-backed
+	r.admitERC20(t, c1RealQuote, 6)                  // real quote: code-backed
 	h.state.stateDB.SetCodeSize(c1FabricatedBase, 0) // synthetic base: NO code
 	prev := installedAssetResolver.Load()
 	if err := InstallAssetResolver(r, h.networkID, h.cChainID); err != nil {
