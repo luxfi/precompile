@@ -46,12 +46,12 @@ type Predicater interface {
 }
 
 // WarpMessageWriter queues a precompile-emitted cross-chain message for the
-// validator set to attest. The unsigned subject is the warp.Core: the
-// canonical value whose digest D = keccak256(DST ‖ zap_c14n(core)) is what the
+// validator set to attest. The unsigned subject is the warp.Message: the
+// canonical value whose digest D = keccak256(DST ‖ zap_c14n(message)) is what the
 // BLS Beam / Corona Pulse / ML-DSA lanes sign. Build one via
-// warp.NewCore(networkID, sourceChainID, payload).
+// warp.NewMessage(networkID, sourceChainID, payload).
 type WarpMessageWriter interface {
-	AddMessage(core *warp.Core) error
+	AddMessage(msg *warp.Message) error
 }
 
 // AcceptContext defines the context passed in to a precompileconfig's Accepter
