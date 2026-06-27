@@ -1,8 +1,14 @@
 // Copyright (C) 2019-2024, Lux Partners Limited. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-// Pure Go FHE implementation using github.com/luxfi/fhe.
-// GPU acceleration available via github.com/luxfi/accel when CGO enabled.
+// Pure Go FHE implementation using github.com/luxfi/fhe (FHEW/TFHE: LWE-bit
+// ciphertexts, gate/programmable bootstrapping). This is the consensus oracle:
+// the byte-exact result every validator must reproduce. GPU acceleration is a
+// transparent, byte-identical optimization of the bootstrap NTT one layer down
+// (github.com/luxfi/lattice/v7), opt-in via `-tags gpu` and gated for
+// byte-equality in gpu_ntt_on.go — it never changes the bytes these functions
+// return. It is NOT the github.com/luxfi/accel BFV/CKKS path, which is a
+// different scheme and cannot represent a TFHE ciphertext.
 package fhe
 
 import (
