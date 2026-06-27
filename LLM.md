@@ -28,7 +28,7 @@ All crypto-heavy precompiles have GPU fast paths via `github.com/luxfi/accel` an
   node. Removed; awaiting a real accel SLH-DSA kernel.
 - `frost/` -- `accelcrypto.BatchVerify(SigECDSA, ...)` for Schnorr verification
 - `cggmp21/` -- `accelcrypto.BatchVerify(SigECDSA, ...)` for ECDSA verification
-- `corona/` -- `accellattice.NTTForward()` for polynomial deserialization (Ring-LWE threshold; renamed from Corona in LP-4200)
+- `corona/` -- `accellattice.NTTForward()` for polynomial deserialization (Module-LWE threshold; renamed from Corona in LP-4200)
 - `blake3/` -- `accelcrypto.Hash(HashBlake3, ...)` for hash256 and Merkle tree batch hashing
 - `fhe/` -- `accelfhe.Add/Sub/Multiply` in `performFHEOperation()` GPU fast path
 
