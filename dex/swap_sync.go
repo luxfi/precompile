@@ -73,13 +73,7 @@ func runSyncSwap(state contract.AccessibleState, caller common.Address, key Pool
 		return nil, gasLeft, err
 	}
 
-	// The block timestamp gates the consensus-visible DEXFill log (the activation-fork
-	// replay guard). It comes from the AccessibleState's block context (the StateDB
-	// adapter exposes only the number); the sync handler reads it here and threads it
-	// into syncSwap so the fill log fires on the SAME dated fork the async path uses.
-	blockTimestamp := state.GetBlockContext().Timestamp()
-
-	out, err := syncSwap(stateDB, resolver, caller, key, params, hookData, blockTimestamp)
+	out, err := syncSwap(stateDB, resolver, caller, key, params, hookData)
 	if err != nil {
 		return nil, gasLeft, err
 	}
@@ -124,11 +118,9 @@ func runSyncSwap(state contract.AccessibleState, caller common.Address, key Pool
 //   - the market exists / is openable (the maker-seed / OpenMarket path bound assets);
 //   - read-only callers are rejected before here (a swap mutates).
 //
-// blockTimestamp gates the DEXFill C-event: a consensus-visible log must not enter a
-// receipt root before the activation boundary (dexLogsActive), or a node re-syncing
-// from before the boundary would compute a divergent root. On the relaunched chain
-// every swap is at/after the boundary, so every filled swap emits the fill log.
-func syncSwap(stateDB StateDB, resolver dexcore.AssetResolver, caller common.Address, key PoolKey, params SwapParams, hookData []byte, blockTimestamp uint64) ([]byte, error) {
+// 0x9999 is AlwaysOn (active from genesis), so the DEXFill C-event fires on every filled
+// swap with no activation gate — see emitDEXFillEvent below.
+func syncSwap(stateDB StateDB, resolver dexcore.AssetResolver, caller common.Address, key PoolKey, params SwapParams, hookData []byte) ([]byte, error) {
 	// Decode the V4 swap into the real-asset routing request (incl. the taker's min-out
 	// floor from hookData and the value-path slippage-protection policy).
 	req, inAssetAddr, err := buildSwapRequest(stateDB, caller, key, params, hookData)
@@ -211,10 +203,10 @@ func syncSwap(stateDB StateDB, resolver dexcore.AssetResolver, caller common.Add
 	// (C event) Emit the DEXFill log so the trade is visible in C events — the SAME
 	// indexable native-CLOB settlement signal the async Phase-B path emits, now fired
 	// on the SYNCHRONOUS money path. The graph indexer / lux.exchange scope CLOB fills
-	// to 0x9999 by this log. Gated on the activation fork (dexLogsActive) for replay
-	// safety, and only when the route actually produced output. amountOut is the
+	// to 0x9999 by this log. 0x9999 is AlwaysOn (active from genesis, no dated fork), so
+	// the log fires unconditionally whenever the route produced output. amountOut is the
 	// taker's realized proceeds; poolId + taker are the indexed topics.
-	if res.AmountOut > 0 && dexLogsActive(blockTimestamp) {
+	if res.AmountOut > 0 {
 		emitDEXFillEvent(stateDB, req.PoolID, caller, new(big.Int).SetUint64(res.AmountOut), stateDB.GetBlockNumber())
 	}
 
