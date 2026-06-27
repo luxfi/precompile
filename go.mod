@@ -28,6 +28,13 @@ require (
 	golang.org/x/crypto v0.52.0
 )
 
+// TEMPORARY (Warp ZAP hard-fork lockstep): build/test against the local
+// feat/warp-zap-native branch which introduces SignedCore / WarpEnvelope /
+// ParseWarpEnvelope and the single keccak256 digest D, replacing the
+// deleted UnsignedMessage / RLP message ID. Drop this replace once warp
+// cuts the coordinated tag carrying the new ZAP API.
+replace github.com/luxfi/warp => /Users/z/work/lux/warp
+
 require (
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/DataDog/zstd v1.5.7 // indirect
