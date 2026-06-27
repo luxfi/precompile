@@ -307,9 +307,12 @@ func TestRunVerifyTEE(t *testing.T) {
 	binary.BigEndian.PutUint32(input[:4], SelectorVerifyTEE)
 	copy(input[4:], data)
 
-	ret, _, err := c.Run(newTestAS(), common.Address{}, ContractAddress, input, 100000, false)
-	require.NoError(t, err)
-	require.Equal(t, byte(1), ret[31])
+	// Real verification now rejects this fake input (a bare 48-byte receipt
+	// carries no attestation certificate chain), so the precompile reverts
+	// rather than returning a forged "1". The happy path with a genuine
+	// certificate chain is covered by TestTEEAttestationValid.
+	_, _, err := c.Run(newTestAS(), common.Address{}, ContractAddress, input, 100000, false)
+	require.Error(t, err)
 
 	// OOG
 	_, _, err = c.Run(newTestAS(), common.Address{}, ContractAddress, input, 100, false)
@@ -448,11 +451,14 @@ func TestVerifyMLDSA87(t *testing.T) {
 
 func TestVerifyTEEEdgeCases(t *testing.T) {
 	receipt := make([]byte, 48)
+	// Absent signature is a malformed input.
 	_, err := VerifyTEE(receipt, []byte{})
 	require.ErrorIs(t, err, ErrTEESignatureInvalid)
 
-	_, err = VerifyTEE(receipt, make([]byte, 32))
-	require.ErrorIs(t, err, ErrTEESignatureInvalid)
+	// A 48-byte receipt carries no certificate chain: malformed input, rejected.
+	valid, err := VerifyTEE(receipt, make([]byte, 32))
+	require.False(t, valid)
+	require.Error(t, err)
 }
 
 // --- GPU ---
