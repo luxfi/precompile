@@ -99,7 +99,7 @@ func TestBuildIntentRequest_CarriesPriceLimit(t *testing.T) {
 		t.Fatalf("buildIntentRequest: %v", err)
 	}
 	if req.PriceLimit == 0 {
-		t.Fatalf("MEDIUM NOT FIXED: buildIntentRequest dropped the slippage floor (PriceLimit=0) for a swap "+
+		t.Fatalf("MEDIUM NOT FIXED: buildIntentRequest dropped the slippage floor (PriceLimit=0) for a swap " +
 			"carrying a real SqrtPriceLimitX96.")
 	}
 	if !req.LimitIsUpper {

@@ -81,18 +81,18 @@ import (
 // generated header. Kept as typed constants so the switch in the
 // adapter is exhaustive and self-documenting.
 const (
-	p3qOK                  = C.P3Q_OK                  // 1  — accepted
-	p3qRejected            = C.P3Q_REJECTED            // 0  — ran, rejected
-	p3qErrNullPtr          = C.P3Q_ERR_NULL_PTR        // -1
-	p3qErrParse            = C.P3Q_ERR_PARSE           // -2
-	p3qErrUnsupportedProf  = C.P3Q_ERR_UNSUPPORTED_PROFILE // -3
-	p3qErrMerkle           = C.P3Q_ERR_MERKLE          // -4
-	p3qErrFRI              = C.P3Q_ERR_FRI             // -5
-	p3qErrStark            = C.P3Q_ERR_STARK           // -6
-	p3qErrTranscript       = C.P3Q_ERR_TRANSCRIPT      // -7
-	p3qErrField            = C.P3Q_ERR_FIELD           // -8
-	p3qErrCircuit          = C.P3Q_ERR_CIRCUIT         // -9
-	p3qErrPanic            = C.P3Q_ERR_PANIC           // -99
+	p3qOK                 = C.P3Q_OK                      // 1  — accepted
+	p3qRejected           = C.P3Q_REJECTED                // 0  — ran, rejected
+	p3qErrNullPtr         = C.P3Q_ERR_NULL_PTR            // -1
+	p3qErrParse           = C.P3Q_ERR_PARSE               // -2
+	p3qErrUnsupportedProf = C.P3Q_ERR_UNSUPPORTED_PROFILE // -3
+	p3qErrMerkle          = C.P3Q_ERR_MERKLE              // -4
+	p3qErrFRI             = C.P3Q_ERR_FRI                 // -5
+	p3qErrStark           = C.P3Q_ERR_STARK               // -6
+	p3qErrTranscript      = C.P3Q_ERR_TRANSCRIPT          // -7
+	p3qErrField           = C.P3Q_ERR_FIELD               // -8
+	p3qErrCircuit         = C.P3Q_ERR_CIRCUIT             // -9
+	p3qErrPanic           = C.P3Q_ERR_PANIC               // -99
 )
 
 // Backend error sentinels. These are INTERNAL failures (decode, FFI,

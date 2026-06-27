@@ -11,8 +11,8 @@ import (
 
 func makeWorkProof(privacy uint16, mins uint32) []byte {
 	p := make([]byte, WorkProofMinSize)
-	p[31] = 0xAA // deviceId (last byte)
-	p[63] = 0xBB // nonce (last byte)
+	p[31] = 0xAA                                     // deviceId (last byte)
+	p[63] = 0xBB                                     // nonce (last byte)
 	binary.BigEndian.PutUint64(p[64:72], 1718000000) // timestamp
 	binary.BigEndian.PutUint16(p[72:74], privacy)
 	binary.BigEndian.PutUint32(p[74:78], mins)
@@ -51,7 +51,7 @@ func TestMintWorkAndDoubleSpend(t *testing.T) {
 func TestMintDataAndDoubleSpend(t *testing.T) {
 	st := NewMockStateDB()
 	desc := make([]byte, 42)
-	desc[31] = 0xCD                             // dataHash (last byte)
+	desc[31] = 0xCD                               // dataHash (last byte)
 	binary.BigEndian.PutUint64(desc[32:40], 1000) // dataSize units
 	binary.BigEndian.PutUint16(desc[40:42], 3)    // privacy: confidential
 	chainId := uint64(200202)

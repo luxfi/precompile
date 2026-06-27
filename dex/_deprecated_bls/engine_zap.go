@@ -68,9 +68,9 @@ const (
 // and D-Chain-side idempotency identity (the vault-drain fix). The four order frames
 // (ensure/place/cancel/submit) are byte-unchanged — this is additive to custody.
 const (
-	zapUserSize       = 16 // user identity field width
-	zapAssetIDSize    = 32 // FULL injective asset id field width (NOT a truncated handle)
-	zapRefSize        = 32 // idempotency reference (originating EVM txHash) field width
+	zapUserSize       = 16                                            // user identity field width
+	zapAssetIDSize    = 32                                            // FULL injective asset id field width (NOT a truncated handle)
+	zapRefSize        = 32                                            // idempotency reference (originating EVM txHash) field width
 	depositReqSize    = zapUserSize + zapAssetIDSize + 8 + zapRefSize // user[16]+asset[32]+amount[8]+ref[32] = 88
 	withdrawReqSize   = zapUserSize + zapAssetIDSize + 8 + zapRefSize // = 88
 	openMarketReqSize = 32 + zapAssetIDSize + zapAssetIDSize          // poolId[32]+base[32]+quote[32] = 96

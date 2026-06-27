@@ -121,7 +121,8 @@ func magnetarKAT() katOut {
 // ---- Corona (0x012206): real 2-round LWE threshold signature -------------
 // Wire: t:uint32 || n:uint32 || msgHash:32 || serializedSig
 // serializedSig (per precompile contract.go deserializeSignature):
-//   c || z[N] || Delta[M] || A[M][N] || bTilde[M], each poly = N()*8 bytes BE.
+//
+//	c || z[N] || Delta[M] || A[M][N] || bTilde[M], each poly = N()*8 bytes BE.
 func coronaKAT(t, n uint32) katOut {
 	shares, groupKey, err := cthr.GenerateKeys(int(t), int(n), rand.Reader)
 	must(err)
@@ -251,7 +252,8 @@ func serializePoly(buf *bytes.Buffer, r *ring.Ring, poly ring.Poly) error {
 // asserts the recovered pubkey equals the supplied aggregated pubkey, so a
 // real KAT is just a genuine secp256k1 signature whose key is the group key.
 // Wire: t:uint32(4) || n:uint32(4) || pubkey(65: 0x04||x||y) || msgHash(32) ||
-//       sig(65: r||s||v).
+//
+//	sig(65: r||s||v).
 func cggmp21KAT(t, n uint32) katOut {
 	priv, err := crypto.GenerateKey()
 	must(err)

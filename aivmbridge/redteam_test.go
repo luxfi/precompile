@@ -169,7 +169,7 @@ func TestSubmit_RejectsZeroTxHash(t *testing.T) {
 	// mockState with txHash==0 (newMockState(zero)) AND txID==ids.Empty → both id sources
 	// zero → the fallback yields a zero c_tx_hash.
 	st := newMockState(common.Hash{}) // StateDB.TxHash() == 0
-	st.txID = ids.Empty                // atomic TxID() == 0 (the fallback is also zero)
+	st.txID = ids.Empty               // atomic TxID() == 0 (the fallback is also zero)
 
 	input := encodeSubmit(h32(0x11), h32(0x22), 1, 1, feeWord(5), [32]byte{})
 	gas := BridgePrecompile.RequiredGas(input)
