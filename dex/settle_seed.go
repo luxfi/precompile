@@ -95,11 +95,15 @@ func (s *SettleContract) runSeedSeamReserve(
 	defer exitCustodyKV(stateDB)
 
 	aid := assetID(asset)
-	delivered, derr := receiveOperatorValue(stateDB, caller, asset, aid, amount)
+	// PHASE A (record) credits seamReserve BEFORE the terminal ERC-20 pull, so the seed's
+	// accounting is never dropped by the geth nested-call host bug.
+	delivered, derr := receiveOperatorValue(stateDB, caller, asset, aid, amount, func(amt *big.Int) error {
+		storeSeamReserve(stateDB, aid, new(big.Int).Add(loadSeamReserve(stateDB, aid), amt))
+		return nil
+	})
 	if derr != nil {
 		return nil, gasLeft, derr
 	}
-	storeSeamReserve(stateDB, aid, new(big.Int).Add(loadSeamReserve(stateDB, aid), delivered))
 	out := make([]byte, 32)
 	delivered.FillBytes(out)
 	return out, gasLeft, nil
@@ -155,38 +159,50 @@ func (s *SettleContract) runCreditPositionFee(
 	if aid != order.LockedAsset {
 		return nil, gasLeft, ErrFeeNoPosition // fees credit the position's own locked asset.
 	}
-	delivered, derr := receiveOperatorValue(stateDB, caller, asset, aid, amount)
+	// PHASE A (record): back the collect BEFORE the terminal ERC-20 pull — the pot, the
+	// record's withdrawable, and the owner reserve all rise by the credited fee, keeping
+	// committedPositions == Σ live records' LockedAmt and the per-owner bound exact. Recording
+	// before the transfer is the geth nested-call fund-loss fix (the prior order dropped these
+	// writes for an ERC-20 fee credit).
+	delivered, derr := receiveOperatorValue(stateDB, caller, asset, aid, amount, func(amt *big.Int) error {
+		storeCommittedPositions(stateDB, aid, new(big.Int).Add(loadCommittedPositions(stateDB, aid), amt))
+		order.LockedAmt = new(big.Int).Add(order.LockedAmt, amt)
+		storeRestingOrder(stateDB, positionID, order)
+		storeLockedReserve(stateDB, order.Owner, aid,
+			new(big.Int).Add(loadLockedReserve(stateDB, order.Owner, aid), amt))
+		return nil
+	})
 	if derr != nil {
 		return nil, gasLeft, derr
 	}
-	// Back the collect: the pot, the record's withdrawable, and the owner reserve all
-	// rise by the delivered fee — keeping committedPositions == Σ live records'
-	// LockedAmt and the per-owner bound exact.
-	storeCommittedPositions(stateDB, aid, new(big.Int).Add(loadCommittedPositions(stateDB, aid), delivered))
-	order.LockedAmt = new(big.Int).Add(order.LockedAmt, delivered)
-	storeRestingOrder(stateDB, positionID, order)
-	storeLockedReserve(stateDB, order.Owner, aid,
-		new(big.Int).Add(loadLockedReserve(stateDB, order.Owner, aid), delivered))
 	out := make([]byte, 32)
 	delivered.FillBytes(out)
 	return out, gasLeft, nil
 }
 
-// receiveOperatorValue moves operator-delivered value INTO the 0x9999 vault and
-// returns the amount that ACTUALLY arrived. Native uses the observed-delta discipline
-// (the host frame already moved msg.value into 0x9999; delivered = realBal − Σ tracked
-// pots), so a value==0 seed delivers 0 and the caller reverts on the unbacked check.
-// ERC-20 uses the vault transferFrom observed delta (fee-on-transfer safe). It does NOT
-// itself touch any pot — the caller records the delivered value in the target pot,
-// keeping the vault-account invariant intact.
-func receiveOperatorValue(stateDB StateDB, caller common.Address, asset Currency, aid [32]byte, amount *big.Int) (*big.Int, error) {
+// receiveOperatorValue moves operator-delivered value INTO the 0x9999 vault and records it in
+// the target pot via `record` using the NATIVE-ZAP two-phase discipline (the geth nested-call
+// fund-loss fix): the pot write (Phase A, via `record`) happens BEFORE the ERC-20 transferFrom
+// (Phase B, terminal), so the host bug cannot drop the seed's accounting (which it did — the
+// ERC-20 seed moved the token but lost the seamReserve/committedPositions credit => a stranded,
+// liveness-ineffective seed).
+//
+//   - NATIVE: observed-delta read (the host frame already moved msg.value into 0x9999; delivered
+//     = realBal − Σ tracked pots), no nested call, so `record(delivered)` is Phase A and safe.
+//     A value==0 seed delivers 0 and reverts; an over-send is captured as real backing.
+//   - ERC-20: `record(requested)` runs in Phase A, then the single transferFrom is the terminal
+//     effect and asserts the vault received at least `requested` (under-delivery reverts the
+//     whole frame, the recorded pot write included — never an unbacked seed credit).
+//
+// Returns the recorded amount (delivered for native, requested for ERC-20).
+func receiveOperatorValue(stateDB StateDB, caller common.Address, asset Currency, aid [32]byte, amount *big.Int, record func(*big.Int) error) (*big.Int, error) {
 	if isNativeAsset(aid) {
 		if _, of := uint256.FromBig(amount); of {
 			return nil, ErrSeedBadAmount
 		}
 		// delivered = realBal − (settleVault + makerLockedVault + seamReserve +
-		// committedPositions): the native this call carried, since every native-moving
-		// path keeps the four pots in lock-step with the vault's real native balance.
+		// committedPositions): the native this call carried, since every native-moving path
+		// keeps the four pots in lock-step with the vault's real native balance.
 		realBal := stateDB.GetBalance(poolManagerAddr9999).ToBig()
 		tracked := new(big.Int).Add(loadSettleVault(stateDB, aid), loadMakerLockedVault(stateDB, aid))
 		tracked.Add(tracked, loadSeamReserve(stateDB, aid))
@@ -195,22 +211,24 @@ func receiveOperatorValue(stateDB StateDB, caller common.Address, asset Currency
 		if delivered.Sign() < 0 || delivered.Cmp(amount) < 0 {
 			return nil, ErrSeedUndelivered
 		}
-		// Return what ACTUALLY arrived, not the requested amount — symmetric with the
-		// ERC-20 branch's observed delta below. The caller records this in the target
-		// pot, so an operator over-send is captured as real backing instead of stranded
-		// (keeps the four pots tracking the vault's real balance; realHolding >= Σ pots
-		// always holds, and == in the normal seed flow).
+		if err := record(delivered); err != nil {
+			return nil, err
+		}
 		return delivered, nil
 	}
 	vault, ok := stateDBERC20(stateDB)
 	if !ok {
 		return nil, ErrSettleERC20Vault
 	}
-	delta, err := safeTransferTokenFrom(vault, asset.Address, caller, poolManagerAddr9999, amount)
-	if err != nil {
+	// PHASE A — record the REQUESTED amount in the target pot, BEFORE the terminal pull.
+	if err := record(amount); err != nil {
 		return nil, err
 	}
-	return delta, nil
+	// PHASE B — terminal transferFrom; revert (rolling back `record`) on under-delivery.
+	if err := pullERC20Terminal(vault, asset.Address, caller, amount); err != nil {
+		return nil, err
+	}
+	return amount, nil
 }
 
 // decodeAssetAmount reads (address asset, uint256 amount) from a 2-word calldata
