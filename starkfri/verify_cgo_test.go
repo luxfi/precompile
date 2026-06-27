@@ -136,11 +136,11 @@ func TestStarkFRI_KAT_RejectTampered(t *testing.T) {
 	// FRI layer roots, final poly, query openings deeper in.
 	bodyLen := len(proof) - len(MagicHeader)
 	bodyOffsets := []int{
-		1,             // header (log_degree_bound)
-		11,            // first byte of the public-input echo / trace area
-		bodyLen / 4,   // FRI layer-root / final-poly region
-		bodyLen / 2,   // query-openings region (Merkle siblings)
-		bodyLen - 2,   // last query opening's last auth byte
+		1,           // header (log_degree_bound)
+		11,          // first byte of the public-input echo / trace area
+		bodyLen / 4, // FRI layer-root / final-poly region
+		bodyLen / 2, // query-openings region (Merkle siblings)
+		bodyLen - 2, // last query opening's last auth byte
 	}
 	for _, off := range bodyOffsets {
 		// Operate on a fresh copy each time.

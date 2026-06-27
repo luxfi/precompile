@@ -39,9 +39,9 @@ import (
 const coreStoreNamespace = settleStateNamespace + "core."
 
 var (
-	coreKVPrefix    = []byte(coreStoreNamespace + "kv.")    // per dexcore key -> value slots
-	coreIndexPrefix = []byte(coreStoreNamespace + "oidx.")  // per-market order-id index
-	coreOrderPrefix = []byte("order:")                      // dexcore order-row key prefix
+	coreKVPrefix    = []byte(coreStoreNamespace + "kv.")   // per dexcore key -> value slots
+	coreIndexPrefix = []byte(coreStoreNamespace + "oidx.") // per-market order-id index
+	coreOrderPrefix = []byte("order:")                     // dexcore order-row key prefix
 )
 
 // evmStore implements dexcore.Store over the 0x9999 EVM storage trie via stateKV
@@ -263,10 +263,10 @@ func (it *evmOrderIterator) Next() bool {
 	return true
 }
 
-func (it *evmOrderIterator) Error() error    { return it.err }
-func (it *evmOrderIterator) Key() []byte      { return it.curKey }
-func (it *evmOrderIterator) Value() []byte    { return it.curVal }
-func (it *evmOrderIterator) Release()         {}
+func (it *evmOrderIterator) Error() error  { return it.err }
+func (it *evmOrderIterator) Key() []byte   { return it.curKey }
+func (it *evmOrderIterator) Value() []byte { return it.curVal }
+func (it *evmOrderIterator) Release()      {}
 
 // --- order-key parsing (the index trigger) ---
 

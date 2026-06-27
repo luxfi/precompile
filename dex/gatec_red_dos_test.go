@@ -15,13 +15,14 @@ import (
 )
 
 // TestRED_GateC_DoS_BuildCostDominatesSweepCost builds N resting maker orders and shows:
-//   (1) each placement costs the GasSwap floor (50k) + real locked capital (custody-gated),
-//       so depth is NOT free — building the "trap" costs N*50k gas;
-//   (2) a taker swap over that depth charges the SAME flat GasSwap floor — confirming the
-//       amplification is real (O(N) work, flat gas) BUT that the attacker paid MORE to
-//       build the book (N*50k) than a single sweep costs (50k);
-//   (3) there is no single input field that forces N to be large in ONE call — N is the
-//       persistent committed book depth, each unit gas+capital-gated.
+//
+//	(1) each placement costs the GasSwap floor (50k) + real locked capital (custody-gated),
+//	    so depth is NOT free — building the "trap" costs N*50k gas;
+//	(2) a taker swap over that depth charges the SAME flat GasSwap floor — confirming the
+//	    amplification is real (O(N) work, flat gas) BUT that the attacker paid MORE to
+//	    build the book (N*50k) than a single sweep costs (50k);
+//	(3) there is no single input field that forces N to be large in ONE call — N is the
+//	    persistent committed book depth, each unit gas+capital-gated.
 func TestRED_GateC_DoS_BuildCostDominatesSweepCost(t *testing.T) {
 	h := newE2EHarness(t)
 	maker, taker := e2eMaker, e2eTaker
