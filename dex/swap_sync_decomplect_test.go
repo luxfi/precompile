@@ -82,7 +82,7 @@ func TestDecomplect_RealAssetFillsThenSyntheticFailsClosed(t *testing.T) {
 	hs.key = c1MarketKey() // base = c1FabricatedBase (synthetic, no code), quote = c1RealQuote (real)
 
 	r := newTestAssetResolver(hs.networkID, hs.cChainID).boundToHarness(hs)
-	r.admitERC20(t, c1RealQuote, 6)                  // real quote: code-backed
+	r.admitERC20(t, c1RealQuote, 6)                   // real quote: code-backed
 	hs.state.stateDB.SetCodeSize(c1FabricatedBase, 0) // synthetic base: NO code
 	prev := installedAssetResolver.Load()
 	installedAssetResolver.Store(nil) // drop any prior harness resolver so this install lands cleanly

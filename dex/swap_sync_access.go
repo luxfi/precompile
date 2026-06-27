@@ -89,8 +89,12 @@ const dexAMMRowSlots = 2
 
 // dexKeyBalance / dexKeyLocked build the dexcore ledger keys EXACTLY as dexcore's
 // balanceLedgerKey does (<prefix><user:32><asset:32>) so valueSlot names the identical slot.
-func dexKeyBalance(user, asset [32]byte) []byte { return dexBalanceLikeKey(coreBalancePrefix, user, asset) }
-func dexKeyLocked(user, asset [32]byte) []byte  { return dexBalanceLikeKey(coreLockedPrefix, user, asset) }
+func dexKeyBalance(user, asset [32]byte) []byte {
+	return dexBalanceLikeKey(coreBalancePrefix, user, asset)
+}
+func dexKeyLocked(user, asset [32]byte) []byte {
+	return dexBalanceLikeKey(coreLockedPrefix, user, asset)
+}
 
 func dexBalanceLikeKey(prefix []byte, user, asset [32]byte) []byte {
 	k := make([]byte, 0, len(prefix)+32+32)
