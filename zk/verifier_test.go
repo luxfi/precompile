@@ -1147,26 +1147,55 @@ func TestModInverse(t *testing.T) {
 	}
 }
 
-// TestIsValidCompressedPoint tests point validation
+// TestIsValidCompressedPoint tests real Pallas compressed-point validation.
 func TestIsValidCompressedPoint(t *testing.T) {
-	// Valid point (non-zero, 32 bytes)
+	// A genuine on-curve Pallas point: the standard generator (x = -1 ≡ p-1,
+	// y = 2), since (-1)^3 + 5 = 4 = 2^2. Encoded as 32-byte big-endian x with
+	// the sign bit clear (p-1 < 2^255).
+	x := new(big.Int).Sub(pallasFieldModulus, big.NewInt(1))
 	valid := make([]byte, 32)
-	valid[0] = 1
+	copy(valid[32-len(x.Bytes()):], x.Bytes())
 	if !isValidCompressedPoint(valid) {
-		t.Error("Expected valid point to pass")
+		t.Error("Expected on-curve Pallas point to pass")
 	}
 
 	// Invalid: wrong size
-	wrongSize := make([]byte, 31)
-	wrongSize[0] = 1
-	if isValidCompressedPoint(wrongSize) {
+	if isValidCompressedPoint(make([]byte, 31)) {
 		t.Error("Expected wrong size to fail")
 	}
 
 	// Invalid: all zeros (identity)
-	zeros := make([]byte, 32)
-	if isValidCompressedPoint(zeros) {
+	if isValidCompressedPoint(make([]byte, 32)) {
 		t.Error("Expected zero point to fail")
+	}
+
+	// Invalid: non-canonical x >= field modulus (all 0xFF, sign bit cleared
+	// => x = 2^255 - 1 > p).
+	overflow := make([]byte, 32)
+	for i := range overflow {
+		overflow[i] = 0xFF
+	}
+	overflow[0] &^= 0x80
+	if isValidCompressedPoint(overflow) {
+		t.Error("Expected non-canonical x >= p to fail")
+	}
+
+	// Invalid: off-curve x (x^3 + 5 is a quadratic non-residue mod p).
+	offX := big.NewInt(2)
+	for {
+		rhs := new(big.Int).Mul(offX, offX)
+		rhs.Mul(rhs, offX)
+		rhs.Add(rhs, big.NewInt(5))
+		rhs.Mod(rhs, pallasFieldModulus)
+		if !isQuadraticResidue(rhs, pallasFieldModulus) {
+			break // found an x with no curve point
+		}
+		offX.Add(offX, big.NewInt(1))
+	}
+	off := make([]byte, 32)
+	copy(off[32-len(offX.Bytes()):], offX.Bytes())
+	if isValidCompressedPoint(off) {
+		t.Errorf("Expected off-curve point (x=%s) to fail", offX)
 	}
 }
 
@@ -1229,6 +1258,27 @@ func TestVerifyHalo2Precompile(t *testing.T) {
 }
 
 // Helper function to build test Halo2 proof data
+// realCompressedPallasPoint returns a valid on-curve compressed Pallas point,
+// deterministically derived from seed (distinct seeds give distinct points).
+// Used so test proof fixtures present points that pass isValidCompressedPoint.
+func realCompressedPallasPoint(seed byte) []byte {
+	x := new(big.Int).SetBytes([]byte{seed, 0xA5, 0x5A, 0x01})
+	for {
+		rhs := new(big.Int).Mul(x, x)
+		rhs.Mul(rhs, x)
+		rhs.Add(rhs, big.NewInt(5))
+		rhs.Mod(rhs, pallasFieldModulus)
+		if isQuadraticResidue(rhs, pallasFieldModulus) {
+			break
+		}
+		x.Add(x, big.NewInt(1))
+	}
+	out := make([]byte, 32)
+	xb := x.Bytes()
+	copy(out[32-len(xb):], xb)
+	return out
+}
+
 func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32) []byte {
 	// Calculate total size
 	size := 32 + // vkID
@@ -1270,9 +1320,9 @@ func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32
 	data[offset+3] = byte(numAdvice)
 	offset += 4
 
-	// advice commitments (numAdvice * 32 bytes) - non-zero
+	// advice commitments (numAdvice * 32 bytes) - real on-curve points
 	for i := range numAdvice {
-		data[offset] = byte(i + 0x10) // Non-zero
+		copy(data[offset:offset+32], realCompressedPallasPoint(byte(i+0x10)))
 		offset += 32
 	}
 
@@ -1283,9 +1333,9 @@ func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32
 	data[offset+3] = byte(numInstance)
 	offset += 4
 
-	// instance commitments (numInstance * 32 bytes) - non-zero
+	// instance commitments (numInstance * 32 bytes) - real on-curve points
 	for i := range numInstance {
-		data[offset] = byte(i + 0x20) // Non-zero
+		copy(data[offset:offset+32], realCompressedPallasPoint(byte(i+0x20)))
 		offset += 32
 	}
 
@@ -1296,15 +1346,15 @@ func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32
 	data[offset+3] = byte(numRounds)
 	offset += 4
 
-	// L points (numRounds * 32 bytes) - non-zero
+	// L points (numRounds * 32 bytes) - real on-curve points
 	for i := range numRounds {
-		data[offset] = byte(i + 0x30) // Non-zero
+		copy(data[offset:offset+32], realCompressedPallasPoint(byte(i+0x30)))
 		offset += 32
 	}
 
-	// R points (numRounds * 32 bytes) - non-zero
+	// R points (numRounds * 32 bytes) - real on-curve points
 	for i := range numRounds {
-		data[offset] = byte(i + 0x40) // Non-zero
+		copy(data[offset:offset+32], realCompressedPallasPoint(byte(i+0x40)))
 		offset += 32
 	}
 
