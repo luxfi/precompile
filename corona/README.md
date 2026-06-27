@@ -20,7 +20,7 @@ The Pulsar Threshold precompile enables verification of lattice-based threshold 
 
 Pulsar implements a threshold signature scheme based on:
 - **Lattice Cryptography**: LWE problem hardness
-- **Ring Learning With Errors**: Polynomial ring operations
+- **Module Learning With Errors**: Polynomial ring operations
 - **Threshold Secret Sharing**: Shamir's secret sharing over rings
 - **Two-Round Protocol**: Efficient distributed key generation and signing
 
