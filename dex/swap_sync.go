@@ -143,75 +143,118 @@ func syncSwap(stateDB StateDB, resolver dexcore.AssetResolver, caller common.Add
 	//     (ErrNoOnChainVerifier).
 	// The left-padded address NAMES an asset but does not let it TRADE: trading requires the
 	// asset to resolve AND verify on-chain. Any REAL pair opens permissionlessly. Idempotent.
+	// OpenMarketChecked + the verifier read 0x9999 / token CODE size via StateDB (not a nested
+	// EVM Call), so this stays in the nested-call-free Phase A.
 	verifier := onChainVerifierFor(stateDB)
 	if err := dexcore.OpenMarketChecked(store, resolver, verifier, req.PoolID,
 		assetSideForCurrency(key.Currency0), assetSideForCurrency(key.Currency1)); err != nil {
 		return nil, err
 	}
 
-	// (C-side lock) Debit the taker's REAL input asset from their EVM balance into the
-	// 0x9999 vault (seamReserve), observed-delta (fee-on-transfer safe). This is the C
-	// leg of the journal's DebitTakerInput; we perform it here because dexcore records
-	// the intent but cannot touch EVM balances. The locked amount becomes the taker's
-	// dexcore-ledger AVAILABLE input the router spends.
-	locked, err := lockIntentInput(stateDB, caller, amountInAssetOf(req), inAssetAddr, req.AmountIn)
-	if err != nil {
-		return nil, err
-	}
-	// Credit the taker's dexcore-ledger available with EXACTLY what the vault locked
-	// (observed delta), so the router draws from real, backed funds.
-	if err := dexcore.Deposit(store, req.TakerUser, amountInAssetOf(req), locked); err != nil {
-		return nil, err
-	}
-	// If a fee-on-transfer token delivered less than requested, route only what arrived.
-	req.AmountIn = locked
+	inAsset := amountInAssetOf(req)
 
-	// Build the router: CLOB first, then the AMM fallthrough (active only when a real
-	// pool is bound for this market).
+	// ─────────────────────────────── PHASE A — accounting + native value moves ──────────────
+	// Zero nested EVM calls here, so NONE of these 0x9999 writes can be dropped by the geth
+	// nested-call host bug. The taker's input is credited to their dexcore-ledger available at
+	// the REQUESTED amount and the seam reserve is locked; the router spends it from real,
+	// seam-backed funds. The REAL input token is pulled TERMINALLY in Phase B — an ERC-20
+	// under-delivery (fee-on-transfer) reverts the whole frame (pullERC20Terminal's
+	// delivered>=amount guard), so the requested-amount credit is never left unbacked.
+	recordSeamLock(stateDB, inAsset, req.AmountIn)
+	if derr := dexcore.Deposit(store, req.TakerUser, inAsset, req.AmountIn); derr != nil {
+		return nil, derr
+	}
+	if isNativeAsset(inAsset) {
+		// Native input moves via a plain balance op (no nested call) — Phase A.
+		if merr := moveNativeIntoVault(stateDB, caller, req.AmountIn); merr != nil {
+			return nil, merr
+		}
+	}
+
+	// Build the router (CLOB first, AMM fallthrough) and route. dexcore writes the D-side
+	// effects to 0x9999 storage and records the C-side proceeds/refund in the journal.
 	router := buildRouter(stateDB, req.PoolID)
-
-	// (Route) Best-execution across the sources. dexcore writes the D-side effects to
-	// 0x9999 storage and records the C-side proceeds/refund in the journal. The
-	// taker's dexcore lock is consumed per fill; the unspent remainder is unlocked.
 	res, err := dexcore.ExecuteSwap(store, router, req)
 	if err != nil {
 		return nil, err
 	}
 
-	// (C-side apply) Mirror the journal's recorded C-deltas onto REAL EVM balances:
-	//   - CreditTakerOutput: release the output asset from the vault to the taker.
-	//   - RefundTakerInput:  release the unspent input from the vault to the taker.
-	// Both draw ONLY on the seam reserve (creditSettlementOutput is no-mint,
-	// conservation-checked), so a proceeds/refund can never pay out of a depositor's
-	// or maker's pot. The DebitTakerInput leg was already applied by lockIntentInput.
-	if err := applyJournalC(stateDB, caller, res.Journal); err != nil {
-		return nil, err
+	// The taker's dexcore-ledger proceeds/refund are TRANSIENT (a swap is IOC, never rests):
+	// drain EXACTLY what the journal released (proceeds + refund) per asset — NOT the taker's
+	// whole available — so a PRIOR deposit the taker holds (a maker-then-taker multi-role user)
+	// is preserved, not stranded.
+	if derr := drainTakerLedger(store, req.TakerUser, res.Journal); derr != nil {
+		return nil, derr
 	}
 
-	// The taker's dexcore-ledger proceeds/refund are now redundant with the EVM credit
-	// (the ledger credited the taker's available during routing; applyJournalC released
-	// the real token). For a swap (IOC, never rests), the taker holds no resting position
-	// FROM THIS SWAP, so the TRANSIENT amount the swap added to the taker's dexcore
-	// available must be DRAINED back out. We drain EXACTLY what the journal released
-	// (proceeds + refund) per asset — NOT the taker's whole available — so a PRIOR
-	// dexcore deposit the taker holds (a maker-then-taker multi-role user) is preserved
-	// and not stranded (its vault backing stays claimed).
-	if err := drainTakerLedger(store, req.TakerUser, res.Journal); err != nil {
-		return nil, err
+	// Record the seam-release for each taker C-credit (proceeds + unspent-input refund) — NO
+	// MINT, drawn ONLY from the seam reserve. NATIVE payouts happen now (balance ops, Phase A);
+	// ERC-20 payouts are collected for the terminal Phase B. The input DebitTakerInput leg is
+	// already covered by the Phase-A seam lock above.
+	var erc20Pays []erc20Payout
+	for _, d := range res.Journal.CDeltas() {
+		switch d.Kind {
+		case dexcore.CTakerCreditOutput, dexcore.CTakerRefundInput:
+			if !d.Amount.IsUint64() {
+				return nil, ErrNativeBadAmount
+			}
+			amt := d.Amount.Uint64()
+			if rerr := recordSeamRelease(stateDB, d.Asset, amt); rerr != nil {
+				return nil, rerr
+			}
+			if isNativeAsset(d.Asset) {
+				if merr := moveNativeOutOfVault(stateDB, caller, amt); merr != nil {
+					return nil, merr
+				}
+			} else {
+				erc20Pays = append(erc20Pays, erc20Payout{token: assetAddress(d.Asset), amount: amt})
+			}
+		case dexcore.CTakerDebitInput:
+			// Covered by the Phase-A input lock (seam reserve + dexcore deposit) above.
+		}
 	}
 
-	// (C event) Emit the DEXFill log so the trade is visible in C events — the SAME
-	// indexable native-CLOB settlement signal the async Phase-B path emits, now fired
-	// on the SYNCHRONOUS money path. The graph indexer / lux.exchange scope CLOB fills
-	// to 0x9999 by this log. 0x9999 is AlwaysOn (active from genesis, no dated fork), so
-	// the log fires unconditionally whenever the route produced output. amountOut is the
-	// taker's realized proceeds; poolId + taker are the indexed topics.
+	// (C event) Emit the DEXFill log — Phase A (a log, before any nested call). The SAME
+	// indexable native-CLOB settlement signal the async Phase-B path emits, fired on the
+	// SYNCHRONOUS money path. 0x9999 is AlwaysOn; the log fires whenever the route produced
+	// output. amountOut is the taker's realized proceeds; poolId + taker are indexed topics.
 	if res.AmountOut > 0 {
 		emitDEXFillEvent(stateDB, req.PoolID, caller, new(big.Int).SetUint64(res.AmountOut), stateDB.GetBlockNumber())
 	}
 
+	// ─────────────────────────────── PHASE B — terminal ERC-20 settlements ──────────────────
+	// The ONLY nested EVM calls in the swap; nothing writes 0x9999 after them. Pull the taker's
+	// REAL input FIRST (so a same-asset refund push is backed), then push their real proceeds /
+	// refund. A revert here rolls back the whole frame, the Phase-A accounting included.
+	if !isNativeAsset(inAsset) {
+		vault, ok := stateDBERC20(stateDB)
+		if !ok {
+			return nil, ErrNativeERC20Vault
+		}
+		if perr := pullERC20Terminal(vault, inAssetAddr, caller, new(big.Int).SetUint64(req.AmountIn)); perr != nil {
+			return nil, perr
+		}
+	}
+	for _, p := range erc20Pays {
+		vault, ok := stateDBERC20(stateDB)
+		if !ok {
+			return nil, ErrNativeERC20Vault
+		}
+		if perr := pushERC20Terminal(vault, p.token, caller, new(big.Int).SetUint64(p.amount)); perr != nil {
+			return nil, perr
+		}
+	}
+
 	// Return the V4 BalanceDelta (amount0 = base leg, amount1 = quote leg).
 	return swapBalanceDelta(req, res), nil
+}
+
+// erc20Payout is a taker C-credit (proceeds or unspent-input refund) deferred to the
+// terminal Phase B of syncSwap, so the ERC-20 transfer is the frame's last external effect
+// (after every 0x9999 accounting write) and the geth nested-call host bug has nothing to drop.
+type erc20Payout struct {
+	token  common.Address
+	amount uint64
 }
 
 // buildSwapRequest decodes the V4 swap into a dexcore.SwapRequest over REAL assets.
@@ -298,27 +341,6 @@ func buildSwapRequest(stateDB StateDB, caller common.Address, key PoolKey, param
 // analog of assetID's left-pad on the asset axis.
 func accountFromAddress(a common.Address) dexcore.AccountID {
 	return dexcore.AccountFromBytes(a.Bytes())
-}
-
-// applyJournalC applies the C-surface deltas dexcore recorded onto REAL EVM balances
-// via the proven vault primitives. The DebitTakerInput leg was applied by
-// lockIntentInput before routing (it needed the observed delta), so here we apply
-// only the credit (proceeds) and refund (unspent input) legs.
-func applyJournalC(stateDB StateDB, caller common.Address, j *dexcore.Journal) error {
-	for _, d := range j.CDeltas() {
-		switch d.Kind {
-		case dexcore.CTakerCreditOutput, dexcore.CTakerRefundInput:
-			if !d.Amount.IsUint64() {
-				return ErrNativeBadAmount
-			}
-			if err := creditSettlementOutput(stateDB, caller, d.Asset, d.Amount.Uint64()); err != nil {
-				return err
-			}
-		case dexcore.CTakerDebitInput:
-			// Already applied by lockIntentInput (observed-delta lock). Skip.
-		}
-	}
-	return nil
 }
 
 // drainTakerLedger debits the TRANSIENT amount this swap added to the taker's dexcore

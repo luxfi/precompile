@@ -102,42 +102,44 @@ func (s *SettleContract) runSettleDeposit(
 		if _, of := uint256.FromBig(amount); of {
 			return nil, gasLeft, ErrSettleAmountRange
 		}
-		// NATIVE DEPOSIT — OBSERVED DELTA, not an absolute balance test.
-		//
-		// The precompile cannot read msg.value (contract.AccessibleState exposes no
-		// CallValue), so we measure the native this CALL actually delivered: the EVM
-		// already moved msg.value into 0x9999 before Run (geth Transfer precedes the
-		// precompile), and every native-moving path keeps settleVault[native] in
-		// lock-step with the vault's real native balance. Therefore
+		// NATIVE DEPOSIT — OBSERVED DELTA, not an absolute balance test. The precompile cannot
+		// read msg.value (no CallValue surface), so we measure the native this CALL delivered:
+		// the EVM already moved msg.value into 0x9999 before Run, and every native-moving path
+		// keeps settleVault[native] in lock-step with the vault's real native balance, so
 		//   delivered = GetBalance(0x9999) - settleVault[native]
-		// is exactly the value this call carried. An ABSOLUTE check (the old
-		// GetBalance >= amount) was structurally broken: 0x9999 is a SHARED vault
-		// holding every prior depositor's native + every swap's native tokenIn, so a
-		// value==0 call trivially passed it and minted an unbacked claim against
-		// OTHERS' funds. The delta check makes value==0 deliver 0 (reverts), closing
-		// the drain. Symmetric with the ERC-20 observed-delta path above.
+		// is exactly the value this call carried. An ABSOLUTE check would let a value==0 call
+		// mint an unbacked claim against OTHERS' funds in the SHARED vault; the delta check makes
+		// value==0 deliver 0 (reverts). This is all reads + balance — no nested call — so the
+		// claim/vault writes below are Phase A (never dropped by the nested-call host bug).
 		realBal := stateDB.GetBalance(poolManagerAddr9999).ToBig()
 		tracked := loadSettleVault(stateDB, aid)
 		delivered := new(big.Int).Sub(realBal, tracked)
 		if delivered.Sign() < 0 || delivered.Cmp(amount) < 0 {
 			return nil, gasLeft, ErrSettleDepositShort // value not delivered this call.
 		}
-	} else {
-		vault, ok := stateDBERC20(stateDB)
-		if !ok {
-			return nil, gasLeft, ErrSettleERC20Vault
-		}
-		delta, err := safeTransferTokenFrom(vault, asset.Address, caller, poolManagerAddr9999, amount)
-		if err != nil {
-			return nil, gasLeft, err
-		}
-		// Observed-delta: credit what truly arrived (fee-on-transfer safe).
-		amount = delta
+		storeDepositorClaim(stateDB, caller, aid, new(big.Int).Add(loadDepositorClaim(stateDB, caller, aid), amount))
+		storeSettleVault(stateDB, aid, new(big.Int).Add(loadSettleVault(stateDB, aid), amount))
+		out := make([]byte, 32)
+		amount.FillBytes(out)
+		return out, gasLeft, nil
 	}
-	// Record the depositor's claim and the vault total for this asset.
+
+	// ERC-20 DEPOSIT — NATIVE-ZAP two phase (the geth nested-call fund-loss fix). Record the
+	// depositor claim + vault total at the REQUESTED amount (PHASE A) BEFORE the single
+	// transferFrom, which is the frame's TERMINAL external effect (PHASE B). The prior order
+	// (transferFrom THEN the two stores) had the host DROP the post-transfer claim/vault writes
+	// => a deposited token with no withdrawable claim (the stranded-funds fund-loss). An under-
+	// delivering token (fee-on-transfer / rebasing-down) reverts the whole frame (pullERC20-
+	// Terminal's delivered>=amount guard) rather than recording a claim the vault cannot back.
+	vault, ok := stateDBERC20(stateDB)
+	if !ok {
+		return nil, gasLeft, ErrSettleERC20Vault
+	}
 	storeDepositorClaim(stateDB, caller, aid, new(big.Int).Add(loadDepositorClaim(stateDB, caller, aid), amount))
 	storeSettleVault(stateDB, aid, new(big.Int).Add(loadSettleVault(stateDB, aid), amount))
-
+	if perr := pullERC20Terminal(vault, asset.Address, caller, amount); perr != nil {
+		return nil, gasLeft, perr
+	}
 	out := make([]byte, 32)
 	amount.FillBytes(out)
 	return out, gasLeft, nil
