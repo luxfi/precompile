@@ -614,9 +614,8 @@ func (m *mockAccessibleState) GetStateDB() contract.StateDB {
 }
 
 func (m *mockAccessibleState) GetBlockContext() contract.BlockContext {
-	// Default to the activation boundary (live-chain era) so surface tests run with
-	// 0x9999 logs active, matching the production path under test.
-	return &mockBlockCtx{number: big.NewInt(int64(m.stateDB.blockNumber)), timestamp: DexSettleActivationTime}
+	// 0x9999 logs are AlwaysOn (active from genesis); any block time runs the live path.
+	return &mockBlockCtx{number: big.NewInt(int64(m.stateDB.blockNumber)), timestamp: harnessBlockTime}
 }
 
 func (m *mockAccessibleState) GetConsensusContext() context.Context {
@@ -632,9 +631,8 @@ func (m *mockAccessibleState) GetPrecompileEnv() contract.PrecompileEnvironment 
 }
 
 // mockBlockCtx implements contract.BlockContext for testing. timestamp defaults to
-// DexSettleActivationTime (the harness post-activation default) so settlement tests
-// exercise the live-chain path where 0x9999 logs are active; tests that need a
-// pre-activation block set timestamp explicitly.
+// harnessBlockTime; 0x9999 and its logs are AlwaysOn (active from genesis), so the
+// value carries no protocol meaning.
 type mockBlockCtx struct {
 	number    *big.Int
 	timestamp uint64
