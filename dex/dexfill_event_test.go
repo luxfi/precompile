@@ -97,15 +97,13 @@ func (h *settleHarness) countDEXFill() int {
 	return n
 }
 
-// TestDEXFillEvent_NotEmittedBeforeActivation proves the consensus-visible DEXFill
-// log is GATED on the Dec-25 dated fork (defense in depth, FIX A): a Phase-B credit
-// executed at a block BEFORE DexSettleActivationTime credits the output (the money
-// path still runs) but emits NO log — so a settlement that somehow dispatched before
-// the boundary cannot add a log to the receipt root that a re-syncing node would not
-// reproduce. The credit happening proves the gate is on the LOG, not the settlement.
-func TestDEXFillEvent_NotEmittedBeforeActivation(t *testing.T) {
+// TestDEXFillEvent_EmittedAtGenesis proves the consensus-visible DEXFill log is AlwaysOn
+// (active from genesis, no dated fork): a Phase-B credit executed at genesis (block
+// timestamp 0) BOTH credits the output AND emits the DEXFill log — there is no
+// pre-activation suppression. Every settlement that executes emits its log, from block 0.
+func TestDEXFillEvent_EmittedAtGenesis(t *testing.T) {
 	h := newSettleHarness(t)
-	h.state.blockTimestamp = DexSettleActivationTime - 1 // one second before the fork
+	h.state.blockTimestamp = 0 // genesis — the earliest possible block
 	h.registerMarket(t)
 	h.fundVaultOut(10_000)
 
@@ -114,36 +112,33 @@ func TestDEXFillEvent_NotEmittedBeforeActivation(t *testing.T) {
 
 	before := h.tokenBal(h.outToken(), h.caller)
 	if _, err := h.runSwap(t, h.settlementCalldata(outputID, 250), false); err != nil {
-		t.Fatalf("phase-B settle (pre-activation): %v", err)
+		t.Fatalf("phase-B settle (genesis): %v", err)
 	}
-	// The credit DID happen (money path is unaffected by the log gate) — the output
-	// token (currency1) is credited from the seam reserve.
+	// The credit happened — the output token (currency1) is credited from the seam reserve.
 	after := h.tokenBal(h.outToken(), h.caller)
 	if new(big.Int).Sub(after, before).Int64() != 250 {
-		t.Fatalf("pre-activation settle must still credit 250, got delta %s", new(big.Int).Sub(after, before))
+		t.Fatalf("genesis settle must credit 250, got delta %s", new(big.Int).Sub(after, before))
 	}
-	// ... but NO DEXFill log was written.
-	if n := h.countDEXFill(); n != 0 {
-		t.Fatalf("DEXFill must NOT be emitted before activation, got %d", n)
+	// ... and the DEXFill log WAS written, from genesis.
+	if n := h.countDEXFill(); n != 1 {
+		t.Fatalf("DEXFill must be emitted from genesis (AlwaysOn), got %d", n)
 	}
 }
 
-// TestDEXFillEvent_EmittedAtActivation proves the boundary is inclusive: a settlement
-// at EXACTLY DexSettleActivationTime emits the DEXFill (the relaunch genesis is at the
-// boundary, so the very first settlement must be indexable).
-func TestDEXFillEvent_EmittedAtActivation(t *testing.T) {
-	h := newSettleHarness(t)
-	h.state.blockTimestamp = DexSettleActivationTime // exactly at the fork
+// TestDEXFillEvent_EmittedOnCredit proves a Phase-B credit at a normal block time emits
+// exactly one DEXFill — the standard indexable settlement signal on the money path.
+func TestDEXFillEvent_EmittedOnCredit(t *testing.T) {
+	h := newSettleHarness(t) // harness default block time
 	h.registerMarket(t)
 	h.fundVaultOut(10_000)
 
 	outputID := ids.ID{0xDE, 0x44}
 	h.putDtoCObject(t, h.caller, outputID, h.outAssetID(), 250)
 	if _, err := h.runSwap(t, h.settlementCalldata(outputID, 250), false); err != nil {
-		t.Fatalf("phase-B settle (at activation): %v", err)
+		t.Fatalf("phase-B settle: %v", err)
 	}
 	if n := h.countDEXFill(); n != 1 {
-		t.Fatalf("DEXFill must be emitted at activation, got %d", n)
+		t.Fatalf("DEXFill must be emitted on a Phase-B credit, got %d", n)
 	}
 }
 
@@ -154,7 +149,7 @@ func TestDEXFillEvent_EmittedAtActivation(t *testing.T) {
 // Asserting against the REAL emitter output (not a fabricated log) is the point: the
 // graph test mirrors this exact shape.
 func TestInitializeEvent_EmittedAt9999WithPairAndFee(t *testing.T) {
-	h := newSettleHarness(t) // harness defaults to post-activation
+	h := newSettleHarness(t) // harness default block time (logs AlwaysOn)
 	h.registerMarket(t)
 
 	initSig := common.BytesToHash(crypto.Keccak256([]byte("Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)")))
@@ -194,22 +189,26 @@ func TestInitializeEvent_EmittedAt9999WithPairAndFee(t *testing.T) {
 	}
 }
 
-// TestInitializeEvent_NotEmittedBeforeActivation proves the Initialize log is gated on
-// the SAME dated fork: registering a market before the boundary writes the
-// C-authoritative state record (verified by a successful call) but emits no log.
-func TestInitializeEvent_NotEmittedBeforeActivation(t *testing.T) {
+// TestInitializeEvent_EmittedAtGenesis proves the Initialize log is AlwaysOn (active from
+// genesis): registering a market at genesis (block timestamp 0) BOTH writes the
+// C-authoritative state record AND emits the Initialize log — no pre-activation suppression.
+func TestInitializeEvent_EmittedAtGenesis(t *testing.T) {
 	h := newSettleHarness(t)
-	h.state.blockTimestamp = DexSettleActivationTime - 1
-	h.registerMarket(t) // must still succeed — only the LOG is gated, not the registry
+	h.state.blockTimestamp = 0 // genesis
+	h.registerMarket(t)
 
 	initSig := common.BytesToHash(crypto.Keccak256([]byte("Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)")))
+	found := 0
 	for _, lg := range h.state.stateDB.Logs() {
 		if len(lg.Topics) > 0 && lg.Topics[0] == initSig {
-			t.Fatal("Initialize must NOT be emitted before activation")
+			found++
 		}
+	}
+	if found != 1 {
+		t.Fatalf("Initialize must be emitted from genesis (AlwaysOn), got %d", found)
 	}
 	// The registry write IS present (idempotent re-init reverts → proves it registered).
 	if _, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999, initCalldata(h.key, new(big.Int).Set(Q96)), 5_000_000, false); err == nil {
-		t.Fatal("re-init should revert ErrPoolAlreadyInitialized — registry must have been written pre-activation")
+		t.Fatal("re-init should revert ErrPoolAlreadyInitialized — registry must have been written")
 	}
 }
