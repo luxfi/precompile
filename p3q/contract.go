@@ -28,7 +28,7 @@
 //	0x012203 = SLH-DSA           (hash-based signature, FIPS 205)
 //	0x012204 = Pulsar            (Module-LWE threshold, FIPS 204 byte-equal)
 //	0x012205 = P3Q               ← this precompile (LP-218 rollup-commit verifier)
-//	0x012206 = Corona            (Ring-LWE threshold)
+//	0x012206 = Corona            (Module-LWE threshold, Ringtail/Raccoon)
 //	0x012207 = Magnetar          (SLH-DSA threshold, FIPS 205 byte-equal)
 //	0x012208 = HQC               (code-based KEM, family-disjoint backup)
 //
@@ -169,7 +169,7 @@ const (
 // libraries land (see LP-220 §"Per-kind specs").
 const (
 	KindPulsar   uint8 = 0x01 // FIPS 204 ML-DSA (Module-LWE threshold, byte-equal)
-	KindCorona   uint8 = 0x02 // Ring-LWE threshold (Corona eprint 2024/1113)
+	KindCorona   uint8 = 0x02 // Module-LWE threshold (Corona eprint 2024/1113)
 	KindMagnetar uint8 = 0x03 // FIPS 205 SLH-DSA (hash-based threshold)
 )
 

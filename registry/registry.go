@@ -533,7 +533,7 @@ var AllPrecompiles = []PrecompileInfo{
 	// Threshold/MPC (P=5) → LP-5xxx
 	{FROSTCChain, "FROST", "Schnorr threshold signatures", 25000, []string{"C", "Q"}, "LP-5xxx"},
 	{CGGMP21CChain, "CGGMP21", "ECDSA threshold signatures", 50000, []string{"C", "Q"}, "LP-5xxx"},
-	{CoronaCChain, "CORONA", "Threshold Ring-LWE signatures (PQ)", 75000, []string{"C", "Q"}, "LP-5xxx"},
+	{CoronaCChain, "CORONA", "Threshold Module-LWE signatures (PQ)", 75000, []string{"C", "Q"}, "LP-5xxx"},
 	{LSSCChain, "LSS", "Lux Secret Sharing", 10000, []string{"C", "Q"}, "LP-5xxx"},
 	{DKGCChain, "DKG", "Distributed Key Generation", 100000, []string{"C", "Q"}, "LP-5xxx"},
 
