@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	// ContractCoronaThresholdAddress is the address of the Corona Ring-LWE threshold signature precompile.
-	// LP-4200 unified PQCrypto block (Ring-LWE threshold): 0x012206.
+	// ContractCoronaThresholdAddress is the address of the Corona Module-LWE threshold signature precompile.
+	// LP-4200 unified PQCrypto block (Module-LWE threshold, Ringtail/Raccoon): 0x012206.
 	// Was 0x020000...000B which collides with FHE precompile space (0x0200...0080+).
 	ContractCoronaThresholdAddress = common.HexToAddress("0x0000000000000000000000000000000000012206")
 
@@ -65,7 +65,7 @@ const (
 
 type coronaThresholdPrecompile struct{}
 
-// Address returns the address of the Corona Ring-LWE threshold signature precompile
+// Address returns the address of the Corona Module-LWE threshold signature precompile
 func (p *coronaThresholdPrecompile) Address() common.Address {
 	return ContractCoronaThresholdAddress
 }
