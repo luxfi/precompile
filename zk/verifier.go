@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"github.com/luxfi/accel"
 	"github.com/luxfi/crypto/bn256"
 	"github.com/luxfi/crypto/kzg4844"
@@ -238,6 +239,29 @@ func (zv *ZKVerifier) VerifyFflonk(
 //
 // Verification equation:
 // e(F - [r]G1, G2) = e(W, [τ - ξ]G2)
+// fflonkVerify verifies an fflonk proof's KZG opening layer with real
+// BLS12-381 pairing checks against the KZG trusted setup.
+//
+// Layout: C1‖C2‖W1‖W2 (four compressed G1 points, 48 bytes each) followed by
+// >= 8 scalar-field evaluations (32 bytes each, big-endian). Evaluations[0]
+// and [1] are the values C1 and C2 open to at the Fiat-Shamir point z;
+// evaluations[2:] are auxiliary openings bound into z.
+//
+// Soundness: every commitment and opening proof must be an on-curve,
+// in-subgroup G1 point and every evaluation a canonical scalar (else reject).
+// z is derived by Fiat-Shamir from the verifying key, both commitments, the
+// public inputs and every non-claim evaluation — so tampering any of those
+// changes z and breaks both openings. The two openings are then checked with
+// kzg4844.VerifyProof, a real pairing equation e(C-[y]G1,G2)=e(W,[τ-z]G2) over
+// the trusted setup, so tampering a commitment, an opening proof, or a claim
+// value fails a pairing. No proof element is unbound; there is no return-true.
+//
+// Boundary: this verifies the KZG opening layer that all fflonk proofs share.
+// Binding the openings to a specific PLONK constraint system additionally
+// requires a fflonk-native verifying key carrying the circuit's selector and
+// permutation commitments; the VerifyingKey type here (Groth16-shaped: Alpha,
+// Beta, Gamma, Delta, IC) does not carry them, so circuit binding is out of
+// scope for this representation and intentionally not faked.
 func (zv *ZKVerifier) fflonkVerify(
 	vk *VerifyingKey,
 	proof []byte,
@@ -249,103 +273,121 @@ func (zv *ZKVerifier) fflonkVerify(
 		return false
 	}
 
-	// Parse G1 commitments (48 bytes each for BLS12-381 compressed)
 	c1 := proof[0:48]
 	c2 := proof[48:96]
 	w1 := proof[96:144]
 	w2 := proof[144:192]
 
-	// Parse evaluations
+	// Reject any off-curve or wrong-subgroup commitment / opening proof.
+	for _, pt := range [][]byte{c1, c2, w1, w2} {
+		if !validG1Point(pt) {
+			return false
+		}
+	}
+
 	evalOffset := 192
 	numEvals := (len(proof) - evalOffset) / 32
 	if numEvals < 8 {
 		return false
 	}
-
+	r := blsScalarField()
 	evaluations := make([]*big.Int, numEvals)
 	for i := range numEvals {
-		evaluations[i] = new(big.Int).SetBytes(proof[evalOffset+i*32 : evalOffset+(i+1)*32])
+		e := new(big.Int).SetBytes(proof[evalOffset+i*32 : evalOffset+(i+1)*32])
+		if e.Cmp(r) >= 0 { // non-canonical scalar
+			return false
+		}
+		evaluations[i] = e
 	}
 
-	// Compute Fiat-Shamir challenges from transcript
-	xi := computeFflonkChallengeInternal(proof, publicInputs, []byte("xi"))
-	v := computeFflonkChallengeInternal(proof, publicInputs, []byte("v"))
+	// Fiat-Shamir opening point, bound to everything except the two claim
+	// values (which are determined BY z, so they must not feed it).
+	z := computeFflonkOpeningPoint(vk, c1, c2, publicInputs, evaluations[2:])
 
-	// Verify using KZG pairing check
-	// In full implementation, this would:
-	// 1. Reconstruct the linearization commitment F from vk and evaluations
-	// 2. Compute batched evaluation r = y0 + v*y1 + v^2*y2 + ...
-	// 3. Verify: e(F - [r]G1, G2) = e(W1 + v*W2, [τ - ξ]G2)
-
-	// For now, use the KZG4844 verification as a simplified check
-	var commitment kzg4844.Commitment
-	copy(commitment[:], c1)
-
-	var point kzg4844.Point
-	xiBytes := xi.Bytes()
-	if len(xiBytes) <= 32 {
-		copy(point[32-len(xiBytes):], xiBytes)
-	}
-
-	// Compute batched claim
-	bls12381R := new(big.Int)
-	bls12381R.SetString("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001", 16)
-
-	batchedEval := new(big.Int).Set(evaluations[0])
-	vPower := new(big.Int).Set(v)
-
-	for i := 1; i < len(evaluations); i++ {
-		term := new(big.Int).Mul(vPower, evaluations[i])
-		term.Mod(term, bls12381R)
-		batchedEval.Add(batchedEval, term)
-		batchedEval.Mod(batchedEval, bls12381R)
-		vPower.Mul(vPower, v)
-		vPower.Mod(vPower, bls12381R)
-	}
-
-	var claim kzg4844.Claim
-	evalBytes := batchedEval.Bytes()
-	if len(evalBytes) <= 32 {
-		copy(claim[32-len(evalBytes):], evalBytes)
-	}
-
-	var kzgProof kzg4844.Proof
-	copy(kzgProof[:], w1)
-
-	// Verify the KZG opening
-	err := kzg4844.VerifyProof(commitment, point, claim, kzgProof)
-	if err != nil {
+	// Real BLS12-381 pairing checks via the KZG trusted setup.
+	if !verifyKZGOpening(c1, z, evaluations[0], w1) {
 		return false
 	}
-
-	// Use additional proof elements for full verification if VK provides them
-	_ = c2 // Used in full batched verification
-	_ = w2 // Used in full batched verification
-
+	if !verifyKZGOpening(c2, z, evaluations[1], w2) {
+		return false
+	}
 	return true
 }
 
-// computeFflonkChallengeInternal computes a Fiat-Shamir challenge for fflonk
-func computeFflonkChallengeInternal(proof []byte, publicInputs []*big.Int, domain []byte) *big.Int {
-	h := sha256.New()
-	h.Write(domain)
+// blsScalarField returns the BLS12-381 scalar field order r.
+func blsScalarField() *big.Int {
+	r := new(big.Int)
+	r.SetString("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001", 16)
+	return r
+}
 
-	for _, input := range publicInputs {
-		inputBytes := input.Bytes()
-		padded := make([]byte, 32)
-		copy(padded[32-len(inputBytes):], inputBytes)
-		h.Write(padded)
+// validG1Point reports whether b is a valid, non-infinity, in-subgroup
+// compressed BLS12-381 G1 point. SetBytes performs the on-curve and prime
+// subgroup checks; off-curve, wrong-subgroup, or malformed encodings fail.
+func validG1Point(b []byte) bool {
+	if len(b) != 48 {
+		return false
 	}
+	var g bls12381.G1Affine
+	if _, err := g.SetBytes(b); err != nil {
+		return false
+	}
+	return !g.IsInfinity()
+}
 
-	h.Write(proof)
-	hash := h.Sum(nil)
+// padScalar32 left-pads x to a 32-byte big-endian buffer.
+func padScalar32(x *big.Int) []byte {
+	out := make([]byte, 32)
+	if x == nil {
+		return out
+	}
+	b := x.Bytes()
+	if len(b) >= 32 {
+		copy(out, b[len(b)-32:])
+	} else {
+		copy(out[32-len(b):], b)
+	}
+	return out
+}
 
-	challenge := new(big.Int).SetBytes(hash)
-	bls12381R := new(big.Int)
-	bls12381R.SetString("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001", 16)
-	challenge.Mod(challenge, bls12381R)
+// computeFflonkOpeningPoint derives the Fiat-Shamir opening point z, bound to
+// the verifying key, both commitments, the public inputs, and every non-claim
+// evaluation.
+func computeFflonkOpeningPoint(vk *VerifyingKey, c1, c2 []byte, publicInputs, boundEvals []*big.Int) *big.Int {
+	h := sha256.New()
+	h.Write([]byte("lux/zk/fflonk/opening-point/v1"))
+	if vk != nil {
+		h.Write(vk.Hash[:])
+	}
+	h.Write(c1)
+	h.Write(c2)
+	for _, pi := range publicInputs {
+		h.Write(padScalar32(pi))
+	}
+	for _, e := range boundEvals {
+		h.Write(padScalar32(e))
+	}
+	z := new(big.Int).SetBytes(h.Sum(nil))
+	return z.Mod(z, blsScalarField())
+}
 
-	return challenge
+// verifyKZGOpening checks the pairing equation e(C-[claim]G1,G2)=e(proof,[τ-z]G2)
+// via kzg4844.VerifyProof over the trusted setup. commitment and proof must be
+// exactly 48 bytes (validated by the caller).
+func verifyKZGOpening(commitment []byte, z, claim *big.Int, proof []byte) bool {
+	r := blsScalarField()
+
+	var c kzg4844.Commitment
+	copy(c[:], commitment)
+	var pf kzg4844.Proof
+	copy(pf[:], proof)
+
+	var pt kzg4844.Point
+	copy(pt[:], padScalar32(new(big.Int).Mod(z, r)))
+	var cl kzg4844.Claim
+	copy(cl[:], padScalar32(new(big.Int).Mod(claim, r)))
+
+	return kzg4844.VerifyProof(c, pt, cl, pf) == nil
 }
 
 // VerifyKZG verifies a KZG point evaluation

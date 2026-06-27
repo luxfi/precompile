@@ -376,17 +376,18 @@ func TestVerifyTEE(t *testing.T) {
 		byte(nonce >> 8), byte(nonce),
 	})
 
-	signature := make([]byte, 64) // Minimum valid signature length
+	signature := make([]byte, 64)
 	for i := range signature {
 		signature[i] = byte(i + 1)
 	}
 
+	// A bare 48-byte receipt carries no attestation certificate chain, so real
+	// verification rejects it. (Previously the stub accepted any >=64-byte
+	// signature — a forgeable hole.) The genuine happy path with a real chain
+	// is covered by TestTEEAttestationValid in tee_attest_test.go.
 	valid, err := VerifyTEE(receipt, signature)
-	if err != nil {
-		t.Fatalf("VerifyTEE error: %v", err)
-	}
-	if !valid {
-		t.Error("Expected valid TEE attestation")
+	if valid {
+		t.Error("fake receipt with no certificate chain must be rejected")
 	}
 
 	// Empty receipt should fail

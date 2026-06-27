@@ -224,29 +224,14 @@ func VerifyTEE(receipt, signature []byte) (bool, error) {
 	return valid, nil
 }
 
-// verifyTEESignature verifies the signature over the receipt.
-// WARNING: This performs structural validation only. Full cryptographic
-// verification (certificate chain, platform root CA) requires platform-specific
-// SDK integration (NVIDIA NVTrust, Intel SGX, AMD SEV).
+// verifyTEESignature performs real TEE attestation verification: it parses the
+// X.509 certificate chain embedded in the receipt, verifies that chain to an
+// embedded vendor root CA (Intel SGX today; see tee_roots.go) as of the
+// report's timestamp, and verifies that `signature` is a genuine signature
+// over the report header by the chain's leaf key. It fails closed on anything
+// unverifiable and never returns true by default. See verifyAttestation.
 func verifyTEESignature(receipt, signature []byte) (bool, error) {
-	if len(signature) == 0 {
-		return false, ErrTEESignatureInvalid
-	}
-
-	// Structural validation: receipt must have device ID (32) + timestamp (8) + nonce (8)
-	if len(receipt) < 48 {
-		return false, ErrInvalidTEEReceipt
-	}
-
-	// Signature must be at least 64 bytes (ECDSA P-256 minimum)
-	if len(signature) < 64 {
-		return false, ErrTEESignatureInvalid
-	}
-
-	// Structural validation only. Full TEE attestation verification requires the
-	// platform-specific SDK (Intel SGX, ARM TrustZone). This gate is NOT used in
-	// consensus-critical paths; it only controls AI mining reward eligibility.
-	return true, nil
+	return verifyAttestation(receipt, signature, teeRootPool())
 }
 
 // IsSpent checks if a work ID has been spent (O(1) state lookup)
