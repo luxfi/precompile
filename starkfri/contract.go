@@ -22,7 +22,7 @@
 //	0x012203 = SLH-DSA         (hash-based signature, FIPS 205)
 //	0x012204 = Pulsar          (Module-LWE threshold FIPS 204, byte-equal)
 //	0x012205 = P3Q             (Post-Quantum Pulsar Proof — see precompile/p3q)
-//	0x012206 = Corona          (Ring-LWE threshold)
+//	0x012206 = Corona          (Module-LWE threshold)
 //	0x012207 = Magnetar        (SLH-DSA threshold, FIPS 205 byte-equal)
 //	0x012208 = HQC             (code-based KEM, family-disjoint backup)
 //	0x012220 = STARK-FRI       ← this precompile (strict-PQ STARK / FRI / SHAKE)
