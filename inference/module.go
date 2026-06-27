@@ -84,9 +84,9 @@ type Config struct {
 	Upgrade precompileconfig.Upgrade `json:"upgrade"`
 }
 
-func (c *Config) Key() string         { return ConfigKey }
-func (c *Config) Timestamp() *uint64  { return c.Upgrade.Timestamp() }
-func (c *Config) IsDisabled() bool    { return c.Upgrade.Disable }
+func (c *Config) Key() string                               { return ConfigKey }
+func (c *Config) Timestamp() *uint64                        { return c.Upgrade.Timestamp() }
+func (c *Config) IsDisabled() bool                          { return c.Upgrade.Disable }
 func (c *Config) Verify(precompileconfig.ChainConfig) error { return nil }
 
 func (c *Config) Equal(cfg precompileconfig.Config) bool {

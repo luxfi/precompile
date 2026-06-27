@@ -63,10 +63,10 @@ func readHostMarker(t testing.TB, db database.Database) uint64 {
 //  3. build the commit batch and STAGE the advanced marker (to) into it (mirrors
 //     acceptedBlockDB.Put of dexAtomicSeqKey into the versiondb the batch snapshots);
 //  4. THE SINGLE ATOMIC WRITE:
-//       - with ops: sm.Apply(reqs, batch) — its WriteAll replays our batch (marker)
-//         onto the shared-memory batch and writes BOTH in one db write;
-//       - without ops: batch.Write() — persists just the marker (mirrors the plain
-//         versiondb.Commit() path the EVM takes when there is nothing cross-chain).
+//     - with ops: sm.Apply(reqs, batch) — its WriteAll replays our batch (marker)
+//     onto the shared-memory batch and writes BOTH in one db write;
+//     - without ops: batch.Write() — persists just the marker (mirrors the plain
+//     versiondb.Commit() path the EVM takes when there is nothing cross-chain).
 //
 // If commit==false we model a CRASH BEFORE the single write (step 4): the batch and
 // reqs are prepared but neither sm.Apply nor batch.Write runs, so NOTHING is durable —
@@ -220,7 +220,7 @@ func TestFIX2_MarkerAndApplyShareOneBatch(t *testing.T) {
 
 	// OLD-BUG MODEL: apply the window to shared memory committed (its own batch write)
 	// but FAIL to persist the marker (the separate versiondb.Commit lost to a crash).
-	from := readHostMarker(t, h.memdbBacking) // 0
+	from := readHostMarker(t, h.memdbBacking)  // 0
 	to := ReadStagedAtomicSeq(h.state.stateDB) // 1
 	reqs, cerr := CollectStagedAtomicRange(h.state.stateDB, from, to)
 	if cerr != nil {

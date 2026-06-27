@@ -437,4 +437,3 @@ func nextSwapCounter(stateDB StateDB, poolID [32]byte) uint64 {
 func blockTimestampNanos(stateDB StateDB) int64 {
 	return int64(stateDB.GetBlockNumber())
 }
-
