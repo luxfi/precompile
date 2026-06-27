@@ -1211,18 +1211,58 @@ func sha256Hash(data []byte) []byte {
 	return h[:]
 }
 
-// isValidCompressedPoint checks if bytes represent a valid compressed curve point
-// For Halo2 with Pallas/Vesta curves, points are 32 bytes
+// pallasFieldModulus is the base field modulus p of the Pallas curve
+// (y^2 = x^3 + 5), the curve Halo2 commitments live on. Field elements (point
+// coordinates) are reduced mod p. p = 2^254 + 0x224698fc094cf91b992d30ed00000001.
+var pallasFieldModulus, _ = new(big.Int).SetString(
+	"28948022309329048855892746252171976963363056481941560715954676764349967630337", 10)
+
+// isValidCompressedPoint validates a 32-byte compressed Halo2 (Pallas) point.
+//
+// Encoding: 32 bytes big-endian; the top bit (0x80 of byte 0) is the y-sign
+// bit and the remaining 255 bits are the x-coordinate. The all-zero encoding
+// is the identity and is rejected here (a meaningful commitment is never the
+// identity).
+//
+// Validation: x must be a canonical field element (x < p) and the curve
+// equation y^2 = x^3 + 5 must have a solution, i.e. x^3 + 5 must be a
+// quadratic residue mod p. Pallas has prime order (cofactor 1), so any point
+// satisfying the curve equation is automatically in the prime-order subgroup;
+// the on-curve test is therefore also the subgroup test. Off-curve x values
+// (x^3 + 5 a non-residue), non-canonical x (x >= p), and wrong-length inputs
+// are rejected.
 func isValidCompressedPoint(p []byte) bool {
 	if len(p) != 32 {
 		return false
 	}
-	// Check point is not all zeros (identity check)
 	if isZeroBytes(p) {
-		return false
+		return false // identity encoding
 	}
-	// In a full implementation, we'd decompress and verify on-curve
-	return true
+	// Recover x by clearing the sign bit (both y-signs are on-curve, so the
+	// sign bit does not affect validity).
+	buf := make([]byte, 32)
+	copy(buf, p)
+	buf[0] &^= 0x80
+	x := new(big.Int).SetBytes(buf)
+	if x.Cmp(pallasFieldModulus) >= 0 {
+		return false // non-canonical x
+	}
+	// rhs = x^3 + 5 mod p
+	rhs := new(big.Int).Mul(x, x)
+	rhs.Mul(rhs, x)
+	rhs.Add(rhs, big.NewInt(5))
+	rhs.Mod(rhs, pallasFieldModulus)
+	return isQuadraticResidue(rhs, pallasFieldModulus)
+}
+
+// isQuadraticResidue reports whether a is a square mod the odd prime p, via
+// Euler's criterion: a is a QR iff a == 0 or a^((p-1)/2) == 1 (mod p).
+func isQuadraticResidue(a, p *big.Int) bool {
+	if a.Sign() == 0 {
+		return true
+	}
+	exp := new(big.Int).Rsh(new(big.Int).Sub(p, big.NewInt(1)), 1)
+	return new(big.Int).Exp(a, exp, p).Cmp(big.NewInt(1)) == 0
 }
 
 // isValidScalar checks if bytes represent a valid scalar in the field
