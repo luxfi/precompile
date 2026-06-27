@@ -16,7 +16,7 @@
 //	0x012204 = Pulsar     (Module-LWE threshold FIPS 204, byte-equal)
 //	0x012205 = P3Q        (rollup-commit PQ verifier; kind-byte dispatch
 //	                       to Pulsar/Corona/Magnetar — see precompile/p3q, LP-218)
-//	0x012206 = Corona     (Ring-LWE threshold signatures)
+//	0x012206 = Corona     (Module-LWE threshold signatures)
 //	0x012207 = Magnetar   ← this precompile (hash-based threshold FIPS 205)
 //	0x012208 = HQC        (code-based KEM, family-disjoint backup)
 //	0x012220 = STARK-FRI  (strict-PQ STARK / FRI — see precompile/starkfri, LP-221)

@@ -156,7 +156,7 @@ var (
 		//   0x12204 = Pulsar    (Module-LWE threshold,  FIPS 204 byte-equal)
 		//   0x12205 = P3Q       (rollup-commit PQ verifier; kind-byte dispatch
 		//                        to Pulsar/Corona/Magnetar — LP-218)
-		//   0x12206 = Corona    (Ring-LWE threshold)
+		//   0x12206 = Corona    (Module-LWE threshold)
 		//   0x12207 = Magnetar  (hash-based threshold,  FIPS 205 byte-equal)
 		//   0x12208 = HQC       (code-based KEM, family-disjoint backup)
 		//   0x12220 = STARK-FRI (strict-PQ STARK / FRI verifier — LP-221)
