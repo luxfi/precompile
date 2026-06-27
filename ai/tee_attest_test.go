@@ -64,9 +64,9 @@ func leafTemplate(serial int64, cn string, notAfter int64) *x509.Certificate {
 
 // teeChain is a generated root -> intermediate -> leaf attestation PKI.
 type teeChain struct {
-	root      *x509.Certificate
-	inter     *x509.Certificate
-	leaf      *x509.Certificate
+	root    *x509.Certificate
+	inter   *x509.Certificate
+	leaf    *x509.Certificate
 	leafKey crypto.Signer
 	roots   *x509.CertPool
 }

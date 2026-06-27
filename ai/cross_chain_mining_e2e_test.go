@@ -30,29 +30,37 @@ type ccDB struct{ m map[common.Hash]common.Hash }
 func newCCDB() *ccDB { return &ccDB{m: map[common.Hash]common.Hash{}} }
 
 func (s *ccDB) GetState(_ common.Address, k common.Hash) common.Hash { return s.m[k] }
-func (s *ccDB) SetState(_ common.Address, k, v common.Hash) common.Hash { o := s.m[k]; s.m[k] = v; return o }
-func (s *ccDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason)                          {}
-func (s *ccDB) GetNonce(common.Address) uint64                                                      { return 0 }
-func (s *ccDB) GetBalance(common.Address) *uint256.Int                                              { return uint256.NewInt(0) }
-func (s *ccDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int    { return uint256.Int{} }
-func (s *ccDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int    { return uint256.Int{} }
-func (s *ccDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int                            { return big.NewInt(0) }
-func (s *ccDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int)                           {}
-func (s *ccDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int)                           {}
-func (s *ccDB) CreateAccount(common.Address)                                                        {}
-func (s *ccDB) Exist(common.Address) bool                                                           { return false }
-func (s *ccDB) AddLog(*ethtypes.Log)                                                                {}
-func (s *ccDB) Logs() []*ethtypes.Log                                                               { return nil }
-func (s *ccDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool)                         { return nil, false }
-func (s *ccDB) TxHash() common.Hash                                                                 { return common.Hash{} }
-func (s *ccDB) Snapshot() int                                                                       { return 0 }
-func (s *ccDB) RevertToSnapshot(int)                                                                {}
+func (s *ccDB) SetState(_ common.Address, k, v common.Hash) common.Hash {
+	o := s.m[k]
+	s.m[k] = v
+	return o
+}
+func (s *ccDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason) {}
+func (s *ccDB) GetNonce(common.Address) uint64                             { return 0 }
+func (s *ccDB) GetBalance(common.Address) *uint256.Int                     { return uint256.NewInt(0) }
+func (s *ccDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return uint256.Int{}
+}
+func (s *ccDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return uint256.Int{}
+}
+func (s *ccDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int    { return big.NewInt(0) }
+func (s *ccDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int)   {}
+func (s *ccDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int)   {}
+func (s *ccDB) CreateAccount(common.Address)                                {}
+func (s *ccDB) Exist(common.Address) bool                                   { return false }
+func (s *ccDB) AddLog(*ethtypes.Log)                                        {}
+func (s *ccDB) Logs() []*ethtypes.Log                                       { return nil }
+func (s *ccDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) { return nil, false }
+func (s *ccDB) TxHash() common.Hash                                         { return common.Hash{} }
+func (s *ccDB) Snapshot() int                                               { return 0 }
+func (s *ccDB) RevertToSnapshot(int)                                        {}
 
 type ccAcc struct{ s contract.StateDB }
 
 func (a ccAcc) GetStateDB() contract.StateDB                     { return a.s }
 func (a ccAcc) GetBlockContext() contract.BlockContext           { return nil }
-func (a ccAcc) GetConsensusContext() context.Context            { return nil }
+func (a ccAcc) GetConsensusContext() context.Context             { return nil }
 func (a ccAcc) GetChainConfig() precompileconfig.ChainConfig     { return nil }
 func (a ccAcc) GetPrecompileEnv() contract.PrecompileEnvironment { return nil }
 
@@ -126,8 +134,8 @@ func TestVerifyAndMintWork_E2E(t *testing.T) {
 
 func TestVerifyAndMintData_E2E(t *testing.T) {
 	const chainId = uint64(420420)
-	desc := make([]byte, 42)              // dataHash(32) | size(8) | privacy(2)
-	desc[31] = 0xDD                       // dataHash
+	desc := make([]byte, 42)                      // dataHash(32) | size(8) | privacy(2)
+	desc[31] = 0xDD                               // dataHash
 	binary.BigEndian.PutUint64(desc[32:40], 1000) // 1000 data units
 	binary.BigEndian.PutUint16(desc[40:42], 3)    // confidential
 	pub, sig := mldsaKeyAndSig(t, desc)

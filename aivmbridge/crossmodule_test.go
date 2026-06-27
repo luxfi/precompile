@@ -31,8 +31,8 @@ import (
 	"encoding/hex"
 	"testing"
 
-	aivm "github.com/luxfi/chains/aivm"
 	"github.com/holiman/uint256"
+	aivm "github.com/luxfi/chains/aivm"
 	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
 )

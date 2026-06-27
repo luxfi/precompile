@@ -31,34 +31,38 @@ func (s *mockState) SetState(_ common.Address, k, v common.Hash) common.Hash {
 	return old
 }
 
-func (s *mockState) SetNonce(common.Address, uint64, tracing.NonceChangeReason)              {}
-func (s *mockState) GetNonce(common.Address) uint64                                          { return 0 }
-func (s *mockState) GetBalance(common.Address) *uint256.Int                                  { return uint256.NewInt(0) }
-func (s *mockState) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int { return uint256.Int{} }
-func (s *mockState) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int { return uint256.Int{} }
-func (s *mockState) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int                { return big.NewInt(0) }
-func (s *mockState) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int)               {}
-func (s *mockState) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int)               {}
-func (s *mockState) CreateAccount(common.Address)                                            {}
-func (s *mockState) Exist(common.Address) bool                                               { return false }
-func (s *mockState) AddLog(*ethtypes.Log)                                                    {}
-func (s *mockState) Logs() []*ethtypes.Log                                                   { return nil }
-func (s *mockState) GetPredicateStorageSlots(common.Address, int) ([]byte, bool)             { return nil, false }
-func (s *mockState) TxHash() common.Hash                                                     { return common.Hash{} }
-func (s *mockState) Snapshot() int                                                           { return 0 }
-func (s *mockState) RevertToSnapshot(int)                                                    {}
+func (s *mockState) SetNonce(common.Address, uint64, tracing.NonceChangeReason) {}
+func (s *mockState) GetNonce(common.Address) uint64                             { return 0 }
+func (s *mockState) GetBalance(common.Address) *uint256.Int                     { return uint256.NewInt(0) }
+func (s *mockState) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return uint256.Int{}
+}
+func (s *mockState) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
+	return uint256.Int{}
+}
+func (s *mockState) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int    { return big.NewInt(0) }
+func (s *mockState) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int)   {}
+func (s *mockState) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int)   {}
+func (s *mockState) CreateAccount(common.Address)                                {}
+func (s *mockState) Exist(common.Address) bool                                   { return false }
+func (s *mockState) AddLog(*ethtypes.Log)                                        {}
+func (s *mockState) Logs() []*ethtypes.Log                                       { return nil }
+func (s *mockState) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) { return nil, false }
+func (s *mockState) TxHash() common.Hash                                         { return common.Hash{} }
+func (s *mockState) Snapshot() int                                               { return 0 }
+func (s *mockState) RevertToSnapshot(int)                                        {}
 
 type mockAccessible struct{ s contract.StateDB }
 
-func (a mockAccessible) GetStateDB() contract.StateDB                       { return a.s }
-func (a mockAccessible) GetBlockContext() contract.BlockContext             { return nil }
-func (a mockAccessible) GetConsensusContext() context.Context              { return nil }
-func (a mockAccessible) GetChainConfig() precompileconfig.ChainConfig       { return nil }
-func (a mockAccessible) GetPrecompileEnv() contract.PrecompileEnvironment   { return nil }
+func (a mockAccessible) GetStateDB() contract.StateDB                     { return a.s }
+func (a mockAccessible) GetBlockContext() contract.BlockContext           { return nil }
+func (a mockAccessible) GetConsensusContext() context.Context             { return nil }
+func (a mockAccessible) GetChainConfig() precompileconfig.ChainConfig     { return nil }
+func (a mockAccessible) GetPrecompileEnv() contract.PrecompileEnvironment { return nil }
 
 // --- helpers -----------------------------------------------------------------------
 
-func sel(s uint32) []byte { b := make([]byte, 4); binary.BigEndian.PutUint32(b, s); return b }
+func sel(s uint32) []byte  { b := make([]byte, 4); binary.BigEndian.PutUint32(b, s); return b }
 func word(b []byte) []byte { out := make([]byte, 32); copy(out[32-len(b):], b); return out }
 func u256(v uint64) []byte { b := make([]byte, 8); binary.BigEndian.PutUint64(b, v); return word(b) }
 
@@ -66,7 +70,7 @@ func adoptInput(name, weight common.Hash, version uint64) []byte {
 	return bytes.Join([][]byte{sel(SelectorAdopt), name[:], u256(version), weight[:]}, nil)
 }
 func getApprovedInput(name common.Hash) []byte { return append(sel(SelectorGetApproved), name[:]...) }
-func isAdminInput(a common.Address) []byte      { return append(sel(SelectorIsAdmin), word(a.Bytes())...) }
+func isAdminInput(a common.Address) []byte     { return append(sel(SelectorIsAdmin), word(a.Bytes())...) }
 func setAdminInput(a common.Address, on bool) []byte {
 	en := make([]byte, 32)
 	if on {

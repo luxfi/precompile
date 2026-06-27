@@ -113,7 +113,9 @@ func modeByteAndLib(t *testing.T, name string) (byte, luxslhdsa.Mode) {
 }
 
 // buildSLHDSAInput frames a precompile call:
-//   mode(1) || pkLen(2,BE) || pk || msgLen(2,BE) || msg || sig
+//
+//	mode(1) || pkLen(2,BE) || pk || msgLen(2,BE) || msg || sig
+//
 // (See slhdsa/contract.go for the canonical layout.)
 func buildSLHDSAInput(t *testing.T, mode byte, pk, msg, sig []byte) []byte {
 	t.Helper()
@@ -131,17 +133,17 @@ func buildSLHDSAInput(t *testing.T, mode byte, pk, msg, sig []byte) []byte {
 
 // runNISTKAT executes the deterministic KAT for one parameter set:
 //
-//   1. Generate keypair from (skSeed || skPrf || pkSeed) via luxfi/crypto
-//      wrapper (which streams (skSeed || skPrf || pkSeed) into circl's
-//      GenerateKey -- this is the FIPS 205 keygen contract).
-//   2. Assert pk[:n] == pkSeed (FIPS 205 §10.2 invariant). Catches wrapper-
-//      level layout regressions.
-//   3. Assert pk[:n] also matches the pinned ExpectedPublicKeyPrefixHex.
-//   4. Sign with precompileCtx; assert sig[:16] matches the pinned
-//      ExpectedSignaturePrefixHex. Catches changes in the sign-deterministic
-//      chain.
-//   5. Drive the precompile and require byte[31] == 1.
-//   6. Tamper with the signature's last byte and require byte[31] == 0.
+//  1. Generate keypair from (skSeed || skPrf || pkSeed) via luxfi/crypto
+//     wrapper (which streams (skSeed || skPrf || pkSeed) into circl's
+//     GenerateKey -- this is the FIPS 205 keygen contract).
+//  2. Assert pk[:n] == pkSeed (FIPS 205 §10.2 invariant). Catches wrapper-
+//     level layout regressions.
+//  3. Assert pk[:n] also matches the pinned ExpectedPublicKeyPrefixHex.
+//  4. Sign with precompileCtx; assert sig[:16] matches the pinned
+//     ExpectedSignaturePrefixHex. Catches changes in the sign-deterministic
+//     chain.
+//  5. Drive the precompile and require byte[31] == 1.
+//  6. Tamper with the signature's last byte and require byte[31] == 0.
 func runNISTKAT(t *testing.T, v slhdsaNISTVector) {
 	t.Helper()
 	mode, libMode := modeByteAndLib(t, v.Mode)

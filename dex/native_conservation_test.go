@@ -58,7 +58,7 @@ func (h *settleHarness) depositNative(t testing.TB, depositor common.Address, am
 	t.Helper()
 	h.state.stateDB.AddBalance(depositor, uint256.NewInt(uint64(amount)))
 	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(uint64(amount))) // host frame moved msg.value
-	data := make([]byte, 64)                                                         // asset = address(0) (native), amount
+	data := make([]byte, 64)                                                        // asset = address(0) (native), amount
 	new(big.Int).SetInt64(amount).FillBytes(data[32:64])
 	_, _, err := h.c.Run(h.state, depositor, poolManagerAddr9999,
 		prependSelector(SelectorDeposit, data), 5_000_000, false)
