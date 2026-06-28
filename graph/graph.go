@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/luxfi/geth/common"
@@ -44,29 +43,20 @@ var (
 // This precompile enables any EVM contract to execute GraphQL queries
 // against the unified G-Chain query layer.
 type GraphQLPrecompile struct {
-	mu sync.RWMutex
-
-	// client is the connection to G-Chain
+	// client is the connection to G-Chain. It is set ONCE during VM init
+	// (SetGraphVMClient), before the precompile is ever invoked in consensus, and is
+	// read-only thereafter — so the Run path holds no lock and shares no mutable state.
 	client GChainClient
 
-	// cache stores recent query results for gas efficiency
-	cache map[[32]byte]*CacheEntry
-
-	// stats tracks query statistics
-	stats *QueryStats
-
-	// config holds runtime configuration
+	// config holds runtime configuration, set once at Configure time and read-only
+	// during execution.
 	config *Config
 }
 
-// CacheEntry represents a cached query result
-type CacheEntry struct {
-	Data      []byte
-	Timestamp time.Time
-	TTL       time.Duration
-}
-
-// QueryStats tracks query performance
+// QueryStats is retained for response-shape compatibility only. A precompile may not
+// accumulate process-global counters: they diverge across validators (and across a single
+// node's restarts) and would leak nondeterministic data into consensus output. getStats
+// therefore always returns the zero value — see runGetStats.
 type QueryStats struct {
 	TotalQueries    uint64
 	CacheHits       uint64
@@ -94,8 +84,6 @@ type Config struct {
 func NewGraphQLPrecompile(client GChainClient) *GraphQLPrecompile {
 	return &GraphQLPrecompile{
 		client: client,
-		cache:  make(map[[32]byte]*CacheEntry),
-		stats:  &QueryStats{},
 		config: &Config{
 			MaxCacheSize:    1000,
 			DefaultCacheTTL: 10 * time.Second,
@@ -115,62 +103,45 @@ func makeStorageKey(prefix []byte, data []byte) common.Hash {
 	return key
 }
 
-// makeCacheKey creates a cache key from query and variables
-func makeCacheKey(query string, variables []byte) [32]byte {
-	h := sha256.New()
-	h.Write([]byte(query))
-	h.Write(variables)
-	var key [32]byte
-	copy(key[:], h.Sum(nil))
-	return key
-}
-
 // =========================================================================
 // Core Query Methods
 // =========================================================================
 
-// Query executes a GraphQL query and returns the result
-// This is the main entry point for EVM contracts
+// Query executes a GraphQL query and returns the result. It is the main entry point for
+// EVM contracts and is a DETERMINISTIC, STATELESS function of (input, local G-Chain DB):
+//   - no time.Now()/wall-clock (it forked on per-validator clock skew),
+//   - no process-global cache (a warm-vs-cold node returned stale-vs-fresh data and
+//     different gas — both consensus-visible),
+//   - no process-global stats counters (cross-tx mutable state, returned on-chain),
+//   - no goroutines (scheduler order is nondeterministic),
+//   - a nil client returns a typed error instead of panicking the dispatch path.
+//
+// Every validator therefore computes the same bytes for the same block state.
 func (p *GraphQLPrecompile) Query(
 	stateDB StateDB,
 	caller common.Address,
 	req QueryRequest,
 	gasLimit uint64,
 ) (QueryResponse, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	startTime := time.Now()
-
 	// Validate query
 	if err := p.validateQuery(req); err != nil {
 		return QueryResponse{}, err
 	}
 
-	// Calculate initial gas cost
+	// Fail CLOSED if the client was never wired (the default instance holds a nil
+	// client until SetGraphVMClient runs at VM init). A nil-interface call below would
+	// panic, and a panic in the precompile dispatch path is unrecovered — it halts every
+	// validator that processed the tx. Return a typed error instead.
+	if p.client == nil {
+		return QueryResponse{}, ErrClientNotInitialized
+	}
+
+	// Gas cost is a pure function of the query (no cache-hit discount), so it is
+	// identical on every node.
 	gasCost := p.calculateGasCost(req)
 	if gasCost > gasLimit {
 		return QueryResponse{}, ErrGasExceeded
 	}
-
-	// Check cache
-	cacheKey := makeCacheKey(req.Query, req.Variables)
-	if entry, ok := p.cache[cacheKey]; ok {
-		if time.Since(entry.Timestamp) < entry.TTL {
-			p.stats.CacheHits++
-			return QueryResponse{
-				Data:    entry.Data,
-				GasUsed: GasQueryBase, // Minimal gas for cache hit
-			}, nil
-		}
-		// Cache expired
-		delete(p.cache, cacheKey)
-	}
-	p.stats.CacheMisses++
-
-	// Execute query against G-Chain
-	ctx, cancel := context.WithTimeout(context.Background(), p.config.QueryTimeout)
-	defer cancel()
 
 	var variables map[string]any
 	if len(req.Variables) > 0 {
@@ -179,24 +150,26 @@ func (p *GraphQLPrecompile) Query(
 		}
 	}
 
+	// No wall-clock deadline: a context timeout fires nondeterministically (a slow node
+	// times out while a fast one succeeds) and forks the chain. The query is a bounded
+	// local-DB read, already gated by gas.
+	ctx := context.Background()
+
 	var result []byte
 	var err error
-
-	if len(req.TargetChains) == 0 {
-		// Query all chains via G-Chain unified layer
+	switch {
+	case len(req.TargetChains) == 0:
+		// Query all chains via the G-Chain unified layer.
 		result, err = p.client.Query(ctx, req.Query, variables)
-	} else if len(req.TargetChains) == 1 {
-		// Query specific chain
+	case len(req.TargetChains) == 1:
+		// Query a specific chain.
 		result, err = p.client.QueryChain(ctx, req.TargetChains[0], req.Query, variables)
-	} else {
-		// Multi-chain query
+	default:
+		// Multi-chain query (sequential, deterministic).
 		result, err = p.executeMultiChainQuery(ctx, req, variables)
 	}
 
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return QueryResponse{}, ErrQueryTimeout
-		}
 		return QueryResponse{
 			Errors:  []QueryError{{Message: err.Error()}},
 			GasUsed: gasCost,
@@ -208,28 +181,10 @@ func (p *GraphQLPrecompile) Query(
 		return QueryResponse{}, ErrQueryTooLarge
 	}
 
-	// Calculate additional gas for response size
 	responseGas := uint64(len(result)) * GasPerByte
-	totalGas := gasCost + responseGas
-
-	// Cache result
-	if len(p.cache) < p.config.MaxCacheSize {
-		p.cache[cacheKey] = &CacheEntry{
-			Data:      result,
-			Timestamp: time.Now(),
-			TTL:       p.config.DefaultCacheTTL,
-		}
-	}
-
-	// Update stats
-	p.stats.TotalQueries++
-	p.stats.TotalGasUsed += totalGas
-	elapsed := time.Since(startTime)
-	p.stats.AvgResponseTime = (p.stats.AvgResponseTime + elapsed) / 2
-
 	return QueryResponse{
 		Data:    result,
-		GasUsed: totalGas,
+		GasUsed: gasCost + responseGas,
 	}, nil
 }
 
@@ -313,45 +268,39 @@ func (p *GraphQLPrecompile) calculateGasCost(req QueryRequest) uint64 {
 	return cost
 }
 
-// executeMultiChainQuery executes a query across multiple chains
+// executeMultiChainQuery executes a query across multiple chains SEQUENTIALLY. The
+// consensus path must be free of goroutines: scheduler order is nondeterministic, and the
+// previous concurrent version let whichever goroutine raced first win the "first error"
+// slot — so different validators could surface different errors (or partial result sets)
+// and fork. Iterating TargetChains in order makes both the result map and the first error
+// deterministic; json.Marshal then sorts the integer keys, so the bytes are identical
+// everywhere.
 func (p *GraphQLPrecompile) executeMultiChainQuery(
 	ctx context.Context,
 	req QueryRequest,
 	variables map[string]any,
 ) ([]byte, error) {
 	results := make(map[uint64]json.RawMessage)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
 	var firstErr error
 
 	for _, chainID := range req.TargetChains {
-		wg.Add(1)
-		go func(cid uint64) {
-			defer wg.Done()
-
-			result, err := p.client.QueryChain(ctx, cid, req.Query, variables)
-			mu.Lock()
-			defer mu.Unlock()
-
-			if err != nil && firstErr == nil {
+		result, err := p.client.QueryChain(ctx, chainID, req.Query, variables)
+		if err != nil {
+			if firstErr == nil {
 				firstErr = err
-				return
 			}
-			results[cid] = json.RawMessage(result)
-		}(chainID)
+			continue
+		}
+		results[chainID] = json.RawMessage(result)
 	}
-
-	wg.Wait()
 
 	if firstErr != nil && len(results) == 0 {
 		return nil, firstErr
 	}
 
-	// Combine results
 	combined := map[string]any{
 		"data": results,
 	}
-
 	return json.Marshal(combined)
 }
 
@@ -359,25 +308,15 @@ func (p *GraphQLPrecompile) executeMultiChainQuery(
 // View Methods
 // =========================================================================
 
-// GetStats returns query statistics
+// GetStats returns query statistics. Precompiles cannot keep process-global counters
+// (they diverge across validators), so this is always the deterministic zero value.
 func (p *GraphQLPrecompile) GetStats() *QueryStats {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.stats
+	return &QueryStats{}
 }
 
-// GetConfig returns the current configuration
+// GetConfig returns the current (immutable) configuration.
 func (p *GraphQLPrecompile) GetConfig() *Config {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 	return p.config
-}
-
-// ClearCache clears the query cache
-func (p *GraphQLPrecompile) ClearCache() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.cache = make(map[[32]byte]*CacheEntry)
 }
 
 // =========================================================================
@@ -474,10 +413,10 @@ func (p *GraphQLPrecompile) runQueryPredefined(input []byte) ([]byte, error) {
 	return resp.Data, nil
 }
 
-// runGetStats handles the getStats method call
+// runGetStats handles the getStats method call. It returns the deterministic zero stats
+// (telemetry counters are not consensus state).
 func (p *GraphQLPrecompile) runGetStats() ([]byte, error) {
-	stats := p.GetStats()
-	return json.Marshal(stats)
+	return json.Marshal(p.GetStats())
 }
 
 // =========================================================================
