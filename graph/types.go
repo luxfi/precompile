@@ -63,13 +63,14 @@ const (
 
 // Errors
 var (
-	ErrInvalidQuery    = errors.New("invalid GraphQL query")
-	ErrQueryTooLarge   = errors.New("query exceeds maximum size")
-	ErrQueryTimeout    = errors.New("query execution timeout")
-	ErrChainNotFound   = errors.New("chain not found")
-	ErrUnauthorized    = errors.New("unauthorized mutation")
-	ErrGasExceeded     = errors.New("gas limit exceeded for query")
-	ErrInvalidResponse = errors.New("invalid response format")
+	ErrInvalidQuery         = errors.New("invalid GraphQL query")
+	ErrQueryTooLarge        = errors.New("query exceeds maximum size")
+	ErrQueryTimeout         = errors.New("query execution timeout")
+	ErrChainNotFound        = errors.New("chain not found")
+	ErrUnauthorized         = errors.New("unauthorized mutation")
+	ErrGasExceeded          = errors.New("gas limit exceeded for query")
+	ErrInvalidResponse      = errors.New("invalid response format")
+	ErrClientNotInitialized = errors.New("graph client not initialized")
 )
 
 // Maximum limits
