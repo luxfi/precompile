@@ -11,7 +11,6 @@ import (
 	"time"
 
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
-	"github.com/luxfi/accel"
 	"github.com/luxfi/crypto/bn256"
 	"github.com/luxfi/crypto/kzg4844"
 	"github.com/luxfi/geth/common"
@@ -726,62 +725,13 @@ func (zv *ZKVerifier) groth16PairingCheck(
 	// This is the linear combination of public inputs with IC points (MSM)
 	vkX := new(bn256.G1)
 
-	// GPU-accelerated MSM for larger input sets
-	if accel.Available() && len(publicInputs) >= 4 {
-		sess, err := accel.NewSession()
-		if err == nil {
-			defer sess.Close()
-
-			// Prepare scalars: publicInputs as 32-byte big-endian
-			scalarSize := 32
-			scalarsData := make([]byte, len(publicInputs)*scalarSize)
-			for i, input := range publicInputs {
-				inputBytes := input.Bytes()
-				// Right-align in 32-byte slot (big-endian)
-				copy(scalarsData[i*scalarSize+(scalarSize-len(inputBytes)):], inputBytes)
-			}
-
-			// Prepare bases: IC[1:] points as serialized G1 (64 bytes each)
-			pointSize := 64
-			basesData := make([]byte, len(publicInputs)*pointSize)
-			for i := range publicInputs {
-				pointBytes := ic[i+1].Marshal()
-				copy(basesData[i*pointSize:], pointBytes)
-			}
-
-			// Create tensors for GPU MSM
-			scalarsTensor, err := accel.NewTensorWithData[byte](sess, []int{len(publicInputs), scalarSize}, scalarsData)
-			if err == nil {
-				defer scalarsTensor.Close()
-				basesTensor, err := accel.NewTensorWithData[byte](sess, []int{len(publicInputs), pointSize}, basesData)
-				if err == nil {
-					defer basesTensor.Close()
-					resultTensor, err := accel.NewTensor[byte](sess, []int{pointSize})
-					if err == nil {
-						defer resultTensor.Close()
-
-						// Execute GPU MSM: result = ∑ᵢ (scalars[i] * bases[i])
-						err = sess.ZK().MSM(scalarsTensor.Untyped(), basesTensor.Untyped(), resultTensor.Untyped())
-						if err == nil {
-							// Retrieve result and add to IC[0]
-							resultBytes, err := resultTensor.ToSlice()
-							if err == nil {
-								msmResult := new(bn256.G1)
-								if _, err := msmResult.Unmarshal(resultBytes); err == nil {
-									// vk_x = IC[0] + MSM result
-									vkX.ScalarMult(ic[0], big.NewInt(1))
-									vkX.Add(vkX, msmResult)
-									goto pairingCheck
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// CPU fallback: compute MSM sequentially
+	// CPU is the single source of truth: sequential bn256 MSM. The removed
+	// accel path called sess.ZK().MSM with NO curve binding (the kernel cannot
+	// know it must operate over BN254), and its result was folded into vk_x
+	// without independent verification -- a wrong or wrong-curve MSM silently
+	// flipped the Groth16 pairing verdict on accel-equipped validators, a
+	// consensus split on proof verification. Re-introducing accel requires a
+	// BN254 MSM kernel proven bit-identical to this loop.
 	vkX.ScalarMult(ic[0], big.NewInt(1)) // Start with IC[0]
 
 	for i, input := range publicInputs {
@@ -792,8 +742,6 @@ func (zv *ZKVerifier) groth16PairingCheck(
 		tmp.ScalarMult(ic[i+1], input)
 		vkX.Add(vkX, tmp)
 	}
-
-pairingCheck:
 
 	// Negate points for the pairing check
 	// We check: e(A, B) · e(-α, β) · e(-vk_x, γ) · e(-C, δ) = 1

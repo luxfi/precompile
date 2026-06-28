@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"sync"
 
-	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/threshold/pkg/math/curve"
@@ -121,20 +120,14 @@ func (p *frostVerifyPrecompile) Run(
 	messageHash := input[40:72]
 	signature := input[72:136]
 
-	// Try GPU-accelerated signature verification first
-	// FROST produces standard Schnorr signatures on secp256k1
-	valid := false
-	if results, err := accelcrypto.BatchVerify(
-		accelcrypto.SigECDSA,
-		[][]byte{signature},
-		[][]byte{messageHash},
-		[][]byte{publicKey},
-	); err == nil && len(results) == 1 && results[0] {
-		valid = true
-	} else {
-		// CPU fallback: verify using threshold library
-		valid = verifySchnorrSignature(publicKey, messageHash, signature)
-	}
+	// CPU is the single source of truth. FROST produces SCHNORR signatures;
+	// the luxfi/accel SigECDSA kernel verifies a different equation entirely
+	// (and mis-frames the 32-byte x-only key against its 33-byte ECDSA key
+	// layout). A GPU "valid" for an ECDSA check does not imply a valid Schnorr
+	// signature -- that was a wrong-primitive forgery surface and a CPU/GPU
+	// consensus split. Re-introducing accel requires a Schnorr (secp256k1)
+	// kernel proven byte-identical to verifySchnorrSignature.
+	valid := verifySchnorrSignature(publicKey, messageHash, signature)
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)
 	result := make([]byte, 32)

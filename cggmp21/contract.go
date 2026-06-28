@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 
-	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -118,22 +117,16 @@ func (p *cggmp21VerifyPrecompile) Run(
 	messageHash := input[73:105]
 	signatureBytes := input[105:170]
 
-	// Try GPU-accelerated ECDSA verification first
-	var valid bool
-	if results, gpuErr := accelcrypto.BatchVerify(
-		accelcrypto.SigECDSA,
-		[][]byte{signatureBytes[:64]}, // r || s only (64 bytes) for batch verify
-		[][]byte{messageHash},
-		[][]byte{publicKeyBytes},
-	); gpuErr == nil && len(results) == 1 && results[0] {
-		valid = true
-	} else {
-		// CPU fallback
-		var err error
-		valid, err = verifyECDSASignature(publicKeyBytes, messageHash, signatureBytes)
-		if err != nil {
-			return nil, remainingGas, err
-		}
+	// CPU is the single source of truth. The luxfi/accel SigECDSA kernel
+	// cannot reproduce this verdict: (1) it framed the 65-byte uncompressed
+	// key as a 33-byte "compressed" key by truncation (garbage point), and
+	// (2) it omits the recover-and-compare binding that verifyECDSASignature
+	// performs below. A GPU "valid" therefore did not imply a CPU "valid"
+	// (consensus split / forgery surface). Re-introducing accel requires a
+	// secp256k1 ECDSA kernel proven byte-identical to verifyECDSASignature.
+	valid, err := verifyECDSASignature(publicKeyBytes, messageHash, signatureBytes)
+	if err != nil {
+		return nil, remainingGas, err
 	}
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)

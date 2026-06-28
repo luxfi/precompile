@@ -24,7 +24,6 @@ import (
 	"encoding/binary"
 	"errors"
 
-	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/crypto/hash/blake3"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -184,18 +183,18 @@ func (p *blake3Precompile) Run(
 	}
 }
 
-// hash256 computes a 32-byte Blake3 hash
+// hash256 computes a 32-byte Blake3 hash.
+//
+// This is BLAKE3 only. The luxfi/accel "HashBlake3" path actually computes
+// BLAKE2b (accel/ops/crypto/crypto_cpu.go) and its GPU branch has no BLAKE3
+// kernel at all -- wiring it here returned a BLAKE2b digest from a precompile
+// that advertises BLAKE3, a wrong-output bug and a CPU/GPU consensus split.
+// The pure-Go luxfi/crypto/hash/blake3 reference is the single source of truth.
 func (p *blake3Precompile) hash256(data []byte) []byte {
 	if len(data) > MaxInputLength {
 		data = data[:MaxInputLength]
 	}
 
-	// Try GPU-accelerated hashing
-	if hashes, err := accelcrypto.Hash(accelcrypto.HashBlake3, [][]byte{data}); err == nil && len(hashes) == 1 {
-		return hashes[0][:]
-	}
-
-	// CPU fallback
 	h := blake3.New()
 	h.Write(data)
 	result := make([]byte, DigestLength32)
@@ -303,29 +302,11 @@ func (p *blake3Precompile) computeMerkleRoot(leaves [][]byte) []byte {
 		leaves = append(leaves, leaves[len(leaves)-1])
 	}
 
-	// Build tree bottom-up
+	// Build tree bottom-up. BLAKE3 only (see hash256): the accel "HashBlake3"
+	// path is BLAKE2b, so a GPU branch here would produce a different Merkle
+	// root than CPU validators. Determinism over speed.
 	for len(leaves) > 1 {
-		// Batch all pairs for GPU hashing
-		pairs := make([][]byte, len(leaves)/2)
-		for i := 0; i < len(leaves); i += 2 {
-			pair := make([]byte, DigestLength32*2)
-			copy(pair[:DigestLength32], leaves[i])
-			copy(pair[DigestLength32:], leaves[i+1])
-			pairs[i/2] = pair
-		}
-
-		// Try GPU batch hash
-		if hashes, err := accelcrypto.Hash(accelcrypto.HashBlake3, pairs); err == nil && len(hashes) == len(pairs) {
-			nextLevel := make([][]byte, len(pairs))
-			for i, h := range hashes {
-				nextLevel[i] = h[:]
-			}
-			leaves = nextLevel
-			continue
-		}
-
-		// CPU fallback
-		nextLevel := make([][]byte, len(pairs))
+		nextLevel := make([][]byte, len(leaves)/2)
 		for i := 0; i < len(leaves); i += 2 {
 			h := blake3.New()
 			h.Write(leaves[i])
