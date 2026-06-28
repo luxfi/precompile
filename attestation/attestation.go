@@ -1,16 +1,30 @@
 // Copyright (C) 2019-2025, Lux Industries Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-// Package attestation implements EVM precompiles for TEE attestation verification.
-// This wires EVM calls to the real attestation implementations in luxfi/ai/pkg/attestation.
+// Package attestation implements the EVM precompile (0x0301) for TEE attestation
+// verification. It is a thin, STATELESS adapter over the one real verifier in
+// the AI precompile block — ai.VerifyTEE (0x0300 selector 0x03) — which checks a
+// device certificate chain to an embedded vendor root at the report's own
+// timestamp. There is exactly one way to verify a TEE quote across the block.
 //
-// Precompile addresses:
-//   - 0x0301: NVTrust GPU attestation
-//   - 0x0302: TPM attestation
-//   - 0x0303: Compute attestation
-//   - 0x0304: Attestation creation
+// Design (decomplected from the prior fake duplicate):
+//   - Verification is real: a quote either chains to an embedded vendor root or
+//     it is rejected. Zero-byte / forged evidence fails closed. There is no
+//     "verified-by-default" path.
+//   - Verification is deterministic: validity is checked at the report's
+//     embedded timestamp (inside ai.verifyAttestation), never the wall clock.
+//     The only chain-time input — an attestation's expiry — is taken from the
+//     block timestamp passed in from AccessibleState, never time.Now().
+//   - Verification is stateless: there is no process-global device registry (the
+//     prior mutable map caused consensus splits). A TEE quote is self-contained,
+//     so no on-chain registry is required to prevent forgery; none is kept.
 //
-// All attestation is LOCAL - no cloud dependencies (blockchain requirement).
+// Precompile selectors (first 4 bytes of input):
+//   - 0x01: VerifyNVTrust   (GPU TEE quote)
+//   - 0x02: VerifyTPM       (CPU TEE quote: SGX / SEV-SNP / TDX)
+//   - 0x03: VerifyCompute   (AI compute-result TEE quote)
+//   - 0x04: CreateAttestation (verify a quote, issue a deterministic record)
+//   - 0x05: GetDeviceStatus (no on-chain registry → always not-found)
 package attestation
 
 import (
@@ -18,10 +32,10 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
-	"sync"
-	"time"
 
-	"github.com/luxfi/ai/pkg/attestation"
+	"github.com/zeebo/blake3"
+
+	"github.com/luxfi/precompile/ai"
 	"github.com/luxfi/precompile/contract"
 )
 
@@ -43,6 +57,17 @@ const (
 	GasGetDeviceStatus uint64 = 5000  // Query device status
 )
 
+// Deterministic trust scores returned for a verified quote, by TEE flavor. A
+// quote that does not verify scores 0.
+const (
+	trustScoreGPU = 90 // hardware-rooted GPU TEE (NVTrust)
+	trustScoreCPU = 85 // CPU TEE (SGX / SEV-SNP / TDX)
+
+	// attestationTTL is how long, in seconds, an issued attestation record is
+	// considered valid past the block in which it was created.
+	attestationTTL = 3600
+)
+
 // Errors
 var (
 	ErrInvalidInput        = contract.ErrInvalidInput
@@ -54,30 +79,31 @@ var (
 	ErrAttestationExpired  = errors.New("attestation has expired")
 )
 
-// Global verifier instance (singleton for efficiency).
-// verifierMu guards concurrent access to globalVerifier and nvtrustVerifier —
-// both have internal mutable state (device registrations, job completions,
-// trusted measurements) and are called from the EVM execution loop where
-// multiple transactions may invoke attestation precompiles in parallel.
-// Without this guard, concurrent writes would data-race and cause consensus
-// splits across validators.
-var (
-	verifierMu      sync.RWMutex
-	globalVerifier  = attestation.NewVerifier()
-	nvtrustVerifier = attestation.NewNvtrustVerifier(attestation.DefaultNvtrustConfig())
-)
+// QuoteInput is the TEE attestation envelope every verifying selector consumes.
+// It is the same envelope the canonical verifier (ai.VerifyTEE) checks:
+//
+//	Receipt   = report(48) || certChainDER   (report = deviceID|timestamp|nonce)
+//	Signature = device leaf-cert signature over the 48-byte report
+type QuoteInput struct {
+	Receipt   []byte `json:"receipt"`
+	Signature []byte `json:"signature"`
+}
 
-// VerifyNVTrustInput represents input for GPU attestation verification
-type VerifyNVTrustInput struct {
-	DeviceID      [32]byte `json:"device_id"`
-	Model         string   `json:"model"`
-	CCEnabled     bool     `json:"cc_enabled"`
-	TEEIOEnabled  bool     `json:"tee_io_enabled"`
-	DriverVersion string   `json:"driver_version"`
-	VBIOSVersion  string   `json:"vbios_version"`
-	SPDMReport    []byte   `json:"spdm_report"`
-	CertChain     []byte   `json:"cert_chain"`
-	Nonce         [32]byte `json:"nonce"`
+// verifyQuote decodes a QuoteInput and verifies it with the real cert-chain
+// verifier. A malformed JSON envelope is a hard input error; any verification
+// failure (untrusted chain, bad signature, structurally invalid receipt) is a
+// deterministic false, never a revert and never a default-true.
+func verifyQuote(data []byte) (QuoteInput, bool, error) {
+	var q QuoteInput
+	if err := json.Unmarshal(data, &q); err != nil {
+		return q, false, ErrInvalidInput
+	}
+	ok, err := ai.VerifyTEE(q.Receipt, q.Signature)
+	if err != nil {
+		// Structural failure (short/absent receipt or signature): not verified.
+		return q, false, nil
+	}
+	return q, ok, nil
 }
 
 // VerifyNVTrustOutput represents output from GPU attestation verification
@@ -86,250 +112,66 @@ type VerifyNVTrustOutput struct {
 	TrustScore  uint8 `json:"trust_score"`
 	HardwareCC  bool  `json:"hardware_cc"`
 	RIMVerified bool  `json:"rim_verified"`
-	Mode        uint8 `json:"mode"` // 0=Local, 1=Software
+	Mode        uint8 `json:"mode"` // 0=Local
 }
 
-// VerifyNVTrust verifies NVIDIA GPU attestation using local nvtrust
-// This is the PRIMARY attestation method - no cloud dependencies
-// Input: ABI-encoded VerifyNVTrustInput
-// Output: ABI-encoded VerifyNVTrustOutput
+// VerifyNVTrust verifies a GPU TEE quote via the real cert-chain verifier.
 // Gas: 50,000
 func VerifyNVTrust(input []byte) ([]byte, error) {
-	if len(input) < 64 {
-		return nil, ErrInvalidInput
-	}
-
-	// Decode input
-	var vi VerifyNVTrustInput
-	if err := decodeInput(input, &vi); err != nil {
+	_, verified, err := verifyQuote(input)
+	if err != nil {
 		return nil, err
 	}
-
-	// Build GPU attestation from input
-	gpuAtt := &attestation.GPUAttestation{
-		DeviceID:      string(vi.DeviceID[:]),
-		Model:         vi.Model,
-		CCEnabled:     vi.CCEnabled,
-		TEEIOEnabled:  vi.TEEIOEnabled,
-		DriverVersion: vi.DriverVersion,
-		VBIOSVersion:  vi.VBIOSVersion,
-		Timestamp:     time.Now(),
-		Mode:          attestation.ModeLocal,
-		LocalEvidence: &attestation.LocalGPUEvidence{
-			SPDMReport:  vi.SPDMReport,
-			CertChain:   vi.CertChain,
-			RIMVerified: false, // Will be set by verifier
-			Nonce:       vi.Nonce,
-		},
+	out := &VerifyNVTrustOutput{Verified: verified}
+	if verified {
+		out.TrustScore = trustScoreGPU
+		out.HardwareCC = true
+		out.RIMVerified = true
 	}
-
-	// Verify using real attestation implementation.
-	// Lock (not RLock) because verifier updates internal device registry.
-	verifierMu.Lock()
-	status, err := globalVerifier.VerifyGPUAttestation(gpuAtt)
-	verifierMu.Unlock()
-	if err != nil {
-		// Return failure result instead of error for verification failures
-		return encodeOutput(&VerifyNVTrustOutput{
-			Verified:   false,
-			TrustScore: 0,
-			HardwareCC: false,
-			Mode:       uint8(attestation.ModeLocal),
-		})
-	}
-
-	return encodeOutput(&VerifyNVTrustOutput{
-		Verified:    status.Attested,
-		TrustScore:  status.TrustScore,
-		HardwareCC:  status.HardwareCC,
-		RIMVerified: gpuAtt.LocalEvidence.RIMVerified,
-		Mode:        uint8(status.Mode),
-	})
+	return encodeOutput(out)
 }
 
-// VerifyTPMInput represents input for TPM attestation verification
-type VerifyTPMInput struct {
-	QuoteType       uint8    `json:"quote_type"` // 1=SGX, 2=SEV-SNP, 3=TDX
-	Quote           []byte   `json:"quote"`
-	Measurement     []byte   `json:"measurement"`
-	ReportData      []byte   `json:"report_data"`
-	Nonce           [32]byte `json:"nonce"`
-	ExpectedMeasure []byte   `json:"expected_measurement"`
-}
-
-// VerifyTPMOutput represents output from TPM attestation verification
+// VerifyTPMOutput represents output from CPU TEE attestation verification
 type VerifyTPMOutput struct {
-	Verified    bool   `json:"verified"`
-	TEEType     uint8  `json:"tee_type"`
-	TrustScore  uint8  `json:"trust_score"`
-	Measurement []byte `json:"measurement"`
+	Verified   bool  `json:"verified"`
+	TrustScore uint8 `json:"trust_score"`
 }
 
-// VerifyTPM verifies CPU TEE attestation (SGX, SEV-SNP, TDX)
-// Input: ABI-encoded VerifyTPMInput
-// Output: ABI-encoded VerifyTPMOutput
+// VerifyTPM verifies a CPU TEE quote (SGX / SEV-SNP / TDX) via the real
+// cert-chain verifier.
 // Gas: 25,000
 func VerifyTPM(input []byte) ([]byte, error) {
-	if len(input) < 64 {
-		return nil, ErrInvalidInput
-	}
-
-	var vi VerifyTPMInput
-	if err := decodeInput(input, &vi); err != nil {
+	_, verified, err := verifyQuote(input)
+	if err != nil {
 		return nil, err
 	}
-
-	// Map input type to TEE type
-	var teeType attestation.TEEType
-	switch vi.QuoteType {
-	case 1:
-		teeType = attestation.TEETypeSGX
-	case 2:
-		teeType = attestation.TEETypeSEVSNP
-	case 3:
-		teeType = attestation.TEETypeTDX
-	default:
-		return nil, ErrInvalidTPMQuote
+	out := &VerifyTPMOutput{Verified: verified}
+	if verified {
+		out.TrustScore = trustScoreCPU
 	}
-
-	// Build attestation quote
-	quote := &attestation.AttestationQuote{
-		Type:        teeType,
-		Version:     1,
-		Quote:       vi.Quote,
-		Measurement: vi.Measurement,
-		ReportData:  vi.ReportData,
-		Timestamp:   time.Now(),
-		Nonce:       vi.Nonce[:],
-	}
-
-	// Verify using real attestation implementation.
-	// Lock because verifier updates internal device registry.
-	verifierMu.Lock()
-	err := globalVerifier.VerifyCPUAttestation(quote, vi.ExpectedMeasure)
-	verifierMu.Unlock()
-	if err != nil {
-		return encodeOutput(&VerifyTPMOutput{
-			Verified:    false,
-			TEEType:     uint8(teeType),
-			TrustScore:  0,
-			Measurement: quote.Measurement,
-		})
-	}
-
-	// Calculate trust score based on TEE type
-	trustScore := calculateTPMTrustScore(teeType)
-
-	return encodeOutput(&VerifyTPMOutput{
-		Verified:    true,
-		TEEType:     uint8(teeType),
-		TrustScore:  trustScore,
-		Measurement: quote.Measurement,
-	})
-}
-
-// calculateTPMTrustScore returns trust score based on TEE type
-func calculateTPMTrustScore(teeType attestation.TEEType) uint8 {
-	switch teeType {
-	case attestation.TEETypeSGX:
-		return 85 // Intel SGX has strong attestation
-	case attestation.TEETypeSEVSNP:
-		return 90 // AMD SEV-SNP has hardware-rooted trust
-	case attestation.TEETypeTDX:
-		return 88 // Intel TDX is newer but well-designed
-	default:
-		return 50
-	}
-}
-
-// VerifyComputeInput represents input for compute result attestation
-type VerifyComputeInput struct {
-	TaskID      [32]byte `json:"task_id"`
-	ProviderID  [32]byte `json:"provider_id"`
-	ResultHash  [32]byte `json:"result_hash"`
-	ComputeTime uint64   `json:"compute_time_ms"`
-	ModelHash   [32]byte `json:"model_hash"`
-	TEEQuote    []byte   `json:"tee_quote"`
-	Signature   []byte   `json:"signature"`
+	return encodeOutput(out)
 }
 
 // VerifyComputeOutput represents output from compute attestation verification
 type VerifyComputeOutput struct {
 	Verified    bool  `json:"verified"`
 	TrustScore  uint8 `json:"trust_score"`
-	ProviderOK  bool  `json:"provider_ok"`
 	ResultValid bool  `json:"result_valid"`
 }
 
-// VerifyCompute verifies AI compute result attestation
-// This combines device attestation with compute proof verification
-// Input: ABI-encoded VerifyComputeInput
-// Output: ABI-encoded VerifyComputeOutput
+// VerifyCompute verifies an AI compute-result TEE quote via the real cert-chain
+// verifier. The quote is the proof the computation ran inside a genuine TEE.
 // Gas: 35,000
 func VerifyCompute(input []byte) ([]byte, error) {
-	if len(input) < 128 {
-		return nil, ErrInvalidInput
-	}
-
-	var vi VerifyComputeInput
-	if err := decodeInput(input, &vi); err != nil {
+	_, verified, err := verifyQuote(input)
+	if err != nil {
 		return nil, err
 	}
-
-	// Check provider is attested
-	providerID := string(vi.ProviderID[:])
-	verifierMu.RLock()
-	status, ok := globalVerifier.GetDeviceStatus(providerID)
-	verifierMu.RUnlock()
-	if !ok || !status.Attested {
-		return encodeOutput(&VerifyComputeOutput{
-			Verified:   false,
-			TrustScore: 0,
-			ProviderOK: false,
-		})
+	out := &VerifyComputeOutput{Verified: verified, ResultValid: verified}
+	if verified {
+		out.TrustScore = trustScoreGPU
 	}
-
-	// Verify TEE quote if provided
-	resultValid := true
-	if len(vi.TEEQuote) > 0 {
-		// The TEE quote should contain the result hash in report_data
-		// This proves the computation ran inside the TEE
-		if len(vi.TEEQuote) < 48 {
-			resultValid = false
-		}
-	}
-
-	// Verify signature over result
-	if len(vi.Signature) < 64 {
-		resultValid = false
-	}
-
-	trustScore := status.TrustScore
-	if !resultValid {
-		trustScore = trustScore / 2 // Reduce trust for invalid result
-	}
-
-	// Record job completion
-	taskID := string(vi.TaskID[:])
-	verifierMu.Lock()
-	globalVerifier.RecordJobCompletion(providerID, taskID)
-	verifierMu.Unlock()
-
-	return encodeOutput(&VerifyComputeOutput{
-		Verified:    resultValid && status.TrustScore >= 50,
-		TrustScore:  trustScore,
-		ProviderOK:  status.Attested,
-		ResultValid: resultValid,
-	})
-}
-
-// CreateAttestationInput represents input for creating new attestation
-type CreateAttestationInput struct {
-	DeviceType uint8    `json:"device_type"` // 0=GPU, 1=CPU_SGX, 2=CPU_SEVSNP, 3=CPU_TDX
-	DeviceID   [32]byte `json:"device_id"`
-	Model      string   `json:"model"`
-	Evidence   []byte   `json:"evidence"` // Raw attestation evidence
-	Nonce      [32]byte `json:"nonce"`
+	return encodeOutput(out)
 }
 
 // CreateAttestationOutput represents output from attestation creation
@@ -337,92 +179,28 @@ type CreateAttestationOutput struct {
 	Success       bool     `json:"success"`
 	AttestationID [32]byte `json:"attestation_id"`
 	TrustScore    uint8    `json:"trust_score"`
-	ExpiresAt     uint64   `json:"expires_at"` // Unix timestamp
+	ExpiresAt     uint64   `json:"expires_at"` // block-time + TTL, deterministic
 }
 
-// CreateAttestation creates a new attestation record for a device
-// This registers the device with the verifier
-// Input: ABI-encoded CreateAttestationInput
-// Output: ABI-encoded CreateAttestationOutput
+// CreateAttestation verifies a TEE quote and, on success, issues a deterministic
+// attestation record. The record is NOT persisted (the precompile is stateless);
+// it is returned to the caller. Expiry is the block timestamp + TTL — never the
+// wall clock — so every validator computes the same value.
 // Gas: 75,000
-func CreateAttestation(input []byte) ([]byte, error) {
-	if len(input) < 64 {
-		return nil, ErrInvalidInput
-	}
-
-	var ci CreateAttestationInput
-	if err := decodeInput(input, &ci); err != nil {
+func CreateAttestation(input []byte, blockTS uint64) ([]byte, error) {
+	q, verified, err := verifyQuote(input)
+	if err != nil {
 		return nil, err
 	}
-
-	var trustScore uint8
-	var success bool
-
-	switch ci.DeviceType {
-	case 0: // GPU
-		gpuAtt := &attestation.GPUAttestation{
-			DeviceID:  string(ci.DeviceID[:]),
-			Model:     ci.Model,
-			CCEnabled: attestation.IsHardwareCCCapable(ci.Model),
-			Timestamp: time.Now(),
-			Mode:      attestation.ModeLocal,
-			LocalEvidence: &attestation.LocalGPUEvidence{
-				SPDMReport: ci.Evidence,
-				CertChain:  nil, // Would be extracted from evidence
-				Nonce:      ci.Nonce,
-			},
-		}
-
-		verifierMu.Lock()
-		status, err := globalVerifier.VerifyGPUAttestation(gpuAtt)
-		verifierMu.Unlock()
-		if err == nil {
-			success = true
-			trustScore = status.TrustScore
-		}
-
-	case 1, 2, 3: // CPU TEE types
-		var teeType attestation.TEEType
-		switch ci.DeviceType {
-		case 1:
-			teeType = attestation.TEETypeSGX
-		case 2:
-			teeType = attestation.TEETypeSEVSNP
-		case 3:
-			teeType = attestation.TEETypeTDX
-		}
-
-		quote := &attestation.AttestationQuote{
-			Type:      teeType,
-			Quote:     ci.Evidence,
-			Timestamp: time.Now(),
-			Nonce:     ci.Nonce[:],
-		}
-
-		verifierMu.Lock()
-		err := globalVerifier.VerifyCPUAttestation(quote, nil)
-		verifierMu.Unlock()
-		if err == nil {
-			success = true
-			trustScore = calculateTPMTrustScore(teeType)
-		}
-
-	default:
-		return nil, ErrInvalidInput
+	out := &CreateAttestationOutput{
+		Success:       verified,
+		AttestationID: attestationID(q.Receipt),
+		ExpiresAt:     blockTS + attestationTTL,
 	}
-
-	// Generate attestation ID from device ID and timestamp
-	attestationID := computeAttestationID(ci.DeviceID, ci.Nonce)
-
-	// Attestation valid for 1 hour
-	expiresAt := time.Now().Add(time.Hour).Unix()
-
-	return encodeOutput(&CreateAttestationOutput{
-		Success:       success,
-		AttestationID: attestationID,
-		TrustScore:    trustScore,
-		ExpiresAt:     uint64(expiresAt),
-	})
+	if verified {
+		out.TrustScore = trustScoreGPU
+	}
+	return encodeOutput(out)
 }
 
 // GetDeviceStatusInput represents input for querying device status
@@ -430,87 +208,42 @@ type GetDeviceStatusInput struct {
 	DeviceID [32]byte `json:"device_id"`
 }
 
-// GetDeviceStatusOutput represents output from device status query
+// GetDeviceStatusOutput represents output from a device status query
 type GetDeviceStatusOutput struct {
-	Found      bool   `json:"found"`
-	Attested   bool   `json:"attested"`
-	TrustScore uint8  `json:"trust_score"`
-	LastSeen   uint64 `json:"last_seen"` // Unix timestamp
-	HardwareCC bool   `json:"hardware_cc"`
-	Mode       uint8  `json:"mode"`
-	JobCount   uint32 `json:"job_count"`
+	Found bool `json:"found"`
 }
 
-// GetDeviceStatus returns the attestation status of a device
-// Input: ABI-encoded GetDeviceStatusInput
-// Output: ABI-encoded GetDeviceStatusOutput
+// GetDeviceStatus reports a device's attestation status. This precompile keeps
+// no on-chain device registry (TEE quotes are self-validating and the prior
+// process-global registry was a consensus-split hazard), so a status lookup by
+// deviceID alone is always not-found. Verify a presented quote with the
+// VerifyNVTrust/VerifyTPM/VerifyCompute selectors instead.
 // Gas: 5,000
 func GetDeviceStatus(input []byte) ([]byte, error) {
-	if len(input) < 32 {
+	var di GetDeviceStatusInput
+	if err := json.Unmarshal(input, &di); err != nil {
 		return nil, ErrInvalidInput
 	}
-
-	var di GetDeviceStatusInput
-	if err := decodeInput(input, &di); err != nil {
-		return nil, err
-	}
-
-	deviceID := string(di.DeviceID[:])
-	verifierMu.RLock()
-	status, ok := globalVerifier.GetDeviceStatus(deviceID)
-	verifierMu.RUnlock()
-
-	if !ok {
-		return encodeOutput(&GetDeviceStatusOutput{
-			Found: false,
-		})
-	}
-
-	return encodeOutput(&GetDeviceStatusOutput{
-		Found:      true,
-		Attested:   status.Attested,
-		TrustScore: status.TrustScore,
-		LastSeen:   uint64(status.LastSeen.Unix()),
-		HardwareCC: status.HardwareCC,
-		Mode:       uint8(status.Mode),
-		JobCount:   uint32(len(status.JobHistory)),
-	})
+	return encodeOutput(&GetDeviceStatusOutput{Found: false})
 }
 
-// RegisterTrustedMeasurement registers a trusted measurement with the verifier
-// This should only be called from governance/admin functions
-func RegisterTrustedMeasurement(name string, measurement []byte) {
-	verifierMu.Lock()
-	globalVerifier.RegisterTrustedMeasurement(name, measurement)
-	verifierMu.Unlock()
+// attestationID derives a deterministic id from the verified quote receipt.
+func attestationID(receipt []byte) [32]byte {
+	return blake3.Sum256(receipt)
 }
 
-// Helper functions
-
-func decodeInput(data []byte, v any) error {
-	return json.Unmarshal(data, v)
-}
-
-func encodeOutput(v any) ([]byte, error) {
-	return json.Marshal(v)
-}
-
-func computeAttestationID(deviceID, nonce [32]byte) [32]byte {
-	h := attestation.ComputeAttestationHash(&attestation.AttestationQuote{
-		Type:  attestation.TEETypeNVIDIA,
-		Quote: deviceID[:],
-		Nonce: nonce[:],
-	})
-	return h
-}
-
-// IsHardwareCCCapable checks if GPU model supports hardware confidential computing
-// Delegates to real implementation in luxfi/ai/pkg/attestation
+// IsHardwareCCCapable reports whether a GPU model supports hardware confidential
+// computing. Pure, static lookup — no external dependency.
 func IsHardwareCCCapable(model string) bool {
-	return attestation.IsHardwareCCCapable(model)
+	for _, m := range SupportedGPUModels() {
+		if m == model {
+			return true
+		}
+	}
+	return false
 }
 
-// SupportedGPUModels returns list of CC-capable GPU models
+// SupportedGPUModels returns the CC-capable GPU models.
 func SupportedGPUModels() []string {
 	return []string{
 		"H100",
@@ -522,9 +255,8 @@ func SupportedGPUModels() []string {
 	}
 }
 
-// RequiredGas returns gas cost for attestation operation
+// RequiredGas returns gas cost for an attestation operation.
 func RequiredGas(selector [4]byte) uint64 {
-	// Function selectors (first 4 bytes of keccak256 hash)
 	switch {
 	case selector == [4]byte{0x01, 0x00, 0x00, 0x00}: // verifyNVTrust
 		return GasVerifyNVTrust
@@ -541,14 +273,13 @@ func RequiredGas(selector [4]byte) uint64 {
 	}
 }
 
-// Run executes the attestation precompile
-// This is the main entry point for EVM precompile calls
-func Run(input []byte) ([]byte, error) {
+// Run executes the attestation precompile. blockTS is the deterministic block
+// timestamp from AccessibleState, used only for attestation expiry.
+func Run(input []byte, blockTS uint64) ([]byte, error) {
 	if len(input) < 4 {
 		return nil, ErrInvalidInput
 	}
 
-	// Extract function selector
 	var selector [4]byte
 	copy(selector[:], input[:4])
 	data := input[4:]
@@ -561,7 +292,7 @@ func Run(input []byte) ([]byte, error) {
 	case [4]byte{0x03, 0x00, 0x00, 0x00}:
 		return VerifyCompute(data)
 	case [4]byte{0x04, 0x00, 0x00, 0x00}:
-		return CreateAttestation(data)
+		return CreateAttestation(data, blockTS)
 	case [4]byte{0x05, 0x00, 0x00, 0x00}:
 		return GetDeviceStatus(data)
 	default:
@@ -569,7 +300,11 @@ func Run(input []byte) ([]byte, error) {
 	}
 }
 
-// ABIEncode encodes values for EVM ABI format
+func encodeOutput(v any) ([]byte, error) {
+	return json.Marshal(v)
+}
+
+// ABIEncode encodes values for EVM ABI format.
 func ABIEncode(values ...any) []byte {
 	var result []byte
 	for _, v := range values {

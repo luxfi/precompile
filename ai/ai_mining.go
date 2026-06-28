@@ -90,7 +90,14 @@ var (
 	ErrInvalidTEEReceipt    = errors.New("invalid TEE attestation receipt")
 	ErrTEESignatureInvalid  = errors.New("TEE attestation signature verification failed")
 	ErrUnauthorized         = errors.New("unauthorized caller")
+	ErrMissingAttestation   = errors.New("work proof missing TEE attestation quote")
+	ErrDeviceKeyMismatch    = errors.New("attested device identity does not match signing key")
 )
+
+// DataContributionSize is the fixed size of a data-contribution descriptor:
+// dataHash(32) | dataSize(uint64,8) | privacyLevel(uint16,2). A TEE attestation
+// envelope binding the signing key to a real device follows these 42 bytes.
+const DataContributionSize = 42
 
 // StateDB interface for accessing and modifying state
 type StateDB interface {
