@@ -26,6 +26,7 @@ var (
 	ErrInvalidPointFormat   = errors.New("invalid elliptic curve point format")
 	ErrVerifierRequired     = errors.New("verifier context required")
 	ErrInvalidCommitmentLen = errors.New("invalid commitment length")
+	ErrFflonkDisabled       = errors.New("fflonk verification disabled: unsound verifier (reserved opcode 0x03)")
 )
 
 // Operation selectors (first byte of input)
@@ -154,30 +155,6 @@ func (p *zkVerifyPrecompile) Run(
 	op := input[0]
 	data := input[1:]
 
-	// Classical pairing/DLOG opcodes are gated by the chain's strict-PQ
-	// profile. The genuinely hash-based opcodes (Nullifier 0x21 and the
-	// Merkle-inclusion sub-mode of Commitment 0x22) remain open on every
-	// chain.
-	//
-	// Commitment (0x22) is NOT uniformly hash-based: only the Merkle
-	// sub-mode (data[0]==0x01) is. The DEFAULT sub-mode is a Pedersen
-	// opening (verifyCommitmentPedersen -> globalPedersen.Verify), which
-	// is bn254 G1 DLOG — quantum-breakable. Refuse the Pedersen sub-path
-	// under strict-PQ, keep the Merkle sub-path open. See isPedersenCommitment.
-	switch op {
-	case OpVerifyGroth16, OpVerifyPLONK, OpVerifyFflonk, OpVerifyHalo2,
-		OpVerifyKZG, OpVerifyIPA, OpVerifyRangeProof, OpVerifyBatch:
-		if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
-			return nil, remainingGas, err
-		}
-	case OpVerifyCommitment:
-		if isPedersenCommitment(data) {
-			if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
-				return nil, remainingGas, err
-			}
-		}
-	}
-
 	switch op {
 	case OpVerifyGroth16:
 		valid, err := p.verifyGroth16(data)
@@ -194,11 +171,13 @@ func (p *zkVerifyPrecompile) Run(
 		return encodeBool(valid), remainingGas, nil
 
 	case OpVerifyFflonk:
-		valid, err := p.verifyFflonk(data)
-		if err != nil {
-			return nil, remainingGas, err
-		}
-		return encodeBool(valid), remainingGas, nil
+		// DISABLED: verifyFflonk has a soundness bug — a nil verifying-key
+		// singleton path accepts a crafted proof for ANY statement (a
+		// universal forge). Reserved at 0x03 for opcode-numbering stability;
+		// refuses execution until a sound verifier ships. This is a security
+		// disable, fully independent of any PQ profile. Builders needing
+		// PLONK-family verification should use OpVerifyPLONK (0x02).
+		return nil, remainingGas, ErrFflonkDisabled
 
 	case OpVerifyHalo2:
 		valid, err := p.verifyHalo2(data)
@@ -1545,20 +1524,6 @@ func (p *zkVerifyPrecompile) verifyCommitment(data []byte) (bool, error) {
 // verifyCommitment receives.
 func isMerkleCommitment(data []byte) bool {
 	return len(data) >= 77 && data[0] == 0x01
-}
-
-// isPedersenCommitment reports whether a 0x22 payload selects the DEFAULT
-// Pedersen-opening sub-mode (verifyCommitmentPedersen -> globalPedersen.
-// Verify, bn254 G1 DLOG — quantum-breakable). It is the logical negation
-// of isMerkleCommitment: anything that is not the Merkle sub-mode falls
-// through to the Pedersen verifier and so must be refused under strict-PQ.
-//
-// A too-short payload (len < 96) is treated as Pedersen: it would reach
-// verifyCommitmentPedersen and fail ErrInvalidInput, but classifying it as
-// Pedersen means strict-PQ refuses it at the gate (fail-closed) rather
-// than letting a malformed classical-path call slip past the PQ boundary.
-func isPedersenCommitment(data []byte) bool {
-	return !isMerkleCommitment(data)
 }
 
 // verifyCommitmentPedersen verifies a Pedersen commitment opening.

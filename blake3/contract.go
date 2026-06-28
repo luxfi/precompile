@@ -141,17 +141,6 @@ func (p *blake3Precompile) Run(
 	if err != nil {
 		return nil, 0, err
 	}
-	// BLAKE3 itself is PQ-safe (128-bit Grover security on 256-bit hash, same
-	// as SHA-256). It is gated under strict-PQ NOT because the primitive is
-	// classical, but because the strict-PQ profile mandates ≥192-bit PQ
-	// security floor (consistent with SHAKE256-384 + ML-DSA-65 elsewhere).
-	// If a chain wants BLAKE3 at 128-bit PQ floor, it must opt out of strict
-	// PQ for that block range. Policy review tracked as Quasar Edition Y2
-	// (cryptographer audit 2026-06-05).
-	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
-		return nil, remainingGas, err
-	}
-
 	if len(input) < 1 {
 		return nil, remainingGas, ErrInvalidInput
 	}
