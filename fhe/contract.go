@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/luxfi/accel"
-	accelfhe "github.com/luxfi/accel/ops/fhe"
 	"github.com/luxfi/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -1165,8 +1163,9 @@ func getCiphertext(stateDB contract.StateDB, handle common.Hash) ([]byte, uint8,
 	return ct, ctType, true
 }
 
-// performFHEOperation executes FHE binary operations using GPU acceleration
-// when available, falling back to TFHE library on CPU.
+// performFHEOperation executes FHE binary operations on the chain's TFHE
+// library. This is the single, deterministic source of truth for homomorphic
+// evaluation across the validator set.
 func performFHEOperation(stateDB contract.StateDB, op string, handle1, handle2 common.Hash, caller common.Address) common.Hash {
 	lhs, lhsType, ok := getCiphertext(stateDB, handle1)
 	if !ok {
@@ -1177,16 +1176,14 @@ func performFHEOperation(stateDB contract.StateDB, op string, handle1, handle2 c
 		return common.Hash{}
 	}
 
-	// Try GPU-accelerated FHE operations for arithmetic ops
-	if result := fheOpGPU(op, lhs, rhs); result != nil {
-		resultType := lhsType
-		if op == "lt" || op == "gt" || op == "eq" || op == "ne" || op == "le" || op == "ge" {
-			resultType = TypeEbool
-		}
-		return storeCiphertextOwned(stateDB, result, resultType, caller)
-	}
-
-	// CPU fallback
+	// CPU is the single source of truth: the chain's TFHE library. The removed
+	// accel path computed BFV arithmetic (a DIFFERENT FHE scheme with an
+	// incompatible ciphertext format -- its own comment admitted the format
+	// conversion was "not yet implemented" and it used a nil relin key for
+	// multiply). A BFV result stored as a TFHE ciphertext is meaningless under
+	// the chain key AND differs from CPU validators -- a consensus split and a
+	// state-corruption bug. Homomorphic evaluation must be bit-exact and
+	// scheme-consistent across all validators.
 	var result []byte
 	switch op {
 	case "add":
@@ -1232,75 +1229,6 @@ func performFHEOperation(stateDB contract.StateDB, op string, handle1, handle2 c
 	}
 
 	return storeCiphertextOwned(stateDB, result, resultType, caller)
-}
-
-// fheOpGPU attempts GPU-accelerated FHE operations.
-// Returns result bytes if GPU succeeded, nil if GPU unavailable or unsupported op.
-func fheOpGPU(op string, lhs, rhs []byte) []byte {
-	// Only use GPU path when accelerator is actually available and initialized.
-	// The TFHE ciphertext format (bit-level) is incompatible with BFV params here.
-	// GPU acceleration requires proper ciphertext format conversion (not yet implemented).
-	if !accel.Available() {
-		return nil
-	}
-
-	// Convert ciphertext bytes to accelfhe format
-	params := accelfhe.Params{
-		Scheme:     accelfhe.SchemeBFV,
-		PolyDegree: 4096,
-		CoeffMods:  []uint64{0x3FFFFFFF000001}, // Standard BFV modulus
-		PlainMod:   65537,
-	}
-
-	ct1 := &accelfhe.Ciphertext{Data: bytesToUint64(lhs), Scheme: accelfhe.SchemeBFV}
-	ct2 := &accelfhe.Ciphertext{Data: bytesToUint64(rhs), Scheme: accelfhe.SchemeBFV}
-
-	var result *accelfhe.Ciphertext
-	var err error
-
-	switch op {
-	case "add":
-		result, err = accelfhe.Add(params, ct1, ct2)
-	case "sub":
-		result, err = accelfhe.Sub(params, ct1, ct2)
-	case "mul":
-		rlk := &accelfhe.RelinKey{Data: nil} // Relin key would come from key store in production
-		result, err = accelfhe.Multiply(params, ct1, ct2, rlk)
-	default:
-		return nil // Unsupported op for GPU, fall through to CPU
-	}
-
-	if err != nil || result == nil {
-		return nil
-	}
-
-	return uint64ToBytes(result.Data)
-}
-
-// bytesToUint64 converts byte slice to uint64 slice for FHE tensor operations.
-func bytesToUint64(b []byte) []uint64 {
-	n := len(b) / 8
-	if n == 0 {
-		return nil
-	}
-	out := make([]uint64, n)
-	for i := range n {
-		for j := 0; j < 8 && i*8+j < len(b); j++ {
-			out[i] |= uint64(b[i*8+j]) << (56 - uint(j)*8)
-		}
-	}
-	return out
-}
-
-// uint64ToBytes converts uint64 slice back to bytes.
-func uint64ToBytes(u []uint64) []byte {
-	out := make([]byte, len(u)*8)
-	for i, v := range u {
-		for j := range 8 {
-			out[i*8+j] = byte(v >> (56 - uint(j)*8))
-		}
-	}
-	return out
 }
 
 // performFHESelect executes conditional selection using real TFHE library
