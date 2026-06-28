@@ -8,7 +8,6 @@ import (
 	"math"
 	"math/big"
 
-	"github.com/holiman/uint256"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/ids"
 	"github.com/luxfi/precompile/contract"
@@ -218,83 +217,77 @@ func (c *NativeDChainClient) SubmitSwapIntent(
 	}
 	stateDB := newPoolStateAdapter(state)
 
-	// Lock the input into the 0x9999 escrow (the vault). This is the C-local debit
-	// that BACKS the C->D object — D imports value C has already removed from the
-	// caller, so no mint can occur on either side.
-	locked, lockErr := lockIntentInput(stateDB, req.Account, req.AssetIn, req.AssetInAddr, req.AmountIn)
-	if lockErr != nil {
-		return ids.Empty, lockErr
-	}
-
-	// Derive the injective intent id (the shared-memory key) over the FULL identity.
-	cChainID := atomicState.CChainID()
 	// The D peer is the dexvm running as the primary network's D-Chain. The object is
 	// keyed by intentID and PUT under the D chain's partition; the dexvm imports it
 	// via Get(cChainID). The host resolves the D-Chain id at runtime from the chain
 	// topology (consensus-context "D" alias) — always-on, zero per-net config; a
 	// network with no dexvm yields ids.Empty and the seam stays closed (no mint).
+	cChainID := atomicState.CChainID()
 	dChainID := atomicState.DChainID()
 	if dChainID == ids.Empty {
 		return ids.Empty, ErrNativeNoAtomicMemory
 	}
-	// CHAIN-OBSERVABLE id: derived from the taker's nonce (carried in the swap's own
-	// calldata), NOT the post-landing txID — so the off-chain keeper derives the SAME id
-	// from the SAME calldata and its watch correlates against the live chain. (The host's
-	// per-tx CallIndex still scopes other precompiles; the swap id no longer needs it
-	// because the user-supplied nonce disambiguates repeats and multi-swap-per-tx.)
+
+	// NATIVE-ZAP two-phase id binding: the locked principal is the REQUESTED amount. The
+	// terminal ERC-20 pull (lockAssetIn Phase B) asserts the vault receives at least this
+	// much or REVERTS the whole frame, so `locked == req.AmountIn` is authoritative — there
+	// is no post-transfer observed delta to diverge on, so the off-chain keeper derives the
+	// SAME id from the SAME calldata. CHAIN-OBSERVABLE id: over the taker's nonce (in the
+	// swap's own calldata), NOT the post-landing txID.
+	locked := req.AmountIn
 	intentID = DeriveIntentID(
 		atomicState.NetworkID(), cChainID, dChainID,
 		req.Account, req.AssetIn, locked, req.MarketID, req.Nonce,
 	)
 
-	// Replay guard: the same intent id must not be submitted twice (a re-executed /
-	// reorged C tx). Durable, consensus-shared (StateDB), CEI before the export.
-	if isIntentSubmitted(stateDB, intentID) {
-		return ids.Empty, ErrNativeIntentReplay
+	// Lock the input into the 0x9999 escrow (the vault) — the C-local debit that BACKS the
+	// C->D object so D imports value C has already removed (no mint on either side). PHASE A
+	// (the record callback) writes EVERY 0x9999 state — replay mark, escrow record, staged
+	// C->D object, routing event — BEFORE the terminal asset pull, so none of those writes
+	// can be dropped by the geth nested-call host bug (the fund-loss this dissolves). The
+	// transferFrom is the frame's LAST external effect; an ERC-20 under-delivery reverts the
+	// whole frame, the Phase-A writes included (all-or-nothing).
+	if _, lockErr := lockAssetIn(stateDB, req.Account, req.AssetIn, req.AssetInAddr, req.AmountIn, func() error {
+		// Replay guard: the same intent id must not be submitted twice (a re-executed /
+		// reorged C tx). Durable, consensus-shared (StateDB), CEI before the export.
+		if isIntentSubmitted(stateDB, intentID) {
+			return ErrNativeIntentReplay
+		}
+		markIntentSubmitted(stateDB, intentID, state.GetBlockContext().Number().Uint64())
+
+		// PERSIST the per-intent escrow record (the swap-rail analog of the LP RestingOrder):
+		// owner (settlement authority + reclaim payee), locked asset, remaining principal
+		// (== locked at submission), deadline. It is the SINGLE record both ImportSettlement
+		// (per-taker cap) and ReclaimIntent (deadline refund) consult. PriceLimit/LimitIsUpper
+		// are the taker's OWN slippage floor (from their V4 SqrtPriceLimitX96 via
+		// priceLimitToCLOB), recorded HERE so the Phase-B floor is TAKER-authenticated, not
+		// keeper-asserted. 0 = no limit (unbounded, as the taker set).
+		putSwapIntentRecord(stateDB, intentID, swapIntentRecord{
+			Owner:        req.Account,
+			AssetIn:      req.AssetIn,
+			Remaining:    locked,
+			Deadline:     req.Deadline,
+			Status:       swapIntentOpen,
+			PriceLimit:   req.PriceLimit,
+			LimitIsUpper: req.LimitIsUpper,
+		})
+
+		// STAGE the C->D atomic object (rail=railSwap, owner=account, asset=assetIn,
+		// amount=locked) keyed by intentID under the D chain's partition. We do NOT Apply to
+		// shared memory here — a direct Apply commits OUTSIDE the EVM revert scope, so a tx
+		// that reverts after this would leave a C->D object with no backing C debit => MINT.
+		// Staging into StateDB is revert-aware (discarded atomically with a rolled-back lock);
+		// the host flushes staged Puts at BLOCK ACCEPT. The railSwap tag makes the swap's D->C
+		// settlement object consumable ONLY by ImportSettlement.
+		obj := encodeAtomicObject(railSwap, req.Account, req.AssetIn, locked)
+		stageAtomicPut(stateDB, dChainID, intentID, obj)
+
+		// Emit the routing metadata for the keeper that builds the D order.
+		emitNativeIntentEvent(stateDB, intentID, dChainID, req, locked)
+		return nil
+	}); lockErr != nil {
+		return ids.Empty, lockErr
 	}
-	markIntentSubmitted(stateDB, intentID, state.GetBlockContext().Number().Uint64())
-
-	// PERSIST the per-intent escrow record (the swap-rail analog of the LP RestingOrder).
-	// It carries the owner (settlement authority + reclaim payee), the locked asset, the
-	// remaining locked principal (== locked at submission), and the deadline. It is the
-	// SINGLE record both ImportSettlement (per-taker cap) and ReclaimIntent (deadline
-	// refund) consult — so a settlement is bounded by THIS taker's own principal and a
-	// stranded intent is reclaimable to THIS taker after the deadline. owner==account is
-	// the recorded D->C object owner D will mirror on the settlement object, so the
-	// settlement's recorded-owner bind and this record's owner agree.
-	// PriceLimit/LimitIsUpper are the taker's OWN slippage floor (from their V4
-	// SqrtPriceLimitX96 via priceLimitToCLOB). Recording them HERE — at submit, bound to
-	// the taker's authenticated intent — is what makes the Phase-B floor TAKER-authenticated
-	// rather than keeper-asserted: ImportSettlement checks the realized proceeds price against
-	// THIS recorded limit, so a malicious keeper that drops the relay limit cannot sandwich
-	// the taker (the proceeds object whose price violates the recorded limit is refused). 0 =
-	// no limit (preserves the unbounded behavior for a taker who set none).
-	putSwapIntentRecord(stateDB, intentID, swapIntentRecord{
-		Owner:        req.Account,
-		AssetIn:      req.AssetIn,
-		Remaining:    locked,
-		Deadline:     req.Deadline,
-		Status:       swapIntentOpen,
-		PriceLimit:   req.PriceLimit,
-		LimitIsUpper: req.LimitIsUpper,
-	})
-
-	// STAGE the C->D atomic object (rail=railSwap, owner=account, asset=assetIn,
-	// amount=locked), keyed by intentID under the D chain's partition. We do NOT Apply
-	// to shared memory here — a direct Apply commits OUTSIDE the EVM revert scope, so a
-	// tx that reverts after this would leave a C->D object with no backing C debit (the
-	// lock rolled back) => D funded without a C lock = MINT. Staging into StateDB is
-	// revert-aware: a reverted tx discards the staged Put atomically with its rolled-
-	// back lock. The host flushes staged Puts to shared memory at BLOCK ACCEPT, the
-	// single cross-domain commit point. (See native_staging.go.) The railSwap tag makes
-	// the swap's D->C settlement object (which D will export on this lane) consumable
-	// ONLY by ImportSettlement.
-	obj := encodeAtomicObject(railSwap, req.Account, req.AssetIn, locked)
-	stageAtomicPut(stateDB, dChainID, intentID, obj)
-
-	// Emit the routing metadata for the keeper that builds the D order. The staged
-	// object backs the value; this only tells the keeper how to route it.
-	emitNativeIntentEvent(stateDB, intentID, dChainID, req, locked)
 	return intentID, nil
 }
 
@@ -327,48 +320,50 @@ func (c *NativeDChainClient) SubmitPositionCommit(
 	}
 	stateDB := newPoolStateAdapter(state)
 
-	// Lock the LP principal into the COMMITTED-POSITIONS pot (the LP rail's own pot),
-	// NOT the swap-rail seam reserve and NOT a depositor claim. This is the C-side
-	// debit that BACKS the C->D commit object: D imports value C has already removed
-	// from the caller's spendable balance, so no mint can occur on either side. locked
-	// is the value ACTUALLY committed (observed delta for ERC-20) — the authoritative
-	// amount the pot, the object, and the record all use, so none can overstate.
-	locked, lockErr := commitPositionInput(stateDB, req.Account, req.AssetIn, req.AssetInAddr, req.AmountIn)
-	if lockErr != nil {
-		return ids.Empty, 0, lockErr
-	}
-
 	// Derive the injective position-commit id (the shared-memory key) over the FULL
-	// identity, in the position-commit domain (disjoint from swap-intent ids).
+	// identity, in the position-commit domain (disjoint from swap-intent ids). The locked
+	// principal is the REQUESTED amount: commitAssetIn's terminal ERC-20 pull asserts the
+	// vault receives at least this much or REVERTS the whole frame, so `locked == req.AmountIn`
+	// is authoritative (no post-transfer observed delta to overstate against).
 	cChainID := atomicState.CChainID()
 	dChainID := atomicState.DChainID()
 	if dChainID == ids.Empty {
 		return ids.Empty, 0, ErrNativeNoAtomicMemory
 	}
+	locked = req.AmountIn
 	positionID = DerivePositionCommitID(
 		atomicState.NetworkID(), cChainID, dChainID,
 		atomicState.TxID(), atomicState.CallIndex(),
 		req.Account, req.AssetIn, locked, req.MarketID,
 	)
 
-	// Replay guard: the same commit id must not be submitted twice (a re-executed /
-	// reorged C tx). Durable, consensus-shared (StateDB), CEI before the export.
-	if isIntentSubmitted(stateDB, positionID) {
-		return ids.Empty, 0, ErrLPCommitReplay
+	// Lock the LP principal into the COMMITTED-POSITIONS pot (the LP rail's own pot) — the
+	// C-side debit that BACKS the C->D commit object (D imports value C already removed, no
+	// mint). PHASE A (the record callback) writes EVERY 0x9999 state — replay mark, staged
+	// C->D commit object, routing event — BEFORE the terminal asset pull, so the geth nested-
+	// call host bug cannot drop them. The transferFrom is the frame's LAST external effect;
+	// an ERC-20 under-delivery reverts the whole frame (all-or-nothing).
+	if _, lockErr := commitAssetIn(stateDB, req.Account, req.AssetIn, req.AssetInAddr, req.AmountIn, func() error {
+		// Replay guard: the same commit id must not be submitted twice (a re-executed /
+		// reorged C tx). Durable, consensus-shared (StateDB), CEI before the export.
+		if isIntentSubmitted(stateDB, positionID) {
+			return ErrLPCommitReplay
+		}
+		markIntentSubmitted(stateDB, positionID, state.GetBlockContext().Number().Uint64())
+
+		// STAGE the C->D commit object (rail=railLP, owner=account, asset=assetIn,
+		// amount=locked) keyed by positionID under the D chain's partition (revert-aware;
+		// flushed at block accept). The railLP tag makes the LP's D->C collect object
+		// consumable ONLY by ImportPositionCollect.
+		obj := encodeAtomicObject(railLP, req.Account, req.AssetIn, locked)
+		stageAtomicPut(stateDB, dChainID, positionID, obj)
+
+		// Emit the DL01 routing event (kind=position) for the keeper to OPEN the D position.
+		emitNativePositionCommitEvent(stateDB, positionID, dChainID, req, locked)
+		return nil
+	}); lockErr != nil {
+		return ids.Empty, 0, lockErr
 	}
-	markIntentSubmitted(stateDB, positionID, state.GetBlockContext().Number().Uint64())
-
-	// STAGE the C->D commit object (rail=railLP, owner=account, asset=assetIn,
-	// amount=locked) keyed by positionID under the D chain's partition (revert-aware —
-	// discarded with the rolled-back lock if the tx reverts; flushed to shared memory
-	// at block accept). The railLP tag makes the LP's D->C collect object (which D will
-	// export on this lane via executeWithdraw) consumable ONLY by ImportPositionCollect.
-	obj := encodeAtomicObject(railLP, req.Account, req.AssetIn, locked)
-	stageAtomicPut(stateDB, dChainID, positionID, obj)
-
-	// Emit the DL01 routing event (kind=position) for the keeper to OPEN the D
-	// position against the committed collateral. The staged object backs the value.
-	emitNativePositionCommitEvent(stateDB, positionID, dChainID, req, locked)
 	return positionID, locked, nil
 }
 
@@ -489,22 +484,23 @@ func (c *NativeDChainClient) ImportPositionCollect(
 	// (6) MARK consumed BEFORE value movement (CEI; a failed credit rolls this back).
 	markSettlementConsumed(stateDB, claim.OutputID, state.GetBlockContext().Number().Uint64())
 
-	// (7) CREDIT C from the COMMITTED-POSITIONS pot — NO MINT, NO RAID. The transfer
-	// token is derived from the RECORDED asset inside creditPositionCollect (FIX-5), so
-	// the claim's AssetAddr cannot redirect the credit to a different token.
+	// (7) PHASE A — drive the position lifecycle + stage the Remove BEFORE the terminal
+	// credit, so the geth nested-call host bug cannot drop these 0x9999 writes:
+	//   - DRIVE the position lifecycle (FIX-3): the collected amount LEAVES the record's
+	//     committed backing AND the owner's per-asset committed reserve; when the record's
+	//     LockedAmt reaches 0 the position is fully collected -> Closed (terminal).
+	//   - STAGE the atomic Remove of the consumed object (revert-aware; flushed at block accept
+	//     atomically with the committed credit).
+	collectPositionRecord(stateDB, claim.PositionID, order, recAsset, recAmount)
+	stageAtomicRemove(stateDB, dChainID, key)
+
+	// (8) PHASE B — CREDIT C from the COMMITTED-POSITIONS pot as the frame's TERMINAL effect:
+	// NO MINT, NO RAID (the LP pot must back it). creditPositionCollect records the committed-
+	// release (Phase A) then performs the native/ERC-20 payout terminally; nothing writes 0x9999
+	// after it. The transfer token is derived from the RECORDED asset (FIX-5).
 	if cerr := creditPositionCollect(stateDB, recOwner, recAsset, recAmount); cerr != nil {
 		return 0, cerr
 	}
-
-	// (8) DRIVE the position lifecycle (FIX-3): the collected amount LEAVES the record's
-	// committed backing AND the owner's per-asset committed reserve. When the record's
-	// LockedAmt reaches 0 the position is fully collected -> Closed (terminal). A
-	// partially-collected position stays Open/Closing (still collectable).
-	collectPositionRecord(stateDB, claim.PositionID, order, recAsset, recAmount)
-
-	// (9) STAGE the atomic Remove of the consumed object (revert-aware; flushed at
-	// block accept atomically with the committed credit).
-	stageAtomicRemove(stateDB, dChainID, key)
 	return recAmount, nil
 }
 
@@ -704,30 +700,29 @@ func (c *NativeDChainClient) ImportSettlement(
 	// credit still leaves it unconsumed because the EVM revert rolls back this write.
 	markSettlementConsumed(stateDB, claim.OutputID, state.GetBlockContext().Number().Uint64())
 
-	// (7) CREDIT C from the vault — NO MINT (the vault must already hold the output;
-	// it was funded by the tokenIn legs of prior intents and operator seeding). The
-	// transfer token is derived from the RECORDED asset inside creditSettlementOutput
-	// (FIX-5), so the claim's AssetAddr cannot redirect the credit to a different token.
-	if cerr := creditSettlementOutput(stateDB, recOwner, recAsset, recAmount); cerr != nil {
-		return 0, cerr
-	}
-
-	// (8) DECREMENT the intent's remaining locked principal ONLY for a same-asset refund
-	// (the per-taker cap's accounting; recAmount <= remaining was proven above, so this
-	// never underflows). A proceeds credit (different asset) does not touch the input
-	// principal. The terminal Reclaimed state is reached only via ReclaimIntent.
+	// (7) PHASE A — record EVERY remaining 0x9999 state BEFORE the terminal credit, so the
+	// geth nested-call host bug cannot drop them (the dropped-write fund-loss this dissolves):
+	//   - DECREMENT the intent's remaining locked principal ONLY for a same-asset refund (the
+	//     per-taker cap's accounting; recAmount <= remaining was proven above, so this never
+	//     underflows). A proceeds credit (different asset) does not touch the input principal.
+	//   - STAGE the atomic Remove of the consumed object under the D source chain. We do NOT
+	//     Apply here (a direct Apply commits outside the EVM revert scope => value LOSS on a
+	//     post-Apply revert); staging is revert-aware and flushed at BLOCK ACCEPT atomically
+	//     with the committed credit.
 	if recAsset == intent.AssetIn {
 		intent.Remaining -= recAmount
 		putSwapIntentRecord(stateDB, claim.IntentID, intent)
 	}
-
-	// (9) STAGE the atomic Remove of the consumed object under the D source chain. As
-	// with the C->D Put, we do NOT Apply here: a direct Apply commits outside the EVM
-	// revert scope, so a tx reverting after this would consume (remove) the D->C
-	// object while the C credit + consumed-mark rolled back => the object is gone and
-	// C was never credited = value LOSS. Staging is revert-aware; the host flushes the
-	// Remove to shared memory at BLOCK ACCEPT atomically with the committed credit.
 	stageAtomicRemove(stateDB, dChainID, key)
+
+	// (8) PHASE B — CREDIT C from the vault as the frame's TERMINAL effect: NO MINT (the seam
+	// reserve must already hold the output, funded by prior tokenIn legs + operator seeding).
+	// creditSettlementOutput records the seam-release (Phase A) then performs the native/ERC-20
+	// payout terminally; nothing writes 0x9999 after it. The transfer token is derived from the
+	// RECORDED asset (FIX-5), so claim.AssetAddr cannot redirect the credit.
+	if cerr := creditSettlementOutput(stateDB, recOwner, recAsset, recAmount); cerr != nil {
+		return 0, cerr
+	}
 	return recAmount, nil
 }
 
@@ -880,19 +875,22 @@ func (c *NativeDChainClient) ReclaimIntent(
 	intent.Status = swapIntentReclaimed
 	putSwapIntentRecord(stateDB, intentID, intent)
 
-	// (6) REFUND the locked principal of the LOCKED asset from seamReserve — NO MINT.
-	// creditSettlementOutput draws ONLY seamReserve[assetIn] (the swap rail's own pot),
-	// the exact pot SubmitSwapIntent credited, so the refund can never raid a depositor
-	// or LP pot. The transfer token is derived from the recorded asset inside it (FIX-5).
+	// (6) PHASE A — stage the compensating C->D Remove + emit the reclaim event BEFORE the
+	// terminal refund, so the geth nested-call host bug cannot drop these 0x9999 writes.
+	// Staging a Remove of the original intent object stops a dexvm that has not yet imported
+	// it from later funding a D order from a reclaimed intent (double-fund); if D already
+	// imported it the Remove no-ops on a missing key and the now-zero remaining still prevents
+	// a double payout.
+	stageAtomicRemove(stateDB, dChainID, intentID)
+	emitNativeReclaimEvent(stateDB, intentID, intent.Owner, intent.AssetIn, refunded)
+
+	// (7) PHASE B — REFUND the locked principal from seamReserve as the frame's TERMINAL
+	// effect: NO MINT (creditSettlementOutput draws ONLY seamReserve[assetIn], the exact pot
+	// SubmitSwapIntent credited, so it can never raid a depositor/LP pot). The transfer token
+	// is derived from the recorded asset (FIX-5). Nothing writes 0x9999 after it.
 	if cerr := creditSettlementOutput(stateDB, intent.Owner, intent.AssetIn, refunded); cerr != nil {
 		return 0, cerr
 	}
-
-	// (7) STAGE a compensating C->D Remove of the original intent object so a dexvm that
-	// has not yet imported it cannot later fund a D order from a reclaimed intent.
-	stageAtomicRemove(stateDB, dChainID, intentID)
-
-	emitNativeReclaimEvent(stateDB, intentID, intent.Owner, intent.AssetIn, refunded)
 	return refunded, nil
 }
 
@@ -935,50 +933,11 @@ func (c *NativeDChainClient) Quote(_ *Pool, _ *big.Int, _ bool) *big.Int {
 }
 
 // --- C-side value movement helpers (escrow lock / settlement credit). ----------
-
-// lockIntentInput debits amount of the input asset from the caller into the 0x9999
-// escrow vault, returning the value ACTUALLY locked (observed delta for ERC-20).
-// Native moves via SubBalance(caller)/AddBalance(0x9999) with an observed-delta
-// pre/post check; ERC-20 via the vault transferFrom observed delta. The locked
-// value backs the C->D object's amount.
-func lockIntentInput(stateDB StateDB, caller common.Address, assetID [32]byte, assetAddr common.Address, amount uint64) (uint64, error) {
-	amt := new(big.Int).SetUint64(amount)
-	if isNativeAsset(assetID) {
-		u, of := uint256.FromBig(amt)
-		if of {
-			return 0, ErrNativeBadAmount
-		}
-		if stateDB.GetBalance(caller).Cmp(u) < 0 {
-			return 0, ErrNativeFundsShort
-		}
-		// Lock the tokenIn into the SEAM RESERVE (the seam's own pot), not the depositor
-		// pot. seamReserve[native] tracks the seam's slice of the vault's real native
-		// balance; the other slices (settleVault depositor pot + makerLockedVault) are
-		// untouched, so this lock can never appear as a depositor's withdrawable claim.
-		before := loadSeamReserve(stateDB, assetID)
-		stateDB.SubBalance(caller, u)
-		stateDB.AddBalance(poolManagerAddr9999, u)
-		storeSeamReserve(stateDB, assetID, new(big.Int).Add(before, amt))
-		return amount, nil
-	}
-	vault, ok := stateDBERC20(stateDB)
-	if !ok {
-		return 0, ErrNativeERC20Vault
-	}
-	delta, err := safeTransferTokenFrom(vault, assetAddr, caller, poolManagerAddr9999, amt)
-	if err != nil {
-		return 0, err
-	}
-	// Track the seam's holding of this asset (the seam reserve) so a later settlement
-	// credit can be conservation-checked against the SEAM's own backing — never the
-	// depositor pot. Observed delta is the true arrival (fee-on-transfer safe).
-	before := loadSeamReserve(stateDB, assetID)
-	storeSeamReserve(stateDB, assetID, new(big.Int).Add(before, delta))
-	if !delta.IsUint64() {
-		return 0, ErrNativeBadAmount
-	}
-	return delta.Uint64(), nil
-}
+//
+// The escrow LOCK is lockAssetIn (native_zap.go) — the two-phase input lock that records
+// seam accounting before the terminal ERC-20 pull (the geth nested-call fund-loss fix).
+// The settlement CREDIT is creditSettlementOutput below (recordSeamRelease + terminal
+// payout). The LP rail's analogs are commitAssetIn / creditPositionCollect.
 
 // creditSettlementOutput releases amount of the output asset from the SEAM RESERVE
 // to the recipient — NO MINT (the seam's own pot must already hold it). The credit is
@@ -994,78 +953,31 @@ func lockIntentInput(stateDB StateDB, caller common.Address, assetID [32]byte, a
 // the token credited is provably the one the reserve was debited for; a caller can
 // no longer name a different token to transfer than the asset it claims to settle.
 func creditSettlementOutput(stateDB StateDB, recipient common.Address, assetID [32]byte, amount uint64) error {
-	amt := new(big.Int).SetUint64(amount)
-	held := loadSeamReserve(stateDB, assetID)
-	if held.Cmp(amt) < 0 {
-		// NO MINT, and NO RAID: the SEAM's own reserve must back the output. A short
-		// seam reserve reverts even if the vault holds depositor/maker funds of this asset.
-		return ErrNativeSettleUnbacked
+	// PHASE A — debit the seam reserve (the conservation gate: NO MINT, the seam's own pot
+	// must back the output; NO RAID, it is checked against seamReserve[a] only, never a
+	// depositor/maker pot). Pure 0x9999 write, no nested call.
+	if err := recordSeamRelease(stateDB, assetID, amount); err != nil {
+		return err
 	}
-	storeSeamReserve(stateDB, assetID, new(big.Int).Sub(held, amt))
 	if isNativeAsset(assetID) {
-		u, of := uint256.FromBig(amt)
-		if of {
-			return ErrNativeBadAmount
-		}
-		// Underflow guard (defense in depth): SubBalance is uint256-modular from a
-		// precompile; the vault holdings (checked above) should never exceed the real
-		// balance, so this only fires on a regression — fail loud, never wrap.
-		if stateDB.GetBalance(poolManagerAddr9999).Cmp(u) < 0 {
-			return ErrNativeSettleUnbacked
-		}
-		stateDB.SubBalance(poolManagerAddr9999, u)
-		stateDB.AddBalance(recipient, u)
-		return nil
+		// Native release is a plain balance op (Phase A) — no nested call.
+		return moveNativeOutOfVault(stateDB, recipient, amount)
 	}
+	// PHASE B — terminal ERC-20 transfer. The token is DERIVED from the recorded asset id
+	// (FIX-5: assetAddress is assetID's injective inverse), so a caller cannot redirect the
+	// credit to a different token. Nothing writes 0x9999 storage after this.
 	vault, ok := stateDBERC20(stateDB)
 	if !ok {
 		return ErrNativeERC20Vault
 	}
-	return safeTransferTokenTo(vault, assetAddress(assetID), recipient, amt)
+	return pushERC20Terminal(vault, assetAddress(assetID), recipient, new(big.Int).SetUint64(amount))
 }
 
 // --- LP-rail value movement (commit into committedPositions / collect out of it). --
 
-// commitPositionInput debits amount of the LP's input asset from the caller's
-// CSpendable balance into the 0x9999 vault, recording it in the COMMITTED-POSITIONS
-// pot (the LP rail's own pot), and returns the value ACTUALLY committed (observed
-// delta for ERC-20). Native moves via SubBalance(caller)/AddBalance(0x9999) with a
-// balance pre-check; ERC-20 via the vault transferFrom observed delta. The committed
-// value backs the C->D commit object's amount AND represents the DCommitted state
-// (the unit left the caller's spendable balance). Byte-for-byte the same discipline
-// as lockIntentInput, but on committedPositions instead of seamReserve — the
-// orthogonal-pot rule (an LP commit can never appear in the swap rail's reserve).
-func commitPositionInput(stateDB StateDB, caller common.Address, assetID [32]byte, assetAddr common.Address, amount uint64) (uint64, error) {
-	amt := new(big.Int).SetUint64(amount)
-	if isNativeAsset(assetID) {
-		u, of := uint256.FromBig(amt)
-		if of {
-			return 0, ErrNativeBadAmount
-		}
-		if stateDB.GetBalance(caller).Cmp(u) < 0 {
-			return 0, ErrNativeFundsShort
-		}
-		before := loadCommittedPositions(stateDB, assetID)
-		stateDB.SubBalance(caller, u)
-		stateDB.AddBalance(poolManagerAddr9999, u)
-		storeCommittedPositions(stateDB, assetID, new(big.Int).Add(before, amt))
-		return amount, nil
-	}
-	vault, ok := stateDBERC20(stateDB)
-	if !ok {
-		return 0, ErrNativeERC20Vault
-	}
-	delta, err := safeTransferTokenFrom(vault, assetAddr, caller, poolManagerAddr9999, amt)
-	if err != nil {
-		return 0, err
-	}
-	before := loadCommittedPositions(stateDB, assetID)
-	storeCommittedPositions(stateDB, assetID, new(big.Int).Add(before, delta))
-	if !delta.IsUint64() {
-		return 0, ErrNativeBadAmount
-	}
-	return delta.Uint64(), nil
-}
+// The LP commit LOCK is commitAssetIn (native_zap.go) — the two-phase analog of lockAssetIn
+// on the committedPositions pot (orthogonal to the swap-rail seam reserve). The collect
+// CREDIT is creditPositionCollect below.
 
 // creditPositionCollect releases amount of the collected asset from the COMMITTED-
 // POSITIONS pot to the LP — NO MINT (the LP pot must already hold it), NO RAID (the
@@ -1078,29 +990,18 @@ func commitPositionInput(stateDB StateDB, caller common.Address, assetID [32]byt
 // asset id (assetAddress(assetID)) INSIDE this function — same discipline as
 // creditSettlementOutput; the caller cannot redirect the credit to a different token.
 func creditPositionCollect(stateDB StateDB, recipient common.Address, assetID [32]byte, amount uint64) error {
-	amt := new(big.Int).SetUint64(amount)
-	held := loadCommittedPositions(stateDB, assetID)
-	if held.Cmp(amt) < 0 {
-		// NO MINT, NO RAID: the LP pot's own reserve must back the collect. A short
-		// committed-positions pot reverts even if other pots hold this asset.
-		return ErrLPCollectUnbacked
+	// PHASE A — debit the LP committed-positions pot (NO MINT, NO RAID — orthogonal to the
+	// swap-rail seam reserve and the depositor/maker pots). Pure 0x9999 write, no nested call.
+	if err := recordCommittedRelease(stateDB, assetID, amount); err != nil {
+		return err
 	}
-	storeCommittedPositions(stateDB, assetID, new(big.Int).Sub(held, amt))
 	if isNativeAsset(assetID) {
-		u, of := uint256.FromBig(amt)
-		if of {
-			return ErrNativeBadAmount
-		}
-		if stateDB.GetBalance(poolManagerAddr9999).Cmp(u) < 0 {
-			return ErrLPCollectUnbacked
-		}
-		stateDB.SubBalance(poolManagerAddr9999, u)
-		stateDB.AddBalance(recipient, u)
-		return nil
+		return moveNativeOutOfVault(stateDB, recipient, amount)
 	}
+	// PHASE B — terminal ERC-20 transfer (token derived from the recorded asset id, FIX-5).
 	vault, ok := stateDBERC20(stateDB)
 	if !ok {
 		return ErrNativeERC20Vault
 	}
-	return safeTransferTokenTo(vault, assetAddress(assetID), recipient, amt)
+	return pushERC20Terminal(vault, assetAddress(assetID), recipient, new(big.Int).SetUint64(amount))
 }
