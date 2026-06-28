@@ -39,6 +39,7 @@ var (
 	ErrZeroLiquidity = errors.New("zero liquidity")
 	ErrConvergence   = errors.New("newton method did not converge")
 	ErrUnknownOp     = errors.New("unknown stableswap operation")
+	ErrTooManyTokens = errors.New("token count exceeds maxTokens")
 )
 
 const (
@@ -50,6 +51,21 @@ const (
 	GasBase = 5000
 
 	maxIterations = 256
+
+	// maxTokens caps the pool's token count. Curve's MAX_COINS is 8; real
+	// pegged-asset pools never exceed it. The cap is a DETERMINISM/DoS bound, not a
+	// feature limit: the Newton solvers below run up to maxIterations passes, each a
+	// nested loop of big.Int mul/div over n tokens whose operands grow ~O(n*256) bits.
+	// Without an upper bound on n an attacker supplies a huge token count (paying only
+	// flat calldata gas) and forces super-linear in-consensus compute on every
+	// validator — a one-tx halt. Capping n makes the worst-case work a fixed constant.
+	maxTokens = 8
+
+	// gasPerTokenIter prices ONE token's contribution to ONE Newton iteration. Gas is
+	// charged as solves*n*maxIterations*gasPerTokenIter so it always reflects the
+	// BOUNDED WORST CASE (every iteration runs), never the lucky early-convergence
+	// cost — an attacker who crafts balances that maximize iterations cannot underpay.
+	gasPerTokenIter = 10
 )
 
 var (
@@ -89,6 +105,15 @@ func (p *stableSwapPrecompile) Run(
 	}
 }
 
+// chargeNewtonGas deducts gas for `solves` Newton solves over n tokens at the bounded
+// worst case (maxIterations passes each). It MUST be called AFTER n is capped at
+// maxTokens (so the product cannot overflow or be unbounded) and BEFORE any solve runs,
+// so an attacker pays for the worst case up front rather than after the work lands.
+func chargeNewtonGas(gas uint64, n, solves int) (uint64, error) {
+	work := uint64(solves) * uint64(n) * uint64(maxIterations) * gasPerTokenIter
+	return contract.DeductGas(gas, work)
+}
+
 // Input layout for GetDy:
 //
 //	[0:4]   i (uint32)
@@ -110,8 +135,16 @@ func getDy(data []byte, gas uint64) ([]byte, uint64, error) {
 	if n < 2 || len(data) < 76+n*32 {
 		return nil, gas, ErrInvalidInput
 	}
+	if n > maxTokens {
+		return nil, gas, ErrTooManyTokens
+	}
 	if int(i) >= n || int(j) >= n || i == j {
 		return nil, gas, ErrInvalidIndex
+	}
+	// getDy runs TWO Newton solves: computeD then computeY. Charge both up front.
+	gas, err := chargeNewtonGas(gas, n, 2)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	balances := make([]*big.Int, n)
@@ -162,6 +195,14 @@ func addLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 
 	if n < 2 || len(data) < 68+2*n*32 {
 		return nil, gas, ErrInvalidInput
+	}
+	if n > maxTokens {
+		return nil, gas, ErrTooManyTokens
+	}
+	// addLiquidity runs TWO Newton solves: computeD(balances) then computeD(newBalances).
+	gas, err := chargeNewtonGas(gas, n, 2)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	amounts := make([]*big.Int, n)
@@ -218,6 +259,11 @@ func removeLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 	if n < 2 || len(data) < 68+n*32 {
 		return nil, gas, ErrInvalidInput
 	}
+	if n > maxTokens {
+		return nil, gas, ErrTooManyTokens
+	}
+	// removeLiquidity runs NO Newton solve — just a bounded O(n) proportional split, so
+	// GasBase covers it once n is capped. No extra per-token charge needed.
 	if totalSupply.Sign() == 0 {
 		return nil, gas, ErrZeroLiquidity
 	}
@@ -252,6 +298,14 @@ func getD(data []byte, gas uint64) ([]byte, uint64, error) {
 	amp := new(big.Int).SetBytes(data[4:36])
 	if n < 2 || len(data) < 36+n*32 {
 		return nil, gas, ErrInvalidInput
+	}
+	if n > maxTokens {
+		return nil, gas, ErrTooManyTokens
+	}
+	// getD runs ONE Newton solve: computeD.
+	gas, err := chargeNewtonGas(gas, n, 1)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	balances := make([]*big.Int, n)
