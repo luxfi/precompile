@@ -754,10 +754,19 @@ func (c *NativeDChainClient) ImportSettlement(
 //     settleFromFills always sets spent > 0 on a proceeds export; a zero here is a malformed
 //     or hostile object and the floor refuses it.)
 //
-// To avoid float division (and its divide-by-zero / rounding pitfalls) the comparison is
-// cross-multiplied: out/spent >= limit  <=>  out >= limit*spent (SELL), and spent/out <=
-// limit  <=>  spent <= limit*out (BUY). Both sides are non-negative float64 (the matcher's
-// own domain), so this neither tightens nor loosens the floor relative to D.
+// EXACT INTEGER COMPARISON (determinism + uint256 safety). priceLimit is a float64 (the
+// dexvm CLOB price domain), but spent/out are uint256-domain token amounts that routinely
+// exceed 2^53 — so the realized price MUST NOT be reconstructed in float64: float64(spent)
+// silently drops the low bits above 2^53, mispricing the floor (it can ACCEPT a fill below
+// the taker's floor, the exact MEV the floor exists to refuse). Instead the recorded limit
+// is taken as its EXACT rational value limNum/limDen (big.Rat.SetFloat64 is lossless for a
+// finite float64) and cross-multiplied with the amounts as big.Ints:
+//
+//	SELL floor : out/spent >= limit  <=>  out*limDen   >= limNum*spent ; reject if <
+//	BUY ceiling: spent/out <= limit  <=>  spent*limDen <= limNum*out   ; reject if >
+//
+// Every term is an exact integer, so the verdict is byte-identical on every validator (no
+// float rounding on the money path) and never truncates a uint256 amount.
 //
 // PROPOSER vs KEEPER. A hostile proposer UNDERSTATING spent would inflate the realized price
 // (loosening this floor), but that same understatement inflates the refund and is
@@ -776,17 +785,29 @@ func enforceProceedsPriceFloor(priceLimit uint64, limitIsUpper bool, spent, out 
 	if !(limit > 0) || math.IsInf(limit, 0) || math.IsNaN(limit) {
 		return nil // a degenerate recorded limit imposes nothing (mirrors priceLimitToCLOB).
 	}
-	spentF := float64(spent)
-	outF := float64(out)
+	limitRat := new(big.Rat).SetFloat64(limit) // exact: limit is finite & > 0 here.
+	if limitRat == nil {
+		return nil // SetFloat64 yields nil only for Inf/NaN, already excluded — defensive.
+	}
+	limNum := limitRat.Num()                  // > 0
+	limDen := limitRat.Denom()                // > 0
+	spentBig := new(big.Int).SetUint64(spent) // exact, no 2^53 truncation.
+	outBig := new(big.Int).SetUint64(out)
 	if limitIsUpper {
 		// BUY ceiling: realized quote/base = spent/out must not EXCEED the limit.
-		if spentF > limit*outF {
+		// reject if spent*limDen > limNum*out
+		lhs := new(big.Int).Mul(spentBig, limDen)
+		rhs := new(big.Int).Mul(limNum, outBig)
+		if lhs.Cmp(rhs) > 0 {
 			return ErrSettlePriceLimit
 		}
 		return nil
 	}
 	// SELL floor: realized quote/base = out/spent must not fall BELOW the limit.
-	if outF < limit*spentF {
+	// reject if out*limDen < limNum*spent
+	lhs := new(big.Int).Mul(outBig, limDen)
+	rhs := new(big.Int).Mul(limNum, spentBig)
+	if lhs.Cmp(rhs) < 0 {
 		return ErrSettlePriceLimit
 	}
 	return nil
