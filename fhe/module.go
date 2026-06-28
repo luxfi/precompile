@@ -88,6 +88,19 @@ func (*configurator) Configure(chainConfig precompileconfig.ChainConfig, cfg pre
 			err, GasMul, MinSafeGasMulRatio, minGasLimit)
 	}
 
-	_ = config // NetworkKeyPath and CoprocessorEndpoint are reserved for future use
+	// Network FHE keys are installed in-process via SetNetworkKeys by the node's
+	// VM layer, which shares the F-Chain (ThresholdVM) DKG's live public key
+	// material (encryption + bootstrap keys) with this precompile. The secret
+	// key is threshold-shared on the F-Chain and is never held here. Until keys
+	// are installed the precompile runs key-less: encrypt/compute fail closed
+	// and decrypt/seal require the F-Chain threshold ceremony — no insecure
+	// default key is ever fabricated.
+	//
+	// Keys are passed as live objects rather than loaded from NetworkKeyPath:
+	// luxfi/fhe v1.8.2 cannot serialize a BootstrapKey for cross-process
+	// transport (its MarshalBinary omits the KSK field and gob-fails on the
+	// blind-rotation key set). NetworkKeyPath/CoprocessorEndpoint remain
+	// reserved for when that upstream serialization is complete.
+	_ = config
 	return nil
 }
