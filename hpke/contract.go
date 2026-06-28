@@ -13,10 +13,11 @@
 // recipient's secret key in calldata, which is public on-chain. Decryption
 // MUST be performed off-chain.
 //
-// GPU: For post-quantum hybrid KEMs (X25519+Kyber768, X-Wing), the Kyber KEM
-// encap is dispatched to GPU via LatticeOps::KyberEncaps with automatic CPU
-// fallback. Batch acceleration via KyberEncapsBatch is available in the
-// parallel.BlockExecutor path.
+// The full HPKE seal (KEM encap -> HKDF key schedule -> AEAD) runs on the CPU
+// via circl and is the single, deterministic source of truth across the
+// validator set. A prior GPU "fast path" computed a Kyber encapsulation and
+// then discarded it, so it was pure vestigial work and a divergence surface;
+// it has been removed.
 package hpke
 
 import (
@@ -26,7 +27,6 @@ import (
 	"io"
 
 	"github.com/cloudflare/circl/hpke"
-	"github.com/luxfi/accel"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -376,16 +376,12 @@ func (p *hpkePrecompile) singleShotSeal(caller common.Address, input []byte) ([]
 	// preserving consensus.
 	params.seed = deriveEffectiveSeed(caller, params.seed)
 
-	// GPU fast path: accelerate KEM encapsulation for Kyber-based KEMs.
-	// The full HPKE seal is: KEM encap -> key schedule (HKDF) -> AEAD seal.
-	// GPU handles KEM encap; key schedule + AEAD stay on CPU via circl.
-	if isKyberKEM(params.kemID) {
-		if result, gpuErr := p.singleShotSealGPU(params); gpuErr == nil {
-			return result, nil
-		}
-		// GPU unavailable or failed -- fall through to CPU path
-	}
-
+	// CPU is the single source of truth. The previous GPU "fast path" ran a
+	// Kyber KEM encapsulation on the accelerator and then THREW THE RESULT
+	// AWAY, returning singleShotSealCPU(params) regardless -- pure vestigial
+	// work whose only effect was an extra, non-deterministic divergence
+	// surface. The full HPKE seal (KEM encap -> HKDF key schedule -> AEAD)
+	// runs on circl, deterministically, for every validator.
 	return p.singleShotSealCPU(params)
 }
 
@@ -437,54 +433,3 @@ func (p *hpkePrecompile) singleShotSealCPU(params *sealParams) ([]byte, error) {
 	return result, nil
 }
 
-// singleShotSealGPU attempts GPU-accelerated KEM encapsulation for the Kyber
-// component of a hybrid KEM, then completes key schedule + AEAD on CPU.
-// Returns (nil, error) if GPU is unavailable so the caller falls back to CPU.
-func (p *hpkePrecompile) singleShotSealGPU(params *sealParams) ([]byte, error) {
-	if !accel.Available() {
-		return nil, accel.ErrNoBackends
-	}
-
-	sess, err := accel.NewSession()
-	if err != nil {
-		return nil, err
-	}
-	defer sess.Close()
-
-	lattice := sess.Lattice()
-
-	// For hybrid KEMs, the public key contains both classical and PQ parts.
-	// Kyber768 public key is 1184 bytes; we pass the full hybrid pk blob and
-	// let the GPU handle the Kyber encapsulation portion.
-	pkTensor, err := accel.NewTensorWithData[byte](sess, []int{len(params.recipient)}, params.recipient)
-	if err != nil {
-		return nil, err
-	}
-	defer pkTensor.Close()
-
-	ctTensor, err := accel.NewTensor[byte](sess, []int{accel.KyberCiphertextSize})
-	if err != nil {
-		return nil, err
-	}
-	defer ctTensor.Close()
-
-	ssTensor, err := accel.NewTensor[byte](sess, []int{accel.KyberSharedKeySize})
-	if err != nil {
-		return nil, err
-	}
-	defer ssTensor.Close()
-
-	if err := lattice.KyberEncaps(pkTensor.Untyped(), ctTensor.Untyped(), ssTensor.Untyped()); err != nil {
-		return nil, err
-	}
-
-	if err := sess.Sync(); err != nil {
-		return nil, err
-	}
-
-	// GPU KEM succeeded -- now complete the full HPKE seal on CPU using circl.
-	// The GPU pre-warmed the Kyber KEM component. For deterministic results
-	// identical to pure-CPU, we run the full HPKE pipeline via circl which
-	// internally performs the same KEM + key schedule + AEAD.
-	return p.singleShotSealCPU(params)
-}
