@@ -19,10 +19,10 @@ var ErrFHEUnsafeGasLimit = errors.New("contract: chain gasLimit too small for sa
 
 // FeeConfigReporter is the feature-detection interface a ChainConfig
 // may implement to expose its effective block gas limit at the
-// timestamp the precompile is being activated. Modeled after
-// StrictPQReporter — compute-heavy precompiles probe this interface
-// in their Configure() activation gate; if absent (e.g. non-Lux
-// integrators), the precompile is permissive.
+// timestamp the precompile is being activated. Compute-heavy
+// precompiles probe this interface in their Configure() activation
+// gate; if absent (e.g. non-Lux integrators), the precompile is
+// permissive.
 //
 // The reporter takes a timestamp because the chain's effective fee
 // config can change over time (feeConfigManagerConfig admin can
