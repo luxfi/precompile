@@ -19,17 +19,22 @@
 package ai
 
 import (
+	"crypto/x509"
 	"encoding/binary"
 	"fmt"
 	"math/big"
 
+	"github.com/zeebo/blake3"
+
 	"github.com/luxfi/precompile/contract"
 )
 
-// Gas: the fused cost of the primitives each method composes.
+// Gas: the fused cost of the primitives each method composes. A mint now also
+// verifies a TEE attestation certificate chain (GasVerifyTEE) — the X.509 work
+// that proves the signing key belongs to a real device — so the cost is metered.
 const (
-	GasVerifyAndMintWork uint64 = GasVerifyMLDSA + GasCalculateReward + GasMarkSpent
-	GasVerifyAndMintData uint64 = GasVerifyMLDSA + GasCalculateReward + GasMarkSpent
+	GasVerifyAndMintWork uint64 = GasVerifyMLDSA + GasVerifyTEE + GasCalculateReward + GasMarkSpent
+	GasVerifyAndMintData uint64 = GasVerifyMLDSA + GasVerifyTEE + GasCalculateReward + GasMarkSpent
 )
 
 // ErrInputTooShort is returned when calldata is truncated.
@@ -101,7 +106,7 @@ func mintWork(stateDB StateDB, workProof []byte, chainId uint64) (*big.Int, erro
 // all of these to the chain, so the same dataset can't be double-claimed. Reward scales
 // with data size and the privacy multiplier (the same schedule as compute mining).
 func mintData(stateDB StateDB, descriptor []byte, chainId uint64) (*big.Int, error) {
-	if len(descriptor) < 42 {
+	if len(descriptor) < DataContributionSize {
 		return nil, ErrInvalidWorkProof
 	}
 	var dataHash [32]byte
@@ -135,11 +140,67 @@ func mintData(stateDB StateDB, descriptor []byte, chainId uint64) (*big.Int, err
 	return reward, nil
 }
 
+// verifyDeviceBinding is the trust gate that makes a mint impossible without a
+// chain-trusted signature. The attestation envelope appended to a work proof /
+// data descriptor is:
+//
+//	envelope = [4]sigLen | teeSig | receipt
+//	receipt  = report(48) | certChainDER     (report = deviceID(32)|ts(8)|nonce(8))
+//
+// It establishes, in order: (1) the certificate chain in the receipt terminates
+// at an embedded vendor root (a genuine TEE device), checked at the report's own
+// timestamp so every validator agrees; (2) teeSig is the device leaf's signature
+// over the 48-byte report; and (3) the attested deviceID equals BLAKE3(pubkey) —
+// so the trust runs embedded-root → device leaf → this exact ML-DSA key. A miner
+// that presents a self-generated key with no embedded-root-anchored quote is
+// rejected: the signing key is vouched for on chain, never asserted in calldata.
+//
+// roots is threaded explicitly (production passes teeRootPool(); tests pass a
+// generated PKI) so the gate carries no hidden global state.
+func verifyDeviceBinding(pubkey, envelope []byte, roots *x509.CertPool) error {
+	if len(envelope) < 4 {
+		return ErrInvalidTEEReceipt
+	}
+	sigLen := uint64(binary.BigEndian.Uint32(envelope[0:4]))
+	if sigLen == 0 || 4+sigLen > uint64(len(envelope)) {
+		return ErrInvalidTEEReceipt
+	}
+	teeSig := envelope[4 : 4+sigLen]
+	receipt := envelope[4+sigLen:]
+
+	ok, err := verifyAttestation(receipt, teeSig, roots)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrTEESignatureInvalid
+	}
+	// receipt is guaranteed >= teeReportLen here (verifyAttestation enforced it),
+	// so receipt[0:32] (the attested deviceID) is safe to read.
+	var attestedDevice [32]byte
+	copy(attestedDevice[:], receipt[:32])
+	if attestedDevice != blake3.Sum256(pubkey) {
+		return ErrDeviceKeyMismatch
+	}
+	return nil
+}
+
 func (c *AIMiningContract) runVerifyAndMintWork(
 	accessibleState contract.AccessibleState,
 	input []byte,
 	suppliedGas uint64,
 	readOnly bool,
+) ([]byte, uint64, error) {
+	return c.verifyAndMintWork(accessibleState, input, suppliedGas, readOnly, teeRootPool())
+}
+
+// verifyAndMintWork is runVerifyAndMintWork with the trust-anchor pool injected.
+func (c *AIMiningContract) verifyAndMintWork(
+	accessibleState contract.AccessibleState,
+	input []byte,
+	suppliedGas uint64,
+	readOnly bool,
+	roots *x509.CertPool,
 ) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, suppliedGas, fmt.Errorf("cannot mint in read-only mode")
@@ -153,12 +214,26 @@ func (c *AIMiningContract) runVerifyAndMintWork(
 	if err != nil {
 		return nil, remaining, err
 	}
+	// 1. The post-quantum key signed THIS exact work claim.
 	valid, err := VerifyMLDSA(pubkey, workProof, signature)
 	if err != nil {
 		return nil, remaining, err
 	}
 	if !valid {
 		return nil, remaining, fmt.Errorf("ml-dsa attestation invalid")
+	}
+	// 2. A TEE quote binds that key to a real, embedded-root-certified device.
+	if len(workProof) <= WorkProofTEEQuoteOffset {
+		return nil, remaining, ErrMissingAttestation
+	}
+	if err := verifyDeviceBinding(pubkey, workProof[WorkProofTEEQuoteOffset:], roots); err != nil {
+		return nil, remaining, err
+	}
+	// 3. The work proof's own deviceID must equal the attested key identity, so
+	//    the settled workId is scoped to the chain-trusted device, not a value
+	//    the attacker grinds freely.
+	if [32]byte(workProof[:32]) != blake3.Sum256(pubkey) {
+		return nil, remaining, ErrDeviceKeyMismatch
 	}
 
 	stateDB := accessibleState.GetStateDB()
@@ -177,6 +252,17 @@ func (c *AIMiningContract) runVerifyAndMintData(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
+	return c.verifyAndMintData(accessibleState, input, suppliedGas, readOnly, teeRootPool())
+}
+
+// verifyAndMintData is runVerifyAndMintData with the trust-anchor pool injected.
+func (c *AIMiningContract) verifyAndMintData(
+	accessibleState contract.AccessibleState,
+	input []byte,
+	suppliedGas uint64,
+	readOnly bool,
+	roots *x509.CertPool,
+) ([]byte, uint64, error) {
 	if readOnly {
 		return nil, suppliedGas, fmt.Errorf("cannot mint in read-only mode")
 	}
@@ -189,12 +275,21 @@ func (c *AIMiningContract) runVerifyAndMintData(
 	if err != nil {
 		return nil, remaining, err
 	}
+	// 1. The post-quantum key signed THIS exact data descriptor.
 	valid, err := VerifyMLDSA(pubkey, descriptor, signature)
 	if err != nil {
 		return nil, remaining, err
 	}
 	if !valid {
 		return nil, remaining, fmt.Errorf("ml-dsa attestation invalid")
+	}
+	// 2. A TEE quote (appended after the 42-byte descriptor) binds that key to a
+	//    real, embedded-root-certified device (the scrub service's enclave).
+	if len(descriptor) <= DataContributionSize {
+		return nil, remaining, ErrMissingAttestation
+	}
+	if err := verifyDeviceBinding(pubkey, descriptor[DataContributionSize:], roots); err != nil {
+		return nil, remaining, err
 	}
 
 	stateDB := accessibleState.GetStateDB()
