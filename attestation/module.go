@@ -94,7 +94,16 @@ func (p *attestationPrecompile) Run(
 		return nil, 0, err
 	}
 
-	result, err := Run(input)
+	// Deterministic block timestamp from consensus state; used only for
+	// attestation expiry. Never time.Now().
+	var blockTS uint64
+	if accessibleState != nil {
+		if bc := accessibleState.GetBlockContext(); bc != nil {
+			blockTS = bc.Timestamp()
+		}
+	}
+
+	result, err := Run(input, blockTS)
 	if err != nil {
 		return nil, gas, err
 	}
