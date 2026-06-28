@@ -180,6 +180,21 @@ var (
 	// expected match — consistent with every other precompile in the tree.
 	ErrInsufficientGas   = fmt.Errorf("insufficient gas for FHE operation: %w", contract.ErrOutOfGas)
 	ErrInvalidCiphertext = errors.New("invalid ciphertext handle")
+
+	// ErrACLUnauthorized is returned when a caller requests an operation on a
+	// ciphertext handle it is not authorized for (it is not the owner). The
+	// caller is rejected outright — it is never handed any plaintext-shaped
+	// output.
+	ErrACLUnauthorized = errors.New("FHE ACL: caller not authorized for ciphertext handle")
+
+	// ErrThresholdDecryptionRequired is the fail-closed result of decrypt and
+	// sealOutput. The precompile holds NO secret key — plaintext can be
+	// recovered ONLY through the F-Chain (ThresholdVM) threshold-decryption
+	// ceremony, where no single party can decrypt. That async Warp round-trip
+	// (requestDecryption → threshold combine → fulfill) is not yet wired into
+	// this precompile, so these ops fail closed rather than ever returning
+	// plaintext from a local key. See LP-134.
+	ErrThresholdDecryptionRequired = errors.New("FHE decrypt requires F-Chain threshold ceremony (no local secret key)")
 )
 
 // FHEContract implements the main FHE precompile
@@ -997,6 +1012,19 @@ func (c *FHEContract) handleAsEuint256(state contract.AccessibleState, caller co
 
 // === Utility Handlers ===
 
+// handleDecrypt is the EVM gateway to F-Chain threshold decryption. It is NOT
+// a local decrypt: the precompile holds no secret key. A decrypt is a gated
+// REQUEST:
+//
+//  1. ACL gate — the caller must be authorized for the handle (owner). An
+//     unauthorized caller is rejected with ErrACLUnauthorized; it never
+//     receives plaintext-shaped output.
+//  2. Threshold ceremony — plaintext is revealed only via the F-Chain
+//     threshold-decryption protocol (requestDecryption → combine → fulfill),
+//     where no single party can decrypt. That async Warp round-trip is not yet
+//     wired into this precompile, so the request FAILS CLOSED here.
+//
+// Under no circumstances does this return plaintext recovered from a local key.
 func (c *FHEContract) handleDecrypt(state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if len(data) < 32 {
 		return nil, gas, ErrInvalidInput
@@ -1006,10 +1034,16 @@ func (c *FHEContract) handleDecrypt(state contract.AccessibleState, caller commo
 	}
 
 	handle := common.BytesToHash(data[:32])
+	gasLeft := gas - GasDecryptRequest
 
-	result := performFHEDecrypt(state.GetStateDB(), handle, caller)
+	if !isAuthorized(state.GetStateDB(), handle, caller) {
+		return nil, gasLeft, ErrACLUnauthorized
+	}
 
-	return result.Bytes(), gas - GasDecryptRequest, nil
+	// Authorized — but decryption is a threshold ceremony on the F-Chain, not a
+	// local operation. Fail closed until that integration lands. NEVER return
+	// plaintext from a local key.
+	return nil, gasLeft, ErrThresholdDecryptionRequired
 }
 
 func (c *FHEContract) handleVerify(state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
@@ -1028,6 +1062,13 @@ func (c *FHEContract) handleVerify(state contract.AccessibleState, caller common
 	return result.Bytes(), gas - GasEncrypt, nil
 }
 
+// handleSealOutput re-encrypts (seals) a ciphertext to a caller-provided public
+// key so the caller can decrypt it off-chain. That re-encryption requires the
+// network secret key (which the precompile does NOT hold) or a threshold
+// re-encryption ceremony on the F-Chain (not yet wired). It is therefore
+// ACL-gated and fails closed — it must NEVER hand the raw network-key
+// ciphertext to the caller, which (combined with any key leak) would expose the
+// plaintext. Same confidentiality posture as decrypt.
 func (c *FHEContract) handleSealOutput(state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if len(data) < 64 {
 		return nil, gas, ErrInvalidInput
@@ -1037,11 +1078,15 @@ func (c *FHEContract) handleSealOutput(state contract.AccessibleState, caller co
 	}
 
 	handle := common.BytesToHash(data[:32])
-	publicKey := data[32:]
+	gasLeft := gas - GasEncrypt
 
-	result := performFHESealOutput(state.GetStateDB(), handle, publicKey, caller)
+	if !isAuthorized(state.GetStateDB(), handle, caller) {
+		return nil, gasLeft, ErrACLUnauthorized
+	}
 
-	return result, gas - GasEncrypt, nil
+	// Authorized — but sealing to the caller's key is a threshold
+	// re-encryption performed via the F-Chain, not locally. Fail closed.
+	return nil, gasLeft, ErrThresholdDecryptionRequired
 }
 
 // Ciphertext storage layout in StateDB:
@@ -1138,7 +1183,7 @@ func performFHEOperation(stateDB contract.StateDB, op string, handle1, handle2 c
 		if op == "lt" || op == "gt" || op == "eq" || op == "ne" || op == "le" || op == "ge" {
 			resultType = TypeEbool
 		}
-		return storeCiphertext(stateDB, result, resultType)
+		return storeCiphertextOwned(stateDB, result, resultType, caller)
 	}
 
 	// CPU fallback
@@ -1186,7 +1231,7 @@ func performFHEOperation(stateDB contract.StateDB, op string, handle1, handle2 c
 		resultType = TypeEbool
 	}
 
-	return storeCiphertext(stateDB, result, resultType)
+	return storeCiphertextOwned(stateDB, result, resultType, caller)
 }
 
 // fheOpGPU attempts GPU-accelerated FHE operations.
@@ -1278,7 +1323,7 @@ func performFHESelect(stateDB contract.StateDB, condition, ifTrue, ifFalse commo
 		return common.Hash{}
 	}
 
-	return storeCiphertext(stateDB, result, trueType)
+	return storeCiphertextOwned(stateDB, result, trueType, caller)
 }
 
 // performFHEUnaryOperation executes FHE unary operations using real TFHE library
@@ -1302,7 +1347,7 @@ func performFHEUnaryOperation(stateDB contract.StateDB, op string, handle common
 		return common.Hash{}
 	}
 
-	return storeCiphertext(stateDB, result, ctType)
+	return storeCiphertextOwned(stateDB, result, ctType, caller)
 }
 
 // encryptValue encrypts a plaintext value using real TFHE library
@@ -1311,7 +1356,7 @@ func encryptValue(stateDB contract.StateDB, value uint64, ctType uint8, caller c
 	if ct == nil {
 		return common.Hash{}
 	}
-	return storeCiphertext(stateDB, ct, ctType)
+	return storeCiphertextOwned(stateDB, ct, ctType, caller)
 }
 
 // encryptAddress encrypts an address using real TFHE library
@@ -1322,7 +1367,7 @@ func encryptAddress(stateDB contract.StateDB, addr common.Address, caller common
 	if ct == nil {
 		return common.Hash{}
 	}
-	return storeCiphertext(stateDB, ct, TypeEaddress)
+	return storeCiphertextOwned(stateDB, ct, TypeEaddress, caller)
 }
 
 // generateEncryptedRandom generates random encrypted value using real TFHE library
@@ -1333,7 +1378,7 @@ func generateEncryptedRandom(stateDB contract.StateDB, ctType uint8, caller comm
 	if ct == nil {
 		return common.Hash{}
 	}
-	return storeCiphertext(stateDB, ct, ctType)
+	return storeCiphertextOwned(stateDB, ct, ctType, caller)
 }
 
 // performFHEScalarOperation executes FHE scalar operations using real TFHE library
@@ -1363,7 +1408,7 @@ func performFHEScalarOperation(stateDB contract.StateDB, op string, handle commo
 		return common.Hash{}
 	}
 
-	return storeCiphertext(stateDB, result, ctType)
+	return storeCiphertextOwned(stateDB, result, ctType, caller)
 }
 
 // performFHEShiftOperation executes FHE shift operations using real TFHE library
@@ -1391,7 +1436,7 @@ func performFHEShiftOperation(stateDB contract.StateDB, op string, handle common
 		return common.Hash{}
 	}
 
-	return storeCiphertext(stateDB, result, ctType)
+	return storeCiphertextOwned(stateDB, result, ctType, caller)
 }
 
 // performFHECast executes type casting using real TFHE library
@@ -1406,7 +1451,7 @@ func performFHECast(stateDB contract.StateDB, handle common.Hash, toType uint8, 
 		return common.Hash{}
 	}
 
-	return storeCiphertext(stateDB, result, toType)
+	return storeCiphertextOwned(stateDB, result, toType, caller)
 }
 
 // encryptBigIntValue encrypts a big.Int value for types > 64 bits
@@ -1415,32 +1460,70 @@ func encryptBigIntValue(stateDB contract.StateDB, value *big.Int, ctType uint8, 
 	if ct == nil {
 		return common.Hash{}
 	}
-	return storeCiphertext(stateDB, ct, ctType)
+	return storeCiphertextOwned(stateDB, ct, ctType, caller)
 }
 
-// performFHEDecrypt decrypts a ciphertext (returns as big.Int bytes)
-func performFHEDecrypt(stateDB contract.StateDB, handle common.Hash, caller common.Address) *big.Int {
-	ct, ctType, ok := getCiphertext(stateDB, handle)
-	if !ok {
-		return big.NewInt(0)
-	}
-
-	return tfheDecrypt(ct, ctType)
-}
-
-// performFHEVerify verifies and stores an input ciphertext
+// performFHEVerify verifies and stores an input ciphertext, recording the
+// submitting caller as its owner.
 func performFHEVerify(stateDB contract.StateDB, inputHandle []byte, ctType uint8, caller common.Address) common.Hash {
 	if !tfheVerify(inputHandle, ctType) {
 		return common.Hash{}
 	}
-	return storeCiphertext(stateDB, inputHandle, ctType)
+	return storeCiphertextOwned(stateDB, inputHandle, ctType, caller)
 }
 
-// performFHESealOutput seals output for a specific public key
-func performFHESealOutput(stateDB contract.StateDB, handle common.Hash, publicKey []byte, caller common.Address) []byte {
-	ct, ctType, ok := getCiphertext(stateDB, handle)
-	if !ok {
-		return nil
+// === Access Control List (ACL) ===
+//
+// Decryption and sealing are gated by ownership. Every ciphertext created
+// through this precompile records its creator as owner; only the owner may
+// request decryption/seal of that handle. There is no separate ACL precompile
+// in this tree, so ownership is tracked here, co-located with the ciphertext
+// storage it governs. Decrypt/seal additionally fail closed (threshold ceremony
+// required), so this gate is defense-in-depth that also pre-positions the
+// authorization check for when F-Chain threshold wiring lands.
+
+// aclOwnerPrefix namespaces owner slots so they never collide with ciphertext
+// data/meta slots in the precompile's state trie.
+var aclOwnerPrefix = []byte("fhe/acl/owner/v1")
+
+// ownerSlot is the deterministic state slot holding the owner of a handle.
+func ownerSlot(handle common.Hash) common.Hash {
+	return keccak256Hash(aclOwnerPrefix, handle.Bytes())
+}
+
+// setOwner records owner for handle on first creation. First-writer-wins: a
+// content-addressed handle cannot have its ownership reassigned by a later
+// creator producing identical ciphertext bytes.
+func setOwner(stateDB contract.StateDB, handle common.Hash, owner common.Address) {
+	slot := ownerSlot(handle)
+	if stateDB.GetState(ContractAddress, slot) != (common.Hash{}) {
+		return
 	}
-	return tfheSealOutput(ct, publicKey, ctType)
+	stateDB.SetState(ContractAddress, slot, common.BytesToHash(owner.Bytes()))
+}
+
+// getOwner returns the recorded owner of handle, or the zero address if none.
+func getOwner(stateDB contract.StateDB, handle common.Hash) common.Address {
+	return common.BytesToAddress(stateDB.GetState(ContractAddress, ownerSlot(handle)).Bytes())
+}
+
+// isAuthorized reports whether caller may decrypt/seal handle. An unknown or
+// unowned handle is never authorized (fail closed).
+func isAuthorized(stateDB contract.StateDB, handle common.Hash, caller common.Address) bool {
+	owner := getOwner(stateDB, handle)
+	if owner == (common.Address{}) {
+		return false
+	}
+	return owner == caller
+}
+
+// storeCiphertextOwned persists a ciphertext and records its creating caller as
+// owner. Production ciphertext creation goes through this wrapper so every
+// handle is ACL-owned at creation.
+func storeCiphertextOwned(stateDB contract.StateDB, ct []byte, ctType uint8, owner common.Address) common.Hash {
+	handle := storeCiphertext(stateDB, ct, ctType)
+	if handle != (common.Hash{}) {
+		setOwner(stateDB, handle, owner)
+	}
+	return handle
 }
