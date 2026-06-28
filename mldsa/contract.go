@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/luxfi/accel"
-	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/crypto/mldsa"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -228,23 +226,18 @@ func (p *mldsaVerifyPrecompile) Run(
 	// Extract message
 	message := input[sigEnd:expectedSize]
 
-	// Consensus safety: by default (no `-tags accel`), verifyGPU's
-	// underlying accel.batchVerifyGPU falls through to CPU via
-	// crypto_default.go. With `-tags accel`, GPU runs but must produce
-	// byte-identical output to CPU for the same mathematical verify
-	// equation. Either way the result is deterministic across validators
-	// built the same way.
-	var valid bool
-	if gpuValid, gpuUsed := verifyGPU(message, signature, publicKey); gpuUsed {
-		valid = gpuValid
-	} else {
-		// CPU fallback: Parse public key and verify
-		pub, err := mldsa.PublicKeyFromBytes(publicKey, mldsaMode)
-		if err != nil {
-			return nil, remainingGas, fmt.Errorf("invalid public key: %w", err)
-		}
-		valid = pub.VerifySignatureCtx(message, signature, precompileCtx)
+	// CPU is the single source of truth. This precompile binds a non-empty
+	// FIPS-204 context string (precompileCtx) into mu = CRH(tr || 0x00 ||
+	// ctxlen || ctx || M). The luxfi/accel ML-DSA kernel verifies with an
+	// EMPTY context (ctxlen 0x00) and cannot absorb precompileCtx, so its
+	// verdict differs from this one on every signature -- a CPU/GPU consensus
+	// split. Re-introducing accel requires a ctx-aware verify kernel
+	// (crypto_sign_verify_ctx) proven byte-identical to VerifySignatureCtx.
+	pub, err := mldsa.PublicKeyFromBytes(publicKey, mldsaMode)
+	if err != nil {
+		return nil, remainingGas, fmt.Errorf("invalid public key: %w", err)
 	}
+	valid := pub.VerifySignatureCtx(message, signature, precompileCtx)
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)
 	result := make([]byte, 32)
@@ -333,34 +326,18 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 		return nil, remainingGas, fmt.Errorf("%w: %d trailing bytes", ErrInvalidInputLength, len(input)-offset)
 	}
 
-	// Try GPU-accelerated batch verification. Default builds (no -tags
-	// accel) fall through to CPU via accel/crypto_default.go; with accel,
-	// GPU runs but produces the same mathematical result.
-	//
-	// Red CRITICAL #176 / #177 propagation: when the GPU C ABI returns
-	// ErrInvalidArgument (msg_len > cap, count > kBatchMaxFactor, null
-	// pointer with non-zero len), the precompile MUST fail closed — a
-	// silent CPU fallback would let the CPU oracle accept the same input
-	// the GPU has already declared malformed, shipping asymmetric
-	// verdicts across the validator set → consensus split. Other accel
-	// errors (NotSupported / OutOfMemory / KernelFailed / NoBackends)
-	// are recoverable and fall through to the per-element CPU verify.
-	results, gpuUsed, gpuErr := batchVerifyGPU(signatures, messages, publicKeys)
-	if gpuErr != nil {
-		return nil, remainingGas, gpuErr
-	}
-
-	if !gpuUsed {
-		// CPU fallback: sequential single verify
-		results = make([]bool, count)
-		for i := range count {
-			pub, parseErr := mldsa.PublicKeyFromBytes(publicKeys[i], mldsaMode)
-			if parseErr != nil {
-				results[i] = false
-				continue
-			}
-			results[i] = pub.VerifySignatureCtx(messages[i], signatures[i], precompileCtx)
+	// CPU is the single source of truth (same ctx-binding reason as the
+	// single-verify path: the accel ML-DSA kernel verifies with empty context
+	// and cannot reproduce the precompileCtx-bound verdict). Sequential
+	// per-element verify under the FIPS-204 context.
+	results := make([]bool, count)
+	for i := range count {
+		pub, parseErr := mldsa.PublicKeyFromBytes(publicKeys[i], mldsaMode)
+		if parseErr != nil {
+			results[i] = false
+			continue
 		}
+		results[i] = pub.VerifySignatureCtx(messages[i], signatures[i], precompileCtx)
 	}
 
 	// Pack results: pad to 32-byte word, results right-aligned
@@ -379,33 +356,6 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 	return out, remainingGas, nil
 }
 
-// batchVerifyGPU attempts GPU-accelerated batch ML-DSA verification.
-// Returns (results, true, nil) on GPU success; (nil, false, nil) when the
-// GPU is unavailable or returned a recoverable error (caller should fall
-// back to CPU); (nil, false, err) when the GPU returned a HARD error
-// such as ErrInvalidArgument (caller MUST propagate — see Red CRITICAL
-// #176/#177 propagation policy at the call site).
-func batchVerifyGPU(signatures, messages, publicKeys [][]byte) ([]bool, bool, error) {
-	if !accel.Available() {
-		return nil, false, nil
-	}
-	results, err := accelcrypto.BatchVerify(accelcrypto.SigMLDSA65, signatures, messages, publicKeys)
-	if err != nil {
-		// Red CRITICAL #176 / M-1 propagation: ErrInvalidArgument is
-		// a HARD contract violation from the GPU C ABI. The lower
-		// layer (accel/ops/crypto/crypto_gpu.go SigMLDSA65 case) has
-		// already refused to silently fall back; propagate up so the
-		// precompile's Run() fails closed. All other accel errors
-		// (NotSupported, OutOfMemory, KernelFailed, NoBackends) stay
-		// recoverable and the caller uses the per-element CPU oracle.
-		if errors.Is(err, accel.ErrInvalidArgument) {
-			return nil, false, err
-		}
-		return nil, false, nil
-	}
-	return results, true, nil
-}
-
 // readUint256 reads a big-endian uint256 as uint64
 func readUint256(b []byte) uint64 {
 	if len(b) != 32 {
@@ -414,49 +364,6 @@ func readUint256(b []byte) uint64 {
 	// Only read last 8 bytes (assume high bytes are 0 for reasonable message lengths)
 	return uint64(b[24])<<56 | uint64(b[25])<<48 | uint64(b[26])<<40 | uint64(b[27])<<32 |
 		uint64(b[28])<<24 | uint64(b[29])<<16 | uint64(b[30])<<8 | uint64(b[31])
-}
-
-// verifyGPU attempts GPU-accelerated ML-DSA signature verification.
-// Returns (valid, true) if GPU was used, (false, false) if GPU unavailable.
-func verifyGPU(message, signature, publicKey []byte) (valid bool, gpuUsed bool) {
-	if !accel.Available() {
-		return false, false
-	}
-
-	sess, err := accel.NewSession()
-	if err != nil {
-		return false, false
-	}
-	defer sess.Close()
-
-	lattice := sess.Lattice()
-
-	// Create tensors for GPU operation
-	msgTensor, err := accel.NewTensorWithData[byte](sess, []int{len(message)}, message)
-	if err != nil {
-		return false, false
-	}
-	defer msgTensor.Close()
-
-	sigTensor, err := accel.NewTensorWithData[byte](sess, []int{len(signature)}, signature)
-	if err != nil {
-		return false, false
-	}
-	defer sigTensor.Close()
-
-	pkTensor, err := accel.NewTensorWithData[byte](sess, []int{len(publicKey)}, publicKey)
-	if err != nil {
-		return false, false
-	}
-	defer pkTensor.Close()
-
-	// Perform GPU-accelerated verification
-	result, err := lattice.DilithiumVerify(msgTensor.Untyped(), sigTensor.Untyped(), pkTensor.Untyped())
-	if err != nil {
-		return false, false
-	}
-
-	return result, true
 }
 
 // Legacy format (isLegacyFormat + RunLegacy) removed: the heuristic
