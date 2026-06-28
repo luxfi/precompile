@@ -80,9 +80,6 @@ func (c *ed25519VerifyPrecompile) Run(
 	if err != nil {
 		return nil, 0, err
 	}
-	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
-		return nil, remainingGas, err
-	}
 
 	if len(input) != InputLength {
 		return nil, remainingGas, nil

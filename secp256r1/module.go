@@ -19,8 +19,9 @@ const ConfigKey = "secp256r1Config"
 // stateful is a thin StatefulPrecompiledContract wrapper around the
 // minimal-interface Contract so we can register the precompile in the
 // modules.Module registry. The wrapper deducts gas first (uniform with
-// every other Lux precompile), enforces RefuseUnderStrictPQ, then delegates
-// to the existing classical verifier.
+// every other Lux precompile), then delegates to the existing classical
+// EIP-7212 verifier. P-256 is enabled for builders (WebAuthn / passkey /
+// cross-chain signature verification) — verify-only and key-safe.
 type stateful struct{ c Contract }
 
 var (
@@ -33,8 +34,8 @@ var (
 // RequiredGas is delegated to the wrapped Contract.
 func (s *stateful) RequiredGas(input []byte) uint64 { return s.c.RequiredGas(input) }
 
-// Run satisfies StatefulPrecompiledContract. Gas deduction, strict-PQ
-// gating, then delegation to the classical EIP-7212 verifier.
+// Run satisfies StatefulPrecompiledContract. Gas deduction, then
+// delegation to the classical EIP-7212 verifier.
 func (s *stateful) Run(
 	accessibleState contract.AccessibleState,
 	_ common.Address,
@@ -46,9 +47,6 @@ func (s *stateful) Run(
 	remainingGas, err := contract.DeductGas(suppliedGas, s.c.RequiredGas(input))
 	if err != nil {
 		return nil, 0, err
-	}
-	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
-		return nil, remainingGas, err
 	}
 	out, err := s.c.Run(input)
 	return out, remainingGas, err
