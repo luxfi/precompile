@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/luxfi/dex/pkg/lx"
 	"github.com/luxfi/geth/common"
 )
 
@@ -883,8 +884,16 @@ func (r *LXRouter) quoteV3(
 // V2 Fallback (STATICCALL to deployed contracts)
 // =========================================================================
 
-// quoteV2 queries a V2 Router for a swap quote.
-// Returns (0, nil) if V2 is not deployed or has no liquidity.
+// quoteV2 resolves a swap quote against the NATIVE constant-product AMM.
+//
+// The V2 venue is the 0.30% constant-product pool (the Uniswap-V2 standard fee):
+// its reserves are bound per-pair via BindAMMPool and read from 0x9999 storage
+// (swap_amm_pool.go), and the output is the canonical xy=k curve from
+// lx.ConstantProductOut — the SAME math the dexcore AMM source uses, so there is
+// exactly one constant-product implementation. When V2 is unconfigured, no pool is
+// bound, or amountIn falls outside the native AMM's uint64 domain, this returns
+// (0, error) so the router falls through to other venues — that fall-through is
+// correct routing behaviour, not a failure.
 func (r *LXRouter) quoteV2(
 	stateDB StateDB,
 	tokenIn, tokenOut common.Address,
@@ -894,10 +903,34 @@ func (r *LXRouter) quoteV2(
 		return big.NewInt(0), fmt.Errorf("V2 router not configured")
 	}
 
-	// In production, this would STATICCALL the V2 Router:
-	// getAmountsOut(amountIn, [tokenIn, tokenOut])
-	// For now, return zero — V2 contracts need to be deployed first.
-	return big.NewInt(0), fmt.Errorf("V2 not deployed")
+	// Canonical V2 pool key for the pair == the 0.30% constant-product pool.
+	poolID := sortedPoolKey(tokenIn, tokenOut, Fee030, TickSpacing030, common.Address{}).ID()
+
+	store := newEVMStore(stateDB)
+	base, quote, _, ok := readAMMRow(store, poolID)
+	if !ok || base == 0 || quote == 0 {
+		return big.NewInt(0), fmt.Errorf("no V2 liquidity bound")
+	}
+
+	// Orient reserves by sort order. The AMM row stores base = reserve of currency0,
+	// quote = reserve of currency1, where currency0 < currency1 by address. When tokenIn
+	// is currency0 (zeroForOne) the input reserve is base; otherwise it is quote.
+	zeroForOne := bytes.Compare(tokenIn[:], tokenOut[:]) < 0
+	var rx, ry uint64
+	if zeroForOne {
+		rx, ry = base, quote
+	} else {
+		rx, ry = quote, base
+	}
+
+	// The native AMM is uint64-domain (reserves are uint64). An amountIn beyond uint64
+	// is outside that domain — fall through rather than truncate.
+	if !amountIn.IsUint64() {
+		return big.NewInt(0), fmt.Errorf("V2 amountIn exceeds native AMM uint64 domain")
+	}
+
+	out := lx.ConstantProductOut(rx, ry, amountIn.Uint64())
+	return new(big.Int).SetUint64(out), nil
 }
 
 // =========================================================================
