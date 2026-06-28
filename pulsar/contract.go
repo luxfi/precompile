@@ -193,7 +193,12 @@ func (p *pulsarVerifyPrecompile) Run(
 		mlen = (mlen << 8) | uint64(body[i])
 	}
 	body = body[32:]
-	if uint64(len(body)) < mlen+uint64(sigSize) {
+	// Bounds check WITHOUT overflow: mlen is attacker-controlled (low 8 bytes
+	// of a uint256), so mlen+sigSize can wrap uint64 and slip past a naive
+	// guard, making body[:mlen] panic — and a panic in the geth precompile
+	// dispatch (no recover) halts every validator on the tx. Compare with
+	// subtraction on the trusted len(body) instead.
+	if mlen > uint64(len(body)) || uint64(len(body))-mlen < uint64(sigSize) {
 		return nil, suppliedGas, ErrInvalidInputLength
 	}
 	msg := body[:mlen]
