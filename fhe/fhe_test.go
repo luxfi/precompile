@@ -68,15 +68,17 @@ func (s *testStateDB) RevertToSnapshot(int) {}
 
 var _ contract.StateDB = (*testStateDB)(nil)
 
-// TestTFHEInitialization tests that the TFHE components initialize correctly
+// TestTFHEInitialization tests that the precompile installs PUBLIC key material
+// only. There is deliberately no secret key and no decryptor in the precompile;
+// decryption is an F-Chain threshold ceremony.
 func TestTFHEInitialization(t *testing.T) {
 	err := initTFHE()
-	require.NoError(t, err, "TFHE initialization should succeed")
-	require.NotNil(t, evaluator, "evaluator should be initialized")
-	require.NotNil(t, encryptor, "encryptor should be initialized")
-	require.NotNil(t, decryptor, "decryptor should be initialized")
-	require.NotNil(t, secretKey, "secretKey should be initialized")
-	require.NotNil(t, publicKey, "publicKey should be initialized")
+	require.NoError(t, err, "network key installation should succeed")
+	require.NotNil(t, evaluator, "evaluator (bootstrap key) should be installed")
+	require.NotNil(t, encryptor, "public-key encryptor should be installed")
+	require.NotNil(t, publicKey, "network public key should be installed")
+	require.NotNil(t, bootstrapKey, "network bootstrap key should be installed")
+	require.True(t, HasNetworkKeys(), "precompile should report installed keys")
 }
 
 // TestFheTypeMapping tests FHE type constant to TFHE type mapping
@@ -695,18 +697,19 @@ func TestFHEVerify(t *testing.T) {
 	require.False(t, invalid)
 }
 
-// TestDeterministicKeygen verifies that initTFHE produces identical keys
-// on repeated invocations (via the fixed seed), which is the core consensus fix.
-func TestDeterministicKeygen(t *testing.T) {
-	// initTFHE uses sync.Once, so we can only verify the keys are non-nil
-	// and that the public key serializes deterministically.
+// TestNetworkPublicKeyStable verifies the precompile publishes a stable network
+// PUBLIC key (so all validators encrypt under the same key) and that the key is
+// the public half only — the secret key lives off-precompile, on the F-Chain
+// threshold set.
+func TestNetworkPublicKeyStable(t *testing.T) {
 	err := initTFHE()
 	require.NoError(t, err)
 
 	pk1 := tfheGetNetworkPublicKey()
 	require.NotNil(t, pk1)
+	require.Greater(t, len(pk1), 0)
 
-	// Second call must return identical bytes (same singleton).
+	// Repeated reads return identical bytes (same installed public key).
 	pk2 := tfheGetNetworkPublicKey()
-	require.Equal(t, pk1, pk2, "public key must be deterministic across calls")
+	require.Equal(t, pk1, pk2, "published network public key must be stable across calls")
 }
