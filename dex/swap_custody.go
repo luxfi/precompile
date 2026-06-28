@@ -96,17 +96,22 @@ func (s *SettleContract) runSwapDeposit(state contract.AccessibleState, caller c
 	defer exitCustodyKV(stateDB)
 
 	aid := assetID(asset)
-	// Lock the REAL token into the vault (seamReserve), observed-delta (fee-on-transfer
-	// safe). The locked amount is what actually arrived.
-	locked, lerr := lockIntentInput(stateDB, caller, aid, asset.Address, amount.Uint64())
+	amt := amount.Uint64()
+	store := newEVMStore(stateDB)
+	// NATIVE-ZAP two-phase deposit (the geth nested-call fund-loss fix). lockAssetIn:
+	//   PHASE A — credits seamReserve AND runs the record callback (the dexcore-ledger credit),
+	//     so BOTH 0x9999 accounting writes land BEFORE any nested call;
+	//   PHASE B — pulls the REAL token into the vault as the frame's TERMINAL effect.
+	// The prior order (transferFrom THEN storeSeamReserve THEN dexcore.Deposit) had the host
+	// drop the two post-transfer writes => seamReserve=0/available=0 while balanceOf(0x9999)
+	// rose: stranded funds, zero fill. The credited amount is the REQUESTED amount; an ERC-20
+	// under-delivery (fee-on-transfer) reverts the whole frame (lockAssetIn's delivered>=amt
+	// guard) rather than under-crediting.
+	locked, lerr := lockAssetIn(stateDB, caller, aid, asset.Address, amt, func() error {
+		return dexcore.Deposit(store, accountFromAddress(caller), aid, amt)
+	})
 	if lerr != nil {
 		return nil, gasLeft, lerr
-	}
-	// Mirror into the dexcore ledger: credit the caller's available by exactly what the
-	// vault locked. The dexcore identity is the full 32-byte left-pad of the address.
-	store := newEVMStore(stateDB)
-	if derr := dexcore.Deposit(store, accountFromAddress(caller), aid, locked); derr != nil {
-		return nil, gasLeft, derr
 	}
 	return leftPadU64(locked), gasLeft, nil
 }

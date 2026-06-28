@@ -214,6 +214,10 @@ type poolStateAdapter struct {
 	stateDB         contract.StateDB
 	blockNumber     uint64
 	accessibleState contract.AccessibleState
+	// vaultMarked caches that this frame already kept the 0x9999 vault account non-empty
+	// (ensureVaultAccountPersists), so the marker runs once at the first 0x9999 storage write
+	// rather than re-reading the nonce on every SetState. Reset per adapter (one per call).
+	vaultMarked bool
 }
 
 // newPoolStateAdapter builds the dex.StateDB adapter from the precompile execution
@@ -254,7 +258,30 @@ func (a *poolStateAdapter) GetState(addr common.Address, key common.Hash) common
 }
 
 func (a *poolStateAdapter) SetState(addr common.Address, key common.Hash, value common.Hash) {
+	// ROOT-CAUSE FIX (the single choke point — no writer can miss it): keep the 0x9999 vault
+	// account NON-EMPTY before persisting ANY of its storage, so an EIP-158
+	// Finalise(deleteEmptyObjects=true) cannot reap the account and the slot together (the live
+	// ERC-20 fund-strand: an ERC-20-only deposit leaves 0x9999 with zero native balance/nonce/
+	// code => empty => reaped with seamReserve). One nonce bump per frame at the first 0x9999
+	// write; see ensureVaultAccountPersists (native_zap.go).
+	if addr == poolManagerAddr9999 && !a.vaultMarked {
+		a.vaultMarked = true
+		ensureVaultAccountPersists(a)
+	}
 	a.stateDB.SetState(addr, key, value)
+}
+
+// GetNonce / SetNonce forward the account nonce to the underlying geth StateDB. They exist
+// solely so the value path can keep the 0x9999 vault account NON-EMPTY (ensureVaultAccount-
+// Persists): an EIP-158 chain reaps an account with zero nonce/balance/code AND its storage at
+// Finalise(deleteEmptyObjects=true), which is the live ERC-20 fund-strand root cause. A native
+// deposit keeps 0x9999 non-empty via its balance; an ERC-20 deposit must bump the nonce instead.
+func (a *poolStateAdapter) GetNonce(addr common.Address) uint64 {
+	return a.stateDB.GetNonce(addr)
+}
+
+func (a *poolStateAdapter) SetNonce(addr common.Address, nonce uint64) {
+	a.stateDB.SetNonce(addr, nonce, tracing.NonceChangeUnspecified)
 }
 
 func (a *poolStateAdapter) GetBalance(addr common.Address) *uint256.Int {

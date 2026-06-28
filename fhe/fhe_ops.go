@@ -1,12 +1,25 @@
 // Copyright (C) 2019-2024, Lux Partners Limited. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-// Pure Go FHE implementation using github.com/luxfi/fhe.
-// GPU acceleration available via github.com/luxfi/accel when CGO enabled.
+// FHE operations for the EVM gateway precompile, backed by github.com/luxfi/fhe.
+//
+// Confidentiality model (LP-134, threshold FHE):
+//
+//	The precompile holds ONLY PUBLIC key material — the network encryption
+//	public key and the bootstrap/evaluation key — both published by the
+//	F-Chain (ThresholdVM) DKG. The FHE secret key is Shamir-shared across the
+//	F-Chain validator set and is NEVER reconstructed by any single party, so
+//	the precompile CANNOT (and MUST NOT) decrypt locally. Decryption is a
+//	threshold ceremony on the F-Chain; see contract.go handleDecrypt.
+//
+//	This file therefore contains NO secret key, NO decryptor, and NO in-source
+//	keygen seed. Key material is installed via SetNetworkKeys (from the F-Chain
+//	DKG output, loaded by Configure) and is identical on every validator. Until
+//	keys are installed, every key-dependent op fails closed (returns nil) rather
+//	than fabricating a key — there is no insecure default.
 package fhe
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"math/big"
 	"sync"
@@ -15,52 +28,93 @@ import (
 )
 
 var (
-	// Singleton TFHE components
-	tfheOnce  sync.Once
-	evaluator *fhe.BitwiseEvaluator
-	encryptor *fhe.BitwiseEncryptor
-	decryptor *fhe.BitwiseDecryptor
-	secretKey *fhe.SecretKey
-	publicKey *fhe.PublicKey
-	params    fhe.Parameters
-	initErr   error
+	// params is the public FHE parameter set. Deterministic and key-independent,
+	// so it is safe to derive in-process; it must match the params the F-Chain
+	// DKG used to generate the installed keys.
+	params     fhe.Parameters
+	paramsOnce sync.Once
+	paramsErr  error
+
+	// Network PUBLIC key material, installed via SetNetworkKeys from the F-Chain
+	// DKG. There is deliberately NO secret key and NO decryptor here.
+	keysMu       sync.RWMutex
+	publicKey    *fhe.PublicKey
+	bootstrapKey *fhe.BootstrapKey
+	encryptor    *fhe.BitwisePublicEncryptor // public-key encryption only
+	evaluator    *fhe.BitwiseEvaluator       // homomorphic compute (bootstrap key only)
 )
 
-// fheKeygenSeed is the domain-separated seed for deterministic FHE keygen.
-// All validators must use the same seed to produce identical keys.
-// Changing this value invalidates all existing ciphertexts on-chain.
-var fheKeygenSeed = sha256.Sum256([]byte("LUX_FHE_KEYGEN_v1"))
-
-// Initialize TFHE components with deterministic keygen for consensus.
-func initTFHE() error {
-	tfheOnce.Do(func() {
-		var err error
-
-		// Create parameters
-		params, err = fhe.NewParametersFromLiteral(fhe.PN10QP27)
-		if err != nil {
-			initErr = err
-			return
-		}
-
-		// Generate keys deterministically from a fixed seed so every
-		// validator produces identical FHE keys. Using crypto/rand here
-		// would make each node's keys different, breaking consensus.
-		kg, err := fhe.NewKeyGeneratorFromSeed(params, fheKeygenSeed[:])
-		if err != nil {
-			initErr = err
-			return
-		}
-		secretKey, publicKey = kg.GenKeyPair()
-		bsk := kg.GenBootstrapKey(secretKey)
-
-		// Create operators
-		encryptor = fhe.NewBitwiseEncryptor(params, secretKey)
-		decryptor = fhe.NewBitwiseDecryptor(params, secretKey)
-		evaluator = fhe.NewBitwiseEvaluator(params, bsk, secretKey)
+// ensureParams initializes the public FHE parameter set exactly once.
+func ensureParams() (fhe.Parameters, error) {
+	paramsOnce.Do(func() {
+		params, paramsErr = fhe.NewParametersFromLiteral(fhe.PN10QP27)
 	})
+	return params, paramsErr
+}
 
-	return initErr
+// SetNetworkKeys installs the F-Chain DKG-published PUBLIC key material:
+// the encryption public key (pk) and the bootstrap/evaluation key (bsk).
+//
+// The corresponding FHE secret key is threshold-shared on the F-Chain and is
+// NEVER held by the precompile, so installing these keys grants the ability to
+// encrypt and to homomorphically compute, but NOT to decrypt. Decryption stays
+// a threshold ceremony.
+//
+// Determinism: every validator installs the identical published bundle, so the
+// derived encryptor/evaluator behave identically across the network. Passing a
+// nil key clears the corresponding capability (fail closed).
+func SetNetworkKeys(pk *fhe.PublicKey, bsk *fhe.BootstrapKey) error {
+	p, err := ensureParams()
+	if err != nil {
+		return err
+	}
+
+	keysMu.Lock()
+	defer keysMu.Unlock()
+
+	publicKey = pk
+	bootstrapKey = bsk
+
+	if pk != nil {
+		encryptor = fhe.NewBitwisePublicEncryptor(p, pk)
+	} else {
+		encryptor = nil
+	}
+	if bsk != nil {
+		// The evaluator needs only the bootstrap key; its sk parameter is
+		// deprecated and ignored by luxfi/fhe. Pass nil — the precompile has
+		// no secret key to give.
+		evaluator = fhe.NewBitwiseEvaluator(p, bsk, nil)
+	} else {
+		evaluator = nil
+	}
+	return nil
+}
+
+// HasNetworkKeys reports whether public key material is installed. Used by the
+// VM/operator to detect an inert (fail-closed) FHE precompile.
+func HasNetworkKeys() bool {
+	keysMu.RLock()
+	defer keysMu.RUnlock()
+	return encryptor != nil && evaluator != nil
+}
+
+func getEvaluator() *fhe.BitwiseEvaluator {
+	keysMu.RLock()
+	defer keysMu.RUnlock()
+	return evaluator
+}
+
+func getEncryptor() *fhe.BitwisePublicEncryptor {
+	keysMu.RLock()
+	defer keysMu.RUnlock()
+	return encryptor
+}
+
+func getPublicKey() *fhe.PublicKey {
+	keysMu.RLock()
+	defer keysMu.RUnlock()
+	return publicKey
 }
 
 // fheTypeToTFHEType converts FHE type constant to TFHE FheUintType
@@ -136,9 +190,14 @@ func deserializeCiphertext(data []byte) *fhe.Ciphertext {
 }
 
 // FHE Operations - Binary Arithmetic
+//
+// Every compute op runs under the PUBLIC bootstrap key only; no secret key is
+// involved and no plaintext is ever exposed. When no bootstrap key is installed
+// the op fails closed (returns nil).
 
 func tfheAdd(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -148,7 +207,7 @@ func tfheAdd(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.Add(ctLhs, ctRhs)
+	result, err := ev.Add(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -157,7 +216,8 @@ func tfheAdd(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheSub(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -167,7 +227,7 @@ func tfheSub(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.Sub(ctLhs, ctRhs)
+	result, err := ev.Sub(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -176,7 +236,8 @@ func tfheSub(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheMul(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -188,7 +249,7 @@ func tfheMul(lhs, rhs []byte, fheType uint8) []byte {
 
 	// TFHE multiplication using schoolbook algorithm.
 	// This is O(n^2) in bootstrapping operations for n-bit integers.
-	result, err := evaluator.Mul(ctLhs, ctRhs)
+	result, err := ev.Mul(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -197,7 +258,8 @@ func tfheMul(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheDiv(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -208,7 +270,7 @@ func tfheDiv(lhs, rhs []byte, fheType uint8) []byte {
 	}
 
 	// TFHE division using binary long division
-	result, err := evaluator.Div(ctLhs, ctRhs)
+	result, err := ev.Div(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -217,7 +279,8 @@ func tfheDiv(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheRem(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -228,7 +291,7 @@ func tfheRem(lhs, rhs []byte, fheType uint8) []byte {
 	}
 
 	// TFHE remainder operation
-	result, err := evaluator.Rem(ctLhs, ctRhs)
+	result, err := ev.Rem(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -240,7 +303,8 @@ func tfheRem(lhs, rhs []byte, fheType uint8) []byte {
 // These return encrypted boolean (single encrypted bit)
 
 func tfheLt(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -250,7 +314,7 @@ func tfheLt(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.Lt(ctLhs, ctRhs)
+	result, err := ev.Lt(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -261,7 +325,8 @@ func tfheLt(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheLe(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -271,7 +336,7 @@ func tfheLe(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.Le(ctLhs, ctRhs)
+	result, err := ev.Le(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -281,7 +346,8 @@ func tfheLe(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheGt(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -291,7 +357,7 @@ func tfheGt(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.Gt(ctLhs, ctRhs)
+	result, err := ev.Gt(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -301,7 +367,8 @@ func tfheGt(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheGe(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -311,7 +378,7 @@ func tfheGe(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.Ge(ctLhs, ctRhs)
+	result, err := ev.Ge(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -321,7 +388,8 @@ func tfheGe(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheEq(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -331,7 +399,7 @@ func tfheEq(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.Eq(ctLhs, ctRhs)
+	result, err := ev.Eq(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -341,7 +409,8 @@ func tfheEq(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheNe(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -352,11 +421,11 @@ func tfheNe(lhs, rhs []byte, fheType uint8) []byte {
 	}
 
 	// NE(a, b) = (a < b) OR (a > b)
-	ltResult, err := evaluator.Lt(ctLhs, ctRhs)
+	ltResult, err := ev.Lt(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
-	gtResult, err := evaluator.Gt(ctLhs, ctRhs)
+	gtResult, err := ev.Gt(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -365,7 +434,7 @@ func tfheNe(lhs, rhs []byte, fheType uint8) []byte {
 	ltBits := fhe.WrapBoolCiphertext(ltResult)
 	gtBits := fhe.WrapBoolCiphertext(gtResult)
 
-	neResult, err := evaluator.Or(ltBits, gtBits)
+	neResult, err := ev.Or(ltBits, gtBits)
 	if err != nil {
 		return nil
 	}
@@ -377,7 +446,8 @@ func tfheNe(lhs, rhs []byte, fheType uint8) []byte {
 // FHE Operations - Bitwise
 
 func tfheAnd(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -387,7 +457,7 @@ func tfheAnd(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.And(ctLhs, ctRhs)
+	result, err := ev.And(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -396,7 +466,8 @@ func tfheAnd(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheOr(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -406,7 +477,7 @@ func tfheOr(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.Or(ctLhs, ctRhs)
+	result, err := ev.Or(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -415,7 +486,8 @@ func tfheOr(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheXor(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -425,7 +497,7 @@ func tfheXor(lhs, rhs []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.Xor(ctLhs, ctRhs)
+	result, err := ev.Xor(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -434,7 +506,8 @@ func tfheXor(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheNot(ct []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -444,12 +517,13 @@ func tfheNot(ct []byte, fheType uint8) []byte {
 	}
 
 	// Not returns *BitCiphertext directly (no error)
-	result := evaluator.Not(ctIn)
+	result := ev.Not(ctIn)
 	return serializeBitCiphertext(result)
 }
 
 func tfheNeg(ct []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -459,7 +533,7 @@ func tfheNeg(ct []byte, fheType uint8) []byte {
 	}
 
 	// Negation: negate the value (two's complement)
-	result, err := evaluator.Neg(ctIn)
+	result, err := ev.Neg(ctIn)
 	if err != nil {
 		return nil
 	}
@@ -470,7 +544,8 @@ func tfheNeg(ct []byte, fheType uint8) []byte {
 // FHE Operations - Selection and Cast
 
 func tfheSelect(control, ifTrue, ifFalse []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -483,7 +558,7 @@ func tfheSelect(control, ifTrue, ifFalse []byte, fheType uint8) []byte {
 	}
 
 	// Select: if control then ifTrue else ifFalse
-	result, err := evaluator.Select(ctControl, ctTrue, ctFalse)
+	result, err := ev.Select(ctControl, ctTrue, ctFalse)
 	if err != nil {
 		return nil
 	}
@@ -492,7 +567,8 @@ func tfheSelect(control, ifTrue, ifFalse []byte, fheType uint8) []byte {
 }
 
 func tfheCast(ct []byte, fromType, toType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -503,7 +579,7 @@ func tfheCast(ct []byte, fromType, toType uint8) []byte {
 
 	targetType := fheTypeToTFHEType(toType)
 	// CastTo returns *BitCiphertext directly (no error)
-	result := evaluator.CastTo(ctIn, targetType)
+	result := ev.CastTo(ctIn, targetType)
 
 	return serializeBitCiphertext(result)
 }
@@ -511,7 +587,8 @@ func tfheCast(ct []byte, fromType, toType uint8) []byte {
 // FHE Operations - Min/Max
 
 func tfheMin(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -522,12 +599,12 @@ func tfheMin(lhs, rhs []byte, fheType uint8) []byte {
 	}
 
 	// Min = (lhs < rhs) ? lhs : rhs
-	ltResult, err := evaluator.Lt(ctLhs, ctRhs)
+	ltResult, err := ev.Lt(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
 
-	result, err := evaluator.Select(ltResult, ctLhs, ctRhs)
+	result, err := ev.Select(ltResult, ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -536,7 +613,8 @@ func tfheMin(lhs, rhs []byte, fheType uint8) []byte {
 }
 
 func tfheMax(lhs, rhs []byte, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -547,12 +625,12 @@ func tfheMax(lhs, rhs []byte, fheType uint8) []byte {
 	}
 
 	// Max = (lhs > rhs) ? lhs : rhs
-	gtResult, err := evaluator.Gt(ctLhs, ctRhs)
+	gtResult, err := ev.Gt(ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
 
-	result, err := evaluator.Select(gtResult, ctLhs, ctRhs)
+	result, err := ev.Select(gtResult, ctLhs, ctRhs)
 	if err != nil {
 		return nil
 	}
@@ -560,79 +638,71 @@ func tfheMax(lhs, rhs []byte, fheType uint8) []byte {
 	return serializeBitCiphertext(result)
 }
 
-// FHE Operations - Encryption/Decryption
+// FHE Operations - Encryption / Input handling
+//
+// Note: there is intentionally NO local decrypt and NO local seal here. Both
+// require the secret key, which the precompile does not hold; they are handled
+// as ACL-gated, fail-closed threshold requests in contract.go.
 
 func tfheVerify(ct []byte, fheType uint8) bool {
-	// Basic validation - check ciphertext can be deserialized
+	// Basic validation - check ciphertext can be deserialized. No key needed:
+	// input ciphertexts are encrypted off-chain under the network public key.
 	return deserializeBitCiphertext(ct) != nil
 }
 
-func tfheDecrypt(ct []byte, fheType uint8) *big.Int {
-	if err := initTFHE(); err != nil {
-		return big.NewInt(0)
-	}
-
-	ctIn := deserializeBitCiphertext(ct)
-	if ctIn == nil {
-		return big.NewInt(0)
-	}
-
-	plaintext := decryptor.DecryptUint64(ctIn)
-	return new(big.Int).SetUint64(plaintext)
-}
-
+// tfheTrivialEncrypt encrypts a PUBLIC plaintext (an on-chain calldata value)
+// under the network PUBLIC key. The plaintext is already public on-chain, so no
+// confidentiality is created or lost here — this only lifts a known value into
+// the ciphertext domain so it can be combined with confidential ciphertexts.
+// Fails closed (nil) when no public key is installed.
 func tfheTrivialEncrypt(plaintext *big.Int, toType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	enc := getEncryptor()
+	if enc == nil {
 		return nil
 	}
 
 	targetType := fheTypeToTFHEType(toType)
-	// Use encryptor for now (trivial encryption would be noiseless)
-	ct := encryptor.EncryptUint64(plaintext.Uint64(), targetType)
+	ct, err := enc.EncryptUint64(plaintext.Uint64(), targetType)
+	if err != nil {
+		return nil
+	}
 
 	return serializeBitCiphertext(ct)
 }
 
-func tfheSealOutput(ct, pk []byte, fheType uint8) []byte {
-	// Seal output for a specific public key
-	// In production, this would re-encrypt under the given public key
-	// For now, just return the ciphertext with a header
-	result := make([]byte, len(ct)+len(pk)+8)
-	binary.BigEndian.PutUint32(result[0:4], uint32(len(pk)))
-	binary.BigEndian.PutUint32(result[4:8], uint32(len(ct)))
-	copy(result[8:8+len(pk)], pk)
-	copy(result[8+len(pk):], ct)
-	return result
-}
-
 func tfheRandom(fheType uint8, seed uint64) []byte {
-	if err := initTFHE(); err != nil {
+	pk := getPublicKey()
+	if pk == nil {
 		return nil
 	}
 
-	// Generate random bytes based on seed
+	p, err := ensureParams()
+	if err != nil {
+		return nil
+	}
+
 	targetType := fheTypeToTFHEType(fheType)
 
-	// Create deterministic seed bytes
+	// Deterministic seed bytes → public-key RNG. No secret key involved.
 	seedBytes := make([]byte, 32)
 	binary.BigEndian.PutUint64(seedBytes[24:], seed)
 
-	rng := fhe.NewFheRNG(params, secretKey, seedBytes)
-	ct := rng.RandomUint(targetType)
+	rng := fhe.NewFheRNGPublic(p, pk, seedBytes)
+	ct, err := rng.RandomUint(targetType)
+	if err != nil {
+		return nil
+	}
 
 	return serializeBitCiphertext(ct)
 }
 
 func tfheGetNetworkPublicKey() []byte {
-	if err := initTFHE(); err != nil {
+	pk := getPublicKey()
+	if pk == nil {
 		return nil
 	}
 
-	if publicKey == nil {
-		return nil
-	}
-
-	data, err := publicKey.MarshalBinary()
+	data, err := pk.MarshalBinary()
 	if err != nil {
 		// Returning random bytes here would be a consensus violation:
 		// each node would return different data for the same call.
@@ -645,7 +715,8 @@ func tfheGetNetworkPublicKey() []byte {
 // === Shift Operations ===
 
 func tfheShl(ct []byte, shift int, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -655,12 +726,13 @@ func tfheShl(ct []byte, shift int, fheType uint8) []byte {
 	}
 
 	// Shl returns *BitCiphertext directly
-	result := evaluator.Shl(ctIn, shift)
+	result := ev.Shl(ctIn, shift)
 	return serializeBitCiphertext(result)
 }
 
 func tfheShr(ct []byte, shift int, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -670,12 +742,13 @@ func tfheShr(ct []byte, shift int, fheType uint8) []byte {
 	}
 
 	// Shr returns *BitCiphertext directly
-	result := evaluator.Shr(ctIn, shift)
+	result := ev.Shr(ctIn, shift)
 	return serializeBitCiphertext(result)
 }
 
 func tfheRotl(ct []byte, shift int, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -688,10 +761,10 @@ func tfheRotl(ct []byte, shift int, fheType uint8) []byte {
 	numBits := ctIn.NumBits()
 	shift = shift % numBits
 
-	leftPart := evaluator.Shl(ctIn, shift)
-	rightPart := evaluator.Shr(ctIn, numBits-shift)
+	leftPart := ev.Shl(ctIn, shift)
+	rightPart := ev.Shr(ctIn, numBits-shift)
 
-	result, err := evaluator.Or(leftPart, rightPart)
+	result, err := ev.Or(leftPart, rightPart)
 	if err != nil {
 		return nil
 	}
@@ -700,7 +773,8 @@ func tfheRotl(ct []byte, shift int, fheType uint8) []byte {
 }
 
 func tfheRotr(ct []byte, shift int, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -713,10 +787,10 @@ func tfheRotr(ct []byte, shift int, fheType uint8) []byte {
 	numBits := ctIn.NumBits()
 	shift = shift % numBits
 
-	rightPart := evaluator.Shr(ctIn, shift)
-	leftPart := evaluator.Shl(ctIn, numBits-shift)
+	rightPart := ev.Shr(ctIn, shift)
+	leftPart := ev.Shl(ctIn, numBits-shift)
 
-	result, err := evaluator.Or(leftPart, rightPart)
+	result, err := ev.Or(leftPart, rightPart)
 	if err != nil {
 		return nil
 	}
@@ -727,7 +801,8 @@ func tfheRotr(ct []byte, shift int, fheType uint8) []byte {
 // === Scalar Operations ===
 
 func tfheScalarAdd(ct []byte, scalar uint64, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -736,7 +811,7 @@ func tfheScalarAdd(ct []byte, scalar uint64, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.ScalarAdd(ctIn, scalar)
+	result, err := ev.ScalarAdd(ctIn, scalar)
 	if err != nil {
 		return nil
 	}
@@ -745,7 +820,8 @@ func tfheScalarAdd(ct []byte, scalar uint64, fheType uint8) []byte {
 }
 
 func tfheScalarSub(ct []byte, scalar uint64, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -760,7 +836,7 @@ func tfheScalarSub(ct []byte, scalar uint64, fheType uint8) []byte {
 	mask := uint64((1 << numBits) - 1)
 	negScalar := (^scalar + 1) & mask
 
-	result, err := evaluator.ScalarAdd(ctIn, negScalar)
+	result, err := ev.ScalarAdd(ctIn, negScalar)
 	if err != nil {
 		return nil
 	}
@@ -769,7 +845,8 @@ func tfheScalarSub(ct []byte, scalar uint64, fheType uint8) []byte {
 }
 
 func tfheScalarMul(ct []byte, scalar uint64, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
@@ -778,7 +855,7 @@ func tfheScalarMul(ct []byte, scalar uint64, fheType uint8) []byte {
 		return nil
 	}
 
-	result, err := evaluator.ScalarMul(ctIn, scalar)
+	result, err := ev.ScalarMul(ctIn, scalar)
 	if err != nil {
 		return nil
 	}
@@ -787,7 +864,9 @@ func tfheScalarMul(ct []byte, scalar uint64, fheType uint8) []byte {
 }
 
 func tfheScalarDiv(ct []byte, scalar uint64, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	enc := getEncryptor()
+	if ev == nil || enc == nil {
 		return nil
 	}
 
@@ -801,11 +880,15 @@ func tfheScalarDiv(ct []byte, scalar uint64, fheType uint8) []byte {
 		return nil
 	}
 
-	// For scalar division, encrypt the scalar and use encrypted division
+	// For scalar division, encrypt the scalar (a public value) under the
+	// network public key and use encrypted division.
 	targetType := fheTypeToTFHEType(fheType)
-	ctScalar := encryptor.EncryptUint64(scalar, targetType)
+	ctScalar, err := enc.EncryptUint64(scalar, targetType)
+	if err != nil {
+		return nil
+	}
 
-	result, err := evaluator.Div(ctIn, ctScalar)
+	result, err := ev.Div(ctIn, ctScalar)
 	if err != nil {
 		return nil
 	}
@@ -814,7 +897,9 @@ func tfheScalarDiv(ct []byte, scalar uint64, fheType uint8) []byte {
 }
 
 func tfheScalarRem(ct []byte, scalar uint64, fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	enc := getEncryptor()
+	if ev == nil || enc == nil {
 		return nil
 	}
 
@@ -828,11 +913,15 @@ func tfheScalarRem(ct []byte, scalar uint64, fheType uint8) []byte {
 		return nil
 	}
 
-	// For scalar remainder, encrypt the scalar and use encrypted rem
+	// For scalar remainder, encrypt the scalar (a public value) under the
+	// network public key and use encrypted rem.
 	targetType := fheTypeToTFHEType(fheType)
-	ctScalar := encryptor.EncryptUint64(scalar, targetType)
+	ctScalar, err := enc.EncryptUint64(scalar, targetType)
+	if err != nil {
+		return nil
+	}
 
-	result, err := evaluator.Rem(ctIn, ctScalar)
+	result, err := ev.Rem(ctIn, ctScalar)
 	if err != nil {
 		return nil
 	}
@@ -842,12 +931,13 @@ func tfheScalarRem(ct []byte, scalar uint64, fheType uint8) []byte {
 
 // tfheMaxValue returns an encrypted max value (all bits set)
 func tfheMaxValue(fheType uint8) []byte {
-	if err := initTFHE(); err != nil {
+	ev := getEvaluator()
+	if ev == nil {
 		return nil
 	}
 
 	targetType := fheTypeToTFHEType(fheType)
-	maxVal := evaluator.MaxValue(targetType)
+	maxVal := ev.MaxValue(targetType)
 	return serializeBitCiphertext(maxVal)
 }
 

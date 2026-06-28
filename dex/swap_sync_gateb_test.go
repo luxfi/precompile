@@ -5,6 +5,7 @@ package dex
 
 import (
 	"bytes"
+	"errors"
 	"math/big"
 	"testing"
 	"time"
@@ -229,55 +230,67 @@ func Test9999SyncSwap_TradeVisibleInDStateAndCEvents(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test9999SyncSwap_ERC20ObservedDelta
+// Test9999SyncSwap_ERC20FeeOnTransferRefused
 // ---------------------------------------------------------------------------
 
-// Test9999SyncSwap_ERC20ObservedDelta proves the swap settles ERC-20 by OBSERVED
-// DELTA: the vault credits the taker's dexcore input by exactly what ARRIVED, not what
-// was nominally requested. With a fee-on-transfer token that delivers less than the
-// stated amount, the routed input is the delivered amount — so the vault is never
-// short, and conservation (seamReserve == ledger total) holds exactly. This is the
-// "the vault holds the REAL tokens" invariant on a non-standard token.
-func Test9999SyncSwap_ERC20ObservedDelta(t *testing.T) {
+// Test9999SyncSwap_ERC20FeeOnTransferRefused proves the NATIVE-ZAP two-phase swap REFUSES a
+// fee-on-transfer / under-delivering ERC-20 FAIL-SECURE — it never routes the reduced amount.
+//
+// WHY THE CONTRACT CHANGED. The prior model credited the OBSERVED delta (what arrived), which
+// REQUIRED writing the measured delta to 0x9999 storage AFTER the transferFrom — exactly the
+// self-write the geth nested-call HOST BUG drops (seamReserve/available lost while the token
+// moved => stranded funds, zero fill). The fix moves ALL 0x9999 accounting BEFORE the terminal
+// transferFrom (Phase A → Phase B), crediting the REQUESTED amount, and asserts the vault
+// received at least that much (pullERC20Terminal's delivered>=amount guard). A token that
+// delivers less therefore REVERTS the whole frame — the EVM snapshot rolls back BOTH the
+// C-surface (balances) and the D-surface (book/ledger), both-or-neither. This is strictly
+// safer than the old partial-route (never an under-backed credit) at the cost of refusing
+// non-standard tokens, which are out of scope for the rail.
+func Test9999SyncSwap_ERC20FeeOnTransferRefused(t *testing.T) {
 	h := newE2EHarness(t)
 	maker, taker := e2eMaker, e2eTaker
 
-	// Maker rests a deep real-funded BID so the taker's whole delivered input can fill.
+	// Maker rests a deep real-funded BID so a STANDARD taker fill would have counterparty depth.
 	h.mint(e2eLUSD, maker, 100_000)
 	h.deposit(t, maker, e2eLUSD, 100_000)
 	h.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 1000) // BID 1000 LETH @ 50
 
-	// Make tokens 1% fee-on-transfer: a 100-unit transferFrom delivers 99. (The mock's
-	// fee flag is global, so it taxes BOTH the input lock leg AND the output proceeds
-	// leg; the observed-delta invariant we prove is on the INPUT leg — the vault routes
-	// what ARRIVED, not what was requested.)
+	// 1% fee-on-transfer: a 100-unit transferFrom delivers only 99 into the vault.
 	h.state.stateDB.feeOnTransferBps = 100 // 1.00%
 	h.mint(e2eLETH, taker, 100)
 
-	// Taker SELLs 100 LETH. Only 99 ARRIVE in the vault (the 1% transfer tax), so the
-	// router fills 99 LETH — the OBSERVED DELTA, not the requested 100.
-	if _, err := h.swap(t, taker, true, 100, sqrtX96For(1.0)); err != nil {
-		t.Fatalf("swap: %v", err)
+	// FAIL-SECURE: the taker's SELL of 100 LETH under-delivers (99 < 100), so Phase B's
+	// terminal pull refuses and the WHOLE frame reverts (runWithEVMSnapshot models the EVM's
+	// RevertToSnapshot-on-error). Nothing moves on EITHER surface.
+	_, err := h.swap(t, taker, true, 100, sqrtX96For(1.0))
+	if !errors.Is(err, ErrERC20UnderDelivered) {
+		t.Fatalf("fee-on-transfer swap: got err %v, want ErrERC20UnderDelivered (fail-secure refusal)", err)
+	}
+	if got := h.ercBal(e2eLETH, taker); got != 100 {
+		t.Fatalf("taker LETH = %d, want 100 (the reverted swap moved nothing)", got)
+	}
+	if got := h.dcAvail(maker, e2eLETH); got != 0 {
+		t.Fatalf("maker bought %d LETH, want 0 (the swap reverted — both-or-neither)", got)
+	}
+	if got := h.seamReserveOf(e2eLETH); got != 0 {
+		t.Fatalf("seamReserve[LETH] = %d, want 0 (the Phase-A lock rolled back with the frame)", got)
 	}
 
-	// THE OBSERVED-DELTA PROOF: the maker bought EXACTLY 99 LETH off the book — proof
-	// only the delivered 99 (not the requested 100) was routed. A naive path trusting
-	// the requested amount would have routed 100 and left the vault 1 LETH short.
-	if got := h.dcAvail(maker, e2eLETH); got != 99 {
-		t.Fatalf("maker bought %d LETH, want 99 (observed delta: only the delivered 99 was routed, not 100)", got)
+	// A STANDARD (non-fee) token settles the FULL requested amount, and conservation holds
+	// exactly — the swap path is correct, it only REFUSES the non-conforming token above.
+	h.state.stateDB.feeOnTransferBps = 0
+	if _, err := h.swap(t, taker, true, 100, sqrtX96For(1.0)); err != nil {
+		t.Fatalf("standard swap: %v", err)
+	}
+	if got := h.dcAvail(maker, e2eLETH); got != 100 {
+		t.Fatalf("maker bought %d LETH, want 100 (full requested amount routed)", got)
 	}
 	if got := h.ercBal(e2eLETH, taker); got != 0 {
-		t.Fatalf("taker LETH = %d, want 0 (whole balance transferred)", got)
+		t.Fatalf("taker LETH = %d, want 0 (whole balance transferred on the standard swap)", got)
 	}
-	// Taker proceeds: 99 LETH @ 50 = 4950 LUSD owed, less the 1%% tax on the OUTPUT
-	// transfer (the global mock fee taxes this leg too) -> 4950 - 49 = 4901 delivered.
-	if got := h.ercBal(e2eLUSD, taker); got != 4901 {
-		t.Fatalf("taker LUSD = %d, want 4901 (99 @ 50 = 4950 owed, minus 1%% output-leg transfer tax)", got)
+	if got := h.ercBal(e2eLUSD, taker); got != 5000 {
+		t.Fatalf("taker LUSD = %d, want 5000 (100 LETH @ 50, no fee)", got)
 	}
-
-	// CONSERVATION holds: the vault's real holdings exactly back the ledger. Turn the
-	// global fee OFF first so the conservation read (which transfers nothing) is clean.
-	h.state.stateDB.feeOnTransferBps = 0
 	assertVaultConservation(t, h, maker, taker)
 }
 

@@ -221,54 +221,61 @@ func Test9999_SyncDispatch_RoutesToSyncPredictor(t *testing.T) {
 	t.Log("dispatch confirmed: a value-enabled untagged swap routes to PredictSyncSwapWriteSet")
 }
 
-// Test9999_SyncAccessSet_FeeOnTransferDoesNotFalseReject is the B6 proof: a FEE-ON-TRANSFER
-// ERC-20 swap (observed delta < requested) does NOT false-reject under the L2 assertion. The
-// async/intent predictor content-addresses the intent by the AMOUNT (DeriveIntentID), so a
-// fee-on-transfer token's observed-vs-requested divergence would yield wrong id-keyed slots and
-// a spurious ErrAccessSetUndeclaredWrite — which is why ONLY the sync route is L2-wrapped. The
-// SYNC predictor's keys are derived from (poolID, account, asset, orderID, block-counter) — NONE
-// amount-derived — so a fee-on-transfer asset changes the VALUES written but not the KEYS. This
-// test drives a real 1%-tax swap through AssertWriteSetWithin(PredictSyncSwapWriteSet) and proves
-// it is ACCEPTED (no false reject), the fence the brief requires.
-func Test9999_SyncAccessSet_FeeOnTransferDoesNotFalseReject(t *testing.T) {
+// Test9999_SyncAccessSet_NotAmountDerived is the B6 proof: NO sync-swap write-set key depends on
+// the AMOUNT, so the L2 access-set assertion (PredictSyncSwapWriteSet ⊇ the handler's writes)
+// never FALSE-REJECTS a swap. This is why ONLY the sync route is L2-wrapped — the async/intent
+// predictor content-addresses by amount via DeriveIntentID and so cannot be. Two proofs:
+//
+//	(1) STRUCTURAL: PredictSyncSwapWriteSet for two DIFFERENT amounts (over the SAME pre-call
+//	    state) yields the IDENTICAL key set — the keys are (poolID, account, asset, orderID,
+//	    block-counter), none amount-derived.
+//	(2) LIVE: a real standard swap run through AssertWriteSetWithin(PredictSyncSwapWriteSet) is
+//	    ACCEPTED (no false reject) and routes the full requested amount.
+//
+// (Under NATIVE-ZAP a fee-on-transfer token no longer reaches the access check: the Phase-B
+// terminal pull refuses it fail-secure with ErrERC20UnderDelivered — a legitimate refusal, never
+// an L2 false-reject — so there is no observed!=requested divergence on a committed sync swap.)
+func Test9999_SyncAccessSet_NotAmountDerived(t *testing.T) {
 	h := newE2EHarness(t)
 	maker, taker := e2eMaker, h.caller
 
-	// Deep maker bid so the whole delivered input fills.
+	// Deep maker bid so a standard taker fill has counterparty depth.
 	h.mint(e2eLUSD, maker, 100_000)
 	h.deposit(t, maker, e2eLUSD, 100_000)
 	h.placeArgs(t, maker, true, 50*uint64(priceMultiplierConst), 1000)
-
-	// 1% fee-on-transfer: a 100-unit transferFrom delivers 99 — observed delta < requested.
-	h.state.stateDB.feeOnTransferBps = 100
-	t.Cleanup(func() { h.state.stateDB.feeOnTransferBps = 0 })
 	h.mint(e2eLETH, taker, 100)
 
-	params := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-100), SqrtPriceLimitX96: sqrtX96For(1.0)}
+	// (1) STRUCTURAL amount-independence: the predicted KEY SET is identical for two different
+	// amounts against the SAME pre-call state — proof no sync key is amount-derived.
+	db := newPoolStateAdapter(h.state)
+	p100 := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-100), SqrtPriceLimitX96: sqrtX96For(1.0)}
+	p50 := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-50), SqrtPriceLimitX96: sqrtX96For(1.0)}
+	set100 := PredictSyncSwapWriteSet(db, h.key, p100, taker)
+	set50 := PredictSyncSwapWriteSet(db, h.key, p50, taker)
+	if len(set100) != len(set50) {
+		t.Fatalf("B6 broken: sync write-set size depends on amount (100 -> %d keys, 50 -> %d keys)", len(set100), len(set50))
+	}
+	for k := range set100 {
+		if _, ok := set50[k]; !ok {
+			t.Fatalf("B6 broken: sync write-set key %x present for amount 100 but not 50 — a key is amount-derived", k)
+		}
+	}
 
-	// PREDICT against the pre-call state (the predictor binds the REQUESTED 100; the handler will
-	// route the OBSERVED 99) — yet the declared KEYS must still cover every key the handler writes,
-	// because none is amount-derived.
-	declared := PredictSyncSwapWriteSet(newPoolStateAdapter(h.state), h.key, params, taker)
-
-	// Run the fee-on-transfer swap through the L2 assertion directly (the SAME assertion the
-	// live dispatch applies around runSyncSwap).
-	_, _, err := AssertWriteSetWithin(h.state, declared, func(s contract.AccessibleState) ([]byte, uint64, error) {
-		return runSyncSwap(s, taker, h.key, params, nil, 5_000_000, false)
+	// (2) LIVE: a real standard swap is ACCEPTED under the L2 assertion (no false reject) and
+	// routes the full requested amount.
+	_, _, err := AssertWriteSetWithin(h.state, set100, func(s contract.AccessibleState) ([]byte, uint64, error) {
+		return runSyncSwap(s, taker, h.key, p100, nil, 5_000_000, false)
 	})
 	if err != nil {
 		if _, ok := err.(*ErrAccessSetUndeclaredWrite); ok {
-			t.Fatalf("B6 broken: a fee-on-transfer swap FALSE-REJECTED under L2 (%v) — a sync-path key "+
-				"must not depend on the observed amount", err)
+			t.Fatalf("B6 broken: a standard swap FALSE-REJECTED under L2 (%v)", err)
 		}
-		t.Fatalf("fee-on-transfer swap errored unexpectedly: %v", err)
+		t.Fatalf("standard swap errored unexpectedly under L2: %v", err)
 	}
-	// And the observed-delta fill actually happened (99 routed, not 100) — proving the swap took
-	// the real fee-on-transfer path, not a no-op that would trivially satisfy the assertion.
-	if got := h.dcAvail(maker, e2eLETH); got != 99 {
-		t.Fatalf("maker bought %d LETH, want 99 (the fee-on-transfer swap must have routed the observed 99)", got)
+	if got := h.dcAvail(maker, e2eLETH); got != 100 {
+		t.Fatalf("maker bought %d LETH, want 100 (the swap routed the full requested amount)", got)
 	}
-	t.Log("B6 confirmed: a fee-on-transfer swap is ACCEPTED under L2 (no amount-derived sync key)")
+	t.Log("B6 confirmed: sync write-set keys are amount-independent; no L2 false-reject")
 }
 
 // Test9999_SyncAccessCommitment_RootBinding is the L4 proof for the synchronous value path: the
