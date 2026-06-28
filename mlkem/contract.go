@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/luxfi/accel"
 	"github.com/luxfi/crypto/mlkem"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -256,51 +255,3 @@ func (p *mlkemPrecompile) encapsulate(caller common.Address, mode uint8, input [
 	return result, nil
 }
 
-// encapsulateGPU attempts GPU-accelerated ML-KEM encapsulation.
-func encapsulateGPU(publicKey []byte, ctSize, ssSize int) (ct []byte, ss []byte, gpuUsed bool) {
-	if !accel.Available() {
-		return nil, nil, false
-	}
-
-	sess, err := accel.NewSession()
-	if err != nil {
-		return nil, nil, false
-	}
-	defer sess.Close()
-
-	lattice := sess.Lattice()
-
-	pkTensor, err := accel.NewTensorWithData[byte](sess, []int{len(publicKey)}, publicKey)
-	if err != nil {
-		return nil, nil, false
-	}
-	defer pkTensor.Close()
-
-	ctTensor, err := accel.NewTensor[byte](sess, []int{ctSize})
-	if err != nil {
-		return nil, nil, false
-	}
-	defer ctTensor.Close()
-
-	ssTensor, err := accel.NewTensor[byte](sess, []int{ssSize})
-	if err != nil {
-		return nil, nil, false
-	}
-	defer ssTensor.Close()
-
-	if err := lattice.KyberEncaps(pkTensor.Untyped(), ctTensor.Untyped(), ssTensor.Untyped()); err != nil {
-		return nil, nil, false
-	}
-
-	ctResult, err := ctTensor.ToSlice()
-	if err != nil {
-		return nil, nil, false
-	}
-
-	ssResult, err := ssTensor.ToSlice()
-	if err != nil {
-		return nil, nil, false
-	}
-
-	return ctResult, ssResult, true
-}

@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 
-	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -113,21 +112,16 @@ func (p *sr25519VerifyPrecompile) Run(
 		return failResult, remainingGas, ErrEmptyMessage
 	}
 
-	// Try GPU-accelerated verification
-	if results, err := accelcrypto.BatchVerify(
-		accelcrypto.SigEd25519, // sr25519 uses Schnorrkel (Ristretto255), closest GPU kernel
-		[][]byte{signature},
-		[][]byte{message},
-		[][]byte{publicKey},
-	); err == nil && len(results) == 1 {
-		if results[0] {
-			return successResult, remainingGas, nil
-		}
-		// GPU said invalid -- still fall through to CPU for sr25519-specific verification
-		// since GPU kernel may not handle Schnorrkel context ("substrate")
-	}
-
-	// CPU fallback: sr25519-donna or go-schnorrkel
+	// sr25519 is Schnorrkel over Ristretto255 with a Merlin ("substrate")
+	// transcript. There is NO GPU/accel kernel for it: luxfi/accel only
+	// exposes an Ed25519 (Edwards) verify, which is a DIFFERENT scheme on a
+	// DIFFERENT encoding. Routing sr25519 through the Ed25519 kernel accepted
+	// any well-formed Ed25519 signature as a valid sr25519 signature
+	// (wrong-curve forgery) AND diverged from this CPU verifier across the
+	// validator set (consensus split). The constant-only CPU verifier below
+	// (sr25519-donna under cgo, go-schnorrkel otherwise) is the single source
+	// of truth. Re-introducing accel here requires a real Ristretto255 +
+	// Merlin Schnorrkel kernel proven byte-identical to this path.
 	if verifySR25519(publicKey, signature, message) {
 		return successResult, remainingGas, nil
 	}

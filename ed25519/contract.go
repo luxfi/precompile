@@ -9,7 +9,6 @@
 package ed25519
 
 import (
-	accelcrypto "github.com/luxfi/accel/ops/crypto"
 	"github.com/luxfi/crypto/ed25519"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
@@ -99,19 +98,14 @@ func (c *ed25519VerifyPrecompile) Run(
 		return nil, remainingGas, nil
 	}
 
-	// Try GPU-accelerated batch verification (batch of 1)
-	if results, err := accelcrypto.BatchVerify(
-		accelcrypto.SigEd25519,
-		[][]byte{signature},
-		[][]byte{message},
-		[][]byte{publicKey},
-	); err == nil && len(results) == 1 && results[0] {
-		return successResult, remainingGas, nil
-	} else if err == nil && len(results) == 1 && !results[0] {
-		return nil, remainingGas, nil
-	}
-
-	// CPU fallback
+	// CPU is the single source of truth, via the canonical luxfi/crypto/ed25519
+	// verifier. Ed25519 verification disagreement across implementations is a
+	// well-known hazard (cofactored vs cofactorless checks, non-canonical S>=L,
+	// small-order A/R): the luxfi/accel Ed25519 GPU kernel is not proven
+	// byte-identical to this verifier on those adversarial edge cases, so
+	// trusting its verdict risked a CPU/GPU consensus split on exactly the
+	// inputs an attacker controls. Re-introducing accel requires a kernel
+	// proven byte-identical to ed25519.Verify over the full edge-case corpus.
 	if ed25519.Verify(publicKey, message, signature) {
 		return successResult, remainingGas, nil
 	}
