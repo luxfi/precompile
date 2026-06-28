@@ -11,7 +11,7 @@ import (
 )
 
 // feeReportingChainConfig is a ChainConfig that also implements
-// FeeConfigReporter. Mirrors the strictPQChainConfig test pattern.
+// FeeConfigReporter.
 type feeReportingChainConfig struct {
 	*MockChainConfig
 	// limit returned at any time before flipAt; postLimit returned at
@@ -112,7 +112,7 @@ func TestRequireGasLimit_NilBlockContext(t *testing.T) {
 
 // TestFeeConfigReporter_InterfaceShape is a compile-time check that
 // the test reporter type satisfies both ChainConfig and
-// FeeConfigReporter. Mirrors TestStrictPQReporter_InterfaceShape.
+// FeeConfigReporter.
 func TestFeeConfigReporter_InterfaceShape(t *testing.T) {
 	var _ FeeConfigReporter = (*feeReportingChainConfig)(nil)
 	var _ precompileconfig.ChainConfig = (*feeReportingChainConfig)(nil)

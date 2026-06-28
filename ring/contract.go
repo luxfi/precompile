@@ -137,16 +137,6 @@ func (p *ringSignaturePrecompile) Run(
 	op := input[0]
 	scheme := input[1]
 
-	// Classical LSAG schemes (secp256k1, Ed25519, DualRing) are gated by
-	// the chain's strict-PQ profile. The lattice scheme (SchemeLatticeLSAG)
-	// remains open on every chain.
-	switch scheme {
-	case SchemeLSAGSecp256k1, SchemeLSAGEd25519, SchemeDualRing:
-		if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
-			return nil, remainingGas, err
-		}
-	}
-
 	var result []byte
 
 	switch op {

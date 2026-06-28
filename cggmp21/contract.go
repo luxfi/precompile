@@ -87,9 +87,6 @@ func (p *cggmp21VerifyPrecompile) Run(
 	if err != nil {
 		return nil, 0, err
 	}
-	if err := contract.RefuseUnderStrictPQ(accessibleState); err != nil {
-		return nil, remainingGas, err
-	}
 
 	// Input format:
 	// [0:4]       = threshold t (uint32)
