@@ -24,7 +24,6 @@ import (
 	"github.com/zeebo/blake3"
 
 	"github.com/luxfi/accel"
-	"github.com/luxfi/accel/ops/crypto"
 )
 
 // Precompile address
@@ -464,37 +463,16 @@ func (ba *BatchAccumulator) flushLocked() {
 	ba.signatures = nil
 	ba.callbacks = nil
 
-	// Try GPU batch verification via accel
-	results, err := crypto.BatchVerify(crypto.SigMLDSA65, signatures, messages, pubkeys)
-	if err != nil {
-		// Red CRITICAL #176 / M-1 propagation: ErrInvalidArgument is
-		// a HARD contract violation. The CPU oracle here (VerifyMLDSA)
-		// has no length cap and would accept input the GPU already
-		// rejected → consensus split. Surface the hard error through
-		// every callback so the caller's pipeline fails closed at the
-		// right level. Other accel errors stay recoverable.
-		if errors.Is(err, accel.ErrInvalidArgument) {
-			for i := range signatures {
-				if callbacks[i] != nil {
-					callbacks[i](false, err)
-				}
-			}
-			return
-		}
-		// Fall back to CPU verification
-		for i := range signatures {
-			valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
-			if callbacks[i] != nil {
-				callbacks[i](valid, verifyErr)
-			}
-		}
-		return
-	}
-
-	// Dispatch GPU results
-	for i := range results {
+	// CPU is the single source of truth. The accel SigMLDSA65 batch kernel
+	// truncates every message to 32 bytes (accel/ops/crypto/crypto_gpu.go:
+	// msgSize=32) and is fixed to ML-DSA-65, so its verdict diverges from
+	// VerifyMLDSA (full message, mode-detected from key size) -- a CPU/GPU
+	// consensus split anywhere this batch result is trusted. Verify each
+	// element on the per-element CPU oracle.
+	for i := range signatures {
+		valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
 		if callbacks[i] != nil {
-			callbacks[i](results[i], nil)
+			callbacks[i](valid, verifyErr)
 		}
 	}
 }
@@ -510,28 +488,15 @@ func (ba *BatchAccumulator) Size() int {
 // Batch Verification Functions
 // =============================================================================
 
-// BatchVerifyMLDSA verifies multiple ML-DSA signatures.
-// Uses GPU when batch size >= Threshold() and GPU is available.
-// Falls back to CPU verification otherwise.
-//
-// Red CRITICAL #176 / #177 propagation: ErrInvalidArgument from the
-// GPU C ABI is a HARD contract violation (msg_len > cap, count
-// overflow). Propagate it as an error so callers in the AI mining
-// pipeline fail closed instead of shipping CPU-vs-GPU asymmetric
-// verdicts → consensus split. Other accel errors are recoverable
-// and trigger the per-element CPU verify.
+// BatchVerifyMLDSA verifies multiple ML-DSA signatures on the CPU oracle.
+// Determinism over speed: the result is identical to calling VerifyMLDSA on
+// each element, so it is byte-stable across the whole validator set
+// regardless of build tags or hardware.
 func BatchVerifyMLDSA(pubkeys, messages, signatures [][]byte) ([]bool, error) {
-	// Try GPU path first via accel
-	results, err := crypto.BatchVerify(crypto.SigMLDSA65, signatures, messages, pubkeys)
-	if err == nil {
-		return results, nil
-	}
-	if errors.Is(err, accel.ErrInvalidArgument) {
-		return nil, err
-	}
-
-	// Fall back to CPU
-	results = make([]bool, len(signatures))
+	// CPU is the single source of truth (see BatchAccumulator.flushLocked):
+	// the accel batch kernel truncates messages to 32 bytes and is mode-fixed,
+	// so it cannot match VerifyMLDSA. Verify each element on the CPU oracle.
+	results := make([]bool, len(signatures))
 	for i := range signatures {
 		valid, verifyErr := VerifyMLDSA(pubkeys[i], messages[i], signatures[i])
 		if verifyErr != nil {
