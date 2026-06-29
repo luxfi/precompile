@@ -1,3 +1,5 @@
+<p align="center"><img src=".github/hero.svg" alt="precompile" width="880"></p>
+
 # Lux Precompiled Contracts
 
 Native EVM precompiles for the Lux blockchain. Each precompile is a Go package that implements `contract.StatefulPrecompiledContract` and registers via `modules.RegisterModule()` in its `init()`.
