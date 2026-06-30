@@ -12,7 +12,7 @@ require (
 	github.com/luxfi/accel v1.2.4
 	github.com/luxfi/ai v0.1.0
 	github.com/luxfi/chains v1.3.18
-	github.com/luxfi/corona v0.10.2
+	github.com/luxfi/corona v0.10.3
 	github.com/luxfi/crypto v1.19.26
 	github.com/luxfi/database v1.20.4
 	github.com/luxfi/dex v1.5.20
