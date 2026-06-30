@@ -124,7 +124,7 @@ func magnetarKAT() katOut {
 //
 //	c || z[N] || Delta[M] || A[M][N] || bTilde[M], each poly = N()*8 bytes BE.
 func coronaKAT(t, n uint32) katOut {
-	shares, groupKey, err := cthr.GenerateKeys(int(t), int(n), rand.Reader)
+	shares, groupKey, err := cthr.GenerateKeysTrustedDealer(int(t), int(n), rand.Reader)
 	must(err)
 
 	prfKey := make([]byte, csign.KeySize)
