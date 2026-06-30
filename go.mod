@@ -12,7 +12,7 @@ require (
 	github.com/luxfi/accel v1.2.4
 	github.com/luxfi/ai v0.1.0
 	github.com/luxfi/chains v1.3.18
-	github.com/luxfi/corona v0.7.9
+	github.com/luxfi/corona v0.10.2
 	github.com/luxfi/crypto v1.19.26
 	github.com/luxfi/database v1.20.4
 	github.com/luxfi/dex v1.5.20
@@ -84,8 +84,11 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/luxfi/age v1.5.0 // indirect
+	github.com/luxfi/dkg v0.3.5 // indirect
 	github.com/luxfi/mdns v0.1.1 // indirect
+	github.com/luxfi/mlwe v0.2.1 // indirect
 	github.com/luxfi/node v1.30.6 // indirect
+	github.com/luxfi/pulsar v1.7.1 // indirect
 	github.com/luxfi/timer v1.0.2 // indirect
 	github.com/luxfi/zap v0.8.10 // indirect
 	github.com/luxfi/zapdb v1.10.1 // indirect
