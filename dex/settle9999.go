@@ -319,12 +319,27 @@ func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, d
 	}, nil
 }
 
+// priceScale is the fixed-point scale of the CLOB price wire (price × 1e8) — the
+// matcher's PriceInt grid, byte-identical with dex/pkg/zapwire.PriceScale (==
+// lx.PriceMultiplier) and the chains/dexvm proxy's PriceScale. Quote-per-base limits
+// and Fill prices cross the C<->D seam as EXACT integers on this grid; there is NO
+// float64 on the value path (its out-of-range int conversion is architecture-
+// dependent and forks — the cross-arch consensus bug the integer wire closes).
+const priceScale = 100000000
+
 // priceLimitToCLOB converts the V4 SqrtPriceLimitX96 into the CLOB price domain the
-// dexvm settles in — quote-per-base as a float64, returned as its IEEE-754 bits so it
-// crosses the seam exactly (no decimal reparse). It is the slippage floor the matcher /
-// settle path enforces: a fill WORSE than this is refused (bounded sandwich/MEV).
+// dexvm settles in — quote-per-base as a uint64 FIXED-POINT ×priceScale value (the
+// PriceInt grid), computed as an EXACT integer so no float→int conversion ever
+// touches the value the settle path compares against. It is the slippage floor the
+// matcher / settle path enforces: a fill WORSE than this is refused (bounded MEV).
 //
-//	price (quote/base) = (sqrtPriceX96 / 2^96)^2 = currency1 per currency0.
+//	price (quote/base) = (sqrtPriceX96 / 2^96)^2 = currency1 per currency0,
+//	grid value         = round(price × priceScale) = round(s^2 × priceScale / 2^192).
+//
+// Round-to-NEAREST (not floor): the client's sqrtPriceLimitX96 is a floored sqrt, so its
+// exact square sits an epsilon below the intended price; flooring the grid value would
+// quantize a "50" limit to 49.99999999 and fail to cross a maker resting AT 50. Rounding
+// to the nearest PriceInt quantizes to the price the taker meant, deterministically.
 //
 // DIRECTION. limitIsUpper reports which side the limit bounds, matching the dexvm's
 // fill-side convention:
@@ -336,7 +351,7 @@ func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, d
 // A SqrtPriceLimitX96 at/beyond the V4 sentinel bounds (MinSqrtRatio for zeroForOne,
 // MaxSqrtRatio for !zeroForOne) means "no limit" — returns 0 so the settle path imposes
 // no floor (the pre-existing unbounded behavior, preserved).
-func priceLimitToCLOB(params SwapParams) (priceLimitBits uint64, limitIsUpper bool) {
+func priceLimitToCLOB(params SwapParams) (priceLimitUnits uint64, limitIsUpper bool) {
 	limitIsUpper = !params.ZeroForOne
 	s := params.SqrtPriceLimitX96
 	if s == nil || s.Sign() <= 0 {
@@ -353,20 +368,19 @@ func priceLimitToCLOB(params SwapParams) (priceLimitBits uint64, limitIsUpper bo
 			return 0, limitIsUpper
 		}
 	}
-	// price = (s / 2^96)^2. Compute in float64: ratio = s / 2^96, then square. The CLOB
-	// price domain is float64 (Fill.Price), so this is the exact value the settle path
-	// compares against — no precision is lost beyond float64's own (the same domain the
-	// matcher already operates in).
-	ratio := new(big.Float).Quo(new(big.Float).SetInt(s), twoPow96Float)
-	price, _ := new(big.Float).Mul(ratio, ratio).Float64()
-	if price <= 0 || math.IsInf(price, 0) || math.IsNaN(price) {
-		return 0, limitIsUpper // degenerate => treat as no limit rather than reject all fills
+	// grid = round(s^2 × priceScale / 2^192), EXACT big.Int arithmetic (add 2^191 before
+	// the >>192 floor-divide = round-half-up). The matcher's crossing loop may project this
+	// back to a float for display, but the CONSENSUS value the settle floor compares against
+	// is this exact PriceInt grid integer.
+	units := new(big.Int).Mul(s, s)
+	units.Mul(units, big.NewInt(priceScale))
+	units.Add(units, new(big.Int).Lsh(big.NewInt(1), 191)) // + 2^191 for round-to-nearest
+	units.Rsh(units, 192)
+	if units.Sign() <= 0 || !units.IsUint64() {
+		return 0, limitIsUpper // degenerate / out of range => no limit (unbounded)
 	}
-	return math.Float64bits(price), limitIsUpper
+	return units.Uint64(), limitIsUpper
 }
-
-// twoPow96Float is 2^96 as a big.Float, the V4 sqrt-price fixed-point denominator.
-var twoPow96Float = new(big.Float).SetInt(new(big.Int).Lsh(big.NewInt(1), 96))
 
 // runSettleReclaimIntent is the reclaimIntent(bytes32 intentID) handler: the swap
 // rail's deadline-reclaim. It decodes the intent id, takes the shared custody

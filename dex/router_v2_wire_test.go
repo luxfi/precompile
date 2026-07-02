@@ -7,7 +7,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/luxfi/dex/pkg/lx"
+	lx "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 )
 

@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/luxfi/dex/pkg/dexcore"
+	dexcore "github.com/luxfi/dex/pkg/dex"
 )
 
 // swap_sync_mevfloor_redteam_test.go is the RED suite for the SYNCHRONOUS 0x9999 router's
