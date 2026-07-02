@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/luxfi/dex/pkg/dexcore"
+	dexcore "github.com/luxfi/dex/pkg/dex"
 )
 
 // swap_sync_decomplect_test.go is the LOCK-IN proof for the 0x9999 value-path decomplect:

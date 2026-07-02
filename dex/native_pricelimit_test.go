@@ -44,22 +44,23 @@ func TestPriceLimitToCLOB_ConvertsAndOrientsLimit(t *testing.T) {
 	// A !zeroForOne swap (BUY base with quote) at limit price 2.0 quote/base => an UPPER
 	// bound (never pay more than 2 per base).
 	buy := SwapParams{ZeroForOne: false, AmountSpecified: big.NewInt(-1000), SqrtPriceLimitX96: sqrtX96For(2.0)}
-	bits, isUpper := priceLimitToCLOB(buy)
+	units, isUpper := priceLimitToCLOB(buy)
 	if !isUpper {
 		t.Fatalf("a !zeroForOne (BUY) limit must be an UPPER bound (ceiling)")
 	}
-	if got := math.Float64frombits(bits); math.Abs(got-2.0) > 1e-6 {
+	// The limit is a fixed-point ×priceScale integer; recover the human price by /priceScale.
+	if got := float64(units) / priceScale; math.Abs(got-2.0) > 1e-6 {
 		t.Fatalf("BUY price limit = %g, want ~2.0 (from sqrtX96(2.0))", got)
 	}
 
 	// A zeroForOne swap (SELL base for quote) at limit price 2.0 => a LOWER bound (never
 	// receive less than 2 per base).
 	sell := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-1000), SqrtPriceLimitX96: sqrtX96For(2.0)}
-	bits2, isUpper2 := priceLimitToCLOB(sell)
+	units2, isUpper2 := priceLimitToCLOB(sell)
 	if isUpper2 {
 		t.Fatalf("a zeroForOne (SELL) limit must be a LOWER bound (floor)")
 	}
-	if got := math.Float64frombits(bits2); math.Abs(got-2.0) > 1e-6 {
+	if got := float64(units2) / priceScale; math.Abs(got-2.0) > 1e-6 {
 		t.Fatalf("SELL price limit = %g, want ~2.0", got)
 	}
 }
@@ -69,17 +70,17 @@ func TestPriceLimitToCLOB_ConvertsAndOrientsLimit(t *testing.T) {
 func TestPriceLimitToCLOB_SentinelsAreUnbounded(t *testing.T) {
 	// zeroForOne with the MinSqrtRatio sentinel => no limit.
 	sell := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-1), SqrtPriceLimitX96: new(big.Int).Set(MinSqrtRatio)}
-	if bits, _ := priceLimitToCLOB(sell); bits != 0 {
-		t.Fatalf("zeroForOne MinSqrtRatio sentinel must mean no limit (0), got bits=%d", bits)
+	if units, _ := priceLimitToCLOB(sell); units != 0 {
+		t.Fatalf("zeroForOne MinSqrtRatio sentinel must mean no limit (0), got units=%d", units)
 	}
 	// !zeroForOne with the MaxSqrtRatio sentinel => no limit.
 	buy := SwapParams{ZeroForOne: false, AmountSpecified: big.NewInt(-1), SqrtPriceLimitX96: new(big.Int).Set(MaxSqrtRatio)}
-	if bits, _ := priceLimitToCLOB(buy); bits != 0 {
-		t.Fatalf("!zeroForOne MaxSqrtRatio sentinel must mean no limit (0), got bits=%d", bits)
+	if units, _ := priceLimitToCLOB(buy); units != 0 {
+		t.Fatalf("!zeroForOne MaxSqrtRatio sentinel must mean no limit (0), got units=%d", units)
 	}
 	// Unset (nil) => no limit.
-	if bits, _ := priceLimitToCLOB(SwapParams{ZeroForOne: false, AmountSpecified: big.NewInt(-1)}); bits != 0 {
-		t.Fatalf("unset SqrtPriceLimitX96 must mean no limit (0), got bits=%d", bits)
+	if units, _ := priceLimitToCLOB(SwapParams{ZeroForOne: false, AmountSpecified: big.NewInt(-1)}); units != 0 {
+		t.Fatalf("unset SqrtPriceLimitX96 must mean no limit (0), got units=%d", units)
 	}
 }
 
@@ -105,7 +106,7 @@ func TestBuildIntentRequest_CarriesPriceLimit(t *testing.T) {
 	if !req.LimitIsUpper {
 		t.Fatalf("a !zeroForOne (BUY) intent must carry an UPPER price bound")
 	}
-	if got := math.Float64frombits(req.PriceLimit); math.Abs(got-3.0) > 1e-6 {
+	if got := float64(req.PriceLimit) / priceScale; math.Abs(got-3.0) > 1e-6 {
 		t.Fatalf("intent price limit = %g, want ~3.0", got)
 	}
 	// The nonce flows through too (the watch-correlation binding).
