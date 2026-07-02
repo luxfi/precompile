@@ -10,8 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/luxfi/dex/pkg/dexcore"
-	"github.com/luxfi/dex/pkg/lx"
+	dexcore "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 	ethtypes "github.com/luxfi/geth/core/types"
 )
@@ -397,15 +396,15 @@ func Test9999RoutesV3WhenCLOBEmpty(t *testing.T) {
 
 	router := buildRouter(h.state.stateDB, pid) // CLOB + AMM (AMM active: pool bound)
 	req := dexcore.SwapRequest{
-		PoolID: pid, TakerUser: takerAcct, Side: lx.Sell,
+		PoolID: pid, TakerUser: takerAcct, Side: dexcore.Sell,
 		Base: assetID(h.key.Currency0), Quote: assetID(h.key.Currency1),
-		AmountIn: 100, OrderID: 7, TimestampN: 1, Class: dexcore.ClassPublicCLOB,
+		AmountIn: 100, OrderID: 7, TimestampN: 1, Class: dexcore.ClassPublicDEX,
 	}
 	res, err := dexcore.ExecuteSwap(store, router, req)
 	if err != nil {
 		t.Fatalf("ExecuteSwap (AMM fallthrough): %v", err)
 	}
-	wantOut := lx.ConstantProductOut(100_000, 5_000_000, 100)
+	wantOut := dexcore.ConstantProductOut(100_000, 5_000_000, 100)
 	if res.AmountOut != wantOut {
 		t.Fatalf("AMM fallthrough out = %d, want %d", res.AmountOut, wantOut)
 	}
@@ -491,7 +490,7 @@ func Test9999SyncSwap_AMMLegMovesRealERC20EndToEnd(t *testing.T) {
 		t.Fatalf("AMM-leg swap through 0x9999: %v", err)
 	}
 
-	wantOut := lx.ConstantProductOut(baseR, quoteR, 100)
+	wantOut := dexcore.ConstantProductOut(baseR, quoteR, 100)
 	// REAL ERC-20 MOVED: taker -100 LETH (into vault), +wantOut LUSD (out of vault).
 	if got := h.ercBal(e2eLETH, taker); got != 0 {
 		t.Fatalf("taker LETH = %d, want 0 (sold into the AMM)", got)
@@ -548,7 +547,7 @@ func Test9999BestExecSplitCLOBAndAMM(t *testing.T) {
 	if err := dexcore.Deposit(store, maker, quote, 1_000_000); err != nil {
 		t.Fatalf("seed maker LUSD: %v", err)
 	}
-	if ok, err := dexcore.PlaceOrder(store, pid, maker, lx.Buy, 60, 10, 1, blockTime()); err != nil || !ok {
+	if ok, err := dexcore.PlaceOrder(store, pid, maker, dexcore.Buy, 60, 10, 1, blockTime()); err != nil || !ok {
 		t.Fatalf("rest CLOB bid: ok=%v err=%v", ok, err)
 	}
 
@@ -562,9 +561,9 @@ func Test9999BestExecSplitCLOBAndAMM(t *testing.T) {
 
 	router := buildRouter(h.state.stateDB, pid)
 	req := dexcore.SwapRequest{
-		PoolID: pid, TakerUser: taker, Side: lx.Sell,
+		PoolID: pid, TakerUser: taker, Side: dexcore.Sell,
 		Base: base, Quote: quote, AmountIn: 30, OrderID: 9, TimestampN: 1,
-		Class: dexcore.ClassPublicCLOB,
+		Class: dexcore.ClassPublicDEX,
 	}
 	res, err := dexcore.ExecuteSwap(store, router, req)
 	if err != nil {
@@ -575,7 +574,7 @@ func Test9999BestExecSplitCLOBAndAMM(t *testing.T) {
 	var sawCLOB, sawAMM bool
 	for _, f := range res.Fills {
 		switch f.Source {
-		case dexcore.SourceCLOB:
+		case dexcore.SourceOrderBook:
 			sawCLOB = true
 			for _, tr := range f.Trades {
 				clobBase += tr.BaseUnits.Uint64()
@@ -591,7 +590,7 @@ func Test9999BestExecSplitCLOBAndAMM(t *testing.T) {
 	if clobBase != 10 || ammBase != 20 {
 		t.Fatalf("split legs: CLOB base=%d (want 10), AMM base=%d (want 20)", clobBase, ammBase)
 	}
-	wantOut := uint64(600) + lx.ConstantProductOut(100_000, 5_000_000, 20)
+	wantOut := uint64(600) + dexcore.ConstantProductOut(100_000, 5_000_000, 20)
 	if res.AmountOut != wantOut {
 		t.Fatalf("split out = %d, want %d (600 CLOB @60 + AMM curve(20))", res.AmountOut, wantOut)
 	}
@@ -720,7 +719,7 @@ func TestEVMMakerNativeTakerSameState(t *testing.T) {
 // path secretly needed a live ZAP round-trip it would hang or fail here. (The
 // structural complement — that the value-path source never invokes a ZAP/venue/keeper
 // transport — is asserted by the absence of any such call in swap_sync.go /
-// swap_custody.go / dexcore; the matcher the route calls is the pure lx.OrderBook, not
+// swap_custody.go / dexcore; the matcher the route calls is the pure dexcore.OrderBook, not
 // a transport.)
 func TestNoLiveZAPSettlement(t *testing.T) {
 	h := newE2EHarness(t)

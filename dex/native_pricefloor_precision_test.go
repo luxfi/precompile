@@ -13,8 +13,9 @@ import (
 
 // exactFloorRef is an INDEPENDENT exact-rational reference for the settlement price floor,
 // computed straight from the definition with big.Rat (no float64 on the amounts). The
+// priceLimit is a fixed-point ×priceScale integer, so limit = priceLimit / priceScale. The
 // production enforceProceedsPriceFloor must agree with it for every amount, including the
-// uint256 range above 2^53 where float64 truncates.
+// uint256 range above 2^53 where a float64 reconstruction would truncate.
 func exactFloorRef(priceLimit uint64, limitIsUpper bool, spent, out uint64) bool /*reject*/ {
 	if priceLimit == 0 {
 		return false
@@ -22,24 +23,24 @@ func exactFloorRef(priceLimit uint64, limitIsUpper bool, spent, out uint64) bool
 	if spent == 0 || out == 0 {
 		return true
 	}
-	limit := math.Float64frombits(priceLimit)
-	if !(limit > 0) || math.IsInf(limit, 0) || math.IsNaN(limit) {
-		return false
-	}
-	limitRat := new(big.Rat).SetFloat64(limit)
-	realized := new(big.Rat).SetFrac(
-		new(big.Int).SetUint64(out),
-		new(big.Int).SetUint64(spent),
-	) // out/spent
+	limitRat := new(big.Rat).SetFrac(
+		new(big.Int).SetUint64(priceLimit),
+		big.NewInt(priceScale),
+	) // limit = priceLimit / priceScale
 	if limitIsUpper {
 		// BUY ceiling: realized quote/base = spent/out must be <= limit.
-		realized = new(big.Rat).SetFrac(
+		realized := new(big.Rat).SetFrac(
 			new(big.Int).SetUint64(spent),
 			new(big.Int).SetUint64(out),
 		)
 		return realized.Cmp(limitRat) > 0 // reject if spent/out > limit
 	}
-	return realized.Cmp(limitRat) < 0 // SELL: reject if out/spent < limit
+	// SELL floor: realized out/spent must be >= limit.
+	realized := new(big.Rat).SetFrac(
+		new(big.Int).SetUint64(out),
+		new(big.Int).SetUint64(spent),
+	)
+	return realized.Cmp(limitRat) < 0 // reject if out/spent < limit
 }
 
 // TestPriceFloor_Exact_Above2Pow53 is the regression for the consensus hazard: spent/out
@@ -51,7 +52,7 @@ func exactFloorRef(priceLimit uint64, limitIsUpper bool, spent, out uint64) bool
 // and out = 2^53 the realized price is BELOW the floor and MUST be rejected. float64 maps
 // both 2^53 and 2^53+1 to the double 2^53, so the old code saw out == spent and PASSED.
 func TestPriceFloor_Exact_Above2Pow53(t *testing.T) {
-	one := math.Float64bits(1.0)
+	one := uint64(priceScale) // limit 1.0 on the fixed-point grid
 	const p53 = uint64(1) << 53
 
 	// SELL floor: out just under spent past the float64 cliff -> must REJECT.
@@ -83,7 +84,7 @@ func TestPriceFloor_MatchesExactReferenceSweep(t *testing.T) {
 		2 * p53, 2*p53 + 1, math.MaxUint64 / 2, math.MaxUint64 - 1,
 	}
 	for _, lf := range limits {
-		lb := math.Float64bits(lf)
+		lb := uint64(lf * priceScale) // the fixed-point ×priceScale grid limit
 		for _, upper := range []bool{false, true} {
 			for _, spent := range amounts {
 				for _, out := range amounts {
@@ -104,13 +105,15 @@ func TestPriceFloor_MatchesExactReferenceSweep(t *testing.T) {
 
 // TestPriceFloor_EdgeCasesPreserved locks the fail-secure edges unchanged by the rewrite.
 func TestPriceFloor_EdgeCasesPreserved(t *testing.T) {
-	one := math.Float64bits(1.0)
+	one := uint64(priceScale) // limit 1.0 on the fixed-point grid
 	// No recorded limit -> no floor.
 	require.NoError(t, enforceProceedsPriceFloor(0, false, 100, 50))
 	// Limit set but an amount is zero -> price unprovable -> fail secure.
 	require.ErrorIs(t, enforceProceedsPriceFloor(one, false, 0, 50), ErrSettlePriceLimit)
 	require.ErrorIs(t, enforceProceedsPriceFloor(one, false, 50, 0), ErrSettlePriceLimit)
-	// Degenerate recorded limit (NaN/Inf bits) imposes nothing.
-	require.NoError(t, enforceProceedsPriceFloor(math.Float64bits(math.Inf(1)), false, 100, 50))
-	require.NoError(t, enforceProceedsPriceFloor(math.Float64bits(math.NaN()), false, 100, 50))
+	// A large integer limit is a REAL floor (no float degeneracy): a SELL realized below it
+	// is rejected, one at/above it passes — exact on the fixed-point grid.
+	big5 := uint64(5 * priceScale)
+	require.ErrorIs(t, enforceProceedsPriceFloor(big5, false, 100, 400), ErrSettlePriceLimit) // 4.0 < 5.0
+	require.NoError(t, enforceProceedsPriceFloor(big5, false, 100, 500))                       // 5.0 == 5.0
 }

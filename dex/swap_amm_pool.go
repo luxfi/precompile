@@ -6,7 +6,7 @@ package dex
 import (
 	"encoding/binary"
 
-	"github.com/luxfi/dex/pkg/dexcore"
+	dexcore "github.com/luxfi/dex/pkg/dex"
 )
 
 // swap_amm_pool.go binds the router's V2/V3 AMM fallthrough to a pool's reserve
@@ -74,7 +74,7 @@ func BindAMMPool(store dexcore.Store, poolID [32]byte, baseReserve, quoteReserve
 // picks best-execution and splits across them.
 func buildRouter(stateDB StateDB, poolID [32]byte) *dexcore.Router {
 	store := newEVMStore(stateDB)
-	sources := []dexcore.Source{dexcore.NewCLOBSource()}
+	sources := []dexcore.Source{dexcore.NewOrderBookSource()}
 	if _, _, feeBps, ok := readAMMRow(store, poolID); ok {
 		sources = append(sources, dexcore.NewAMMSource(newEVMAMMPool(feeBps)))
 	}

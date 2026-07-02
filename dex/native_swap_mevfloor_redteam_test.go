@@ -4,7 +4,6 @@
 package dex
 
 import (
-	"math"
 	"math/big"
 	"testing"
 
@@ -31,9 +30,10 @@ import (
 // spent word, byte-identical with chains/dexvm). quote-per-base realized price is out/spent
 // on a SELL (zeroForOne) and spent/out on a BUY (!zeroForOne).
 
-// priceBits returns a quote-per-base price as IEEE-754 float64 bits — the CLOB price domain
-// the intent records and the floor compares in (priceLimitToCLOB's output domain).
-func priceBits(price float64) uint64 { return math.Float64bits(price) }
+// priceUnits returns a quote-per-base price as a uint64 FIXED-POINT ×priceScale value —
+// the PriceInt grid the intent records and the floor compares in (priceLimitToCLOB's
+// output domain). No float on the wire.
+func priceUnits(price float64) uint64 { return uint64(price * priceScale) }
 
 // TestRED_MEVFloor_KeeperZeroedLimit_StillRejected is the DECISIVE proof: even if the keeper
 // drops the relay limit entirely (so D imposes NO floor and settles a sandwiched fill), C
@@ -50,7 +50,7 @@ func TestRED_MEVFloor_KeeperZeroedLimit_StillRejected(t *testing.T) {
 	// The taker SELLS base for quote (zeroForOne) and recorded a FLOOR of 2.0 quote/base
 	// (limitIsUpper=false). They locked 100 base. The keeper relayed priceLimit=0 to D (the
 	// sandwich), so D settled a fill realized at 1.5 quote/base: 100 base in -> 150 quote out.
-	intentID := h.seedSwapIntentLimit(h.caller, in, 100, 0, priceBits(2.0), false, ids.ID{0x3E, 0x00, 0x01})
+	intentID := h.seedSwapIntentLimit(h.caller, in, 100, 0, priceUnits(2.0), false, ids.ID{0x3E, 0x00, 0x01})
 
 	// D exports the sandwiched proceeds object: out=150 quote, spent=100 base -> realized 1.5,
 	// WORSE than the taker's recorded floor of 2.0.
@@ -103,7 +103,7 @@ func TestRED_MEVFloor_BuyCeiling_Rejected(t *testing.T) {
 	h.fundVaultNativeOut(1_000_000)
 
 	// Taker recorded a CEILING of 2.0 quote/base (limitIsUpper=true). Locked 1000 quote.
-	intentID := h.seedSwapIntentLimit(h.caller, quote, 1000, 0, priceBits(2.0), true, ids.ID{0x4B, 0x00, 0x01})
+	intentID := h.seedSwapIntentLimit(h.caller, quote, 1000, 0, priceUnits(2.0), true, ids.ID{0x4B, 0x00, 0x01})
 
 	// D exports a proceeds object realized at 2.5 quote/base (WORSE for a buyer than the 2.0
 	// ceiling): spent=200 quote in, out=80 base -> 200/80 = 2.5.
@@ -136,7 +136,7 @@ func TestRED_MEVFloor_ZeroSpentFailsSecure(t *testing.T) {
 	out := h.outAssetID()
 	in := h.inAssetID()
 
-	intentID := h.seedSwapIntentLimit(h.caller, in, 100, 0, priceBits(2.0), false, ids.ID{0x5C, 0x00, 0x01})
+	intentID := h.seedSwapIntentLimit(h.caller, in, 100, 0, priceUnits(2.0), false, ids.ID{0x5C, 0x00, 0x01})
 
 	// Proceeds object with spent=0 (price unprovable) under a non-zero limit -> fail secure.
 	obj := ids.ID{0x5C, 0x00, 0x02}
