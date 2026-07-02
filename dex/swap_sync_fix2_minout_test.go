@@ -8,8 +8,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/luxfi/dex/pkg/dexcore"
-	"github.com/luxfi/dex/pkg/lx"
+	dexcore "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 )
 
@@ -191,7 +190,7 @@ func Test9999SplitRouteRespectsAggregateMinOut(t *testing.T) {
 func Test9999AMMFallbackRespectsMinOut(t *testing.T) {
 	const baseR, quoteR = uint64(100_000), uint64(5_000_000)
 	const amountIn = int64(100)
-	ammOut := lx.ConstantProductOut(baseR, quoteR, uint64(amountIn)) // the deterministic curve output
+	ammOut := dexcore.ConstantProductOut(baseR, quoteR, uint64(amountIn)) // the deterministic curve output
 
 	// (a) Floor exactly at the AMM output -> succeeds.
 	h := newE2EHarness(t)

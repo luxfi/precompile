@@ -8,8 +8,7 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/luxfi/dex/pkg/dexcore"
-	"github.com/luxfi/dex/pkg/lx"
+	dexcore "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -232,13 +231,13 @@ func (s *SettleContract) runSwapPlace(state contract.AccessibleState, caller com
 		return nil, gasLeft, oerr
 	}
 
-	side := lx.Sell
+	side := dexcore.Sell
 	if isBid {
-		side = lx.Buy
+		side = dexcore.Buy
 	}
 	// Price is a PriceInt grid value (quote-per-base * PriceMultiplier); size is base
 	// units. Convert to the float domain the matcher/dexcore place use.
-	priceFloat := float64(priceWord.Uint64()) / float64(lx.PriceMultiplier)
+	priceFloat := float64(priceWord.Uint64()) / float64(dexcore.PriceMultiplier)
 	sizeFloat := float64(sizeWord.Uint64())
 	orderID := deterministicSwapOrderID(stateDB, key.ID())
 	ts := blockTimestampNanos(stateDB)
