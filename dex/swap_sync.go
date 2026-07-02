@@ -5,11 +5,9 @@ package dex
 
 import (
 	"errors"
-	"math"
 	"math/big"
 
-	"github.com/luxfi/dex/pkg/dexcore"
-	"github.com/luxfi/dex/pkg/lx"
+	dexcore "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -284,20 +282,18 @@ func buildSwapRequest(stateDB StateDB, caller common.Address, key PoolKey, param
 
 	base := assetID(key.Currency0)  // REAL: left-pad of currency0's token address
 	quote := assetID(key.Currency1) // REAL: left-pad of currency1's token address
-	side := lx.Sell
+	side := dexcore.Sell
 	inAddr := key.Currency0.Address
 	if !params.ZeroForOne {
-		side = lx.Buy
+		side = dexcore.Buy
 		inAddr = key.Currency1.Address
 	}
 
-	// Price limit: the V4 SqrtPriceLimitX96 -> CLOB quote-per-base, as a PriceInt grid
-	// value (the matcher's price domain), plus which side it bounds.
-	limitBits, limitIsUpper := priceLimitToCLOB(params)
-	var limitPrice lx.PriceInt
-	if limitBits != 0 {
-		limitPrice = dexcore.PriceToInt(math.Float64frombits(limitBits))
-	}
+	// Price limit: the V4 SqrtPriceLimitX96 -> CLOB quote-per-base, already a uint64
+	// FIXED-POINT ×priceScale value on the matcher's PriceInt grid, plus which side it
+	// bounds. No float roundtrip — priceLimitToCLOB returns the exact grid integer.
+	limitUnits, limitIsUpper := priceLimitToCLOB(params)
+	limitPrice := dexcore.PriceInt(limitUnits)
 
 	// H3: the taker's min-out floor, decoded from the V4 hookData (DM01). This is the
 	// slippage floor dexcore.enforceProceedsPriceFloor / the MinOut check enforce — so a
@@ -313,7 +309,7 @@ func buildSwapRequest(stateDB StateDB, caller common.Address, key PoolKey, param
 	// exposure). A SELL with a price limit is already protected (the limit floors price);
 	// a SELL with neither is refused. (A no-limit market BUY is already refused downstream
 	// by dexcore.ErrBuyRequiresLimit, so only the SELL gap is closed here.)
-	if side == lx.Sell && limitPrice <= 0 && minOut == 0 {
+	if side == dexcore.Sell && limitPrice <= 0 && minOut == 0 {
 		return dexcore.SwapRequest{}, common.Address{}, ErrSellRequiresProtection
 	}
 
@@ -329,7 +325,7 @@ func buildSwapRequest(stateDB StateDB, caller common.Address, key PoolKey, param
 		LimitPrice:   limitPrice,
 		LimitIsUpper: limitIsUpper,
 		MinOut:       minOut,
-		Class:        dexcore.ClassPublicCLOB,
+		Class:        dexcore.ClassPublicDEX,
 	}
 	return req, inAddr, nil
 }
@@ -392,7 +388,7 @@ func swapBalanceDelta(req dexcore.SwapRequest, res *dexcore.SwapResult) []byte {
 	var amount0, amount1 *big.Int
 	in := new(big.Int).SetUint64(res.AmountIn)
 	out := new(big.Int).SetUint64(res.AmountOut)
-	if req.Side == lx.Sell {
+	if req.Side == dexcore.Sell {
 		// Paid base, received quote.
 		amount0 = new(big.Int).Neg(in)
 		amount1 = out
@@ -407,7 +403,7 @@ func swapBalanceDelta(req dexcore.SwapRequest, res *dexcore.SwapResult) []byte {
 // req.AmountInAsset returns the swap's spend asset id (quote for a BUY, base for a
 // SELL). A small method-style helper on the request for the lock/deposit legs.
 func amountInAssetOf(req dexcore.SwapRequest) dexcore.AssetID {
-	if req.Side == lx.Buy {
+	if req.Side == dexcore.Buy {
 		return req.Quote
 	}
 	return req.Base

@@ -5,7 +5,6 @@ package dex
 
 import (
 	"errors"
-	"math"
 	"math/big"
 
 	"github.com/luxfi/geth/common"
@@ -166,12 +165,13 @@ type IntentRequest struct {
 	AssetInAddr  common.Address // the ERC-20 token (address(0) for native) for the C lock
 	MarketID     [32]byte       // D market the order targets
 	MinAmountOut *big.Int       // taker slippage floor (routing only; D enforces at match)
-	// PriceLimit is the taker's worst-acceptable CLOB price (quote-per-base, float64
-	// bits) derived from the V4 SqrtPriceLimitX96 (priceLimitToCLOB). LimitIsUpper says
-	// which side it bounds (true = a BUY ceiling, false = a SELL floor). The keeper carries
-	// these onto the settling relay (RelayOrderTx.PriceLimit/LimitIsUpper) and the dexvm
-	// settle path REFUSES a fill worse than the limit — the bounded sandwich/MEV guard.
-	// Emitted in the routing event so the keeper does not re-derive them. 0 = no limit.
+	// PriceLimit is the taker's worst-acceptable CLOB price (quote-per-base, uint64
+	// FIXED-POINT ×priceScale on the PriceInt grid) derived from the V4 SqrtPriceLimitX96
+	// (priceLimitToCLOB). LimitIsUpper says which side it bounds (true = a BUY ceiling,
+	// false = a SELL floor). The keeper carries these onto the settling relay
+	// (RelayOrderTx.PriceLimit/LimitIsUpper) and the dexvm settle path REFUSES a fill worse
+	// than the limit — the bounded sandwich/MEV guard. Emitted in the routing event so the
+	// keeper does not re-derive them. 0 = no limit.
 	PriceLimit   uint64
 	LimitIsUpper bool
 	Recipient    common.Address // where the D->C settlement must credit (object owner on return)
@@ -733,10 +733,11 @@ func (c *NativeDChainClient) ImportSettlement(
 // (spent = matched input, out = proceeds output), so calling it before any state write
 // preserves ImportSettlement's CEI ordering.
 //
-// PRICE DOMAIN. priceLimit is quote-per-base (currency1 per currency0) as IEEE-754
-// float64 bits — the SAME CLOB price domain the dexvm matcher uses (Fill.Price) and the
-// SAME value priceLimitToCLOB produced from the taker's V4 SqrtPriceLimitX96. The realized
-// price is reconstructed in that domain from the integer witness:
+// PRICE DOMAIN. priceLimit is quote-per-base (currency1 per currency0) as a uint64
+// FIXED-POINT ×priceScale value — the SAME PriceInt grid the dexvm matcher uses
+// (Fill.Price) and the SAME value priceLimitToCLOB produced from the taker's V4
+// SqrtPriceLimitX96, so limit = priceLimit / priceScale exactly. The realized price is
+// reconstructed from the integer witness:
 //
 //   - SELL (limitIsUpper == false; zeroForOne: base in -> quote out): spent = base in,
 //     out = quote out, so realized quote/base = out/spent. The taker must receive AT LEAST
@@ -754,19 +755,19 @@ func (c *NativeDChainClient) ImportSettlement(
 //     settleFromFills always sets spent > 0 on a proceeds export; a zero here is a malformed
 //     or hostile object and the floor refuses it.)
 //
-// EXACT INTEGER COMPARISON (determinism + uint256 safety). priceLimit is a float64 (the
-// dexvm CLOB price domain), but spent/out are uint256-domain token amounts that routinely
-// exceed 2^53 — so the realized price MUST NOT be reconstructed in float64: float64(spent)
-// silently drops the low bits above 2^53, mispricing the floor (it can ACCEPT a fill below
-// the taker's floor, the exact MEV the floor exists to refuse). Instead the recorded limit
-// is taken as its EXACT rational value limNum/limDen (big.Rat.SetFloat64 is lossless for a
-// finite float64) and cross-multiplied with the amounts as big.Ints:
+// EXACT INTEGER COMPARISON (determinism + uint256 safety). limit = priceLimit / priceScale
+// is a ratio of exact integers, and spent/out are uint256-domain token amounts that
+// routinely exceed 2^53 — so the realized price MUST NOT be reconstructed in float64:
+// float64(spent) silently drops the low bits above 2^53, mispricing the floor (it can
+// ACCEPT a fill below the taker's floor, the exact MEV the floor exists to refuse). Instead
+// the limit is carried as its exact numerator/denominator (priceLimit / priceScale) and
+// cross-multiplied with the amounts as big.Ints:
 //
-//	SELL floor : out/spent >= limit  <=>  out*limDen   >= limNum*spent ; reject if <
-//	BUY ceiling: spent/out <= limit  <=>  spent*limDen <= limNum*out   ; reject if >
+//	SELL floor : out/spent >= limit  <=>  out*priceScale   >= priceLimit*spent ; reject if <
+//	BUY ceiling: spent/out <= limit  <=>  spent*priceScale <= priceLimit*out   ; reject if >
 //
 // Every term is an exact integer, so the verdict is byte-identical on every validator (no
-// float rounding on the money path) and never truncates a uint256 amount.
+// float on the money path) and never truncates a uint256 amount.
 //
 // PROPOSER vs KEEPER. A hostile proposer UNDERSTATING spent would inflate the realized price
 // (loosening this floor), but that same understatement inflates the refund and is
@@ -781,16 +782,8 @@ func enforceProceedsPriceFloor(priceLimit uint64, limitIsUpper bool, spent, out 
 	if spent == 0 || out == 0 {
 		return ErrSettlePriceLimit // limit set but price unprovable — fail secure.
 	}
-	limit := math.Float64frombits(priceLimit)
-	if !(limit > 0) || math.IsInf(limit, 0) || math.IsNaN(limit) {
-		return nil // a degenerate recorded limit imposes nothing (mirrors priceLimitToCLOB).
-	}
-	limitRat := new(big.Rat).SetFloat64(limit) // exact: limit is finite & > 0 here.
-	if limitRat == nil {
-		return nil // SetFloat64 yields nil only for Inf/NaN, already excluded — defensive.
-	}
-	limNum := limitRat.Num()                  // > 0
-	limDen := limitRat.Denom()                // > 0
+	limNum := new(big.Int).SetUint64(priceLimit) // limit = priceLimit / priceScale
+	limDen := big.NewInt(priceScale)
 	spentBig := new(big.Int).SetUint64(spent) // exact, no 2^53 truncation.
 	outBig := new(big.Int).SetUint64(out)
 	if limitIsUpper {
