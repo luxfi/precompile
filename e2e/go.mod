@@ -53,7 +53,7 @@ require (
 	github.com/luxfi/pq v1.0.3 // indirect
 	github.com/luxfi/runtime v1.1.0 // indirect
 	github.com/luxfi/sampler v1.1.0 // indirect
-	github.com/luxfi/threshold v1.9.4 // indirect
+	github.com/luxfi/threshold v1.12.0 // indirect
 	github.com/luxfi/utils v1.1.5 // indirect
 	github.com/luxfi/validators v1.2.0 // indirect
 	github.com/luxfi/version v1.0.1 // indirect
