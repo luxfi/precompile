@@ -218,7 +218,7 @@ func TestEstimateGas(t *testing.T) {
 // generateThresholdSignature generates a threshold signature using the threshold package
 func generateThresholdSignature(thresholdVal, totalParties uint32, message string) ([]byte, []byte, error) {
 	// Generate key shares using threshold package
-	shares, groupKey, err := threshold.GenerateKeys(int(thresholdVal), int(totalParties), rand.Reader)
+	shares, groupKey, err := threshold.GenerateKeysTrustedDealer(int(thresholdVal), int(totalParties), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate keys: %w", err)
 	}
