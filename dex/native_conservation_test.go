@@ -25,7 +25,7 @@ import (
 // THE FIX: the seam owns a separate seamReserve[a] pot; settleVault[a] is now PURELY
 // the depositor pot (== Σ depositorClaim). The vault-account invariant per asset a is
 //
-//	realHolding(0x9999, a) == settleVault[a] + makerLockedVault[a] + seamReserve[a]
+//	realHolding(0x9999, a) == settleVault[a] + seamReserve[a] + committedPositions[a]
 //
 // and a settlement credit draws ONLY seamReserve[a], a withdraw ONLY settleVault[a].
 // These tests exercise BOTH subsystems against the SAME asset and assert the pots
@@ -33,21 +33,22 @@ import (
 
 // vaultInvariantNative asserts the FULL vault-account invariant for the native asset:
 //
-//	realHolding == settleVault + makerLockedVault + seamReserve + committedPositions
+//	realHolding == settleVault + seamReserve + committedPositions
 //
-// the four orthogonal pots that partition the 0x9999 vault by CLAIM (depositor pot,
-// legacy maker pot, swap-rail seam reserve, LP-rail committed positions). Each pot
-// backs only its own credits; none can raid another.
+// the three orthogonal pots that partition the 0x9999 vault by CLAIM (depositor pot,
+// swap-rail seam reserve, LP-rail committed positions). Each pot backs only its own
+// credits; none can raid another. (The vestigial makerLockedVault pot — always 0, never
+// written — was removed in the settle-only decomplect.)
 func (h *settleHarness) vaultInvariantNative(t testing.TB, where string) {
 	t.Helper()
 	db := newPoolStateAdapter(h.state)
 	native := [32]byte{}
 	real := h.state.stateDB.GetBalance(poolManagerAddr9999).ToBig()
-	sum := new(big.Int).Add(loadSettleVault(db, native), loadMakerLockedVault(db, native))
+	sum := new(big.Int).Set(loadSettleVault(db, native))
 	sum.Add(sum, loadSeamReserve(db, native))
 	sum.Add(sum, loadCommittedPositions(db, native))
 	if real.Cmp(sum) != 0 {
-		t.Fatalf("%s: vault-account invariant violated: realHolding=%s != settleVault+makerLocked+seamReserve+committedPositions=%s", where, real, sum)
+		t.Fatalf("%s: vault-account invariant violated: realHolding=%s != settleVault+seamReserve+committedPositions=%s", where, real, sum)
 	}
 }
 

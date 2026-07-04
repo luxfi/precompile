@@ -266,7 +266,7 @@ func (s *SettleContract) runSettleInitialize(
 // mutation: it is a pure admission check (it does not bind the dexcore book; initialize
 // writes only the C MarketRecord), so a refused initialize leaves C untouched.
 //
-// Identity discipline (mirrors swap_sync.runSyncSwap exactly): the runtime
+// Identity discipline: the runtime
 // (networkID, cChainID) come from the consensus-supplied AtomicState capability, and
 // resolverForRuntime cross-checks the installed resolver's bound identity against them
 // (fail-closed on mismatch). A node with no resolver installed yields a nil resolver,
