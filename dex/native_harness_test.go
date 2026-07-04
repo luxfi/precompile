@@ -411,12 +411,12 @@ func (h *settleHarness) settlementCalldataFor(outputID ids.ID, amount uint64, in
 	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, amount, intentID))
 }
 
-// intentCalldata builds a Phase-A async swap calldata. After the decomplect a plain
-// (empty-hookData) swap settles SYNCHRONOUSLY through the on-chain router; the async C->D
-// intent primitive is reached ONLY by the EXPLICIT DI01 tag. So the canonical "intent" swap
-// the async-seam tests drive is DI01-tagged (deadline 0 => defaulted to a finite horizon,
-// nonce 0). This keeps every async-rail test exercising the genuine cross-chain primitive,
-// not the synchronous path.
+// intentCalldata builds a Phase-A swap calldata. After the decomplect EVERY swap routes to
+// the native C<->D atomic seam: a plain (empty-hookData) swap is ALSO a Phase-A intent, and
+// an explicit DI01 tag is the same phase carrying an optional deadline/nonce. The async-seam
+// tests drive the DI01-tagged form (deadline 0 => defaulted to a finite reclaim horizon,
+// nonce 0) so they can pin the deadline/nonce; there is no longer any synchronous matcher an
+// untagged swap could take instead.
 func (h *settleHarness) intentCalldata() []byte {
 	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(0, 0))
 }

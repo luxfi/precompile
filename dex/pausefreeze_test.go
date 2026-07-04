@@ -85,29 +85,6 @@ func swapParams() SwapParams {
 // 1. PauseDEX blocks Swap
 // =========================================================================
 
-func TestPauseFreeze_PauseDEXBlocksSwap(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	keyAB, _, _, _ := initTwoPoolsPF(t, pm, stateDB)
-
-	// Swap works before pause.
-	_, err := pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if err != nil {
-		t.Fatalf("swap before pause should succeed: %v", err)
-	}
-
-	// Pause DEX.
-	if err := pm.PauseDEX(stateDB, admin); err != nil {
-		t.Fatalf("PauseDEX failed: %v", err)
-	}
-
-	// Swap must fail with ErrDEXPaused.
-	_, err = pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrDEXPaused) {
-		t.Fatalf("expected ErrDEXPaused, got: %v", err)
-	}
-}
-
 // =========================================================================
 // 2. PauseDEX blocks ModifyLiquidity
 // =========================================================================
@@ -179,124 +156,17 @@ func TestPauseFreeze_PauseDEXDoesNotBlockInitialize(t *testing.T) {
 // 5. ResumeDEX re-enables operations
 // =========================================================================
 
-func TestPauseFreeze_ResumeDEXReenablesSwap(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	keyAB, _, _, _ := initTwoPoolsPF(t, pm, stateDB)
-
-	if err := pm.PauseDEX(stateDB, admin); err != nil {
-		t.Fatalf("PauseDEX failed: %v", err)
-	}
-
-	// Swap blocked.
-	_, err := pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrDEXPaused) {
-		t.Fatalf("expected ErrDEXPaused, got: %v", err)
-	}
-
-	// Resume.
-	if err := pm.ResumeDEX(stateDB, admin); err != nil {
-		t.Fatalf("ResumeDEX failed: %v", err)
-	}
-
-	// Swap works again.
-	_, err = pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if err != nil {
-		t.Fatalf("swap after resume should succeed: %v", err)
-	}
-}
-
 // =========================================================================
 // 6. PausePool blocks only that pool
 // =========================================================================
-
-func TestPauseFreeze_PausePoolBlocksOnlyThatPool(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	keyAB, poolIdAB, keyBC, _ := initTwoPoolsPF(t, pm, stateDB)
-
-	// Pause pool A/B only.
-	if err := pm.PausePool(stateDB, admin, poolIdAB); err != nil {
-		t.Fatalf("PausePool A/B failed: %v", err)
-	}
-
-	// Swap on A/B must fail.
-	_, err := pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrPoolPaused) {
-		t.Fatalf("expected ErrPoolPaused for A/B, got: %v", err)
-	}
-
-	// Swap on B/C must still work.
-	_, err = pm.Swap(stateDB, testCaller, keyBC, swapParams(), nil)
-	if err != nil {
-		t.Fatalf("swap on B/C should succeed while A/B paused: %v", err)
-	}
-}
 
 // =========================================================================
 // 7. ResumePool re-enables the pool
 // =========================================================================
 
-func TestPauseFreeze_ResumePoolReenables(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	keyAB, poolIdAB, _, _ := initTwoPoolsPF(t, pm, stateDB)
-
-	if err := pm.PausePool(stateDB, admin, poolIdAB); err != nil {
-		t.Fatalf("PausePool failed: %v", err)
-	}
-
-	_, err := pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrPoolPaused) {
-		t.Fatalf("expected ErrPoolPaused, got: %v", err)
-	}
-
-	if err := pm.ResumePool(stateDB, admin, poolIdAB); err != nil {
-		t.Fatalf("ResumePool failed: %v", err)
-	}
-
-	_, err = pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if err != nil {
-		t.Fatalf("swap after ResumePool should succeed: %v", err)
-	}
-}
-
 // =========================================================================
 // 8. FreezePool blocks operations permanently
 // =========================================================================
-
-func TestPauseFreeze_FreezePoolBlocksOperations(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	keyAB, poolIdAB, _, _ := initTwoPoolsPF(t, pm, stateDB)
-
-	if err := pm.FreezePool(stateDB, admin, poolIdAB); err != nil {
-		t.Fatalf("FreezePool failed: %v", err)
-	}
-
-	// Swap blocked.
-	_, err := pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrPoolFrozen) {
-		t.Fatalf("expected ErrPoolFrozen on swap, got: %v", err)
-	}
-
-	// ModifyLiquidity blocked.
-	params := ModifyLiquidityParams{
-		TickLower:      -120,
-		TickUpper:      120,
-		LiquidityDelta: big.NewInt(500),
-	}
-	_, _, err = pm.ModifyLiquidity(stateDB, testCaller, keyAB, params, nil)
-	if !errors.Is(err, ErrPoolFrozen) {
-		t.Fatalf("expected ErrPoolFrozen on ModifyLiquidity, got: %v", err)
-	}
-
-	// Donate blocked.
-	_, err = pm.Donate(stateDB, testCaller, keyAB, big.NewInt(10), big.NewInt(10))
-	if !errors.Is(err, ErrPoolFrozen) {
-		t.Fatalf("expected ErrPoolFrozen on Donate, got: %v", err)
-	}
-}
 
 // =========================================================================
 // 9. FreezePool clears pause state
@@ -514,78 +384,6 @@ func TestPauseFreeze_ResumeWhenNotPaused_Pool(t *testing.T) {
 // 16. Check ordering: DEX pause checked before pool freeze before pool pause
 // =========================================================================
 
-func TestPauseFreeze_CheckOrdering(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	keyAB, poolIdAB, _, _ := initTwoPoolsPF(t, pm, stateDB)
-
-	// First: freeze the pool.
-	if err := pm.FreezePool(stateDB, admin, poolIdAB); err != nil {
-		t.Fatalf("FreezePool failed: %v", err)
-	}
-
-	// Second: pause the DEX globally.
-	if err := pm.PauseDEX(stateDB, admin); err != nil {
-		t.Fatalf("PauseDEX failed: %v", err)
-	}
-
-	// With both DEX paused and pool frozen, DEX pause should be checked first.
-	_, err := pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrDEXPaused) {
-		t.Fatalf("expected ErrDEXPaused (checked before pool freeze), got: %v", err)
-	}
-
-	// Resume DEX -> now pool freeze should be the error.
-	if err := pm.ResumeDEX(stateDB, admin); err != nil {
-		t.Fatalf("ResumeDEX failed: %v", err)
-	}
-
-	_, err = pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrPoolFrozen) {
-		t.Fatalf("expected ErrPoolFrozen (checked after DEX pause cleared), got: %v", err)
-	}
-}
-
-func TestPauseFreeze_CheckOrdering_FreezeBeforePause(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-
-	// Create a different pool for this test to avoid collision.
-	keyAB := PoolKey{
-		Currency0:   Currency{Address: testTokenA},
-		Currency1:   Currency{Address: testTokenB},
-		Fee:         Fee005,
-		TickSpacing: TickSpacing005,
-	}
-	_, err := pm.Initialize(stateDB, keyAB, new(big.Int).Set(Q96), nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-	lp := ModifyLiquidityParams{
-		TickLower:      -10,
-		TickUpper:      10,
-		LiquidityDelta: big.NewInt(1_000_000),
-	}
-	if _, _, err := pm.ModifyLiquidity(stateDB, testLP, keyAB, lp, nil); err != nil {
-		t.Fatalf("ModifyLiquidity failed: %v", err)
-	}
-	poolIdAB := keyAB.ID()
-
-	// Pause the pool, then freeze it. Freeze supersedes pause.
-	if err := pm.PausePool(stateDB, admin, poolIdAB); err != nil {
-		t.Fatalf("PausePool failed: %v", err)
-	}
-	if err := pm.FreezePool(stateDB, admin, poolIdAB); err != nil {
-		t.Fatalf("FreezePool failed: %v", err)
-	}
-
-	// checkPauseState should return ErrPoolFrozen, not ErrPoolPaused.
-	_, err = pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrPoolFrozen) {
-		t.Fatalf("expected ErrPoolFrozen (freeze supersedes pause), got: %v", err)
-	}
-}
-
 // =========================================================================
 // 17. Frozen pool positions readable via getPoolState (extsload)
 // =========================================================================
@@ -662,118 +460,17 @@ func TestPauseFreeze_ExternalVenueQuote(t *testing.T) {
 // 19. External venue blocked from execution (ErrNoOnChainLiquidity)
 // =========================================================================
 
-func TestPauseFreeze_ExternalVenueBlockedInExecution(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	// External venue with good pricing.
-	router.RegisterVenue(&mockVenue{
-		id: [32]byte{0xEE},
-		quoteFunc: func(_, _ common.Address, amountIn *big.Int) (*big.Int, error) {
-			return new(big.Int).Mul(amountIn, big.NewInt(10)), nil
-		},
-	})
-
-	// No V4 pool. Execution must fail: external venues are quote-only.
-	params := SwapExactInputSingleParams{
-		TokenIn:  testTokenA,
-		TokenOut: testTokenB,
-		AmountIn: big.NewInt(5000),
-	}
-
-	_, _, err := router.ExactInputSingle(stateDB, testCaller, params)
-	if err == nil {
-		t.Fatal("expected error: external venue must not settle on-chain")
-	}
-}
-
 // =========================================================================
 // 20. Multi-hop: A->B->C where both are V4 pools
 // =========================================================================
-
-func TestPauseFreeze_MultiHopV4(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-	setupV4Pool(t, pm, stateDB, testTokenB, testTokenC)
-
-	params := SwapExactInputParams{
-		Path:     []common.Address{testTokenA, testTokenB, testTokenC},
-		AmountIn: big.NewInt(10_000),
-	}
-
-	amountOut, err := router.ExactInput(stateDB, testCaller, params)
-	if err != nil {
-		t.Fatalf("multi-hop A->B->C failed: %v", err)
-	}
-	if amountOut.Sign() <= 0 {
-		t.Fatalf("expected positive output, got %s", amountOut)
-	}
-}
 
 // =========================================================================
 // 21. Multi-hop with paused intermediate pool -> error propagates
 // =========================================================================
 
-func TestPauseFreeze_MultiHopPausedIntermediate(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	keyAB := setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-	setupV4Pool(t, pm, stateDB, testTokenB, testTokenC)
-
-	// Pause the A/B pool (intermediate in A->B->C).
-	poolIdAB := keyAB.ID()
-	if err := pm.PausePool(stateDB, admin, poolIdAB); err != nil {
-		t.Fatalf("PausePool failed: %v", err)
-	}
-
-	params := SwapExactInputParams{
-		Path:     []common.Address{testTokenA, testTokenB, testTokenC},
-		AmountIn: big.NewInt(10_000),
-	}
-
-	_, err := router.ExactInput(stateDB, testCaller, params)
-	if err == nil {
-		t.Fatal("expected error when intermediate pool is paused")
-	}
-	t.Logf("multi-hop correctly failed with paused intermediate: %v", err)
-}
-
 // =========================================================================
 // 22. ExactOutput multi-hop with pause -> error
 // =========================================================================
-
-func TestPauseFreeze_ExactOutputMultiHopPaused(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-	keyBC := setupV4Pool(t, pm, stateDB, testTokenB, testTokenC)
-
-	// Pause the B/C pool.
-	poolIdBC := keyBC.ID()
-	if err := pm.PausePool(stateDB, admin, poolIdBC); err != nil {
-		t.Fatalf("PausePool B/C failed: %v", err)
-	}
-
-	// ExactOutput path is reversed: [C, B, A] means want C, pay in A.
-	params := SwapExactOutputParams{
-		Path:      []common.Address{testTokenC, testTokenB, testTokenA},
-		AmountOut: big.NewInt(3_000),
-	}
-
-	_, err := router.ExactOutput(stateDB, testCaller, params)
-	if err == nil {
-		t.Fatal("expected error when pool in exact-output path is paused")
-	}
-	t.Logf("exact-output correctly failed with paused pool: %v", err)
-}
 
 // =========================================================================
 // 23. After PauseDEX, verify stateDB.SetState was called with correct key
@@ -897,29 +594,6 @@ func TestPauseFreeze_FreezePoolDoesNotAffectDonateOnOtherPool(t *testing.T) {
 	}
 }
 
-// TestPauseFreeze_PauseDEXBlocksAllPools verifies that DEX-level pause
-// blocks operations on ALL pools, not just a specific one.
-func TestPauseFreeze_PauseDEXBlocksAllPools(t *testing.T) {
-	pm := newPauseTestPM()
-	stateDB := NewMockStateDB()
-	keyAB, _, keyBC, _ := initTwoPoolsPF(t, pm, stateDB)
-
-	if err := pm.PauseDEX(stateDB, admin); err != nil {
-		t.Fatalf("PauseDEX failed: %v", err)
-	}
-
-	// Both pools should be blocked.
-	_, err := pm.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrDEXPaused) {
-		t.Fatalf("expected ErrDEXPaused on pool A/B, got: %v", err)
-	}
-
-	_, err = pm.Swap(stateDB, testCaller, keyBC, swapParams(), nil)
-	if !errors.Is(err, ErrDEXPaused) {
-		t.Fatalf("expected ErrDEXPaused on pool B/C, got: %v", err)
-	}
-}
-
 // TestPauseFreeze_IsPausedIsFrozenAccessors tests the boolean accessors.
 func TestPauseFreeze_IsPausedIsFrozenAccessors(t *testing.T) {
 	pm := newPauseTestPM()
@@ -979,81 +653,6 @@ func TestPauseFreeze_IsPausedIsFrozenAccessors(t *testing.T) {
 // =========================================================================
 // Restart survival: new PoolManager, same StateDB
 // =========================================================================
-
-// TestPauseFreeze_DEXPauseSurvivesRestart proves that a DEX-level pause
-// persists across a simulated node restart (new PoolManager, same StateDB).
-func TestPauseFreeze_DEXPauseSurvivesRestart(t *testing.T) {
-	stateDB := NewMockStateDB()
-
-	// Phase 1: pause the DEX
-	pm1 := newPauseTestPM()
-	keyAB, _, _, _ := initTwoPoolsPF(t, pm1, stateDB)
-	if err := pm1.PauseDEX(stateDB, admin); err != nil {
-		t.Fatalf("PauseDEX failed: %v", err)
-	}
-
-	// Phase 2: "restart" — new PoolManager with cold caches, same stateDB.
-	// Pool already exists in StateDB from phase 1 — getPool will reload it.
-	pm2 := NewPoolManager(&mockEngine{})
-	pm2.protocolFeeController = admin
-
-	// Swap should be blocked because checkPauseState reads from StateDB
-	_, err := pm2.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrDEXPaused) {
-		t.Fatalf("DEX pause should survive restart, got: %v", err)
-	}
-}
-
-// TestPauseFreeze_PoolFreezeSurvivesRestart proves that a pool freeze
-// persists across a simulated node restart.
-func TestPauseFreeze_PoolFreezeSurvivesRestart(t *testing.T) {
-	stateDB := NewMockStateDB()
-
-	// Phase 1: freeze pool A/B
-	pm1 := newPauseTestPM()
-	keyAB, poolIdAB, keyBC, _ := initTwoPoolsPF(t, pm1, stateDB)
-	if err := pm1.FreezePool(stateDB, admin, poolIdAB); err != nil {
-		t.Fatalf("FreezePool failed: %v", err)
-	}
-
-	// Phase 2: "restart" — new PoolManager
-	pm2 := NewPoolManager(&mockEngine{})
-	pm2.protocolFeeController = admin
-
-	// Frozen pool A/B should be blocked — checkPauseState reads freeze from StateDB
-	_, err := pm2.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrPoolFrozen) {
-		t.Fatalf("Pool freeze should survive restart, got: %v", err)
-	}
-
-	// Unfrozen pool B/C should work (engine returns zero delta, no error)
-	_, err = pm2.Swap(stateDB, testCaller, keyBC, swapParams(), nil)
-	if errors.Is(err, ErrPoolFrozen) || errors.Is(err, ErrPoolPaused) || errors.Is(err, ErrDEXPaused) {
-		t.Fatalf("Pool B/C should not be affected by A/B freeze after restart, got: %v", err)
-	}
-}
-
-// TestPauseFreeze_PoolPauseSurvivesRestart proves that a pool pause
-// persists across a simulated node restart.
-func TestPauseFreeze_PoolPauseSurvivesRestart(t *testing.T) {
-	stateDB := NewMockStateDB()
-
-	// Phase 1: pause pool A/B
-	pm1 := newPauseTestPM()
-	keyAB, poolIdAB, _, _ := initTwoPoolsPF(t, pm1, stateDB)
-	if err := pm1.PausePool(stateDB, admin, poolIdAB); err != nil {
-		t.Fatalf("PausePool failed: %v", err)
-	}
-
-	// Phase 2: "restart"
-	pm2 := NewPoolManager(&mockEngine{})
-	pm2.protocolFeeController = admin
-
-	_, err := pm2.Swap(stateDB, testCaller, keyAB, swapParams(), nil)
-	if !errors.Is(err, ErrPoolPaused) {
-		t.Fatalf("Pool pause should survive restart, got: %v", err)
-	}
-}
 
 // =========================================================================
 // State persistence: Pool fees and Position fields survive restarts (H1/H2)

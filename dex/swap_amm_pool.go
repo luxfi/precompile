@@ -69,37 +69,8 @@ func BindAMMPool(store dexcore.Store, poolID [32]byte, baseReserve, quoteReserve
 	return writeAMMRow(store, poolID, baseReserve, quoteReserve, feeBps)
 }
 
-// buildRouter assembles the router for a market: the CLOB source always, plus the AMM
-// source when a real pool is bound. The order is the priority (CLOB first); dexcore
-// picks best-execution and splits across them.
-func buildRouter(stateDB StateDB, poolID [32]byte) *dexcore.Router {
-	store := newEVMStore(stateDB)
-	sources := []dexcore.Source{dexcore.NewOrderBookSource()}
-	if _, _, feeBps, ok := readAMMRow(store, poolID); ok {
-		sources = append(sources, dexcore.NewAMMSource(newEVMAMMPool(feeBps)))
-	}
-	return dexcore.NewRouter(sources...)
-}
-
-// evmAMMPool implements dexcore.AMMPool over the 0x9999-stored reserve row of a bound
-// pool. The reserves live in the dexcore Store (the same StateDB trie), so the read is
-// from committed state (deterministic replay), and a fill writes the new reserves back
-// into the same trie — committed by the block root alongside the CLOB + EVM-balance
-// effects. The fee is per-market, read at router-build time and carried here.
-type evmAMMPool struct{ feeBps uint32 }
-
-func newEVMAMMPool(feeBps uint32) *evmAMMPool { return &evmAMMPool{feeBps: feeBps} }
-
-// Reserves reads the bound pool's (base, quote) reserves from the dexcore Store row.
-func (*evmAMMPool) Reserves(db dexcore.Store, poolID [32]byte) (uint64, uint64, bool, error) {
-	base, quote, _, ok := readAMMRow(db, poolID)
-	return base, quote, ok, nil
-}
-
-// SetReserves writes the post-fill reserves back, preserving the fee + bound flag.
-func (p *evmAMMPool) SetReserves(db dexcore.Store, poolID [32]byte, base, quote uint64) error {
-	return writeAMMRow(db, poolID, base, quote, p.feeBps)
-}
-
-// FeeBps returns the bound pool's fee (read at router-build time).
-func (p *evmAMMPool) FeeBps() uint32 { return p.feeBps }
+// The CLOB+AMM in-trie router (buildRouter / evmAMMPool) was REMOVED with the embedded
+// matcher: 0x9999 no longer matches on C. The reserve-row read/write helpers above remain
+// ONLY to back the read-only quote views (0x9998 Quoter, 0x9012 router quote selectors)
+// and the operator seed (BindAMMPool). No value path reads or crosses this row any longer —
+// a swap settles solely by consuming a real D-Chain-committed atomic object (settle9999.go).

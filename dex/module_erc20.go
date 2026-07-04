@@ -114,24 +114,13 @@ func (a *poolStateAdapter) callable() callableEnv {
 
 // inStateVault returns a GENUINE in-state erc20Vault ledger reachable on the underlying
 // StateDB, or nil when none is present (the live EVM path, where the token leg moves through
-// the Call surface instead). It unwraps the write-observing decorator(s) to inspect the REAL
-// inner StateDB, because the decorator itself structurally satisfies erc20Vault by FORWARDING
-// to its inner — so a bare type assertion on a.stateDB would always match the decorator and,
-// when that inner is the live registry stateDBBridge (which has no vault), dead-end. We
-// therefore peel decorators and only accept an inner that DIRECTLY implements the vault (the
-// test in-state wrapper / a future native vault). nil here means "no in-state ledger; use the
-// EVM Call surface" — which is exactly the live registry-bridge case (the bridge is a
-// contract.StateDB that does not implement erc20Vault, so the assertion below is false).
+// the Call surface instead). nil here means "no in-state ledger; use the EVM Call surface" —
+// exactly the live registry-bridge case (the bridge is a contract.StateDB that does not
+// implement erc20Vault, so the assertion is false). Only the test in-state wrapper / a future
+// native vault directly implements erc20Vault. (The write-observing STM decorator that this
+// used to peel was removed with the unwired Block-STM scaffolding.)
 func (a *poolStateAdapter) inStateVault() erc20Vault {
-	var sdb contract.StateDB = a.stateDB
-	for {
-		if w, ok := sdb.(*writeObservingStateDB); ok {
-			sdb = w.StateDB // peel the observing decorator to its real inner
-			continue
-		}
-		break
-	}
-	if v, ok := sdb.(erc20Vault); ok {
+	if v, ok := a.stateDB.(erc20Vault); ok {
 		return v
 	}
 	return nil
