@@ -94,20 +94,18 @@ func Test9999Swap_CreatesCToDAtomicIntent(t *testing.T) {
 
 // Test9999Swap_DoesNotUseBLSReceiptPath — a hookData shaped like the OLD BLS settlement
 // envelope ("D991" tag) must NOT settle a fill from a "cert". After the decomplect that tag
-// is neither DI01 nor DS01, so isUntaggedSwap treats it as a NORMAL swap routed through the
-// synchronous on-chain router — there is no BLS cert/receipt credit path to take. With the
-// harness's native market carrying no on-chain liquidity, that synchronous swap reverts (no
-// liquidity); the decisive property is that the caller is NEVER credited an output from a
-// fabricated cert. The BLS receipt path is gone from the value path.
+// is neither DI01 nor DS01, so decodeSwapPhase treats it as a PHASE A intent (opaque body
+// ignored): the input is LOCKED and an intent id is returned — there is no synchronous
+// matcher and no BLS cert/receipt credit path. The decisive property: the caller is NEVER
+// credited an output. An opaque/unknown blob can, at most, lock input into a reclaimable
+// intent; it can never produce an output credit. The BLS receipt path is gone from the value
+// path.
 func Test9999Swap_DoesNotUseBLSReceiptPath(t *testing.T) {
 	h := newSettleHarness(t)
-	// Value gate (A2): this test exercises the SYNCHRONOUS value path (C1 admission / BLS
-	// absence), which runs only when native-value swaps are enabled — enable it as a
-	// quorum-finality node would; cleanup restores the fail-closed default.
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
 	// Pre-fund the vault output so that IF a BLS-style credit path existed, it COULD
-	// pay out — making the test meaningful (the credit is possible iff a path exists).
+	// pay out — making the "no output credit" assertion meaningful.
 	h.fundVaultOut(10_000)
 
 	callerOutBefore := h.wrapper().inner.tokenBalances[h.outToken()][h.caller]
@@ -115,23 +113,26 @@ func Test9999Swap_DoesNotUseBLSReceiptPath(t *testing.T) {
 		callerOutBefore = big.NewInt(0)
 	}
 
-	// A blob with the legacy BLS envelope tag + garbage. It is NOT a recognized cross-chain
-	// tag, so it routes to the synchronous router as a normal swap. With no resolver/liquidity
-	// it reverts — and crucially never credits an output off a "cert".
+	// A blob with the legacy BLS envelope tag ("D991") + garbage. It is NOT a recognized
+	// cross-chain phase tag, so it is treated as a plain PHASE A intent (opaque body ignored):
+	// input locked, intent id returned. No fill, no cert credit.
 	blsLike := append([]byte("D991"), bytes.Repeat([]byte{0xAB}, 200)...)
 	out, _, err := runWithEVMSnapshot(h.c, h.state, h.caller, poolManagerAddr9999,
 		prependSelector(SelectorSwap, buildSwapCalldata(h.key, h.params, blsLike)), 5_000_000, false)
-	if err == nil {
-		t.Fatalf("a BLS-like (untagged) swap must NOT settle a cert fill; got success out=%x", out)
+	if err != nil {
+		t.Fatalf("an unknown-tag swap must be treated as a Phase A intent (lock-only), got err: %v", err)
 	}
-	// The caller received NO output token (no cert path credited anything), and the swap
-	// rolled back atomically.
+	if len(out) != 32 {
+		t.Fatalf("Phase A intent must return a 32-byte intent id, got %d bytes", len(out))
+	}
+	// The decisive invariant: the caller received NO output token. The BLS-cert credit path
+	// is gone — an opaque blob cannot settle a fill.
 	callerOutAfter := h.wrapper().inner.tokenBalances[h.outToken()][h.caller]
 	if callerOutAfter == nil {
 		callerOutAfter = big.NewInt(0)
 	}
 	if callerOutAfter.Cmp(callerOutBefore) != 0 {
-		t.Fatalf("BLS-like hookData must NOT credit output (BLS path is gone); credited %s",
+		t.Fatalf("unknown-tag hookData must NOT credit output (BLS path is gone); credited %s",
 			new(big.Int).Sub(callerOutAfter, callerOutBefore))
 	}
 }
