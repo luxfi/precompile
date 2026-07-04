@@ -26,7 +26,8 @@ import (
 //     censored nor DoS'd through this authority. There is no default key to abuse.
 //  5. The SAME gate guards pot seeding (seedSeamReserve): the retired EOA cannot seed.
 //  6. Conservation is preserved: governance can halt/unhalt but mints nothing (the
-//     unhalt restores trading; CASE 6 in gatec_red_probe_test.go proves no mint/move).
+//     unhalt restores trading; TestDecomplect_DAOControllerCannotMintOrMoveUserFunds in
+//     settle_decomplect_test.go proves no mint/move).
 
 // haltGlobal builds and runs setHaltGlobal(on) from `caller`, returning the dispatch err.
 func haltGlobal(h *settleHarness, caller common.Address, on bool) error {
@@ -159,8 +160,8 @@ func TestHIGH3_FailClosed_NoGovernanceConfigured_NobodyCanHalt(t *testing.T) {
 
 // TestHIGH3_RetiredEOACannotSeedPots proves the SAME governance gate guards the operator
 // pot-seeding selectors (seedSeamReserve), so the retired EOA cannot seed/credit either.
-// (CASE 6 in gatec_red_probe_test.go already proves the AUTHORIZED controller cannot mint;
-// here we prove the retired EOA is not even authorized to attempt it.)
+// (TestDecomplect_DAOControllerCannotMintOrMoveUserFunds already proves the AUTHORIZED
+// controller cannot mint; here we prove the retired EOA is not even authorized to attempt it.)
 func TestHIGH3_RetiredEOACannotSeedPots(t *testing.T) {
 	h := newSettleHarness(t)
 
@@ -182,42 +183,43 @@ func TestHIGH3_RetiredEOACannotSeedPots(t *testing.T) {
 	}
 }
 
-// TestHIGH3_HaltBitesARealFill is the end-to-end proof that governance-set halt actually
-// stops a real swap: governance halts the market, a real fillable swap reverts with the
-// halt error, governance lifts it, and the swap then fills. This closes the loop —
-// "governance halts" means "trading actually stops", and only governance can do it.
-func TestHIGH3_HaltBitesARealFill(t *testing.T) {
-	h := newE2EHarness(t)
+// TestHIGH3_HaltBitesARealSwap is the end-to-end proof that governance-set halt actually
+// stops a real swap on the money path: governance halts the market, a real swap (a Phase-A
+// intent — the canonical settle-only money path) reverts with the halt error before any
+// input is locked, governance lifts it, and the swap then proceeds. This closes the loop —
+// "governance halts" means "the money path actually stops", and only governance can do it.
+func TestHIGH3_HaltBitesARealSwap(t *testing.T) {
+	h := newSettleHarness(t)
+	h.registerMarket(t)
+	h.fundCallerNative(1000)
 	gov := h.operator()
-	maker, taker := e2eMaker, e2eTaker
-
-	// Seed a resting bid so a taker SELL of base (LETH) for quote (LUSD) can fill.
-	h.mint(e2eLUSD, maker, 1_000_000)
-	h.deposit(t, maker, e2eLUSD, 1_000_000)
-	h.placeArgs(t, maker, true, uint64(50)*uint64(priceMultiplierConst), 1000)
-	h.mint(e2eLETH, taker, 100)
+	poolID := h.key.ID()
 
 	// Governance halts THIS market.
-	poolID := h.key.ID()
-	if err := haltMarket(h.settleHarness, gov, poolID, true); err != nil {
+	if err := haltMarket(h, gov, poolID, true); err != nil {
 		t.Fatalf("governance setHaltMarket: %v", err)
 	}
 
-	// A real, otherwise-fillable swap now reverts with the market-halt error.
-	if _, err := h.swapMinOut(t, taker, 100, 1); !errors.Is(err, ErrMarketHalted) {
-		t.Fatalf("halted market must refuse a fill with ErrMarketHalted, got: %v", err)
+	// A real swap (Phase-A intent) now reverts with the market-halt error — checkHalt gates
+	// the money path BEFORE any input is locked (no strand on a halted swap).
+	if _, err := h.runSwap(t, h.intentCalldata(), false); !errors.Is(err, ErrMarketHalted) {
+		t.Fatalf("halted market must refuse a swap with ErrMarketHalted, got: %v", err)
 	}
 
 	// Only governance can lift it (the retired EOA cannot).
-	if err := haltMarket(h.settleHarness, retiredHardcodedHaltEOA, poolID, false); !errors.Is(err, ErrUnauthorized) {
+	if err := haltMarket(h, retiredHardcodedHaltEOA, poolID, false); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("retired EOA must NOT be able to clear the market halt, got: %v", err)
 	}
-	if err := haltMarket(h.settleHarness, gov, poolID, false); err != nil {
+	if err := haltMarket(h, gov, poolID, false); err != nil {
 		t.Fatalf("governance must be able to clear the market halt, got: %v", err)
 	}
 
-	// With the halt lifted, the same swap fills.
-	if _, err := h.swapMinOut(t, taker, 100, 1); err != nil {
-		t.Fatalf("after governance lifted the halt, the swap must fill, got: %v", err)
+	// With the halt lifted, the same swap proceeds (creates its C->D intent).
+	out, err := h.runSwap(t, h.intentCalldata(), false)
+	if err != nil {
+		t.Fatalf("after governance lifted the halt, the swap must succeed, got: %v", err)
+	}
+	if len(out) != 32 {
+		t.Fatal("swap after unhalt must return a 32-byte intent id")
 	}
 }
