@@ -218,45 +218,22 @@ func (s *SettleContract) Run(
 
 	switch selector {
 	case SelectorSwap:
-		// THE swap path. The 0x9999 precompile is ALWAYS-ON and UNCONDITIONAL: a plain swap()
-		// reaches this case and an UNTAGGED swap routes to the SYNCHRONOUS on-chain smart-order-
-		// router. There is no value-activation gate — the decomplect collapsed "is this
-		// dispatchable?" and "may value move?" into one path, with the swap's own intrinsic
-		// fail-closed controls deciding whether it fills. Two models still share the V4 swap
-		// selector, distinguished SOLELY by the hookData phase tag:
+		// THE money path — SETTLE-ONLY. 0x9999 NEVER matches on C. Every swap routes to the
+		// native C<->D atomic seam (SettleSwap, settle9999.go), keyed on the hookData phase:
 		//
-		//   - UNTAGGED swap (empty hookData / a DM01 min-out floor / any opaque hook blob): the
-		//     SYNCHRONOUS on-chain smart-order-router (swap_sync.go). One in-process, in-trie,
-		//     atomic transition — route across the native CLOB + the V2/V3 AMM, apply the C EVM
-		//     balance delta AND the D book/fill delta in ONE block. THE normal same-domain swap
-		//     path. Its intrinsic fail-closed controls (real-asset admission via the installed
-		//     resolver, live-code verifier, min-out floor, halt, custody mutex) decide whether it
-		//     fills; on a node that wired no resolver it fails closed (ErrNoAssetResolver) — the
-		//     structural replacement for the retired consensus gate.
-		//   - TAGGED swap (DI01 intent / DS01 settlement hookData): the async cross-CHAIN D->C
-		//     settlement primitive (settle9999.go SettleSwap), retained for a genuine settlement
-		//     to a DIFFERENT network. Its own deadline-reclaim guarantees a locked intent can
-		//     always exit; it never settles a synchronous fill.
+		//   - UNTAGGED / opaque / DI01 hookData => PHASE A (INTENT): lock the taker's input on
+		//     C and write a C->D atomic object. D imports it and matches under ITS OWN
+		//     consensus. Phase A returns the intent id — NOT a fill; no output is credited here.
+		//   - DS01-tagged hookData => PHASE B (SETTLEMENT): consume a real D->C atomic object
+		//     ONCE and credit the output. This is the ONLY path that credits C, and the credit
+		//     is the RECORDED object's amount — never a caller-supplied fill value.
 		//
-		// L2 ACCESS-SET SOUNDNESS (anti-fork): the synchronous route is wrapped in the runtime
-		// write-set assertion. The handler runs against a write-OBSERVING StateDB; if it touches
-		// any 0x9999 conflict key OUTSIDE the declared PredictSyncSwapWriteSet (computed against
-		// the PRE-call state), the call FAILS with ErrAccessSetUndeclaredWrite and the EVM
-		// reverts — so an under-declared write becomes a REJECTED tx in Verify, never a forked
-		// commit. The sync predictor's keys are derived from (poolID, account, asset, orderID,
-		// block-counter) — NONE amount-derived — so a fee-on-transfer ERC-20 (observed-delta
-		// value, same keys) does NOT false-reject (B6: the sync path is fee-on-transfer-safe by
-		// construction; the async/intent path's amount-keyed id divergence is why ONLY the sync
-		// route is L2-wrapped here). A malformed swap input falls through to the async handler.
-		if key, params, hookData, derr := DecodeSwapInput(data); derr == nil && isUntaggedSwap(hookData) {
-			// Declare the sync write-set against the PRE-call state (the exact state runSyncSwap
-			// reads when it runs), then run the handler under the L2 assertion.
-			declared := PredictSyncSwapWriteSet(newPoolStateAdapter(accessibleState), key, params, caller)
-			return AssertWriteSetWithin(accessibleState, declared,
-				func(s contract.AccessibleState) ([]byte, uint64, error) {
-					return runSyncSwap(s, caller, key, params, hookData, suppliedGas, readOnly)
-				})
-		}
+		// There is NO in-trie CLOB/AMM router, NO synchronous on-chain matcher, NO "money lives
+		// in the order book" maker custody. The embedded matcher (swap_sync / swap_custody) was
+		// REMOVED: a live matcher inside C-Chain block execution forks consensus (each validator
+		// observes independently-timed fills => divergent StateRoot). Deterministic consumption
+		// of a committed D->C object is fork-safe INLINE. A swap with no valid D-committed object
+		// cannot settle — that is the load-bearing "no-receipt-no-settle" invariant.
 		return SettleSwap(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// Market creation — C-AUTHORITATIVE registry (settle_market.go). Computes the
@@ -305,20 +282,6 @@ func (s *SettleContract) Run(
 		return s.runSettleWithdraw(accessibleState, caller, data, suppliedGas, readOnly)
 	case SelectorBalanceOf:
 		return s.runSettleBalanceOf(accessibleState, data, suppliedGas)
-
-	// Synchronous on-chain-router custody (swap_custody.go): the maker side of the
-	// in-process router — deposit REAL tokens into the dexcore ledger (vault-backed),
-	// rest/cancel a limit order, withdraw. The "money lives in the order book" model
-	// for the sync swap path — always-on, like the rest of 0x9999 (no enable gate);
-	// deposit/withdraw are not halt-gated so funds can always exit.
-	case SelectorSwapDeposit:
-		return s.runSwapDeposit(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorSwapWithdraw:
-		return s.runSwapWithdraw(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorSwapPlace:
-		return s.runSwapPlace(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorSwapCancel:
-		return s.runSwapCancel(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// Settlement governance (governance-controller-gated, resolved from runtime
 	// AtomicState — never a hardcoded key). Only the real kill switches remain

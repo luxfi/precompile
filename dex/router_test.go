@@ -92,57 +92,6 @@ func TestRouterQuoteNoPool(t *testing.T) {
 	}
 }
 
-func TestRouterExactInputSingleV4(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-
-	params := SwapExactInputSingleParams{
-		TokenIn:  testTokenA,
-		TokenOut: testTokenB,
-		AmountIn: big.NewInt(10_000),
-	}
-
-	amountOut, venue, err := router.ExactInputSingle(stateDB, testCaller, params)
-	if err != nil {
-		t.Fatalf("ExactInputSingle failed: %v", err)
-	}
-	if venue != VenueV4Native {
-		t.Errorf("expected VenueV4Native, got %d", venue)
-	}
-	if amountOut.Sign() <= 0 {
-		t.Fatalf("expected positive output, got %s", amountOut)
-	}
-
-	t.Logf("Router swap: 10000 -> %s via V4", amountOut)
-}
-
-func TestRouterExactInputMultiHop(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-	setupV4Pool(t, pm, stateDB, testTokenB, testTokenC)
-
-	params := SwapExactInputParams{
-		Path:     []common.Address{testTokenA, testTokenB, testTokenC},
-		AmountIn: big.NewInt(10_000),
-	}
-
-	amountOut, err := router.ExactInput(stateDB, testCaller, params)
-	if err != nil {
-		t.Fatalf("ExactInput multi-hop failed: %v", err)
-	}
-	if amountOut.Sign() <= 0 {
-		t.Fatalf("expected positive output, got %s", amountOut)
-	}
-
-	t.Logf("Multi-hop swap: 10000 A -> B -> C = %s", amountOut)
-}
-
 func TestRouterGetBestRoute(t *testing.T) {
 	pm := NewPoolManager(&mockEngine{})
 	stateDB := NewMockStateDB()
@@ -223,28 +172,6 @@ func TestRouterEncodeDecodeParams(t *testing.T) {
 	}
 }
 
-func TestRouterMinimumOutput(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-
-	// Set unreachable minimum output
-	params := SwapExactInputSingleParams{
-		TokenIn:          testTokenA,
-		TokenOut:         testTokenB,
-		AmountIn:         big.NewInt(100),
-		AmountOutMinimum: big.NewInt(1_000_000_000), // way more than pool liquidity
-	}
-
-	_, _, err := router.ExactInputSingle(stateDB, testCaller, params)
-	if err == nil {
-		t.Fatal("expected error for insufficient output")
-	}
-	t.Logf("Correctly rejected: %v", err)
-}
-
 // =========================================================================
 // V4 Path Encoding Tests
 // =========================================================================
@@ -311,179 +238,13 @@ func TestPathEncodeDecode(t *testing.T) {
 // V4 Multi-hop with PathKeys
 // =========================================================================
 
-func TestRouterExactInputV4Path(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-	setupV4Pool(t, pm, stateDB, testTokenB, testTokenC)
-
-	params := SwapExactInputParams{
-		CurrencyIn: testTokenA,
-		PathKeys: []PathKey{
-			{IntermediateCurrency: testTokenB, Fee: Fee030, TickSpacing: TickSpacing030},
-			{IntermediateCurrency: testTokenC, Fee: Fee030, TickSpacing: TickSpacing030},
-		},
-		AmountIn:         big.NewInt(10_000),
-		AmountOutMinimum: big.NewInt(1),
-	}
-
-	amountOut, err := router.ExactInput(stateDB, testCaller, params)
-	if err != nil {
-		t.Fatalf("ExactInput V4 path failed: %v", err)
-	}
-	if amountOut.Sign() <= 0 {
-		t.Fatalf("expected positive output, got %s", amountOut)
-	}
-
-	t.Logf("V4 path multi-hop: 10000 A -> B -> C = %s", amountOut)
-
-	// Compare with simple path — should produce the same result
-	params2 := SwapExactInputParams{
-		Path:     []common.Address{testTokenA, testTokenB, testTokenC},
-		AmountIn: big.NewInt(10_000),
-	}
-
-	// Need fresh pools since the first swap consumed liquidity
-	pm2 := NewPoolManager(&mockEngine{})
-	stateDB2 := NewMockStateDB()
-	router2 := NewLXRouter(pm2)
-	setupV4Pool(t, pm2, stateDB2, testTokenA, testTokenB)
-	setupV4Pool(t, pm2, stateDB2, testTokenB, testTokenC)
-
-	amountOut2, err := router2.ExactInput(stateDB2, testCaller, params2)
-	if err != nil {
-		t.Fatalf("ExactInput simple path failed: %v", err)
-	}
-
-	t.Logf("Simple path multi-hop: 10000 A -> B -> C = %s", amountOut2)
-}
-
 // =========================================================================
 // Deadline Tests
 // =========================================================================
 
-func TestRouterDeadlineExpired(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	stateDB.SetBlockNumber(100)
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-
-	params := SwapExactInputSingleParams{
-		TokenIn:  testTokenA,
-		TokenOut: testTokenB,
-		AmountIn: big.NewInt(10_000),
-		Deadline: 50, // block 100 > deadline 50
-	}
-
-	_, _, err := router.ExactInputSingle(stateDB, testCaller, params)
-	if err == nil {
-		t.Fatal("expected deadline error")
-	}
-	t.Logf("Correctly rejected expired deadline: %v", err)
-}
-
-func TestRouterDeadlineValid(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	stateDB.SetBlockNumber(10)
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-
-	params := SwapExactInputSingleParams{
-		TokenIn:  testTokenA,
-		TokenOut: testTokenB,
-		AmountIn: big.NewInt(10_000),
-		Deadline: 100, // block 10 < deadline 100
-	}
-
-	amountOut, _, err := router.ExactInputSingle(stateDB, testCaller, params)
-	if err != nil {
-		t.Fatalf("valid deadline should not fail: %v", err)
-	}
-	if amountOut.Sign() <= 0 {
-		t.Fatal("expected positive output")
-	}
-}
-
-func TestRouterDeadlineZeroMeansNone(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	stateDB.SetBlockNumber(999999)
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-
-	params := SwapExactInputSingleParams{
-		TokenIn:  testTokenA,
-		TokenOut: testTokenB,
-		AmountIn: big.NewInt(10_000),
-		Deadline: 0, // no deadline
-	}
-
-	_, _, err := router.ExactInputSingle(stateDB, testCaller, params)
-	if err != nil {
-		t.Fatalf("zero deadline should not fail: %v", err)
-	}
-}
-
 // =========================================================================
 // Exact Output Tests
 // =========================================================================
-
-func TestRouterExactOutputSingle(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-
-	params := SwapExactOutputSingleParams{
-		TokenIn:   testTokenA,
-		TokenOut:  testTokenB,
-		AmountOut: big.NewInt(5_000),
-		Fee:       Fee030,
-	}
-
-	amountIn, venue, err := router.ExactOutputSingle(stateDB, testCaller, params)
-	if err != nil {
-		t.Fatalf("ExactOutputSingle failed: %v", err)
-	}
-	if venue != VenueV4Native {
-		t.Errorf("expected VenueV4Native, got %d", venue)
-	}
-	if amountIn.Sign() <= 0 {
-		t.Fatalf("expected positive input amount, got %s", amountIn)
-	}
-
-	t.Logf("ExactOutputSingle: want 5000 out, need %s in", amountIn)
-}
-
-func TestRouterExactOutputSlippage(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-
-	params := SwapExactOutputSingleParams{
-		TokenIn:         testTokenA,
-		TokenOut:        testTokenB,
-		AmountOut:       big.NewInt(5_000),
-		AmountInMaximum: big.NewInt(1), // impossibly low max input
-		Fee:             Fee030,
-	}
-
-	_, _, err := router.ExactOutputSingle(stateDB, testCaller, params)
-	if err == nil {
-		t.Fatal("expected slippage error")
-	}
-	t.Logf("Correctly rejected excessive input: %v", err)
-}
 
 // =========================================================================
 // External Venue Tests
@@ -536,34 +297,6 @@ func TestRouterExternalVenueQuote(t *testing.T) {
 		t.Fatal("expected external venue in quote results")
 	}
 	t.Logf("External venue quote: %d results", len(quotes))
-}
-
-func TestRouterExternalVenueRejectedInExecution(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	// External venue with good pricing — but execution should NOT use it.
-	// External venues are quote-only; settlement happens via FillAttestation (LP-9090).
-	router.RegisterVenue(&mockVenue{
-		id: [32]byte{0x02},
-		quoteFunc: func(_, _ common.Address, amountIn *big.Int) (*big.Int, error) {
-			return new(big.Int).Mul(amountIn, big.NewInt(2)), nil
-		},
-	})
-
-	// No V4 pool — router must return error, NOT use external venue for execution
-	params := SwapExactInputSingleParams{
-		TokenIn:  testTokenA,
-		TokenOut: testTokenB,
-		AmountIn: big.NewInt(5000),
-	}
-
-	_, _, err := router.ExactInputSingle(stateDB, testCaller, params)
-	if err == nil {
-		t.Fatal("expected error when no on-chain pool available, got nil (external venue must not settle)")
-	}
-	t.Logf("Correctly rejected external venue in execution: %v", err)
 }
 
 func TestRouterExternalVenueStillWorksInQuotes(t *testing.T) {
@@ -683,155 +416,13 @@ func TestDecodeExactInputSingleParamsExtended(t *testing.T) {
 	}
 }
 
-func TestRouterExactInputSingleWithExplicitPoolKey(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-
-	// Specify explicit fee/tickSpacing to target the known pool
-	params := SwapExactInputSingleParams{
-		TokenIn:     testTokenA,
-		TokenOut:    testTokenB,
-		AmountIn:    big.NewInt(10_000),
-		Fee:         Fee030,
-		TickSpacing: TickSpacing030,
-	}
-
-	amountOut, venue, err := router.ExactInputSingle(stateDB, testCaller, params)
-	if err != nil {
-		t.Fatalf("ExactInputSingle with explicit key failed: %v", err)
-	}
-	if venue != VenueV4Native {
-		t.Errorf("expected VenueV4Native, got %d", venue)
-	}
-	if amountOut.Sign() <= 0 {
-		t.Fatalf("expected positive output, got %s", amountOut)
-	}
-
-	t.Logf("ExactInputSingle with explicit pool key: 10000 -> %s", amountOut)
-}
-
 // =========================================================================
 // ExactOutput Direction Tests (Fix #2)
 // =========================================================================
 
-func TestRouterExactOutputMultiHop(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	// Create pools A<->B and B<->C
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
-	setupV4Pool(t, pm, stateDB, testTokenB, testTokenC)
-
-	// Path=[C, B, A] means: want amountOut of C, paying in A.
-	// Direction: A -> B -> C, but computed in reverse (C needed, then B, then A).
-	params := SwapExactOutputParams{
-		Path:      []common.Address{testTokenC, testTokenB, testTokenA},
-		AmountOut: big.NewInt(3_000),
-	}
-
-	amountIn, err := router.ExactOutput(stateDB, testCaller, params)
-	if err != nil {
-		t.Fatalf("ExactOutput multi-hop failed: %v", err)
-	}
-	if amountIn.Sign() <= 0 {
-		t.Fatalf("expected positive input amount, got %s", amountIn)
-	}
-	// The input must be >= output (fees exist), confirming correct direction
-	if amountIn.Cmp(params.AmountOut) < 0 {
-		t.Errorf("input (%s) should be >= output (%s) due to fees", amountIn, params.AmountOut)
-	}
-
-	t.Logf("ExactOutput multi-hop: want 3000 C, need %s A", amountIn)
-}
-
 // =========================================================================
 // Path Length Limit Tests (Fix #4)
 // =========================================================================
-
-func TestRouterPathTooLongExactInput(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	// Build a path with MaxPathLength+1 hops (MaxPathLength+2 tokens)
-	path := make([]common.Address, MaxPathLength+2)
-	for i := range path {
-		addr := common.Address{}
-		addr[19] = byte(i + 1)
-		path[i] = addr
-	}
-
-	params := SwapExactInputParams{
-		Path:     path,
-		AmountIn: big.NewInt(1000),
-	}
-
-	_, err := router.ExactInput(stateDB, testCaller, params)
-	if err == nil {
-		t.Fatal("expected error for path exceeding MaxPathLength")
-	}
-	t.Logf("Correctly rejected long path: %v", err)
-}
-
-func TestRouterPathTooLongExactOutput(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	// Build a path with MaxPathLength+1 hops
-	path := make([]common.Address, MaxPathLength+2)
-	for i := range path {
-		addr := common.Address{}
-		addr[19] = byte(i + 1)
-		path[i] = addr
-	}
-
-	params := SwapExactOutputParams{
-		Path:      path,
-		AmountOut: big.NewInt(1000),
-	}
-
-	_, err := router.ExactOutput(stateDB, testCaller, params)
-	if err == nil {
-		t.Fatal("expected error for path exceeding MaxPathLength")
-	}
-	t.Logf("Correctly rejected long path: %v", err)
-}
-
-func TestRouterPathAtMaxLength(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
-	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
-
-	// MaxPathLength hops = MaxPathLength+1 tokens, this should be accepted
-	// (though it will fail due to missing pools, validation should pass)
-	path := make([]common.Address, MaxPathLength+1)
-	for i := range path {
-		addr := common.Address{}
-		addr[19] = byte(i + 1)
-		path[i] = addr
-	}
-
-	params := SwapExactInputParams{
-		Path:     path,
-		AmountIn: big.NewInt(1000),
-	}
-
-	_, err := router.ExactInput(stateDB, testCaller, params)
-	// Should fail on pool lookup, NOT on path length
-	if err == nil {
-		t.Fatal("expected error (no pools), but path length should be accepted")
-	}
-	// Verify it's not a path-length error
-	if err.Error() == "path too long" {
-		t.Fatal("path of MaxPathLength hops should be allowed")
-	}
-	t.Logf("Path at max length accepted (failed on pool lookup as expected): %v", err)
-}
 
 // =========================================================================
 // Gas Constant Tests (Fix #4)

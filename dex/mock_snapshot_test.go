@@ -12,13 +12,15 @@ import (
 	"github.com/luxfi/precompile/contract"
 )
 
-// swap_sync_snapshot_test.go gives the test harness the EXACT atomicity boundary
+// mock_snapshot_test.go gives the test harness the EXACT atomicity boundary
 // production has: the EVM wraps every CALL to a precompile in StateDB.Snapshot()
 // and, when the precompile returns a non-nil error, StateDB.RevertToSnapshot()
 // rolls back EVERY state write the precompile made — the ERC-20 transferFrom of
-// the lock, the dexcore book/ledger writes, the vault seam-reserve move — all of
-// it, because they are all StateDB writes covered by the one snapshot. See
+// the intent lock, the seam-reserve/escrow ledger writes, the vault value move —
+// all of it, because they are all StateDB writes covered by the one snapshot. See
 // geth/core/vm/evm.go (Snapshot at the top of Call, RevertToSnapshot on err).
+// (Recovered from the deleted swap_sync_snapshot_test.go: it is generic mock-EVM
+// snapshot infra — no matcher dependency — that the KEEP settle/atomicity tests use.)
 //
 // The MockStateDB the unit tests run over stubbed Snapshot/RevertToSnapshot as
 // no-ops, so a direct h.c.Run(...) could not OBSERVE the rollback — a returned

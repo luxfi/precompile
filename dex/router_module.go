@@ -5,6 +5,7 @@ package dex
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -13,6 +14,18 @@ import (
 	"github.com/luxfi/precompile/modules"
 	"github.com/luxfi/precompile/precompileconfig"
 )
+
+// ErrPrecompileMoved is the revert returned by the DEPRECATED 0x9012 (LP-9012) router's
+// VALUE-moving selectors (exactInput* / exactOutput*). The LP-901x legacy series was a
+// SECOND matcher money path: the router routed swaps through the engine's SYNCHRONOUS
+// in-block matcher (poolManager.Swap), which forks consensus (each validator observes
+// independently-timed fills => divergent StateRoot). There is now exactly ONE money path —
+// 0x9999 receipt-settlement, which credits C only by consuming a D-committed atomic object.
+// A caller hitting a moved selector must migrate to 0x9999; the read-only quote/route VIEWS
+// on 0x9012 remain (they move no value). The revert reason begins with the stable token
+// PRECOMPILE_MOVED so tooling can detect and redirect. Gated at the SAME existing canonical
+// activation (1766708400): settle-only 0x9999 + moved 0x9012 are the Dec-25-2025 behavior.
+var ErrPrecompileMoved = errors.New("PRECOMPILE_MOVED: 0x9012 value ops removed — a swap settles only via 0x9999 (consume a D-committed atomic object)")
 
 var _ contract.Configurator = (*routerConfigurator)(nil)
 var _ contract.StatefulPrecompiledContract = (*RouterContract)(nil)
@@ -137,14 +150,16 @@ func (c *RouterContract) Run(
 	data := input[4:]
 
 	switch selector {
-	case SelectorExactInputSingle:
-		return c.runExactInputSingle(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorExactInput:
-		return c.runExactInput(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorExactOutputSingle:
-		return c.runExactOutputSingle(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorExactOutput:
-		return c.runExactOutput(accessibleState, caller, data, suppliedGas, readOnly)
+	// DEPRECATED value-moving selectors — the LP-9012 router was a SECOND matcher money
+	// path (it routed swaps through the engine's synchronous in-block matcher, which forks
+	// consensus). They now REVERT PRECOMPILE_MOVED: there is exactly ONE money path, 0x9999
+	// receipt-settlement (a swap settles only by consuming a D-committed atomic object).
+	// The revert is charged NO gas — it is a "this entrypoint is gone" boundary, not work.
+	case SelectorExactInputSingle, SelectorExactInput, SelectorExactOutputSingle, SelectorExactOutput:
+		return nil, suppliedGas, ErrPrecompileMoved
+
+	// Read-only quote/route VIEWS remain — advisory pricing over pool state; they move no
+	// value, so they are safe to keep on the deprecated router address.
 	case SelectorQuoteExactInputSingle:
 		return c.runQuoteExactInputSingle(accessibleState, data, suppliedGas)
 	case SelectorQuoteExactInput:
@@ -156,133 +171,14 @@ func (c *RouterContract) Run(
 	}
 }
 
-func (c *RouterContract) runExactInputSingle(
-	state contract.AccessibleState,
-	caller common.Address,
-	input []byte,
-	suppliedGas uint64,
-	readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
-	}
-	if suppliedGas < GasSingleSwap {
-		return nil, 0, fmt.Errorf("out of gas")
-	}
-
-	params, err := DecodeExactInputSingleParams(input)
-	if err != nil {
-		return nil, suppliedGas - GasSingleSwap, err
-	}
-
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
-	amountOut, venue, err := c.router.ExactInputSingle(stateAdapter, caller, params)
-	if err != nil {
-		return nil, suppliedGas - GasSingleSwap, err
-	}
-
-	return EncodeSwapResult(amountOut, venue), suppliedGas - GasSingleSwap, nil
-}
-
-func (c *RouterContract) runExactInput(
-	state contract.AccessibleState,
-	caller common.Address,
-	input []byte,
-	suppliedGas uint64,
-	readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
-	}
-
-	params, err := DecodeExactInputParams(input)
-	if err != nil {
-		return nil, suppliedGas, err
-	}
-
-	numHops := len(params.Path) - 1
-	if len(params.PathKeys) > 0 {
-		numHops = len(params.PathKeys)
-	}
-	gasCost := GasMultiHopBase + uint64(numHops)*GasMultiHopPerHop
-	if suppliedGas < gasCost {
-		return nil, 0, fmt.Errorf("out of gas")
-	}
-
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
-	amountOut, err := c.router.ExactInput(stateAdapter, caller, params)
-	if err != nil {
-		return nil, suppliedGas - gasCost, err
-	}
-
-	result := make([]byte, 32)
-	copy(result, common.LeftPadBytes(amountOut.Bytes(), 32))
-	return result, suppliedGas - gasCost, nil
-}
-
-func (c *RouterContract) runExactOutputSingle(
-	state contract.AccessibleState,
-	caller common.Address,
-	input []byte,
-	suppliedGas uint64,
-	readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
-	}
-	if suppliedGas < GasSingleSwap {
-		return nil, 0, fmt.Errorf("out of gas")
-	}
-
-	params, err := DecodeExactOutputSingleParams(input)
-	if err != nil {
-		return nil, suppliedGas - GasSingleSwap, err
-	}
-
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
-	amountIn, venue, err := c.router.ExactOutputSingle(stateAdapter, caller, params)
-	if err != nil {
-		return nil, suppliedGas - GasSingleSwap, err
-	}
-
-	return EncodeSwapResult(amountIn, venue), suppliedGas - GasSingleSwap, nil
-}
-
-func (c *RouterContract) runExactOutput(
-	state contract.AccessibleState,
-	caller common.Address,
-	input []byte,
-	suppliedGas uint64,
-	readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
-	}
-
-	params, err := DecodeExactOutputParams(input)
-	if err != nil {
-		return nil, suppliedGas, err
-	}
-
-	numHops := len(params.Path) - 1
-	if len(params.PathKeys) > 0 {
-		numHops = len(params.PathKeys)
-	}
-	gasCost := GasMultiHopBase + uint64(numHops)*GasMultiHopPerHop
-	if suppliedGas < gasCost {
-		return nil, 0, fmt.Errorf("out of gas")
-	}
-
-	stateAdapter := &poolStateAdapter{stateDB: state.GetStateDB(), blockNumber: state.GetBlockContext().Number().Uint64()}
-	amountIn, err := c.router.ExactOutput(stateAdapter, caller, params)
-	if err != nil {
-		return nil, suppliedGas - gasCost, err
-	}
-
-	result := make([]byte, 32)
-	copy(result, common.LeftPadBytes(amountIn.Bytes(), 32))
-	return result, suppliedGas - gasCost, nil
-}
+// The RouterContract value-execution handlers (runExactInputSingle / runExactInput /
+// runExactOutputSingle / runExactOutput) were REMOVED: 0x9012's value selectors now revert
+// PRECOMPILE_MOVED at the dispatch (see Run), so these dispatch handlers had no caller. They
+// routed swaps through the engine's synchronous in-block matcher (LXRouter.Exact* ->
+// poolManager.Swap), which forks consensus — the second money path the decomplect eliminates.
+// The underlying LXRouter.Exact* + poolManager.Swap engine remains for now (legacy-engine unit
+// tests exercise it directly; it is UNREACHABLE via any dispatched precompile selector) and is
+// staged for a follow-up removal. Only the read-only quote/route views survive on 0x9012.
 
 func (c *RouterContract) runQuoteExactInputSingle(
 	state contract.AccessibleState,

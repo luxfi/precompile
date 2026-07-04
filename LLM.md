@@ -34,6 +34,31 @@ All crypto-heavy precompiles have GPU fast paths via `github.com/luxfi/accel` an
 
 ## New: DEX Precompiles (Uniswap v4-Style)
 
+> **CANONICAL DECOMPLECT (2026-07 — supersedes the "matcher" descriptions below).**
+> The DEX has ONE money path: **D-Chain (dexvm) matches · C-Chain `0x9999` SETTLES · C never matches.**
+> - `0x9999` (`SettleModule`, AlwaysOn) is SETTLE-ONLY. `swap()` routes to `SettleSwap`
+>   (native C↔D atomic seam): untagged/DI01 hookData ⇒ **Phase A intent** (lock input, write a
+>   C→D atomic object, return an intent id — no fill); DS01 hookData ⇒ **Phase B settlement**
+>   (consume a real D→C atomic object ONCE, credit the RECORDED amount). No BLS cert/receipt in
+>   the value path. **No-receipt-no-settle**: absent a real D-committed object, Phase B reverts
+>   `ErrNativeNoSettlement` (`TestDecomplect_NoReceiptNoSettle`).
+> - The **embedded matcher was DELETED**: `swap_sync*.go`, `swap_custody.go` (maker order book),
+>   `buildRouter`/`evmAMMPool` in `swap_amm_pool.go`, and the `swapDeposit/withdraw/place/cancel`
+>   selectors. A live in-trie matcher forks consensus; deterministic atomic-object consumption is
+>   fork-safe inline.
+> - `0x9010` (LXPool): not dispatched (no `Run`) — already deprecated. `0x9012` (LXRouter): the
+>   legacy SECOND matcher path; its value selectors (`exactInput*`/`exactOutput*`) now revert
+>   `ErrPrecompileMoved` ("PRECOMPILE_MOVED"); read-only quote/route views remain. The legacy
+>   `LXRouter.Exact*`/`poolManager.Swap` engine survives only for legacy unit tests and is
+>   UNREACHABLE via any dispatched selector (staged for a follow-up removal).
+> - KEEP surface: deposit/withdraw (`settle_custody`), receipt/atomic verify (`native_dchain_client`),
+>   halt (`setHaltGlobal/Market/Asset`), replay guard, views (`0x9998/0x9997/0x9996`), strict-ERC20
+>   admission (`asset_resolver`/`asset_onchain_verifier`), conservation invariants, reclaimIntent/
+>   collectPosition exit paths. Activation rides the EXISTING canonical gate **1766708400**
+>   (Dec 25 2025 16:20 PST) — no new timestamp; settle-only is simply what `0x9999` does at/after it.
+> - The address table below (`0x0400…`) is STALE; the live DEX addresses are `0x9999/0x9998/0x9997/0x9996`
+>   (settlement/quoter/stateview/positions) and the deprecated `0x9010/0x9012`.
+
 ### Architecture Overview
 
 The Lux DEX precompiles implement a Uniswap v4-style decentralized exchange as native EVM precompiles, providing:
@@ -1058,7 +1083,7 @@ EVM interface to B-Chain MPC bridge operations:
 EVM interface to **M-Chain** MPC-as-a-service. Per LP-134 (Lux Chain
 Topology), M-Chain hosts the MPC ceremonies (CGGMP21 / FROST /
 Corona-gen) that the legacy T-Chain monolith used to host. The
-implementation lives in `chains/thresholdvm/` running in MPC mode; the
+implementation lives in `chains/mpcvm/` running in MPC mode; the
 sibling F-Chain runs the same substrate in FHE mode for TFHE keygen
 and encrypted-EVM compute. The legacy "T-Chain" name is retained only
 for `teleportvm` (LP-6332), which is unrelated.
