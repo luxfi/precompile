@@ -107,32 +107,7 @@ var (
 	restingOrderPrefix  = []byte(settleStateNamespace + "ord") // restingOrder[orderID] -> record
 	ownerOrdersPrefix   = []byte(settleStateNamespace + "own") // ownerOrders[owner][i] -> orderID, [count]
 	lockedReservePrefix = []byte(settleStateNamespace + "lck") // lockedReserve[owner][asset] -> amount
-	// makerLockedVaultPrefix tracks the per-asset TOTAL of all makers' locked
-	// reserve, held SEPARATELY from the swap-payable settleVault. A maker ADD moves
-	// `delta` of an asset OUT of settleVault and INTO this sub-ledger; a REMOVE moves
-	// it back. This is THE conservation fix: locked maker funds are no longer counted
-	// in the swap-payable pool, so settle() can never pay a taker out of a maker's
-	// locked reserve (and a withdraw can never double-spend it), while the asset never
-	// leaves the 0x9999 vault account. Invariant: settleVault[a] + makerLockedVault[a]
-	// == the vault's real holdings of a.
-	makerLockedVaultPrefix = []byte(settleStateNamespace + "mlk") // makerLockedVault[asset] -> total locked
 )
-
-func makerLockedVaultKey(assetID [32]byte) common.Hash {
-	return makeStorageKey(makerLockedVaultPrefix, assetID[:])
-}
-
-func loadMakerLockedVault(stateDB stateKV, assetID [32]byte) *big.Int {
-	return new(big.Int).SetBytes(stateDB.GetState(poolManagerAddr9999, makerLockedVaultKey(assetID)).Bytes())
-}
-
-func storeMakerLockedVault(stateDB stateKV, assetID [32]byte, amount *big.Int) {
-	var w common.Hash
-	if amount != nil && amount.Sign() > 0 {
-		amount.FillBytes(w[:])
-	}
-	stateDB.SetState(poolManagerAddr9999, makerLockedVaultKey(assetID), w)
-}
 
 // order record slot suffixes (one concern per slot).
 var (

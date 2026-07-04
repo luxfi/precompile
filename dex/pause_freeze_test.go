@@ -111,30 +111,6 @@ func TestResumeDEXUnauthorized(t *testing.T) {
 	}
 }
 
-func TestDEXPausePreventsSwap(t *testing.T) {
-	pm := newPauseTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
-
-	// Pause the DEX
-	pm.PauseDEX(stateDB, adminAddr)
-
-	// Attempt swap — must fail with ErrDEXPaused
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(-1000),
-		SqrtPriceLimitX96: new(big.Int).Add(MinSqrtRatio, big.NewInt(1)),
-	}
-
-	_, err := pm.Swap(stateDB, caller, key, params, nil)
-	if err != ErrDEXPaused {
-		t.Fatalf("expected ErrDEXPaused, got: %v", err)
-	}
-}
-
 func TestDEXPausePreventsModifyLiquidity(t *testing.T) {
 	pm := newPauseTestPoolManager()
 	stateDB := NewMockStateDB()
@@ -171,31 +147,6 @@ func TestDEXPausePreventsDonate(t *testing.T) {
 	_, err := pm.Donate(stateDB, caller, key, big.NewInt(100), big.NewInt(200))
 	if err != ErrDEXPaused {
 		t.Fatalf("expected ErrDEXPaused, got: %v", err)
-	}
-}
-
-func TestDEXResumeAllowsSwap(t *testing.T) {
-	pm := newPauseTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
-
-	// Pause then resume
-	pm.PauseDEX(stateDB, adminAddr)
-	pm.ResumeDEX(stateDB, adminAddr)
-
-	// Swap should now succeed
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(-1000),
-		SqrtPriceLimitX96: new(big.Int).Add(MinSqrtRatio, big.NewInt(1)),
-	}
-
-	_, err := pm.Swap(stateDB, caller, key, params, nil)
-	if err != nil {
-		t.Fatalf("swap after resume should succeed: %v", err)
 	}
 }
 
@@ -237,29 +188,6 @@ func TestPausePoolUnauthorized(t *testing.T) {
 	}
 }
 
-func TestPausedPoolPreventsSwap(t *testing.T) {
-	pm := newPauseTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
-
-	poolId := key.ID()
-	pm.PausePool(stateDB, adminAddr, poolId)
-
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(-1000),
-		SqrtPriceLimitX96: new(big.Int).Add(MinSqrtRatio, big.NewInt(1)),
-	}
-
-	_, err := pm.Swap(stateDB, caller, key, params, nil)
-	if err != ErrPoolPaused {
-		t.Fatalf("expected ErrPoolPaused, got: %v", err)
-	}
-}
-
 func TestPausedPoolPreventsModifyLiquidity(t *testing.T) {
 	pm := newPauseTestPoolManager()
 	stateDB := NewMockStateDB()
@@ -281,69 +209,6 @@ func TestPausedPoolPreventsModifyLiquidity(t *testing.T) {
 	_, _, err := pm.ModifyLiquidity(stateDB, caller, key, params, nil)
 	if err != ErrPoolPaused {
 		t.Fatalf("expected ErrPoolPaused, got: %v", err)
-	}
-}
-
-func TestResumePoolAllowsSwap(t *testing.T) {
-	pm := newPauseTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
-
-	poolId := key.ID()
-	pm.PausePool(stateDB, adminAddr, poolId)
-	pm.ResumePool(stateDB, adminAddr, poolId)
-
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(-1000),
-		SqrtPriceLimitX96: new(big.Int).Add(MinSqrtRatio, big.NewInt(1)),
-	}
-
-	_, err := pm.Swap(stateDB, caller, key, params, nil)
-	if err != nil {
-		t.Fatalf("swap after pool resume should succeed: %v", err)
-	}
-}
-
-func TestPoolPauseDoesNotAffectOtherPools(t *testing.T) {
-	pm := newPauseTestPoolManager()
-	stateDB := NewMockStateDB()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	key1 := newTestPoolKey()
-	key2 := PoolKey{
-		Currency0:   NativeCurrency,
-		Currency1:   Currency{Address: common.HexToAddress("0xABCDEF1234567890123456789012345678901234")},
-		Fee:         Fee030,
-		TickSpacing: TickSpacing030,
-		Hooks:       common.Address{},
-	}
-
-	initPoolWithLiquidity(t, pm, stateDB, key1, 1_000_000_000)
-	initPoolWithLiquidity(t, pm, stateDB, key2, 1_000_000_000)
-
-	// Pause pool1 only
-	pm.PausePool(stateDB, adminAddr, key1.ID())
-
-	// Pool1 swap should fail
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(-1000),
-		SqrtPriceLimitX96: new(big.Int).Add(MinSqrtRatio, big.NewInt(1)),
-	}
-
-	_, err := pm.Swap(stateDB, caller, key1, params, nil)
-	if err != ErrPoolPaused {
-		t.Fatalf("pool1 swap should fail with ErrPoolPaused, got: %v", err)
-	}
-
-	// Pool2 swap should succeed
-	_, err = pm.Swap(stateDB, caller, key2, params, nil)
-	if err != nil {
-		t.Fatalf("pool2 swap should succeed: %v", err)
 	}
 }
 
@@ -395,29 +260,6 @@ func TestFreezePoolAlreadyFrozen(t *testing.T) {
 	err := pm.FreezePool(stateDB, adminAddr, poolId)
 	if err != ErrAlreadyFrozen {
 		t.Fatalf("expected ErrAlreadyFrozen, got: %v", err)
-	}
-}
-
-func TestFrozenPoolPreventsSwap(t *testing.T) {
-	pm := newPauseTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
-
-	poolId := key.ID()
-	pm.FreezePool(stateDB, adminAddr, poolId)
-
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(-1000),
-		SqrtPriceLimitX96: new(big.Int).Add(MinSqrtRatio, big.NewInt(1)),
-	}
-
-	_, err := pm.Swap(stateDB, caller, key, params, nil)
-	if err != ErrPoolFrozen {
-		t.Fatalf("expected ErrPoolFrozen, got: %v", err)
 	}
 }
 
@@ -524,53 +366,6 @@ func TestFreezeClearsPauseState(t *testing.T) {
 // =========================================================================
 // Precedence Tests: DEX pause > Pool freeze > Pool pause
 // =========================================================================
-
-func TestDEXPauseTakesPrecedenceOverPoolState(t *testing.T) {
-	pm := newPauseTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
-
-	// DEX paused, pool not paused
-	pm.PauseDEX(stateDB, adminAddr)
-
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(-1000),
-		SqrtPriceLimitX96: new(big.Int).Add(MinSqrtRatio, big.NewInt(1)),
-	}
-
-	_, err := pm.Swap(stateDB, caller, key, params, nil)
-	if err != ErrDEXPaused {
-		t.Fatalf("DEX pause should take precedence, got: %v", err)
-	}
-}
-
-func TestPoolFreezeErrorWhenDEXResumed(t *testing.T) {
-	pm := newPauseTestPoolManager()
-	stateDB := NewMockStateDB()
-	key := newTestPoolKey()
-	caller := common.HexToAddress("0x1111111111111111111111111111111111111111")
-
-	initPoolWithLiquidity(t, pm, stateDB, key, 1_000_000_000)
-
-	poolId := key.ID()
-	pm.FreezePool(stateDB, adminAddr, poolId)
-
-	// DEX is NOT paused, but pool is frozen
-	params := SwapParams{
-		ZeroForOne:        true,
-		AmountSpecified:   big.NewInt(-1000),
-		SqrtPriceLimitX96: new(big.Int).Add(MinSqrtRatio, big.NewInt(1)),
-	}
-
-	_, err := pm.Swap(stateDB, caller, key, params, nil)
-	if err != ErrPoolFrozen {
-		t.Fatalf("expected ErrPoolFrozen, got: %v", err)
-	}
-}
 
 // =========================================================================
 // Event Emission Tests

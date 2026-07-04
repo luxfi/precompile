@@ -186,10 +186,6 @@ func init() {
 	SelectorPausePool = keccak4("pausePool(bytes32)")
 	SelectorResumePool = keccak4("resumePool(bytes32)")
 	SelectorFreezePool = keccak4("freezePool(bytes32)")
-
-	// Synchronous on-chain-router custody selectors (swap_custody.go): the maker
-	// deposit/place/cancel/withdraw surface of the in-process router.
-	registerSwapCustodySelectors()
 }
 
 // DEXContract is the in-process holder of the shared *PoolManager. It is NOT a
