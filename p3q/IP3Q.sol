@@ -30,6 +30,7 @@ pragma solidity ^0.8.24;
  *
  * Wire format (raw calldata, not Solidity-ABI-encoded):
  *
+ *   [ 1 byte  ] kind (0x01 Pulsar / 0x02 Corona / 0x03 Magnetar)
  *   [ 1 byte  ] mode (0x44 / 0x65 / 0x87)
  *   [ 4 bytes ] pulsarSig length (big-endian uint32)
  *   [ N bytes ] pulsarSig
@@ -37,14 +38,20 @@ pragma solidity ^0.8.24;
  *   [ M bytes ] groupPubKey
  *   [ 32 bytes ] messageHash
  *
+ * The leading kind byte is mandatory: the precompile dispatches on it
+ * (2026-06-03 single-slot / kind-byte decomplection) and rejects any
+ * calldata whose first byte is not a known kind. This mirror encoder
+ * MUST prepend it — omitting it makes the precompile read the mode byte
+ * (0x44/0x65/0x87) as the kind and reject on the default branch.
+ *
  * Output: 32-byte EVM-ABI bool (last byte 0x01 on verifying signature,
  * 0x00 on any verification failure). The precompile never reverts on
  * cryptographic failure — the Solidity caller decides whether `false`
  * is fatal.
  *
  * Gas cost: 50,000 base + 10 per input byte.
- *   - Canonical ML-DSA-65 (1952 pk + 3309 sig + 32 hash + 9 framing):
- *     ~103,020 gas (5302 bytes * 10 + 50,000)
+ *   - Canonical ML-DSA-65 (1952 pk + 3309 sig + 32 hash + 10 framing):
+ *     ~103,030 gas (5303 bytes * 10 + 50,000)
  *   - Block budget at 12M gas: ~117 P3Q verifies per block
  *
  * Domain separation: every P3Q verify binds the FIPS 204 context
@@ -88,6 +95,11 @@ interface IP3Q {
 library P3QLib {
     /// @notice Precompile address (LP-218 + HANZO-CRYPTO-SUITE §5.2).
     address constant P3Q = address(uint160(0x012205));
+
+    /// @notice P3Q family kind (wire byte 0). Slot 0x012205 dispatches
+    ///         on this byte; Pulsar (FIPS 204 ML-DSA) is the only wired
+    ///         kind today (Corona / Magnetar reserved).
+    uint8 constant KIND_PULSAR = 0x01;
 
     /// @notice ML-DSA parameter set identifiers (FIPS 204 §4 Table 1).
     uint8 constant MODE_MLDSA44 = 0x44; // NIST PQ Category 2
@@ -173,6 +185,7 @@ library P3QLib {
      *         the other.
      *
      *         Wire layout:
+     *           [ 1 byte ] kind (KIND_PULSAR)
      *           [ 1 byte ] mode
      *           [ 4 bytes ] uint32(sigLen)  BE
      *           [ N bytes ] sig
@@ -189,6 +202,7 @@ library P3QLib {
         uint32 sigLen = uint32(pulsarSig.length);
         uint32 pkLen = uint32(groupPubKey.length);
         out = abi.encodePacked(
+            KIND_PULSAR,
             mode,
             sigLen,
             pulsarSig,
@@ -205,8 +219,8 @@ library P3QLib {
      * @return gasEstimate Total gas cost (base + per-byte).
      */
     function estimateGas(uint256 sigLen, uint256 pkLen) internal pure returns (uint256) {
-        // 1 mode + 4 sigLen + 4 pkLen + 32 hash framing.
-        uint256 inputLen = 1 + 4 + sigLen + 4 + pkLen + 32;
+        // 1 kind + 1 mode + 4 sigLen + 4 pkLen + 32 hash framing.
+        uint256 inputLen = 1 + 1 + 4 + sigLen + 4 + pkLen + 32;
         return BASE_GAS + inputLen * PER_BYTE_GAS;
     }
 }
