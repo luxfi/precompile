@@ -77,10 +77,10 @@
 // verification (NTT inverse + matrix-vector multiplication mod q).
 // The per-byte adder covers serialization / hashing overhead. At a
 // canonical ML-DSA-65 payload (1952-byte pk + 3309-byte sig + 32-byte
-// hash + 9-byte framing = 5302 bytes) the total gas is
-// 50_000 + 5302 * 10 = 103_020 gas — well under the 12M C-Chain block
-// gas limit (per contract.FeeConfigReporter audit at 117 verifies per
-// block).
+// hash + 10-byte framing [1 kind + 1 mode + 4 sigLen + 4 pkLen] = 5303
+// bytes) the total gas is 50_000 + 5303 * 10 = 103_030 gas — well under
+// the 12M C-Chain block gas limit (per contract.FeeConfigReporter audit
+// at ~117 verifies per block).
 //
 // Domain separation: every P3Q verify binds the FIPS 204 context
 // string `lux-evm-precompile-p3q-v1`. Mismatched context between
