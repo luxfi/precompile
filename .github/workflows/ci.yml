@@ -27,7 +27,7 @@ env:
 jobs:
   test:
     name: Build + Test
-    runs-on: ubuntu-24.04
+    runs-on: lux-build-amd64
     steps:
       - uses: actions/checkout@v4
 
@@ -89,7 +89,7 @@ jobs:
 
   govulncheck:
     name: govulncheck
-    runs-on: ubuntu-24.04
+    runs-on: lux-build-amd64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
