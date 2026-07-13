@@ -39,9 +39,10 @@ import (
 const coreStoreNamespace = settleStateNamespace + "core."
 
 var (
-	coreKVPrefix    = []byte(coreStoreNamespace + "kv.")   // per dexcore key -> value slots
-	coreIndexPrefix = []byte(coreStoreNamespace + "oidx.") // per-market order-id index
-	coreOrderPrefix = []byte("order:")                     // dexcore order-row key prefix
+	coreKVPrefix      = []byte(coreStoreNamespace + "kv.")   // per dexcore key -> value slots
+	coreIndexPrefix   = []byte(coreStoreNamespace + "oidx.") // per-market order-id index
+	coreMarketsPrefix = []byte(coreStoreNamespace + "mkts.") // append-only list of markets that have held a resting order
+	coreOrderPrefix   = []byte("order:")                     // dexcore order-row key prefix
 )
 
 // evmStore implements dexcore.Store over the 0x9999 EVM storage trie via stateKV
@@ -174,7 +175,9 @@ func (s *evmStore) indexWrite(poolID [32]byte, ids []uint64) {
 }
 
 // indexAdd adds orderID to poolID's index (idempotent — a re-Put of the same row,
-// which the EVM does across a tx's repeated executions, does not duplicate).
+// which the EVM does across a tx's repeated executions, does not duplicate). The
+// FIRST order in a market also registers the market in the markets list so an owner-
+// scoped view (getOpenOrders) can enumerate every market without a full-trie scan.
 func (s *evmStore) indexAdd(poolID [32]byte, orderID uint64) {
 	ids := s.indexIDs(poolID)
 	for _, id := range ids {
@@ -182,7 +185,57 @@ func (s *evmStore) indexAdd(poolID [32]byte, orderID uint64) {
 			return // already present
 		}
 	}
+	if len(ids) == 0 {
+		s.marketsAdd(poolID)
+	}
 	s.indexWrite(poolID, append(ids, orderID))
+}
+
+// --- markets list (the owner-scoped enumeration backing) ---
+//
+// EVM storage has no prefix iteration, so a "which markets exist" query needs an
+// explicit index just as the per-market order set does. This is an APPEND-ONLY list
+// of every poolID that has ever held a resting order: a market is added on its first
+// order and never removed (an emptied market simply yields no orders on a scan). It
+// is 0x9999 state — committed by the block root, reverted by snapshots — so it is
+// consensus-shared and reorg-safe, exactly like the per-market index.
+
+// marketsSlot returns the storage slot for word `word` of the markets list. word 0
+// holds the count; words 1.. hold one 32-byte poolID each.
+func (s *evmStore) marketsSlot(word int) common.Hash {
+	var w [8]byte
+	putU64(w[:], uint64(word))
+	return makeStorageKey(coreMarketsPrefix, w[:])
+}
+
+// marketsList reads the append-only list of markets that have held a resting order.
+func (s *evmStore) marketsList() [][32]byte {
+	countWord := s.sdb.GetState(poolManagerAddr9999, s.marketsSlot(0))
+	n := int(bytesToU64(countWord[24:32]))
+	if n == 0 {
+		return nil
+	}
+	out := make([][32]byte, 0, n)
+	for i := 0; i < n; i++ {
+		w := s.sdb.GetState(poolManagerAddr9999, s.marketsSlot(i+1))
+		out = append(out, [32]byte(w))
+	}
+	return out
+}
+
+// marketsAdd appends poolID to the markets list if absent (idempotent).
+func (s *evmStore) marketsAdd(poolID [32]byte) {
+	list := s.marketsList()
+	for _, m := range list {
+		if m == poolID {
+			return
+		}
+	}
+	n := len(list)
+	var countWord common.Hash
+	putU64(countWord[24:32], uint64(n+1))
+	s.sdb.SetState(poolManagerAddr9999, s.marketsSlot(0), countWord)
+	s.sdb.SetState(poolManagerAddr9999, s.marketsSlot(n+1), common.Hash(poolID))
 }
 
 // indexRemove removes orderID from poolID's index (no-op if absent).
