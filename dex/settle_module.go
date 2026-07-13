@@ -320,6 +320,17 @@ func (s *SettleContract) Run(
 	case SelectorSwapCancel:
 		return s.runSwapCancel(accessibleState, caller, data, suppliedGas, readOnly)
 
+	// Synchronous-book READ views (swap_views.go): the read counterpart to the swap
+	// custody rail, served HERE (0x9999) because the resting book lives here. The maker
+	// enumerates its resting orders (getOpenOrders) to cancel stale quotes and reads the
+	// top of book (getBestBidAsk) to re-quote; both are pure GetState folds (read-only,
+	// no mutation) over the same storage swapPlace writes. Same signatures the 0x9997
+	// StateView exposes over the registry rail — the maker targets 0x9999 for the CLOB.
+	case SelectorGetBestBidAsk:
+		return s.runGetBestBidAsk(accessibleState, data, suppliedGas)
+	case SelectorGetOpenOrders:
+		return s.runGetOpenOrders(accessibleState, data, suppliedGas)
+
 	// Settlement governance (governance-controller-gated, resolved from runtime
 	// AtomicState — never a hardcoded key). Only the real kill switches remain
 	// (global / market / asset); the BLS-era validator-set rotation and cert-type
