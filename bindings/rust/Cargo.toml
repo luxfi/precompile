@@ -1,5 +1,5 @@
 [package]
-name = "lux-precompile"
+name = "lux-precompile-sys"
 version = "0.1.0"
 edition = "2021"
 description = "Lux Network — FFI bindings to libluxprecompile (all Lux EVM precompiles via Go shared library)"

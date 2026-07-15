@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use luxprecompile_sys::{run, list, required_gas};
+//! use lux_precompile_sys::{run, list, required_gas};
 //!
 //! // List all registered precompiles
 //! let precompiles = list().unwrap();
