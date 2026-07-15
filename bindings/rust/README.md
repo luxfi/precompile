@@ -1,4 +1,4 @@
-# luxprecompile-sys
+# lux-precompile-sys
 
 FFI bindings to `libluxprecompile` — every Lux EVM precompile (PQ verify, Quasar,
 Blake3, FROST, dex, AI, ZK, …) reachable via one Go-built shared library, one
@@ -34,7 +34,7 @@ The `build.rs` searches for the library in this order:
 ## Usage
 
 ```rust
-use luxprecompile_sys::{run, list, required_gas};
+use lux_precompile_sys::{run, list, required_gas};
 
 // List all registered precompiles
 let precompiles = list().unwrap();
