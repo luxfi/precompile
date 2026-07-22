@@ -9,15 +9,16 @@ require (
 	github.com/consensys/gnark-crypto v0.20.1
 	github.com/crate-crypto/go-kzg-4844 v1.1.0
 	github.com/holiman/uint256 v1.3.2
-	github.com/luxfi/accel v1.2.4
+	github.com/luxfi/accel v1.3.1
 	github.com/luxfi/ai v0.1.0
 	github.com/luxfi/chains v1.3.18
 	github.com/luxfi/corona v0.10.3
-	github.com/luxfi/crypto v1.19.26
+	github.com/luxfi/crypto v1.20.2
 	github.com/luxfi/database v1.20.4
 	github.com/luxfi/dex v1.14.0
 	github.com/luxfi/fhe v1.8.2
 	github.com/luxfi/geth v1.17.12
+	github.com/luxfi/gpu v1.1.2
 	github.com/luxfi/lattice/v7 v7.1.4
 	github.com/luxfi/magnetar v1.2.3
 	github.com/luxfi/runtime v1.1.3
