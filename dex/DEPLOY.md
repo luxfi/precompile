@@ -53,10 +53,10 @@ The EVM depends on `github.com/luxfi/precompile v0.4.10` (see `evm/go.mod:34`).
 
 ### ThresholdVM Status
 
-ThresholdVM at `~/work/lux/node/vms/thresholdvm/` is **complete and registered**:
+ThresholdVM at `~/work/lux/node/vms/mpcvm/` is **complete and registered**:
 
 - Factory registered in `node/node/vms_allvms.go:50` under `constants.ThresholdVMID`
-- Aliases: `T`, `threshold`, `thresholdvm`, `mpc`
+- Aliases: `T`, `threshold`, `mpcvm`, `mpc`
 - Implements `chain.ChainVM` interface
 - Full MPC protocol suite (LSS, FROST, CGGMP21, Pulsar)
 - FHE acceleration (GPU optional, CPU fallback)
