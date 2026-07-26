@@ -1058,7 +1058,7 @@ EVM interface to B-Chain MPC bridge operations:
 EVM interface to **M-Chain** MPC-as-a-service. Per LP-134 (Lux Chain
 Topology), M-Chain hosts the MPC ceremonies (CGGMP21 / FROST /
 Corona-gen) that the legacy T-Chain monolith used to host. The
-implementation lives in `chains/thresholdvm/` running in MPC mode; the
+implementation lives in `chains/mpcvm/` running in MPC mode; the
 sibling F-Chain runs the same substrate in FHE mode for TFHE keygen
 and encrypted-EVM compute. The legacy "T-Chain" name is retained only
 for `teleportvm` (LP-6332), which is unrelated.
