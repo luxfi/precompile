@@ -263,12 +263,12 @@ lux network start --testnet
 # Check precompile responds at LXPool address
 cast call 0x0000000000000000000000000000000000009010 \
   "0x08000000" \
-  --rpc-url http://127.0.0.1:9740/ext/bc/C/rpc
+  --rpc-url http://127.0.0.1:9740/v1/bc/C/rpc
 
 # Check LXRouter
 cast call 0x0000000000000000000000000000000000009012 \
   "0x0C000000" \
-  --rpc-url http://127.0.0.1:9740/ext/bc/C/rpc
+  --rpc-url http://127.0.0.1:9740/v1/bc/C/rpc
 
 # Initialize a test pool (ETH/USDC 0.3% fee)
 # Use the method selector 0x01000000 (SelectorInitialize)
