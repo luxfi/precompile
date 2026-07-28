@@ -4,7 +4,7 @@
 package dex
 
 import (
-	"github.com/luxfi/dex/pkg/dexcore"
+	dexcore "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 )
 
