@@ -8,8 +8,8 @@ import (
 	"math"
 	"math/big"
 
-	"github.com/luxfi/dex/pkg/dexcore"
-	"github.com/luxfi/dex/pkg/lx"
+	dexcore "github.com/luxfi/dex/pkg/dex"
+	lx "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 )
@@ -329,7 +329,7 @@ func buildSwapRequest(stateDB StateDB, caller common.Address, key PoolKey, param
 		LimitPrice:   limitPrice,
 		LimitIsUpper: limitIsUpper,
 		MinOut:       minOut,
-		Class:        dexcore.ClassPublicCLOB,
+		Class:        dexcore.ClassPublicDEX,
 	}
 	return req, inAddr, nil
 }

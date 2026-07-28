@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/luxfi/dex/pkg/dexcore"
-	"github.com/luxfi/dex/pkg/lx"
+	dexcore "github.com/luxfi/dex/pkg/dex"
+	lx "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 	ethtypes "github.com/luxfi/geth/core/types"
 )
@@ -399,7 +399,7 @@ func Test9999RoutesV3WhenCLOBEmpty(t *testing.T) {
 	req := dexcore.SwapRequest{
 		PoolID: pid, TakerUser: takerAcct, Side: lx.Sell,
 		Base: assetID(h.key.Currency0), Quote: assetID(h.key.Currency1),
-		AmountIn: 100, OrderID: 7, TimestampN: 1, Class: dexcore.ClassPublicCLOB,
+		AmountIn: 100, OrderID: 7, TimestampN: 1, Class: dexcore.ClassPublicDEX,
 	}
 	res, err := dexcore.ExecuteSwap(store, router, req)
 	if err != nil {
@@ -564,7 +564,7 @@ func Test9999BestExecSplitCLOBAndAMM(t *testing.T) {
 	req := dexcore.SwapRequest{
 		PoolID: pid, TakerUser: taker, Side: lx.Sell,
 		Base: base, Quote: quote, AmountIn: 30, OrderID: 9, TimestampN: 1,
-		Class: dexcore.ClassPublicCLOB,
+		Class: dexcore.ClassPublicDEX,
 	}
 	res, err := dexcore.ExecuteSwap(store, router, req)
 	if err != nil {
@@ -575,7 +575,7 @@ func Test9999BestExecSplitCLOBAndAMM(t *testing.T) {
 	var sawCLOB, sawAMM bool
 	for _, f := range res.Fills {
 		switch f.Source {
-		case dexcore.SourceCLOB:
+		case dexcore.SourceOrderBook:
 			sawCLOB = true
 			for _, tr := range f.Trades {
 				clobBase += tr.BaseUnits.Uint64()

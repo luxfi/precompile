@@ -8,8 +8,8 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/luxfi/dex/pkg/dexcore"
-	"github.com/luxfi/dex/pkg/lx"
+	dexcore "github.com/luxfi/dex/pkg/dex"
+	lx "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 )
 

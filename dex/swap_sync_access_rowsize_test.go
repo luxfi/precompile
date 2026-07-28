@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/luxfi/dex/pkg/lx"
+	lx "github.com/luxfi/dex/pkg/dex"
 )
 
 // swap_sync_access_rowsize_test.go pins the predictor's order-row slot count to the ACTUAL
