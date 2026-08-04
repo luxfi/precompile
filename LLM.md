@@ -759,31 +759,31 @@ Import order: Testnet C-Chain → Zootest → Zoo → Mainnet C-Chain (last, lar
 # Import C-Chain testnet blocks (fast, ~218 blocks)
 curl -s -X POST -H "Content-Type: application/json" \
   --data '{"jsonrpc":"2.0","method":"admin_importChain","params":["'$HOME'/work/lux/state/rlp/lux-testnet/lux-testnet-96368.rlp"],"id":1}' \
-  http://127.0.0.1:9642/ext/bc/C/rpc
+  http://127.0.0.1:9642/v1/bc/C/rpc
 
 # Import zootest blocks (84 blocks)
 # First get the blockchain ID
 ZOOTEST_ID=$(curl -s -X POST -H "Content-Type: application/json" \
   --data '{"jsonrpc":"2.0","method":"platform.getBlockchains","params":{},"id":1}' \
-  http://127.0.0.1:9642/ext/bc/P | jq -r '.result.blockchains[] | select(.name=="zootest") | .id')
+  http://127.0.0.1:9642/v1/bc/P | jq -r '.result.blockchains[] | select(.name=="zootest") | .id')
 
 curl -s -X POST -H "Content-Type: application/json" \
   --data '{"jsonrpc":"2.0","method":"admin_importChain","params":["'$HOME'/work/lux/state/rlp/zoo-testnet/zoo-testnet-200201.rlp"],"id":1}' \
-  http://127.0.0.1:9642/ext/bc/${ZOOTEST_ID}/rpc
+  http://127.0.0.1:9642/v1/bc/${ZOOTEST_ID}/rpc
 
 # Import zoo mainnet blocks (799 blocks)
 ZOO_ID=$(curl -s -X POST -H "Content-Type: application/json" \
   --data '{"jsonrpc":"2.0","method":"platform.getBlockchains","params":{},"id":1}' \
-  http://127.0.0.1:9632/ext/bc/P | jq -r '.result.blockchains[] | select(.name=="zoo") | .id')
+  http://127.0.0.1:9632/v1/bc/P | jq -r '.result.blockchains[] | select(.name=="zoo") | .id')
 
 curl -s -X POST -H "Content-Type: application/json" \
   --data '{"jsonrpc":"2.0","method":"admin_importChain","params":["'$HOME'/work/lux/state/rlp/zoo-mainnet/zoo-mainnet-200200.rlp"],"id":1}' \
-  http://127.0.0.1:9632/ext/bc/${ZOO_ID}/rpc
+  http://127.0.0.1:9632/v1/bc/${ZOO_ID}/rpc
 
 # Import C-Chain mainnet blocks (LAST - ~700k blocks, runs in background)
 curl -s -X POST -H "Content-Type: application/json" \
   --data '{"jsonrpc":"2.0","method":"admin_importChain","params":["'$HOME'/work/lux/state/rlp/lux-mainnet/lux-mainnet-96369.rlp"],"id":1}' \
-  http://127.0.0.1:9632/ext/bc/C/rpc
+  http://127.0.0.1:9632/v1/bc/C/rpc
 ```
 
 #### 4. Verify Import Progress
@@ -792,7 +792,7 @@ curl -s -X POST -H "Content-Type: application/json" \
 # Check C-Chain block height
 curl -s -X POST -H "Content-Type: application/json" \
   --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
-  http://127.0.0.1:9632/ext/bc/C/rpc | jq -r '.result' | xargs printf "%d\n"
+  http://127.0.0.1:9632/v1/bc/C/rpc | jq -r '.result' | xargs printf "%d\n"
 
 # Check logs for import progress
 tail -f ~/.lux/runs/mainnet/run_*/node1/db/mainnet/main.log | grep -E "(Inserted|Imported)"
@@ -981,12 +981,12 @@ The import requires two steps:
 # 1. Write genesis state spec (enables import without full state trie)
 curl -s -X POST -H "Content-Type: application/json" \
   --data '{"jsonrpc":"2.0","method":"admin_writeGenesisStateSpec","params":["/path/to/genesis.json"],"id":1}' \
-  "http://127.0.0.1:9630/ext/bc/<CHAIN_ID>/rpc"
+  "http://127.0.0.1:9630/v1/bc/<CHAIN_ID>/rpc"
 
 # 2. Import blocks from RLP
 curl -s -X POST -H "Content-Type: application/json" \
   --data '{"jsonrpc":"2.0","method":"admin_importChain","params":["/path/to/blocks.rlp"],"id":1}' \
-  "http://127.0.0.1:9630/ext/bc/<CHAIN_ID>/rpc"
+  "http://127.0.0.1:9630/v1/bc/<CHAIN_ID>/rpc"
 ```
 
 ### Verified Import Results (2025-12-25)
@@ -1004,15 +1004,15 @@ curl -s -X POST -H "Content-Type: application/json" \
 - ZAP wire: `localhost:8369`
 - Validators: 5 nodes on ports 9630-9638
 - Chains:
-  - C-Chain: `http://127.0.0.1:9630/ext/bc/C/rpc`
-  - Zoo: `http://127.0.0.1:9630/ext/bc/2iJykKjE7gpWNjGUvGG6fVtj7u5Tbvo89CVCu6gjNPCnEdCVpY/rpc`
+  - C-Chain: `http://127.0.0.1:9630/v1/bc/C/rpc`
+  - Zoo: `http://127.0.0.1:9630/v1/bc/2iJykKjE7gpWNjGUvGG6fVtj7u5Tbvo89CVCu6gjNPCnEdCVpY/rpc`
 
 **Testnet (Network ID: 2)**
 - ZAP wire: `localhost:8368`
 - Validators: 5 nodes on ports 9640-9648
 - Chains:
-  - C-Chain: `http://127.0.0.1:9640/ext/bc/C/rpc`
-  - Zootest: `http://127.0.0.1:9640/ext/bc/9iABHiD4jiXiShpC2eL2P5VFg76kBnLvd5qCxp6iRpjemC89W/rpc`
+  - C-Chain: `http://127.0.0.1:9640/v1/bc/C/rpc`
+  - Zootest: `http://127.0.0.1:9640/v1/bc/9iABHiD4jiXiShpC2eL2P5VFg76kBnLvd5qCxp6iRpjemC89W/rpc`
 
 ### RLP Files (Updated Counts)
 
