@@ -4,6 +4,7 @@
 package dex
 
 import (
+	"crypto/sha256"
 	"errors"
 
 	"github.com/luxfi/database"
@@ -11,6 +12,28 @@ import (
 	"github.com/luxfi/ids"
 	"github.com/luxfi/vm/chains/atomic"
 )
+
+// SeamPendingTrait is the FIXED, owner-agnostic discovery trait every C->D swap
+// intent carries in shared memory, so the D-Chain proposer can ENUMERATE pending
+// intents without already knowing their owners.
+//
+// WHY IT IS NEEDED. atomic.SharedMemory.Indexed can only return keys that possess
+// a trait the caller names. The per-owner trait this flush already writes is
+// useless for discovery: D would have to know the owner set to query for it. One
+// shared constant that the writer tags and the reader queries is what closes
+// that, and it is domain-separated to 32 bytes so it can never collide with a
+// 20-byte owner trait.
+//
+// CROSS-REPO CONTRACT. This value is byte-pinned against the D-Chain's own
+// constant (dex/pkg/dchain SeamPendingTrait, same domain string) the same way the
+// 69-byte object wire is pinned by golden vector. The two repos cannot import
+// each other, so drift here is a silent break — D would enumerate a trait C never
+// writes, find nothing, and every swap would sit unmatched forever with no error
+// anywhere. The golden test in this package is what makes that loud.
+var SeamPendingTrait = func() []byte {
+	d := sha256.Sum256([]byte("lux.dex.native.intent.pending.v1"))
+	return d[:]
+}()
 
 // native_staging.go solves the CROSS-DOMAIN ATOMICITY problem of the native seam.
 //
@@ -276,15 +299,32 @@ func collectRange(stateDB stateKV, fromSeq, toSeq uint64) (map[ids.ID]*atomic.Re
 			// The owner Trait is read from the decoded value (offset past the rail byte),
 			// so the destination indexes the object by recipient — the same Trait the
 			// precompile/dexvm export side writes.
-			_, owner, _, _, _, ok := decodeAtomicObject(object)
+			rail, owner, _, _, _, ok := decodeAtomicObject(object)
 			if !ok {
 				return nil, ErrStagedOpMalformed
 			}
 			req := forChain(dChainID)
+			traits := [][]byte{append([]byte(nil), owner[:]...)}
+			// DISCOVERY TRAIT (swap rail only). The owner trait alone cannot be
+			// enumerated: atomic.SharedMemory.Indexed looks up keys by a trait the
+			// caller already knows, and D does not know the owner set in advance.
+			// So a real Phase-A intent tagged only by owner is INVISIBLE to the
+			// D-Chain's autonomous import drive — it enumerates by this fixed,
+			// owner-agnostic tag inside BuildBlock. Without it the drive finds
+			// nothing, no intent is ever imported, and no fill is ever produced,
+			// which is a second reason the seam is dark that survives fixing the
+			// transport.
+			//
+			// Swap rail only, deliberately: the LP rail's collect/withdraw
+			// lifecycle is driven by the position record, not by enumeration, and
+			// tagging it would put LP objects into the swap drive's queue.
+			if rail == railSwap {
+				traits = append(traits, append([]byte(nil), SeamPendingTrait...))
+			}
 			req.PutRequests = append(req.PutRequests, &atomic.Element{
 				Key:    append([]byte(nil), key[:]...),
 				Value:  append([]byte(nil), object...),
-				Traits: [][]byte{append([]byte(nil), owner[:]...)},
+				Traits: traits,
 			})
 		case stageKindRemove:
 			rec := readBytesFromSlots(stateDB, stageRemovePrefix, i)
