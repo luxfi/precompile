@@ -299,8 +299,22 @@ func (h *settleHarness) commitNativePosition(t testing.TB, tickLower, tickUpper 
 // collectPosition selector: it consumes the railLP D->C object at outputID for
 // `amount` of native against the named position record, crediting the caller out of
 // committedPositions. Returns the call error.
+//
+// The calldata now CARRIES the object (settle_import.go): there is no separate amount
+// word, so `amount` no longer rides the wire — the credited value IS the object's
+// amount. The bytes come from recordedObject, exactly as a keeper reads them off D.
 func (h *settleHarness) collectNative(outputID ids.ID, amount uint64, positionID [32]byte) ([]byte, error) {
-	input := EncodeCollectPositionInput(outputID, [32]byte{}, amount, positionID)
+	_ = amount // the amount is inside the object; the wire no longer restates it.
+	return h.collectCarrying(outputID, positionID, h.recordedObject(outputID))
+}
+
+// collectCarrying drives the SAME collectPosition selector with EXPLICIT object bytes.
+// Carrying the object is the keeper's real degree of freedom now that execution never
+// reads shared memory (settle_import.go), so it is also the attacker's: the redteam
+// tests use this to supply bytes shared memory does NOT hold and then prove the
+// resulting declaration cannot authenticate.
+func (h *settleHarness) collectCarrying(outputID ids.ID, positionID [32]byte, object []byte) ([]byte, error) {
+	input := EncodeCollectPositionInput(outputID, [32]byte{}, positionID, object)
 	out, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
 		prependSelector(SelectorCollectPosition, input), 5_000_000, false)
 	return out, err
@@ -384,6 +398,18 @@ func (h *settleHarness) putDtoCObjectRailSpent(t testing.TB, rail Rail, owner co
 	}
 }
 
+// recordedObject reads back the D->C object BYTES a test PUT into shared memory for
+// outputID — the same read a keeper performs off D when it builds the settle/collect
+// transaction, whose calldata now CARRIES those bytes (settle_import.go). Empty when
+// nothing was recorded at that key.
+func (h *settleHarness) recordedObject(outputID ids.ID) []byte {
+	vals, err := h.cSM.Get(h.dChainID, [][]byte{outputID[:]})
+	if err != nil || len(vals) != 1 {
+		return nil
+	}
+	return vals[0]
+}
+
 // readCtoDObject simulates the dexvm's executeImport READ: it Gets the C->D object
 // the precompile PUT (keyed by the D chain), readable by D via Get(cChainID).
 func (h *settleHarness) readCtoDObject(t testing.TB, intentID ids.ID) ([]byte, bool) {
@@ -402,13 +428,16 @@ func (h *settleHarness) readCtoDObject(t testing.TB, intentID ids.ID) ([]byte, b
 // settlementCalldataFor with a specific intent id.
 func (h *settleHarness) settlementCalldata(outputID ids.ID, amount uint64) []byte {
 	intentID := h.standingIntent(amount)
-	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, amount, intentID))
+	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, intentID, h.recordedObject(outputID)))
 }
 
 // settlementCalldataFor builds a Phase-B swap calldata naming a SPECIFIC intent id
-// (for the per-taker cap / deadline tests).
+// (for the per-taker cap / deadline tests). `amount` only sizes the standing intent in
+// settlementCalldata; the settled value IS the carried object's amount, never a
+// separate wire field.
 func (h *settleHarness) settlementCalldataFor(outputID ids.ID, amount uint64, intentID ids.ID) []byte {
-	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, amount, intentID))
+	_ = amount // the amount is inside the object; the wire no longer restates it.
+	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, intentID, h.recordedObject(outputID)))
 }
 
 // intentCalldata builds a Phase-A swap calldata. After the decomplect EVERY swap routes to

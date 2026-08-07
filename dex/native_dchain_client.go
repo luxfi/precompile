@@ -430,15 +430,13 @@ func (c *NativeDChainClient) ImportPositionCollect(
 		return 0, ErrNativeNoAtomicMemory
 	}
 
-	// (1) Read the RECORDED object. A missing object => never credit.
+	// (1) BIND to the object the TRANSACTION carried, and DECLARE the consumption into
+	// the receipt — the SAME primitive the swap rail uses, so the two rails can never
+	// drift and neither can forget the declaration Verify authenticates.
 	key := claim.OutputID
-	vals, gerr := sm.Get(dChainID, [][]byte{key[:]})
-	if gerr != nil || len(vals) != 1 || len(vals[0]) == 0 {
-		return 0, ErrNativeNoSettlement
-	}
-	recRail, recOwner, recAsset, recAmount, _, ok := decodeAtomicObject(vals[0])
-	if !ok {
-		return 0, ErrNativeSettleMalformed
+	recRail, recOwner, recAsset, recAmount, _, berr := bindImportObject(stateDB, dChainID, key, claim.Object)
+	if berr != nil {
+		return 0, berr
 	}
 
 	// (2) RAIL gate (H1-B): consume ONLY railLP objects. A swap-fill object (railSwap)
@@ -447,15 +445,12 @@ func (c *NativeDChainClient) ImportPositionCollect(
 		return 0, ErrLPCollectWrongRail
 	}
 
-	// (3) BIND the credit to the RECORDED value (authoritative, not declared).
+	// (3) BIND the credit to the OBJECT's value (authoritative, not declared).
 	if recAsset != claim.Asset {
 		return 0, ErrNativeSettleAsset
 	}
 	if recOwner != claim.Recipient {
 		return 0, ErrNativeSettleOwner
-	}
-	if recAmount != claim.Amount || recAmount == 0 {
-		return 0, ErrNativeSettleAmount
 	}
 
 	// (4) REPLAY guard: one-time consumption across ALL D->C objects (shared set).
@@ -547,10 +542,17 @@ func collectPositionRecord(stateDB stateKV, orderID [32]byte, order RestingOrder
 // it must already credit.
 type SettlementClaim struct {
 	OutputID  ids.ID         // the D->C object's shared-memory UTXO key (sourceTxID|outputIndex-derived on D)
-	Asset     [32]byte       // claimed output asset — MUST equal the recorded asset
-	AssetAddr common.Address // ERC-20 token for the credit (address(0) for native) — IGNORED for the transfer token, which is derived from the recorded asset (FIX-5)
-	Amount    uint64         // claimed output amount — MUST equal the recorded amount
-	Recipient common.Address // claimed owner — MUST equal the recorded owner
+	Asset     [32]byte       // claimed output asset — MUST equal the object's asset
+	AssetAddr common.Address // ERC-20 token for the credit (address(0) for native) — IGNORED for the transfer token, which is derived from the object's asset (FIX-5)
+	Recipient common.Address // claimed owner — MUST equal the object's owner
+	// Object is the D->C atomic object's BYTES, carried by the transaction
+	// (rail|owner|asset|amount|spent, exactly as D exported them). It is the
+	// AUTHORITATIVE value: the credit is this object's amount, never a number the
+	// claim states separately. Execution binds to these bytes WITHOUT reading shared
+	// memory, so the transaction replays byte-identically forever; the host proves
+	// the bytes are the recorded object at Block.Verify (settle_import.go), where a
+	// forgery rejects the block instead of diverging a receipt.
+	Object []byte
 	// PositionID is the LP-rail-only binding: the position RECORD id (MakerOrderID)
 	// the collect draws against. ImportPositionCollect requires the recorded owner to
 	// hold THIS specific position (Open/Closing) and bounds the credit by that
@@ -604,15 +606,13 @@ func (c *NativeDChainClient) ImportSettlement(
 		return 0, ErrNativeNoAtomicMemory
 	}
 
-	// (1) Read the RECORDED object. A missing object => never credit.
+	// (1) BIND to the object the TRANSACTION carried, and DECLARE the consumption into
+	// the receipt. No shared-memory read here: that read is what made this path
+	// unsyncable, and it now happens once per block at Verify, against this declaration.
 	key := claim.OutputID
-	vals, gerr := sm.Get(dChainID, [][]byte{key[:]})
-	if gerr != nil || len(vals) != 1 || len(vals[0]) == 0 {
-		return 0, ErrNativeNoSettlement
-	}
-	recRail, recOwner, recAsset, recAmount, recSpent, ok := decodeAtomicObject(vals[0])
-	if !ok {
-		return 0, ErrNativeSettleMalformed
+	recRail, recOwner, recAsset, recAmount, recSpent, berr := bindImportObject(stateDB, dChainID, key, claim.Object)
+	if berr != nil {
+		return 0, berr
 	}
 
 	// (2) RAIL gate (H1-A): consume ONLY railSwap objects. An LP-collect object
@@ -623,18 +623,16 @@ func (c *NativeDChainClient) ImportSettlement(
 		return 0, ErrSettleWrongRail
 	}
 
-	// (3) BIND the credit to the RECORDED value (authoritative, not declared).
+	// (3) BIND the credit to the OBJECT's value (authoritative, not declared). The
+	// asset is derived from the swap direction and the recipient is the caller, so
+	// these equalities are what stop a claim naming a victim's object or a
+	// re-denominated asset — the same bindings as before, now against the carried
+	// bytes that Verify proves are the recorded ones.
 	if recAsset != claim.Asset {
 		return 0, ErrNativeSettleAsset
 	}
 	if recOwner != claim.Recipient {
 		return 0, ErrNativeSettleOwner
-	}
-	if recAmount != claim.Amount {
-		return 0, ErrNativeSettleAmount
-	}
-	if recAmount == 0 {
-		return 0, ErrNativeSettleAmount
 	}
 
 	// (4) REPLAY guard: one-time settlement, durable + consensus-shared.

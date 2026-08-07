@@ -260,17 +260,19 @@ func (s *SettleContract) requestPositionWithdraw(
 //
 //	outputID[32]   // the D->C atomic object's shared-memory key (D's UTXO id)
 //	asset[32]      // the claimed asset (address left-padded; native all-zero) —
-//	               // EQUALITY-checked against the recorded object's asset
-//	amount[32]     // the claimed amount (uint256; must fit uint64 + == recorded)
+//	               // EQUALITY-checked against the object's asset
 //	positionID[32] // the position RECORD id (MakerOrderID) the collect draws against
-//	               // — the recorded owner must hold THIS position (Open/Closing) and
+//	               // — the object's owner must hold THIS position (Open/Closing) and
 //	               // the credit is bounded by its remaining committed backing
+//	object[69]     // THE OBJECT ITSELF: rail|owner|asset|amount|spent, as D exported
+//	               // it. Carried by the tx so execution never reads shared memory and
+//	               // the block replays identically; Verify proves it (settle_import.go).
 //
 // The recipient is the CALLER (day-1, no delegation). ImportPositionCollect binds the
-// recorded object's RAIL (must be railLP — a swap-fill object is refused), its
+// object's RAIL (must be railLP — a swap-fill object is refused), its
 // owner/asset/amount, AND the named position record, so a claim cannot invent value,
 // consume a victim's object, re-denominate it, consume a swap-rail object on the LP
-// pot, or draw beyond the recorded owner's OWN committed backing.
+// pot, or draw beyond the object owner's OWN committed backing.
 func (s *SettleContract) runSettleCollectPosition(
 	state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool,
 ) ([]byte, uint64, error) {
@@ -286,19 +288,20 @@ func (s *SettleContract) runSettleCollectPosition(
 	if !ok || atomicState.AtomicMemory() == nil {
 		return nil, gasLeft, ErrLPNoAtomicState
 	}
-	if len(input) < 128 {
+	// FIXED width: outputID(32) | asset(32) | positionID(32) | object(69). The object
+	// rides in the CALLDATA for the same reason the swap rail's does — execution must
+	// never read shared memory, or a node can never re-execute this block. There is no
+	// separate `amount` word: the amount IS the object's amount.
+	if len(input) != collectPositionInputLen {
 		return nil, gasLeft, ErrLPBadCollectInput
 	}
 	var outputID ids.ID
 	copy(outputID[:], input[0:32])
 	var asset [32]byte
 	copy(asset[:], input[32:64])
-	amount := new(big.Int).SetBytes(input[64:96])
-	if !amount.IsUint64() || amount.Sign() <= 0 {
-		return nil, gasLeft, ErrLPCollectBadAmount
-	}
 	var positionID [32]byte
-	copy(positionID[:], input[96:128])
+	copy(positionID[:], input[64:96])
+	object := append([]byte(nil), input[96:collectPositionInputLen]...)
 
 	stateDB := newPoolStateAdapter(state)
 
@@ -313,10 +316,10 @@ func (s *SettleContract) runSettleCollectPosition(
 	claim := SettlementClaim{
 		OutputID:   outputID,
 		Asset:      asset,
-		AssetAddr:  assetAddress(asset), // routing only; the transfer token is derived from the recorded asset (FIX-5).
-		Amount:     amount.Uint64(),
-		Recipient:  caller, // day-1: no delegation; recipient is the caller.
+		AssetAddr:  assetAddress(asset), // routing only; the transfer token is derived from the object's asset (FIX-5).
+		Recipient:  caller,              // day-1: no delegation; recipient is the caller.
 		PositionID: positionID,
+		Object:     object,
 	}
 	credited, ierr := nativeClient.ImportPositionCollect(state, atomicState, claim)
 	if ierr != nil {
@@ -330,11 +333,15 @@ func (s *SettleContract) runSettleCollectPosition(
 // EncodeCollectPositionInput builds collectPosition calldata (outputID, asset,
 // amount, positionID) for the keeper's collect-tx builder and tests. The inverse of
 // the decode in runSettleCollectPosition.
-func EncodeCollectPositionInput(outputID ids.ID, asset [32]byte, amount uint64, positionID [32]byte) []byte {
-	out := make([]byte, 128)
+func EncodeCollectPositionInput(outputID ids.ID, asset [32]byte, positionID [32]byte, object []byte) []byte {
+	out := make([]byte, collectPositionInputLen)
 	copy(out[0:32], outputID[:])
 	copy(out[32:64], asset[:])
-	new(big.Int).SetUint64(amount).FillBytes(out[64:96])
-	copy(out[96:128], positionID[:])
+	copy(out[64:96], positionID[:])
+	copy(out[96:collectPositionInputLen], object)
 	return out
 }
+
+// collectPositionInputLen is the fixed collectPosition calldata width:
+// outputID(32) | asset(32) | positionID(32) | object(69).
+const collectPositionInputLen = 32 + 32 + 32 + exportedOutputSize9999
