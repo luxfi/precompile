@@ -59,7 +59,8 @@ func TestRED_MEVFloor_KeeperZeroedLimit_StillRejected(t *testing.T) {
 
 	db := newPoolStateAdapter(h.state)
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: badObj, Asset: out, AssetAddr: assetAddress(out), Amount: 150, Recipient: h.caller, IntentID: intentID,
+		OutputID: badObj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		Object: encodeAtomicObjectSpent(railSwap, h.caller, out, 150, 100),
 	}); err != ErrSettlePriceLimit {
 		t.Fatalf("MEV: a proceeds fill realized at 1.5 (< the taker's recorded floor 2.0) MUST revert "+
 			"ErrSettlePriceLimit even with a keeper-zeroed relay limit, got: %v", err)
@@ -79,7 +80,8 @@ func TestRED_MEVFloor_KeeperZeroedLimit_StillRejected(t *testing.T) {
 	okObj := ids.ID{0x3E, 0x00, 0x03}
 	h.putDtoCObjectRailSpent(t, railSwap, h.caller, okObj, out, 200, 100)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: okObj, Asset: out, AssetAddr: assetAddress(out), Amount: 200, Recipient: h.caller, IntentID: intentID,
+		OutputID: okObj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		Object: encodeAtomicObjectSpent(railSwap, h.caller, out, 200, 100),
 	})
 	if err != nil || credited != 200 {
 		t.Fatalf("MEV: an honest proceeds fill AT the recorded floor (200 quote for 100 base = 2.0) MUST be credited: credited=%d err=%v", credited, err)
@@ -110,7 +112,8 @@ func TestRED_MEVFloor_BuyCeiling_Rejected(t *testing.T) {
 	badObj := ids.ID{0x4B, 0x00, 0x02}
 	h.putDtoCObjectRailSpent(t, railSwap, h.caller, badObj, base, 80, 200)
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: badObj, Asset: base, AssetAddr: assetAddress(base), Amount: 80, Recipient: h.caller, IntentID: intentID,
+		OutputID: badObj, Asset: base, AssetAddr: assetAddress(base), Recipient: h.caller, IntentID: intentID,
+		Object: encodeAtomicObjectSpent(railSwap, h.caller, base, 80, 200),
 	}); err != ErrSettlePriceLimit {
 		t.Fatalf("MEV: a BUY fill realized at 2.5 (> the taker's recorded ceiling 2.0) MUST revert ErrSettlePriceLimit, got: %v", err)
 	}
@@ -119,7 +122,8 @@ func TestRED_MEVFloor_BuyCeiling_Rejected(t *testing.T) {
 	okObj := ids.ID{0x4B, 0x00, 0x03}
 	h.putDtoCObjectRailSpent(t, railSwap, h.caller, okObj, base, 100, 200)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: okObj, Asset: base, AssetAddr: assetAddress(base), Amount: 100, Recipient: h.caller, IntentID: intentID,
+		OutputID: okObj, Asset: base, AssetAddr: assetAddress(base), Recipient: h.caller, IntentID: intentID,
+		Object: encodeAtomicObjectSpent(railSwap, h.caller, base, 100, 200),
 	})
 	if err != nil || credited != 100 {
 		t.Fatalf("MEV: an honest BUY at the recorded ceiling (200 quote -> 100 base = 2.0) MUST be credited: credited=%d err=%v", credited, err)
@@ -142,7 +146,8 @@ func TestRED_MEVFloor_ZeroSpentFailsSecure(t *testing.T) {
 	obj := ids.ID{0x5C, 0x00, 0x02}
 	h.putDtoCObjectRailSpent(t, railSwap, h.caller, obj, out, 200, 0)
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Amount: 200, Recipient: h.caller, IntentID: intentID,
+		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		Object: encodeAtomicObjectSpent(railSwap, h.caller, out, 200, 0),
 	}); err != ErrSettlePriceLimit {
 		t.Fatalf("MEV: a proceeds object with spent=0 under a real limit MUST fail secure (ErrSettlePriceLimit), got: %v", err)
 	}
@@ -165,7 +170,8 @@ func TestRED_MEVFloor_NoLimitIsUnbounded(t *testing.T) {
 	obj := ids.ID{0x6D, 0x00, 0x02}
 	h.putDtoCObjectRailSpent(t, railSwap, h.caller, obj, out, 1, 100)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Amount: 1, Recipient: h.caller, IntentID: intentID,
+		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		Object: encodeAtomicObjectSpent(railSwap, h.caller, out, 1, 100),
 	})
 	if err != nil || credited != 1 {
 		t.Fatalf("MEV: with NO recorded limit any proceeds price must be credited (unbounded), got credited=%d err=%v", credited, err)

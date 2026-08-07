@@ -60,7 +60,8 @@ func TestRED_Swap_RefundBoundToOwnIntentPrincipal(t *testing.T) {
 	// = 100) REFUSES the 150 over-refund — X cannot reach the pooled tokenIn beyond its
 	// own 100 stake.
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: overObj, Asset: in, AssetAddr: assetAddress(in), Amount: 150, Recipient: x, IntentID: intentX,
+		OutputID: overObj, Asset: in, AssetAddr: assetAddress(in), Recipient: x, IntentID: intentX,
+		Object: encodeAtomicObject(railSwap, x, in, 150),
 	}); err != ErrSettleExceedsIntent {
 		t.Fatalf("MEDIUM: an over-refund (150) beyond X's own locked principal (100) MUST revert ErrSettleExceedsIntent, got: %v", err)
 	}
@@ -78,7 +79,8 @@ func TestRED_Swap_RefundBoundToOwnIntentPrincipal(t *testing.T) {
 	okObj := ids.ID{0x0F, 0xE0, 0x02}
 	h.putDtoCObjectRail(t, railSwap, x, okObj, in, 100)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: okObj, Asset: in, AssetAddr: assetAddress(in), Amount: 100, Recipient: x, IntentID: intentX,
+		OutputID: okObj, Asset: in, AssetAddr: assetAddress(in), Recipient: x, IntentID: intentX,
+		Object: encodeAtomicObject(railSwap, x, in, 100),
 	})
 	if err != nil || credited != 100 {
 		t.Fatalf("MEDIUM: X's legitimate refund of its OWN 100 must succeed: credited=%d err=%v", credited, err)
@@ -90,7 +92,8 @@ func TestRED_Swap_RefundBoundToOwnIntentPrincipal(t *testing.T) {
 	moreObj := ids.ID{0x0F, 0xE0, 0x03}
 	h.putDtoCObjectRail(t, railSwap, x, moreObj, in, 1)
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: moreObj, Asset: in, AssetAddr: assetAddress(in), Amount: 1, Recipient: x, IntentID: intentX,
+		OutputID: moreObj, Asset: in, AssetAddr: assetAddress(in), Recipient: x, IntentID: intentX,
+		Object: encodeAtomicObject(railSwap, x, in, 1),
 	}); err != ErrSettleExceedsIntent {
 		t.Fatalf("MEDIUM: refunding a drained intent (remaining 0) must revert ErrSettleExceedsIntent, got: %v", err)
 	}
@@ -118,7 +121,8 @@ func TestRED_Swap_ProceedsNotCappedByInputPrincipal(t *testing.T) {
 	proceedsObj := ids.ID{0x9A, 0x00, 0x02}
 	h.putDtoCObjectRail(t, railSwap, h.caller, proceedsObj, out, 60_000)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: proceedsObj, Asset: out, AssetAddr: assetAddress(out), Amount: 60_000, Recipient: h.caller, IntentID: intentID,
+		OutputID: proceedsObj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		Object: encodeAtomicObject(railSwap, h.caller, out, 60_000),
 	})
 	if err != nil || credited != 60_000 {
 		t.Fatalf("CORRECTNESS: an honest proceeds credit (60000 out) for a 100-in intent MUST succeed "+
@@ -147,7 +151,8 @@ func TestRED_Swap_SettleMustNameAnOpenIntent(t *testing.T) {
 	// standing intent for a zero IntentID, which is exactly what we must AVOID here).
 	imp := func(intentID [32]byte) error {
 		_, err := nativeClient.ImportSettlement(h.state, h.state, SettlementClaim{
-			OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Amount: 200, Recipient: h.caller, IntentID: intentID,
+			OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+			Object: encodeAtomicObject(railSwap, h.caller, out, 200),
 		})
 		return err
 	}
@@ -244,7 +249,8 @@ func TestRED_Swap_SettleRefusedPastDeadline(t *testing.T) {
 	// Past the deadline => settlement refused.
 	h.state.blockTimestamp = deadline + 1
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Amount: 200, Recipient: h.caller, IntentID: intentID,
+		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		Object: encodeAtomicObject(railSwap, h.caller, out, 200),
 	}); err != ErrSettlePastDeadline {
 		t.Fatalf("a settlement past the intent deadline must revert ErrSettlePastDeadline, got: %v", err)
 	}
@@ -252,7 +258,8 @@ func TestRED_Swap_SettleRefusedPastDeadline(t *testing.T) {
 	// At/<= the deadline => settlement allowed (the bound is the boundary, not blanket).
 	h.state.blockTimestamp = deadline
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Amount: 200, Recipient: h.caller, IntentID: intentID,
+		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		Object: encodeAtomicObject(railSwap, h.caller, out, 200),
 	}); err != nil {
 		t.Fatalf("a settlement at the deadline boundary must succeed, got: %v", err)
 	}
@@ -288,7 +295,8 @@ func TestRED_Swap_ReclaimAndSettleAreMutuallyExclusive(t *testing.T) {
 	h.putDtoCObjectRail(t, railSwap, h.caller, obj, out, 200)
 	h.state.blockTimestamp = deadline // even at a settle-valid timestamp, the reclaimed intent is terminal
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Amount: 200, Recipient: h.caller, IntentID: intentID,
+		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		Object: encodeAtomicObject(railSwap, h.caller, out, 200),
 	}); err != ErrSettleNoIntent {
 		t.Fatalf("CONSERVATION: a settlement naming a reclaimed intent MUST revert (no double payout), got: %v", err)
 	}

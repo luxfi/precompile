@@ -90,7 +90,8 @@ func TestRED_LP_CollectObjectCannotBeSwapSettled(t *testing.T) {
 
 	// (a) directly via ImportSettlement (the swap credit path) — MUST refuse on rail.
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: lpObj, Asset: native, AssetAddr: common.Address{}, Amount: 250, Recipient: h.caller,
+		OutputID: lpObj, Asset: native, AssetAddr: common.Address{}, Recipient: h.caller,
+		Object: encodeAtomicObject(railLP, h.caller, native, 250),
 	}); err != ErrSettleWrongRail {
 		t.Fatalf("H1-A: a railLP object consumed via ImportSettlement MUST revert ErrSettleWrongRail, got: %v", err)
 	}
@@ -213,8 +214,8 @@ func TestRED_FIX5_CreditTokenDerivedFromRecordedAsset(t *testing.T) {
 		OutputID:  obj,
 		Asset:     h.outAssetID(),
 		AssetAddr: wrongTok, // attacker-supplied; MUST be ignored for the transfer.
-		Amount:    300,
 		Recipient: h.caller,
+		Object:    encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 300),
 	})
 	if err != nil || credited != 300 {
 		t.Fatalf("FIX-5: a bound claim must credit 300: credited=%d err=%v", credited, err)

@@ -4,6 +4,7 @@
 package dex
 
 import (
+	"errors"
 	"math/big"
 	"testing"
 
@@ -442,11 +443,15 @@ func TestRED_LP_PositionFundableOnlyByConsumingCToDObject(t *testing.T) {
 	}
 }
 
-// TestRED_LP_CollectCannotCreditWithoutDToCObject — the ship rule (D->C leg): a
-// collect CANNOT credit C without a real D->C object in shared memory. A collect that
-// names a non-existent object reverts (ErrNativeNoSettlement); a collect whose claim
-// amount/owner does not match the recorded object reverts (bind failure). No declared
-// amount can drive a credit.
+// TestRED_LP_CollectCannotCreditWithoutDToCObject — the ship rule (D->C leg), proven at
+// its two enforcement points. Execution keeps every check it can make on the bytes the
+// transaction CARRIES: an object the keeper never found is zero-padded to the canonical
+// width and is refused as a zero-amount non-object, and an object owned by someone else
+// cannot be claimed. The question execution can no longer ask — "is this what D really
+// exported?" — moved to Block.Verify, because reading shared memory during execution is
+// what made a settled collect unsyncable (settle_import.go). So a well-formed forgery
+// executes and is killed by the block rule, which authenticates the declaration this
+// execution emitted against shared memory. Both halves are pinned below.
 func TestRED_LP_CollectCannotCreditWithoutDToCObject(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
@@ -458,30 +463,74 @@ func TestRED_LP_CollectCannotCreditWithoutDToCObject(t *testing.T) {
 	recordID, _ := h.commitNativePosition(t, -60, 60, 1000, lpSalt(0x09))
 	committedBefore := loadCommittedPositions(db, native)
 
-	// (a) collect with NO object in shared memory => revert, NO credit.
+	// (a) collect naming an object nothing ever exported: the keeper reads no bytes, so the
+	// fixed-width wire carries an ALL-ZERO object. That is a well-formed encoding of NO
+	// VALUE, refused at the single binding primitive => NO credit.
 	phantom := ids.ID{0x00, 0xDE, 0xAD}
-	if _, err := h.collectNative(phantom, 500, recordID); err != ErrNativeNoSettlement {
-		t.Fatalf("collect with no D->C object must revert ErrNativeNoSettlement, got: %v", err)
+	if _, err := h.collectNative(phantom, 500, recordID); !errors.Is(err, ErrNativeSettleAmount) {
+		t.Fatalf("collect carrying no object bytes must fail closed, got: %v", err)
 	}
 
-	// (b) a real railLP object exists for 250, but the claim DECLARES 500 => amount-bind
-	// failure, NO credit (the credit is the RECORDED amount, not the declared one).
+	// (a2) The same attack with WELL-FORMED fabricated bytes, in a FRESH harness so the pot
+	// assertion below stays clean. It EXECUTES — execution is a pure function of the block —
+	// but it DECLARES what it consumed, and shared memory holds NOTHING at that key, so the
+	// declaration cannot authenticate and the BLOCK is rejected.
+	fh := newSettleHarness(t)
+	fh.registerMarket(t)
+	fRecord, _ := fh.commitNativePosition(t, -60, 60, 1000, lpSalt(0x09))
+	forged := encodeAtomicObjectSpent(railLP, fh.caller, fh.inAssetID(), 500, 0)
+	if _, err := fh.collectCarrying(phantom, fRecord, forged); err != nil {
+		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", err)
+	}
+	if n := len(DecodeSettleImports(fh.state.stateDB.Logs())); n != 1 {
+		t.Fatalf("a forged collect must still DECLARE what it consumed; got %d declarations", n)
+	}
+	if vals, gerr := fh.cSM.Get(fh.dChainID, [][]byte{phantom[:]}); gerr == nil && len(vals) == 1 && len(vals[0]) > 0 {
+		t.Fatal("the forged object must NOT be in shared memory — the test premise is broken")
+	}
+
+	// (b) a real railLP object records 250, but the transaction CARRIES bytes claiming 500.
+	// Execution credits the carried amount (it has nothing else to bind to) and convicts
+	// itself: the declaration commits to the 500-bytes while shared memory holds the
+	// 250-bytes, so the hashes differ and the block is rejected. FRESH harness — unlike the
+	// refusals, this one moves value.
+	mh := newSettleHarness(t)
+	mh.registerMarket(t)
+	mRecord, _ := mh.commitNativePosition(t, -60, 60, 1000, lpSalt(0x09))
 	realObj := ids.ID{0x00, 0xC0, 0x01}
-	h.putDtoCLPObject(t, h.caller, realObj, native, 250)
-	if _, err := h.collectNative(realObj, 500, recordID); err != ErrNativeSettleAmount {
-		t.Fatalf("collect declaring 500 against a 250 object must revert ErrNativeSettleAmount, got: %v", err)
+	mh.putDtoCLPObject(t, mh.caller, realObj, native, 250)
+	callerBefore := mh.state.stateDB.GetBalance(mh.caller).ToBig()
+	inflated := encodeAtomicObjectSpent(railLP, mh.caller, native, 500, 0)
+	if _, err := mh.collectCarrying(realObj, mRecord, inflated); err != nil {
+		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", err)
+	}
+	if got := new(big.Int).Sub(mh.state.stateDB.GetBalance(mh.caller).ToBig(), callerBefore); got.Int64() != 500 {
+		t.Fatalf("execution credits the CARRIED object's amount: credited %s, want 500", got)
+	}
+	imports := DecodeSettleImports(mh.state.stateDB.Logs())
+	if len(imports) != 1 {
+		t.Fatalf("expected exactly 1 declared import, got %d", len(imports))
+	}
+	recorded, gerr := mh.cSM.Get(mh.dChainID, [][]byte{realObj[:]})
+	if gerr != nil || len(recorded) != 1 {
+		t.Fatalf("could not read the recorded object back: %v", gerr)
+	}
+	if SettleObjectHash(recorded[0]) == imports[0].ObjectHash {
+		t.Fatal("the inflated claim authenticated against shared memory — the block rule is broken")
 	}
 
 	// (c) a railLP object owned by a DIFFERENT account => owner-bind failure when this
-	// caller claims it (recipient=caller != recorded owner).
+	// caller claims it (recipient=caller != carried owner).
 	other := common.HexToAddress("0x0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a")
 	victimObj := ids.ID{0x00, 0x71, 0x71}
 	h.putDtoCLPObject(t, other, victimObj, native, 250)
-	if _, err := h.collectNative(victimObj, 250, recordID); err != ErrNativeSettleOwner {
+	if _, err := h.collectNative(victimObj, 250, recordID); !errors.Is(err, ErrNativeSettleOwner) {
 		t.Fatalf("collect of another account's object must revert ErrNativeSettleOwner, got: %v", err)
 	}
 
-	// Through all the refused collects, committedPositions is UNTOUCHED (no credit).
+	// Through both collects this harness REFUSED — (a) and (c) — committedPositions is
+	// UNTOUCHED (no credit). The two that execute ran in their own harnesses precisely so
+	// this pot assertion still means what it says.
 	if loadCommittedPositions(db, native).Cmp(committedBefore) != 0 {
 		t.Fatal("refused collects must not move committedPositions (no credit without a bound D->C object)")
 	}

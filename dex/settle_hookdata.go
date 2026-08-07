@@ -24,7 +24,8 @@ import (
 //	empty hookData               -> PHASE A (INTENT): lock input, create C->D object.
 //	tag "DI01" + (empty)         -> PHASE A (INTENT), explicit, deadline 0 (none).
 //	tag "DI01" + deadline[32]    -> PHASE A (INTENT) with an explicit deadline.
-//	tag "DS01" + body            -> PHASE B (SETTLEMENT): consume a D->C object.
+//	tag "DS02" + body            -> PHASE B (SETTLEMENT): consume a D->C object.
+//	tag "DS01" + anything        -> RETIRED. Hard error, never re-read as Phase A.
 //
 // PHASE A body layout (optional, two recognized widths; absent => deadline 0, nonce 0):
 //
@@ -43,14 +44,32 @@ import (
 // PHASE B body layout (deterministic, fixed width, bounds-checked):
 //
 //	outputID[32]   // the D->C atomic object's shared-memory key
-//	amount[32]     // claimed output amount (uint256; must fit uint64 + == recorded)
 //	intentID[32]   // the originating C->D intent id this settlement draws against
+//	object[69]     // THE OBJECT ITSELF: rail|owner|asset|amount|spent, exactly as D
+//	               // exported it (native_wire.go encodeAtomicObjectSpent)
+//
+// WHY THE OBJECT RIDES IN THE CALLDATA (the change that makes this path syncable).
+// The settlement's value used to be read from shared memory DURING EVM execution,
+// while the matching Remove landed at block accept. A node re-executing that block
+// later — bootstrapping, state-syncing, re-tracing — found the object gone and
+// computed a different receipt than the network had accepted, so it could never sync
+// past a settled swap. Carrying the object IN the transaction makes execution a pure
+// function of the block, replayable byte-identically forever. The proof that these
+// bytes are the real recorded object is a BLOCK rule now (see settle_import.go): the
+// host authenticates every declared consumption against shared memory at Verify, and
+// a forged object REJECTS THE BLOCK rather than diverging a receipt. This is the
+// primary network's own ImportTx discipline — the object travels in the transaction,
+// shared memory is consulted at Verify.
+//
+// There is NO separate `amount` field: the amount IS the object's amount. One
+// declaration of a fact, never two that must be cross-checked.
 //
 // The output ASSET and RECIPIENT are NOT free wire fields: the asset is DERIVED
 // from the swap direction (the pool's output side) and the recipient is the CALLER
 // (day-1, no operator delegation). This keeps the claim from naming a victim's
 // object or a re-denominated asset — ImportSettlement then binds these against the
-// RECORDED object, so even the derived values must match what D actually exported.
+// SUPPLIED object (which Verify proves is the recorded one), so even the derived
+// values must match what D actually exported.
 // The intentID binds the credit to the taker's OWN intent record so it is capped by
 // that taker's remaining locked principal (the per-taker cap, the swap-rail analog of
 // the LP per-position bound).
@@ -60,7 +79,16 @@ import (
 // tags, and even if they did the inner decode rejects a non-conforming body).
 var (
 	intentPhaseTag     = [4]byte{'D', 'I', '0', '1'} // PHASE A explicit
-	settlementPhaseTag = [4]byte{'D', 'S', '0', '1'} // PHASE B
+	settlementPhaseTag = [4]byte{'D', 'S', '0', '2'} // PHASE B (object-carrying)
+
+	// retiredSettlementTag is the OLD Phase-B tag, whose body named an object it did
+	// not carry. It is retired, not merely superseded: the fallback for an unknown tag
+	// is PHASE A, so a stale DS01 blob reaching this build would otherwise be silently
+	// re-read as an INTENT and LOCK the sender's input instead of settling. That is the
+	// one mixed-fleet outcome worse than a revert, so DS01 is refused explicitly and
+	// loudly. It was never able to settle on any network — the seam has emitted zero
+	// events on every net since genesis — so nothing is being broken here.
+	retiredSettlementTag = [4]byte{'D', 'S', '0', '1'}
 )
 
 type swapPhase uint8
@@ -76,6 +104,10 @@ var (
 	ErrUnknownSwapPhase    = errors.New("dex: swap hookData carries an unknown phase tag")
 	ErrIntentBodyMalformed = errors.New("dex: intent hookData body is malformed")
 	ErrIntentBadDeadline   = errors.New("dex: intent deadline out of range")
+	// ErrRetiredSwapPhase refuses the retired DS01 settlement tag. It is a distinct,
+	// loud error precisely so a stale settle can never fall through to Phase A and
+	// lock the sender's input.
+	ErrRetiredSwapPhase = errors.New("dex: settlement hookData uses the retired DS01 phase tag")
 )
 
 // decodeSwapPhase classifies the hookData into a phase and returns the phase body —
@@ -88,70 +120,70 @@ var (
 // settles AND its arbitrary bytes are never mis-parsed as a deadline (the body is only
 // meaningful behind the DI01 tag). taggedIntent reports whether the DI01 tag was seen
 // so only an explicit intent body is read for a deadline.
-func decodeSwapPhase(hookData []byte) (phase swapPhase, body []byte, taggedIntent bool) {
+func decodeSwapPhase(hookData []byte) (phase swapPhase, body []byte, taggedIntent bool, err error) {
 	if len(hookData) == 0 {
-		return swapPhaseIntent, nil, false
+		return swapPhaseIntent, nil, false, nil
 	}
 	if len(hookData) >= 4 {
 		switch {
 		case bytes.Equal(hookData[:4], intentPhaseTag[:]):
-			return swapPhaseIntent, hookData[4:], true
+			return swapPhaseIntent, hookData[4:], true, nil
 		case bytes.Equal(hookData[:4], settlementPhaseTag[:]):
-			return swapPhaseSettlement, hookData[4:], false
+			return swapPhaseSettlement, hookData[4:], false, nil
+		case bytes.Equal(hookData[:4], retiredSettlementTag[:]):
+			// RETIRED. Refuse rather than fall through to the Phase-A default: a stale
+			// settle silently becoming an intent would LOCK the sender's input.
+			return swapPhaseIntent, nil, false, ErrRetiredSwapPhase
 		}
 	}
 	// Non-empty, non-tagged hookData: a Phase-A intent whose opaque body is IGNORED
 	// (nil body => no deadline parse). A hook-only swap that carries arbitrary bytes
 	// still creates a (no-deadline) intent; it never accidentally settles (settlement
-	// requires the DS01 tag) and its bytes are never read as a deadline.
-	return swapPhaseIntent, nil, false
+	// requires the DS02 tag) and its bytes are never read as a deadline.
+	return swapPhaseIntent, nil, false, nil
 }
 
-// settlementBodyLen is the fixed Phase-B body width: outputID(32) | amount(32) |
-// intentID(32).
-const settlementBodyLen = 32 + 32 + 32
+// settlementBodyLen is the fixed Phase-B body width: outputID(32) | intentID(32) |
+// object(69).
+const settlementBodyLen = 32 + 32 + exportedOutputSize9999
 
 // decodeSettlementBody parses a Phase-B body into a SettlementClaim, DERIVING the
-// asset from the swap output direction and the recipient from the caller. The
-// claim is then bound against the recorded D->C object in ImportSettlement, and its
-// credit is capped by the named intent record's remaining principal.
+// asset from the swap output direction and the recipient from the caller, and
+// carrying the SUPPLIED object bytes through untouched. The claim is bound against
+// those bytes in ImportSettlement (which the host proves are the recorded object at
+// Verify), and its credit is capped by the named intent record's remaining principal.
 func decodeSettlementBody(body []byte, key PoolKey, params SwapParams, caller common.Address) (SettlementClaim, error) {
 	if len(body) != settlementBodyLen {
 		return SettlementClaim{}, ErrSettleBodyMalformed
 	}
 	var outputID ids.ID
 	copy(outputID[:], body[0:32])
-	amount := new(big.Int).SetBytes(body[32:64])
-	if !amount.IsUint64() || amount.Sign() <= 0 {
-		return SettlementClaim{}, ErrSettleBadAmount
-	}
 	var intentID [32]byte
-	copy(intentID[:], body[64:96])
+	copy(intentID[:], body[32:64])
 	// Output asset = the pool's output side for this swap direction (the asset the
 	// taker receives). Derived, not wire-supplied, so a claim cannot name a foreign
-	// asset; ImportSettlement still equality-checks it against the recorded object.
+	// asset; ImportSettlement still equality-checks it against the object.
 	_, outAsset := swapAssetDirection(key, params)
 	return SettlementClaim{
 		OutputID:  outputID,
 		Asset:     outAsset,
 		AssetAddr: assetAddress(outAsset),
-		Amount:    amount.Uint64(),
 		Recipient: caller, // day-1: no delegation; recipient is the caller.
 		IntentID:  intentID,
+		Object:    append([]byte(nil), body[64:settlementBodyLen]...),
 	}, nil
 }
 
 // EncodeSettlementHookData builds a Phase-B hookData for tests and the keeper's
-// settle-tx builder: tag + outputID + amount + intentID. The inverse of
-// decodeSettlementBody (asset/recipient are derived at decode, not encoded).
-func EncodeSettlementHookData(outputID ids.ID, amount uint64, intentID ids.ID) []byte {
+// settle-tx builder: tag + outputID + intentID + object. The inverse of
+// decodeSettlementBody (asset/recipient are derived at decode, not encoded; the
+// amount is inside the object and is never restated).
+func EncodeSettlementHookData(outputID ids.ID, intentID ids.ID, object []byte) []byte {
 	out := make([]byte, 0, 4+settlementBodyLen)
 	out = append(out, settlementPhaseTag[:]...)
 	out = append(out, outputID[:]...)
-	var amt [32]byte
-	binary.BigEndian.PutUint64(amt[24:32], amount)
-	out = append(out, amt[:]...)
 	out = append(out, intentID[:]...)
+	out = append(out, object...)
 	return out
 }
 

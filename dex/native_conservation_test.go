@@ -106,7 +106,8 @@ func TestFIX3_SettlementCannotRaidDepositorClaim(t *testing.T) {
 	h.putDtoCObject(t, h.caller, outputID, native, 500)
 
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: native, AssetAddr: common.Address{}, Amount: 500, Recipient: h.caller,
+		OutputID: outputID, Asset: native, AssetAddr: common.Address{}, Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, native, 500),
 	})
 	if err != ErrNativeSettleUnbacked {
 		t.Fatalf("BLAST RADIUS: a settlement with empty seam reserve must REVERT (ErrNativeSettleUnbacked), not raid the depositor pot; got credited=%d err=%v", credited, err)
@@ -149,7 +150,8 @@ func TestFIX3_WithdrawCannotStrandSettlement(t *testing.T) {
 	outputID := ids.ID{0x5E, 0x78}
 	h.putDtoCObject(t, h.caller, outputID, native, 500)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: native, AssetAddr: common.Address{}, Amount: 500, Recipient: h.caller,
+		OutputID: outputID, Asset: native, AssetAddr: common.Address{}, Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, native, 500),
 	})
 	if err != nil || credited != 500 {
 		t.Fatalf("a seam-backed settlement must succeed after a depositor withdraw: credited=%d err=%v", credited, err)
@@ -203,7 +205,8 @@ func TestFIX3_VaultInvariantAcrossBothSubsystems(t *testing.T) {
 	h.putDtoCObject(t, h.caller, outputID, native, 1500)
 	seamBeforeCredit := loadSeamReserve(newPoolStateAdapter(h.state), native)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: native, AssetAddr: common.Address{}, Amount: 1500, Recipient: h.caller,
+		OutputID: outputID, Asset: native, AssetAddr: common.Address{}, Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, native, 1500),
 	})
 	if err != nil || credited != 1500 {
 		t.Fatalf("backed settlement: credited=%d err=%v", credited, err)

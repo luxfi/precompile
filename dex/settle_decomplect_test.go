@@ -42,10 +42,19 @@ func c1MarketKey() PoolKey {
 	}
 }
 
-// TestDecomplect_NoReceiptNoSettle is THE negative invariant: a PHASE B settlement (DS01)
-// that names a D->C object which does NOT exist in shared memory MUST revert and credit
-// NOTHING — even with the output vault fully funded. This is the structural "0x9999 cannot
-// fabricate a fill" guarantee: absent a real D-committed atomic object, there is no credit.
+// TestDecomplect_NoReceiptNoSettle is THE negative invariant, unchanged in substance
+// and relocated in enforcement: a PHASE B settlement naming a D->C object that does
+// NOT exist in shared memory must never result in an accepted credit — even with the
+// output vault fully funded. "0x9999 cannot fabricate a fill."
+//
+// WHERE IT IS PROVEN NOW. Execution can no longer consult shared memory (that read is
+// what made a settled swap unsyncable — see settle_import.go), so a phantom object
+// with WELL-FORMED bytes does execute. What it cannot do is survive: it necessarily
+// DECLARES the bytes it used, and that declaration provably disagrees with shared
+// memory, so every validator — including the producer, which verifies its own block
+// before proposing it — rejects the block. The forger buys a rejected block, never
+// value. This test pins both halves: an ill-formed object still fails closed at
+// execution with nothing moved, and a well-formed forgery is provably rejectable.
 func TestDecomplect_NoReceiptNoSettle(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
@@ -59,11 +68,37 @@ func TestDecomplect_NoReceiptNoSettle(t *testing.T) {
 	callerOutBefore := h.tokenBal(h.outToken(), h.caller)
 	vaultOutBefore := h.tokenBal(h.outToken(), poolManagerAddr9999)
 
-	// settlementCalldata seeds a standing per-taker intent so we get PAST the per-taker cap
-	// and reach the object lookup (step 1 of ImportSettlement) — which must fail closed.
+	// (1) NO object bytes at all: fails closed at execution, nothing moves. The
+	// harness builder reads the recorded object, which for a phantom is empty, so the
+	// fixed-width body gate refuses it.
 	_, err := h.runSwap(t, h.settlementCalldata(phantom, 500), false)
-	if !errors.Is(err, ErrNativeNoSettlement) {
-		t.Fatalf("Phase-B settle with NO D->C object must revert ErrNativeNoSettlement, got: %v", err)
+	if !errors.Is(err, ErrSettleBodyMalformed) && !errors.Is(err, ErrImportObjectMalformed) {
+		t.Fatalf("Phase-B settle with NO object bytes must fail closed, got: %v", err)
+	}
+
+	// (2) FABRICATED well-formed bytes for the same phantom, in a FRESH harness so the
+	// balance assertions above stay clean. This executes — it must, because execution
+	// is now a pure function of the block — but it declares the forgery, and the
+	// declaration cannot authenticate against shared memory, so the block dies.
+	forgeH := newSettleHarness(t)
+	forgeH.registerMarket(t)
+	forgeH.fundVaultOut(1_000_000)
+	forged := encodeAtomicObjectSpent(railSwap, forgeH.caller, forgeH.outAssetID(), 500, 0)
+	intentID := forgeH.standingIntent(500)
+	forgedCalldata := buildSwapCalldata(forgeH.key, forgeH.params,
+		EncodeSettlementHookData(phantom, intentID, forged))
+	if _, ferr := forgeH.runSwap(t, forgedCalldata, false); ferr != nil {
+		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", ferr)
+	}
+	imports := DecodeSettleImports(forgeH.state.stateDB.Logs())
+	if len(imports) != 1 {
+		t.Fatalf("a forged settlement must still DECLARE what it consumed; got %d declarations", len(imports))
+	}
+	// The host's Verify check: shared memory holds nothing at this key, so the block is
+	// rejected. Absence is itself the disproof — nothing the forgery credited is ever
+	// accepted, which is the ship rule, relocated.
+	if vals, gerr := forgeH.cSM.Get(forgeH.dChainID, [][]byte{phantom[:]}); gerr == nil && len(vals) == 1 && len(vals[0]) > 0 {
+		t.Fatal("the phantom object must NOT be in shared memory — the test premise is broken")
 	}
 
 	// No output token moved out of the vault; the caller was credited nothing.
@@ -76,7 +111,7 @@ func TestDecomplect_NoReceiptNoSettle(t *testing.T) {
 }
 
 // TestDecomplect_UntaggedSwapIsIntentNotFill proves the positive half: a PLAIN swap (empty
-// hookData — no DI01/DS01 tag) is treated as a PHASE A INTENT. It LOCKS the taker's input and
+// hookData — no DI01/DS02 tag) is treated as a PHASE A INTENT. It LOCKS the taker's input and
 // returns a 32-byte intent id; it does NOT match, does NOT credit any output. There is no
 // synchronous in-trie fill. (Before the decomplect this routed to the embedded sync matcher.)
 func TestDecomplect_UntaggedSwapIsIntentNotFill(t *testing.T) {
@@ -255,7 +290,7 @@ func TestDecomplect_DAOControllerCannotMintOrMoveUserFunds(t *testing.T) {
 	}
 	// (i) fabricated object: no privileged path to mint a settlement object.
 	credited, ierr := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: [32]byte{0xAB}, Asset: native, AssetAddr: common.Address{}, Amount: 500, Recipient: controller,
+		OutputID: [32]byte{0xAB}, Asset: native, AssetAddr: common.Address{}, Recipient: controller,
 	})
 	if ierr == nil || credited != 0 {
 		t.Fatalf("controller credited itself from a fabricated settlement object: credited=%d err=%v", credited, ierr)
@@ -265,7 +300,8 @@ func TestDecomplect_DAOControllerCannotMintOrMoveUserFunds(t *testing.T) {
 	realObj := [32]byte{0xCD, 0xEF}
 	h.putDtoCObject(t, controller, realObj, native, 500)
 	credited2, ierr2 := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: realObj, Asset: native, AssetAddr: common.Address{}, Amount: 500, Recipient: controller,
+		OutputID: realObj, Asset: native, AssetAddr: common.Address{}, Recipient: controller,
+		Object: encodeAtomicObject(railSwap, controller, native, 500),
 	})
 	if ierr2 != ErrNativeSettleUnbacked {
 		t.Fatalf("controller raided the depositor pot via a real object with empty seam: credited=%d err=%v (must be ErrNativeSettleUnbacked)", credited2, ierr2)
