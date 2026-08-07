@@ -54,6 +54,25 @@ import (
 // WHICH fills occurred / their amounts (D is the matcher); the per-taker cap bounds the
 // blast radius of a faulty/hostile D export to that one taker's own locked principal.
 //
+// THIS FILE'S WIRE CHANGE IS A C-CHAIN FORK, and the rollout order follows from that.
+// SubmitSwapIntent stages the C->D object into StateDB, so the object's bytes are part
+// of the C state root: a node on the old precompile stages 69 bytes across 4 storage
+// words where a node on this one stages 118 across 6, and the zero-price-limit refusal
+// changes a receipt from success to revert. Two C nodes across that line executing the
+// SAME swap therefore derive DIFFERENT roots — a mixed C fleet FORKS on the first 0x9999
+// swap it sees. There is no version negotiation that helps; there is only ordering:
+//
+//	1. upgrade every C validator (this precompile) AND every D validator (the D-Chain
+//	   reads the object) before any 0x9999 swap is submitted;
+//	2. only then let a swap through.
+//
+// Until step 1 completes the seam is inert by construction — a not-yet-upgraded C node
+// writes the .v1 discovery trait, which no upgraded D node enumerates, and an upgraded C
+// node writes .v2, which no old D node enumerates — so nothing is imported either way
+// and no value is at risk. The exposure is entirely in step 2's timing, and on any chain
+// that has never carried a 0x9999 swap (all of them, at time of writing) the window is
+// whatever gap the operator leaves between the last node coming up and the first swap.
+//
 // CONSENSUS-SAFETY: every method is a pure deterministic function of (input,
 // StateDB, shared-memory contents) — no live query whose result is not already a
 // committed cross-chain object. Writing/consuming shared memory is the SAME
