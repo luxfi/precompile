@@ -24,8 +24,8 @@ import (
 // THE V4 swap selector is two-phase, keyed on hookData (the V4 ABI is UNCHANGED —
 // web/mobile already pass `bytes hookData`; only its CONTENTS select the phase):
 //
-//   - PHASE A — INTENT (hookData empty, or tagged INTENT): lock the taker's input
-//     on C and write a C->D atomic intent object. Returns the intent id (NOT a
+//   - PHASE A — ORDER (hookData empty, or tagged ORDER): lock the taker's input
+//     on C and write a C->D atomic order object. Returns the order id (NOT a
 //     fill). D imports the object and matches under its own consensus.
 //   - PHASE B — SETTLEMENT (hookData tagged SETTLE, carrying a D->C object ref):
 //     consume the D->C atomic settlement object ONCE and credit the output. This
@@ -34,7 +34,7 @@ import (
 // THE SHIP RULE (enforced structurally, not by trust): a C balance can be credited
 // by 0x9999 ONLY by consuming a D->C atomic object (Phase B / ImportSettlement); a
 // D order/position can be funded ONLY by consuming a C->D atomic object (Phase A /
-// SubmitSwapIntent -> dexvm executeImport). No fill VALUE returned by any live
+// SubmitSwapOrder -> dexvm executeImport). No fill VALUE returned by any live
 // matcher can credit C — Phase B has no fill-amount parameter; the credit is the
 // RECORDED atomic object's amount, and absent a real object in shared memory it
 // reverts.
@@ -44,10 +44,10 @@ import (
 //     owner/asset/amount (no aliasing/re-denomination), the object's rail is railSwap
 //     (no cross-rail pot drain), the object is consumed at most once (replay), the
 //     credit is drawn ONLY from seamReserve (never a depositor/maker/LP pot), AND —
-//     the per-taker cap (MEDIUM) — the credit is bounded by the taker's OWN intent's
+//     the per-taker cap (MEDIUM) — the credit is bounded by the taker's OWN order's
 //     remaining locked principal, so an over-export for one taker can never draw on
 //     other takers' pooled tokenIn. C ALSO guarantees liveness independently: a locked
-//     intent's principal can always exit via reclaimIntent once its deadline passes,
+//     order's principal can always exit via reclaimIntent once its deadline passes,
 //     with no dependence on D or the keeper.
 //   - C relies on D for: WHICH fills occurred and their amounts (D is the matcher;
 //     conservation of proceeds vs refund within a single taker's locked principal is
@@ -59,12 +59,12 @@ import (
 // configured and NOT persisted: 0x9999 is ALWAYS-ON with zero per-net config, so the
 // chain identity is resolved at RUNTIME from the host's atomic capability
 // (contract.AtomicState: NetworkID()/CChainID()/DChainID(), sourced from the consensus
-// context). The native intent id still binds the full (networkID, cChainID, dChainID)
+// context). The native order id still binds the full (networkID, cChainID, dChainID)
 // so an object minted on one chain/network can never be consumed on another — that
 // binding is unchanged; only its SOURCE moved from genesis config to runtime context.
 
 // --- Settlement value movement vault. The 0x9999 vault (the precompile self-
-// address) is the counterparty reserve: a Phase-A intent locks tokenIn into the
+// address) is the counterparty reserve: a Phase-A order locks tokenIn into the
 // vault, a Phase-B settlement releases tokenOut from the vault. NO MINT — a credit
 // the vault cannot back reverts (conservation).
 
@@ -97,29 +97,29 @@ var (
 // fixed shared-memory write/read + one StateDB replay slot + the value move. No
 // per-validator crypto (the BLS pairing model is gone), so a flat tier suffices.
 const (
-	GasNativeIntent     uint64 = 40_000 // decode + lock + SM put + replay slot. Phase A emits NO log.
+	GasNativeOrder      uint64 = 40_000 // decode + lock + SM put + replay slot. Phase A emits NO log.
 	GasNativeSettlement uint64 = 50_000 // decode + SM get/bind + replay slot + credit + SM remove + DEXFill log (Phase B).
 )
 
-// maxIntentTTL is the FINITE reclaim horizon applied to any value-path swap intent that
+// maxOrderTTL is the FINITE reclaim horizon applied to any value-path swap order that
 // did NOT name an explicit deadline (a plain swap(), or a DI01 body with deadline 0). It
 // bounds how long a taker's locked principal can sit unsettled before reclaimIntent can
 // refund it. Seven days (in seconds) is generous enough for any honest cross-domain
 // settlement to land yet guarantees the principal is never permanently stranded — the
 // structural fix for the deadline-0 fund-lock. A taker who wants a tighter window passes an
 // explicit DI01 deadline; this is only the floor for those who pass none.
-const maxIntentTTL uint64 = 7 * 24 * 60 * 60 // 604800s = 7 days
+const maxOrderTTL uint64 = 7 * 24 * 60 * 60 // 604800s = 7 days
 
-// defaultedReclaimDeadline returns the finite deadline to stamp on an intent that supplied
-// none: blockTimestamp + maxIntentTTL, saturating at the uint64 max so the addition can
+// defaultedReclaimDeadline returns the finite deadline to stamp on an order that supplied
+// none: blockTimestamp + maxOrderTTL, saturating at the uint64 max so the addition can
 // never wrap to a SMALL (already-past) value (which would let reclaim fire immediately, or —
 // worse — a wrapped tiny deadline could let a Phase-B settlement be rejected as "late" right
 // away). Saturation keeps the horizon in the future for every realistic block time.
 func defaultedReclaimDeadline(blockTimestamp uint64) uint64 {
-	if blockTimestamp > math.MaxUint64-maxIntentTTL {
+	if blockTimestamp > math.MaxUint64-maxOrderTTL {
 		return math.MaxUint64
 	}
-	return blockTimestamp + maxIntentTTL
+	return blockTimestamp + maxOrderTTL
 }
 
 // isNativeAsset reports whether an injective AssetID is native LUX (all-zero).
@@ -159,7 +159,7 @@ var nativeClient = NewNativeDChainClient("Lux DEX")
 // SettleSwap is THE 0x9999 swap handler — the native C<->D two-phase money path.
 // It decodes the V4 swap call (key, params, hookData) and dispatches on the
 // hookData phase. The V4 ABI is UNCHANGED. Returns the V4 BalanceDelta on a
-// Phase-B credit, or a packed intent-id marker on a Phase-A intent.
+// Phase-B credit, or a packed order-id marker on a Phase-A order.
 func SettleSwap(
 	state contract.AccessibleState,
 	caller common.Address,
@@ -200,7 +200,7 @@ func SettleSwap(
 	blockNumber := state.GetBlockContext().Number().Uint64()
 	blockTimestamp := state.GetBlockContext().Timestamp()
 
-	phase, body, taggedIntent, perr := decodeSwapPhase(hookData)
+	phase, body, taggedOrder, perr := decodeSwapPhase(hookData)
 	if perr != nil {
 		return nil, suppliedGas, perr
 	}
@@ -239,72 +239,72 @@ func SettleSwap(
 		return PackBalanceDelta(delta.Amount0, delta.Amount1), gasLeft, nil
 
 	default:
-		// PHASE A — lock input on C and create a C->D atomic intent.
-		if suppliedGas < GasNativeIntent {
+		// PHASE A — lock input on C and create a C->D atomic order.
+		if suppliedGas < GasNativeOrder {
 			return nil, 0, errors.New("dex: out of gas")
 		}
-		gasLeft := suppliedGas - GasNativeIntent
+		gasLeft := suppliedGas - GasNativeOrder
 
 		if herr := checkHalt(stateDB, key, params); herr != nil {
 			return nil, gasLeft, herr
 		}
-		// The OPTIONAL deadline + nonce ride in an EXPLICIT DI01 intent body (the V4
-		// SwapParams tuple is unchanged). They are read ONLY for a DI01-tagged intent; an
-		// untagged / opaque hook body carries neither (taggedIntent=false => body ignored),
+		// The OPTIONAL deadline + nonce ride in an EXPLICIT DI01 order body (the V4
+		// SwapParams tuple is unchanged). They are read ONLY for a DI01-tagged order; an
+		// untagged / opaque hook body carries neither (taggedOrder=false => body ignored),
 		// so a hook contract's arbitrary bytes are never mis-parsed. The deadline gates late
-		// settlement + reclaim; the NONCE is folded into the intent id so it is
+		// settlement + reclaim; the NONCE is folded into the order id so it is
 		// chain-observable (the off-chain keeper derives the SAME id from the SAME calldata —
 		// the watch-correlation fix) and disambiguates otherwise-identical swaps.
 		var deadline, nonce uint64
-		if taggedIntent {
-			d, n, derr := decodeIntentBody(body)
+		if taggedOrder {
+			d, n, derr := decodeOrderBody(body)
 			if derr != nil {
 				return nil, gasLeft, derr
 			}
 			deadline, nonce = d, n
 		}
-		// FIX (do-not-ship fund-lock): a plain swap() — and any intent that did not name an
+		// FIX (do-not-ship fund-lock): a plain swap() — and any order that did not name an
 		// explicit deadline — MUST still carry a FINITE reclaim horizon. Without it the taker's
-		// full input is locked under SubmitSwapIntent with Deadline==0, and reclaimIntent then
+		// full input is locked under SubmitSwapOrder with Deadline==0, and reclaimIntent then
 		// PERMANENTLY refuses (ErrReclaimNoDeadline) => the principal can never exit if D never
-		// settles. We default a missing deadline to block.timestamp + maxIntentTTL so EVERY
-		// value-path intent is reclaimable after a bounded wait. An explicit deadline (DI01) is
+		// settles. We default a missing deadline to block.timestamp + maxOrderTTL so EVERY
+		// value-path order is reclaimable after a bounded wait. An explicit deadline (DI01) is
 		// honored as-is. This is the structural guarantee that swap() can never strand funds.
 		if deadline == 0 {
 			deadline = defaultedReclaimDeadline(blockTimestamp)
 		}
-		req, berr := buildIntentRequest(key, params, caller, deadline, nonce)
+		req, berr := buildOrderRequest(key, params, caller, deadline, nonce)
 		if berr != nil {
 			return nil, gasLeft, berr
 		}
-		intentID, serr := nativeClient.SubmitSwapIntent(state, atomicState, req)
+		orderID, serr := nativeClient.SubmitSwapOrder(state, atomicState, req)
 		if serr != nil {
 			return nil, gasLeft, serr
 		}
-		// Return the intent id (32 bytes) so the caller / keeper can track the
+		// Return the order id (32 bytes) so the caller / keeper can track the
 		// async D->C settlement. NOT a fill — Phase A returns no output value.
 		out := make([]byte, 32)
-		copy(out, intentID[:])
+		copy(out, orderID[:])
 		return out, gasLeft, nil
 	}
 }
 
-// buildIntentRequest derives the C->D intent from the V4 swap: the taker is the
+// buildOrderRequest derives the C->D order from the V4 swap: the taker is the
 // caller, the input asset/amount come from the swap direction + amountSpecified
 // (exact-input magnitude), the market is the pool id, the recipient defaults to the
 // caller, and the deadline is the (optional) value parsed from the Phase-A hookData
-// body. A non-zero deadline is persisted in the per-intent record so Phase-B refuses
+// body. A non-zero deadline is persisted in the per-order record so Phase-B refuses
 // a late settlement and the locker can reclaim the principal past it.
-func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, deadline, nonce uint64) (IntentRequest, error) {
+func buildOrderRequest(key PoolKey, params SwapParams, caller common.Address, deadline, nonce uint64) (OrderRequest, error) {
 	in, _ := swapAssetDirection(key, params)
 	// Exact-input: AmountSpecified < 0, magnitude is the input. Exact-output is a P4
-	// router concern; the native intent locks the exact input the taker commits.
+	// router concern; the native order locks the exact input the taker commits.
 	if params.AmountSpecified == nil || params.AmountSpecified.Sign() == 0 {
-		return IntentRequest{}, ErrInvalidAmount
+		return OrderRequest{}, ErrInvalidAmount
 	}
 	mag := new(big.Int).Abs(params.AmountSpecified)
 	if !mag.IsUint64() || mag.Sign() <= 0 {
-		return IntentRequest{}, ErrInvalidAmount
+		return OrderRequest{}, ErrInvalidAmount
 	}
 	// THE OPERATION the C->D object carries. The CLOB convention on a V4 pool is
 	// base = currency0, quote = currency1 (priceLimitToCLOB computes quote-per-base as
@@ -322,7 +322,7 @@ func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, d
 	// and with priceLimit == 0 that floor is vacuous. Refuse at submission rather than
 	// lock the taker's principal behind a check that cannot protect them.
 	if priceLimit == 0 {
-		return IntentRequest{}, ErrNativeIntentNoPriceLimit
+		return OrderRequest{}, ErrNativeOrderNoPriceLimit
 	}
 	// SIZE in base units. A SELL spends the base it locked, so the locked amount IS the
 	// size. A BUY spends quote, so the size is the most base that quote can buy at the
@@ -336,14 +336,14 @@ func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, d
 		q := new(big.Int).Mul(mag, big.NewInt(priceScale))
 		q.Quo(q, new(big.Int).SetUint64(priceLimit))
 		if !q.IsUint64() {
-			return IntentRequest{}, ErrInvalidAmount
+			return OrderRequest{}, ErrInvalidAmount
 		}
 		size = q.Uint64()
 	}
 	if size == 0 {
-		return IntentRequest{}, ErrNativeIntentDustSize
+		return OrderRequest{}, ErrNativeOrderDustSize
 	}
-	return IntentRequest{
+	return OrderRequest{
 		Account:      caller,
 		AssetIn:      in,
 		AmountIn:     amountIn,
@@ -422,13 +422,13 @@ func priceLimitToCLOB(params SwapParams) (priceLimitUnits uint64, limitIsUpper b
 	return units.Uint64(), limitIsUpper
 }
 
-// runSettleReclaimIntent is the reclaimIntent(bytes32 intentID) handler: the swap
-// rail's deadline-reclaim. It decodes the intent id, takes the shared custody
+// runSettleReclaimOrder is the reclaimIntent(bytes32 orderID) handler: the swap
+// rail's deadline-reclaim. It decodes the order id, takes the shared custody
 // non-reentrant guard (the refund moves value through the seam reserve, and an ERC-20
-// transfer can re-enter), and calls ReclaimIntent which refunds the remaining locked
+// transfer can re-enter), and calls ReclaimOrder which refunds the remaining locked
 // principal to the caller (the locker) once the deadline has passed. Returns the
 // refunded amount. NOT gated by the swap halt — funds must always be able to exit.
-func (s *SettleContract) runSettleReclaimIntent(
+func (s *SettleContract) runSettleReclaimOrder(
 	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
 ) ([]byte, uint64, error) {
 	if readOnly {
@@ -446,8 +446,8 @@ func (s *SettleContract) runSettleReclaimIntent(
 	if len(data) < 32 {
 		return nil, gasLeft, ErrReclaimBadInput
 	}
-	var intentID ids.ID
-	copy(intentID[:], data[0:32])
+	var orderID ids.ID
+	copy(orderID[:], data[0:32])
 
 	stateDB := newPoolStateAdapter(state)
 	if !enterCustodyKV(stateDB) {
@@ -455,7 +455,7 @@ func (s *SettleContract) runSettleReclaimIntent(
 	}
 	defer exitCustodyKV(stateDB)
 
-	refunded, rerr := nativeClient.ReclaimIntent(state, atomicState, caller, intentID)
+	refunded, rerr := nativeClient.ReclaimOrder(state, atomicState, caller, orderID)
 	if rerr != nil {
 		return nil, gasLeft, rerr
 	}
@@ -464,17 +464,17 @@ func (s *SettleContract) runSettleReclaimIntent(
 	return out, gasLeft, nil
 }
 
-// EncodeReclaimIntentInput builds reclaimIntent(bytes32) calldata for the locker's
+// EncodeReclaimOrderInput builds reclaimIntent(bytes32) calldata for the locker's
 // reclaim tx and tests.
-func EncodeReclaimIntentInput(intentID ids.ID) []byte {
+func EncodeReclaimOrderInput(orderID ids.ID) []byte {
 	out := make([]byte, 32)
-	copy(out, intentID[:])
+	copy(out, orderID[:])
 	return out
 }
 
 // ErrReclaimBadInput is returned when reclaimIntent calldata is too short to carry an
-// intent id.
-var ErrReclaimBadInput = errors.New("dex: reclaimIntent input too short (need bytes32 intentID)")
+// order id.
+var ErrReclaimBadInput = errors.New("dex: reclaimIntent input too short (need bytes32 orderID)")
 
 // balanceDeltaForOutput maps a credited output amount to the V4 BalanceDelta
 // convention (output paid out to taker = negative on the output side; the input

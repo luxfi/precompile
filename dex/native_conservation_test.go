@@ -96,7 +96,7 @@ func TestFIX3_SettlementCannotRaidDepositorClaim(t *testing.T) {
 		t.Fatal("depositor claim must be 1000")
 	}
 	if loadSeamReserve(newPoolStateAdapter(h.state), native).Sign() != 0 {
-		t.Fatal("seam reserve must be ZERO (no operator seed, no intent locks)")
+		t.Fatal("seam reserve must be ZERO (no operator seed, no order locks)")
 	}
 	h.vaultInvariantNative(t, "after deposit")
 
@@ -164,7 +164,7 @@ func TestFIX3_WithdrawCannotStrandSettlement(t *testing.T) {
 
 // TestFIX3_VaultInvariantAcrossBothSubsystems — the FIX-3 vault-account invariant holds
 // across a full interleaving of BOTH subsystems on the SAME native asset: operator
-// seed, depositor deposit, Phase-A intent lock, Phase-B settlement credit, depositor
+// seed, depositor deposit, Phase-A order lock, Phase-B settlement credit, depositor
 // withdraw. After every step realHolding == settleVault + makerLockedVault + seamReserve.
 func TestFIX3_VaultInvariantAcrossBothSubsystems(t *testing.T) {
 	h := newSettleHarness(t)
@@ -183,22 +183,22 @@ func TestFIX3_VaultInvariantAcrossBothSubsystems(t *testing.T) {
 	h.depositNative(t, depositor, 3000)
 	h.vaultInvariantNative(t, "after deposit")
 
-	// 3) A taker submits a Phase-A intent that LOCKS native tokenIn into the seam
+	// 3) A taker submits a Phase-A order that LOCKS native tokenIn into the seam
 	// reserve (the caller funds it). seamReserve grows; settleVault (depositor) is
 	// untouched.
 	h.fundCallerNative(1000)
 	seamBeforeLock := loadSeamReserve(newPoolStateAdapter(h.state), native)
-	if _, err := h.runSwap(t, h.intentCalldata(), false); err != nil {
-		t.Fatalf("phase-A intent: %v", err)
+	if _, err := h.runSwap(t, h.orderCalldata(), false); err != nil {
+		t.Fatalf("phase-A order: %v", err)
 	}
 	seamAfterLock := loadSeamReserve(newPoolStateAdapter(h.state), native)
 	if new(big.Int).Sub(seamAfterLock, seamBeforeLock).Int64() != 100 { // AmountSpecified = -100
-		t.Fatalf("intent must add 100 to the seam reserve, delta=%s", new(big.Int).Sub(seamAfterLock, seamBeforeLock))
+		t.Fatalf("order must add 100 to the seam reserve, delta=%s", new(big.Int).Sub(seamAfterLock, seamBeforeLock))
 	}
 	if loadDepositorClaim(newPoolStateAdapter(h.state), depositor, native).Int64() != 3000 {
-		t.Fatal("a Phase-A intent lock must NOT touch the depositor pot")
+		t.Fatal("a Phase-A order lock must NOT touch the depositor pot")
 	}
-	h.vaultInvariantNative(t, "after intent lock")
+	h.vaultInvariantNative(t, "after order lock")
 
 	// 4) A backed Phase-B settlement credits the taker out of the seam reserve only.
 	outputID := ids.ID{0x5E, 0x79}

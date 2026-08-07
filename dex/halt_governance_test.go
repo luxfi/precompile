@@ -185,7 +185,7 @@ func TestHIGH3_RetiredEOACannotSeedPots(t *testing.T) {
 
 // TestHIGH3_HaltBitesARealSwap is the end-to-end proof that governance-set halt actually
 // stops a real swap on the money path: governance halts the market, a real swap (a Phase-A
-// intent — the canonical settle-only money path) reverts with the halt error before any
+// order — the canonical settle-only money path) reverts with the halt error before any
 // input is locked, governance lifts it, and the swap then proceeds. This closes the loop —
 // "governance halts" means "the money path actually stops", and only governance can do it.
 func TestHIGH3_HaltBitesARealSwap(t *testing.T) {
@@ -200,9 +200,9 @@ func TestHIGH3_HaltBitesARealSwap(t *testing.T) {
 		t.Fatalf("governance setHaltMarket: %v", err)
 	}
 
-	// A real swap (Phase-A intent) now reverts with the market-halt error — checkHalt gates
+	// A real swap (Phase-A order) now reverts with the market-halt error — checkHalt gates
 	// the money path BEFORE any input is locked (no strand on a halted swap).
-	if _, err := h.runSwap(t, h.intentCalldata(), false); !errors.Is(err, ErrMarketHalted) {
+	if _, err := h.runSwap(t, h.orderCalldata(), false); !errors.Is(err, ErrMarketHalted) {
 		t.Fatalf("halted market must refuse a swap with ErrMarketHalted, got: %v", err)
 	}
 
@@ -214,12 +214,12 @@ func TestHIGH3_HaltBitesARealSwap(t *testing.T) {
 		t.Fatalf("governance must be able to clear the market halt, got: %v", err)
 	}
 
-	// With the halt lifted, the same swap proceeds (creates its C->D intent).
-	out, err := h.runSwap(t, h.intentCalldata(), false)
+	// With the halt lifted, the same swap proceeds (creates its C->D order).
+	out, err := h.runSwap(t, h.orderCalldata(), false)
 	if err != nil {
 		t.Fatalf("after governance lifted the halt, the swap must succeed, got: %v", err)
 	}
 	if len(out) != 32 {
-		t.Fatal("swap after unhalt must return a 32-byte intent id")
+		t.Fatal("swap after unhalt must return a 32-byte order id")
 	}
 }

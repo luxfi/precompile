@@ -21,7 +21,7 @@ import (
 //
 // THE SPENT WITNESS (trailing 8 bytes): on a D->C swap PROCEEDS leg, spent carries
 // the matched INPUT amount (in the locked/input-asset units) that produced this
-// output. It is 0 on every other leg (C->D intents/commits, same-asset refunds, LP
+// output. It is 0 on every other leg (C->D orders/commits, same-asset refunds, LP
 // collects). ImportSettlement reads it to enforce the TAKER's OWN recorded slippage
 // limit on the proceeds leg — realized price = out/spent (SELL) or spent/out (BUY) —
 // INDEPENDENTLY of the keeper-relayed RelayOrderTx.PriceLimit. So a keeper that
@@ -44,10 +44,10 @@ import (
 // only the matching consume path (drawing only the matching pot) accepts it.
 //
 // THE TWO LEGS (the ship rule made concrete):
-//   - C->D INTENT/COMMIT: C writes one of these into shared memory keyed by the D
+//   - C->D ORDER/COMMIT: C writes one of these into shared memory keyed by the D
 //     chain. D's executeImport consumes it and credits a funded D order/position.
 //     D is funded ONLY by consuming a C->D object. The C->D object is stamped with
-//     the lane that wrote it (SubmitSwapIntent => railSwap, SubmitPositionCommit
+//     the lane that wrote it (SubmitSwapOrder => railSwap, SubmitPositionCommit
 //     => railLP) so the rail round-trips: a swap lives on railSwap for BOTH legs,
 //     an LP on railLP for BOTH legs.
 //   - D->C SETTLEMENT/COLLECT: D writes one of these into shared memory keyed by
@@ -58,17 +58,17 @@ import (
 // THE OPERATION SEGMENT (the seam's missing half). The 69 bytes above are a VALUE:
 // "this much of this asset belongs to this owner on this rail". A value says what
 // moves; it does not say what to DO with it. That is why the D side could consume a
-// C->D intent, credit the taker's D account, and stop: it had been told nothing else.
+// C->D order, credit the taker's D account, and stop: it had been told nothing else.
 // Nothing placed an order, so nothing crossed, so no proceeds existed, so no D->C
 // settlement object was ever produced and the whole seam was unreachable by
 // construction.
 //
-// A C->D SWAP INTENT therefore carries a second, orthogonal segment — the OPERATION
+// A C->D SWAP ORDER therefore carries a second, orthogonal segment — the OPERATION
 // the taker authorized on C:
 //
 //	market(32) | side(1) | limitPrice(8) | size(8)  = 49 bytes
 //
-// appended to the value, giving a 118-byte intent object. The two segments are
+// appended to the value, giving a 118-byte order object. The two segments are
 // composed, not braided: the value head is byte-for-byte the same 69 bytes every
 // other consumer already reads (the golden vectors that pin it stay valid), and the
 // op tail is a separate value qualified by its own accessor. WIDTH IS THE
@@ -77,7 +77,7 @@ import (
 //
 //	69 bytes  -> a VALUE object: D->C settlements, D->C LP collects, C->D LP commits.
 //	            Those legs instruct nothing; they only move value. decodeAtomicObject.
-//	118 bytes -> a C->D SWAP INTENT: value + the CLOB operation. decodeIntentObject.
+//	118 bytes -> a C->D SWAP ORDER: value + the CLOB operation. decodeOrderObject.
 //
 // WHY THE OPERATION MUST BE IN THE OBJECT AND NOWHERE ELSE. The atomic object is the
 // only authenticated C->D channel. D cannot read C's logs, so the routing EVENT is
@@ -91,7 +91,7 @@ import (
 // limit is by definition its ceiling while a SELL's is its floor. Deriving them keeps
 // one declaration of each fact instead of two to cross-check.
 //
-// The remaining intent metadata (minAmountOut, recipient, deadline, nonce) is neither
+// The remaining order metadata (minAmountOut, recipient, deadline, nonce) is neither
 // value-bearing nor an instruction to the matcher; it rides in the C->D routing EVENT
 // (events.go) and is enforced on C at settlement.
 
@@ -101,7 +101,7 @@ import (
 type Rail uint8
 
 const (
-	// railSwap is the swap-fill / refund lane: SubmitSwapIntent writes it on C->D,
+	// railSwap is the swap-fill / refund lane: SubmitSwapOrder writes it on C->D,
 	// the dexvm's fill-settlement export (settleFromFills) writes it on D->C, and
 	// ImportSettlement is the ONLY C-side path that consumes it — debiting ONLY
 	// seamReserve. It is the ZERO value so an object whose lane is unstated defaults
@@ -129,14 +129,14 @@ const exportedOutputSize9999 = 1 + 20 + 32 + 8 + 8
 // full injective AssetID (assetID(Currency); native = all-zero); amount is the
 // integer asset unit count.
 //
-// The precompile only ever writes C->D INTENT/COMMIT objects, which carry NO matched
+// The precompile only ever writes C->D ORDER/COMMIT objects, which carry NO matched
 // input (the match happens later on D), so spent is ALWAYS 0 here — written as the
 // trailing zero word. The D side fills spent on the D->C proceeds leg (settleFromFills);
 // the precompile DECODES it in ImportSettlement. Keeping spent=0 on the C->D leg makes
 // the C->D object byte-identical with what the dexvm's executeImport expects (its
 // decodeExportedOutput requires exactly this width and ignores spent on an import).
 func encodeAtomicObject(rail Rail, owner common.Address, asset [32]byte, amount uint64) []byte {
-	// A C->D intent/commit object carries no matched input, so spent is always 0 here.
+	// A C->D order/commit object carries no matched input, so spent is always 0 here.
 	return encodeAtomicObjectSpent(rail, owner, asset, amount, 0)
 }
 
@@ -155,7 +155,7 @@ func encodeAtomicObjectSpent(rail Rail, owner common.Address, asset [32]byte, am
 	return v
 }
 
-// --- the OPERATION segment (C->D swap intents only) -----------------------------
+// --- the OPERATION segment (C->D swap orders only) -----------------------------
 
 // Side is the CLOB side the taker's operation takes. The wire bytes are pinned to
 // the matcher's own constants (dex/pkg/zapwire, dex/pkg/dchain sideBuy/sideSell), so
@@ -169,12 +169,12 @@ const (
 // limitPrice(8) | size(8) = 49 bytes. IDENTICAL to dex/pkg/dchain seamOpSize.
 const seamOpSize = 32 + 1 + 8 + 8
 
-// intentObjectSize9999 is the fixed C->D SWAP INTENT object width: the 69-byte value
+// orderObjectSize9999 is the fixed C->D SWAP ORDER object width: the 69-byte value
 // head plus the 49-byte operation tail = 118 bytes. IDENTICAL to dex/pkg/dchain
-// seamIntentObjectSize. A width that is neither 69 nor 118 is not an object of ours.
-const intentObjectSize9999 = exportedOutputSize9999 + seamOpSize
+// seamOrderObjectSize. A width that is neither 69 nor 118 is not an object of ours.
+const orderObjectSize9999 = exportedOutputSize9999 + seamOpSize
 
-// SeamOp is the CLOB operation a C->D swap intent instructs. Every field is a value
+// SeamOp is the CLOB operation a C->D swap order instructs. Every field is a value
 // the taker fixed on C when they signed the swap:
 //
 //   - Market     : the D market (poolId) the order targets.
@@ -224,21 +224,21 @@ func decodeSeamOp(b []byte) (SeamOp, bool) {
 	return op, true
 }
 
-// encodeIntentObject serializes a C->D SWAP INTENT: the canonical value head with
+// encodeOrderObject serializes a C->D SWAP ORDER: the canonical value head with
 // spent=0 (a C->D leg has matched nothing yet), followed by the operation tail. This
 // is the ONLY object the swap rail writes C->D, and the ONLY one D's import consumes.
-func encodeIntentObject(owner common.Address, asset [32]byte, amount uint64, op SeamOp) []byte {
-	v := make([]byte, 0, intentObjectSize9999)
+func encodeOrderObject(owner common.Address, asset [32]byte, amount uint64, op SeamOp) []byte {
+	v := make([]byte, 0, orderObjectSize9999)
 	v = append(v, encodeAtomicObjectSpent(railSwap, owner, asset, amount, 0)...)
 	return append(v, encodeSeamOp(op)...)
 }
 
-// decodeIntentObject reads back a C->D swap intent. ok=false for any width other than
-// the canonical 118 — so a 69-byte VALUE object (an old, op-less intent, or a
+// decodeOrderObject reads back a C->D swap order. ok=false for any width other than
+// the canonical 118 — so a 69-byte VALUE object (an old, op-less order, or a
 // settlement object misrouted here) is REFUSED rather than imported with an invented
 // operation. Fail closed: no operation, no import.
-func decodeIntentObject(v []byte) (owner common.Address, asset [32]byte, amount uint64, op SeamOp, ok bool) {
-	if len(v) != intentObjectSize9999 {
+func decodeOrderObject(v []byte) (owner common.Address, asset [32]byte, amount uint64, op SeamOp, ok bool) {
+	if len(v) != orderObjectSize9999 {
 		return common.Address{}, [32]byte{}, 0, SeamOp{}, false
 	}
 	rail, owner, asset, amount, _, headOK := decodeObjectHead(v[:exportedOutputSize9999])
@@ -253,7 +253,7 @@ func decodeIntentObject(v []byte) (owner common.Address, asset [32]byte, amount 
 }
 
 // decodeObjectHead reads the 69-byte VALUE head. It is the single definition of the
-// head field offsets, shared by the value-object decoder and the intent decoder, so
+// head field offsets, shared by the value-object decoder and the order decoder, so
 // the two readings of those bytes can never drift apart.
 func decodeObjectHead(v []byte) (rail Rail, owner common.Address, asset [32]byte, amount, spent uint64, ok bool) {
 	if len(v) != exportedOutputSize9999 {
@@ -280,9 +280,9 @@ func decodeAtomicObject(v []byte) (rail Rail, owner common.Address, asset [32]by
 	return decodeObjectHead(v)
 }
 
-// DeriveIntentID computes the deterministic id of a C->D atomic intent object.
+// DeriveOrderID computes the deterministic id of a C->D atomic order object.
 // It is the shared-memory UTXO key the object is PUT under (and that D's import
-// consumes), and it is INJECTIVE over the full identity so two distinct intents
+// consumes), and it is INJECTIVE over the full identity so two distinct orders
 // never collide:
 //
 //	SHA-256( domain | networkID | cChainID | dChainID |
@@ -305,10 +305,10 @@ func decodeAtomicObject(v []byte) (rail Rail, owner common.Address, asset [32]by
 // REPLAY/INJECTIVITY. Two distinct takers differ by account; the same taker's two
 // DIFFERENT swaps differ by asset/amount/market; the same taker's two IDENTICAL swaps
 // must use DISTINCT nonces (a reused tuple derives the same id and the second submit is
-// replay-rejected by the on-chain isIntentSubmitted guard — idempotent, never a second
+// replay-rejected by the on-chain isOrderSubmitted guard — idempotent, never a second
 // debit). The nonce is the user's order-nonce: it disambiguates repeats AND two swaps in
 // one tx (the caller supplies distinct nonces), replacing the former callIndex axis.
-func DeriveIntentID(
+func DeriveOrderID(
 	networkID uint32,
 	cChainID, dChainID ids.ID,
 	account common.Address,
@@ -318,7 +318,7 @@ func DeriveIntentID(
 	nonce uint64,
 ) ids.ID {
 	h := sha256.New()
-	h.Write([]byte(nativeIntentDomain))
+	h.Write([]byte(nativeOrderDomain))
 	var u4 [4]byte
 	binary.BigEndian.PutUint32(u4[:], networkID)
 	h.Write(u4[:])
@@ -337,16 +337,19 @@ func DeriveIntentID(
 	return ids.ID(out)
 }
 
-// nativeIntentDomain scopes the intent-id derivation so an id minted for the DEX
+// nativeOrderDomain scopes the order-id derivation so an id minted for the DEX
 // C->D atomic seam can never be confused with any other shared-memory object id.
-const nativeIntentDomain = "lux.dex.native.intent.v1"
+//
+// The literal is the hash input, not a label, so it does not track this identifier:
+// changing a byte of it moves every order id the seam has ever derived.
+const nativeOrderDomain = "lux.dex.native.intent.v1"
 
 // DerivePositionCommitID computes the deterministic id of a C->D LP POSITION-COMMIT
-// atomic object (intent kind DL01) — the C->D leg that FUNDS a D position. It is the
+// atomic object (order kind DL01) — the C->D leg that FUNDS a D position. It is the
 // shared-memory UTXO key the commit object is PUT under (and that D's import
 // consumes). It is derived with its OWN domain (positionCommitDomain) so a
-// position-commit id and a swap-intent id (DeriveIntentID, nativeIntentDomain) live
-// in DISJOINT id spaces — a swap intent object can NEVER be consumed as a position
+// position-commit id and a swap-order id (DeriveOrderID, nativeOrderDomain) live
+// in DISJOINT id spaces — a swap order object can NEVER be consumed as a position
 // commit, nor vice-versa, even with the same (account, asset, amount, market). The
 // 69-byte object wire (rail|owner|asset|amount|spent) is IDENTICAL so D imports both
 // natively; only the id DOMAIN (and the routing event KIND) distinguish the two rails.
@@ -358,7 +361,7 @@ const nativeIntentDomain = "lux.dex.native.intent.v1"
 // commits in one tx; (networkID, cChainID, dChainID) scope the object to one rail;
 // account/asset/amount/pool bind the economic payload so the id cannot be reused.
 //
-// DELIBERATE ASYMMETRY vs DeriveIntentID (txID+callIndex here, user NONCE there — do NOT
+// DELIBERATE ASYMMETRY vs DeriveOrderID (txID+callIndex here, user NONCE there — do NOT
 // "align" them into a consensus break). The SWAP id is chain-observable (derived from the
 // taker's DI01 nonce, no txID) because an OFF-CHAIN keeper must re-derive it from calldata
 // to correlate its fill watch. The LP commit id has NO such off-chain re-derivation: it is
@@ -401,7 +404,7 @@ func DerivePositionCommitID(
 }
 
 // positionCommitDomain scopes the position-commit-id derivation so a DL01 LP commit
-// object id can never collide with a DI01 swap-intent object id (nativeIntentDomain)
+// object id can never collide with a DI01 swap-order object id (nativeOrderDomain)
 // or any other shared-memory object id. This is the id-space half of the rail
 // separation (the routing-event KIND is the other half).
 const positionCommitDomain = "lux.dex.native.poscommit.v1"

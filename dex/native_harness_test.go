@@ -147,7 +147,7 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 		memdbBacking: backing,
 	}
 	// V4 pool: currency0 = native (0x0), currency1 = token 0x..02. zeroForOne = swap
-	// native in, token out. AmountSpecified < 0 (exact-input) for the native intent.
+	// native in, token out. AmountSpecified < 0 (exact-input) for the native order.
 	h.key = PoolKey{
 		Currency0:   Currency{Address: common.Address{}},
 		Currency1:   Currency{Address: common.HexToAddress("0x0000000000000000000000000000000000000002")},
@@ -155,7 +155,7 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 		TickSpacing: 60,
 		Hooks:       common.Address{},
 	}
-	// A cross-chain intent REQUIRES a price limit (see ErrNativeIntentNoPriceLimit):
+	// A cross-chain order REQUIRES a price limit (see ErrNativeOrderNoPriceLimit):
 	// the taker's order executes on D, in a block they do not control, so the seam
 	// refuses an unbounded order. The default harness swap therefore carries a real
 	// SqrtPriceLimitX96 — the shape a router actually sends.
@@ -218,7 +218,7 @@ func (h *settleHarness) wrapper() *contractStateDBWrapper {
 	return h.state.GetStateDB().(*contractStateDBWrapper)
 }
 
-// fundCallerNative seeds the caller's native balance so it can fund an intent.
+// fundCallerNative seeds the caller's native balance so it can fund an order.
 func (h *settleHarness) fundCallerNative(amount int64) {
 	h.state.stateDB.AddBalance(h.caller, uint256.NewInt(uint64(amount)))
 }
@@ -416,9 +416,9 @@ func (h *settleHarness) recordedObject(outputID ids.ID) []byte {
 
 // readCtoDObject simulates the dexvm's executeImport READ: it Gets the C->D object
 // the precompile PUT (keyed by the D chain), readable by D via Get(cChainID).
-func (h *settleHarness) readCtoDObject(t testing.TB, intentID ids.ID) ([]byte, bool) {
+func (h *settleHarness) readCtoDObject(t testing.TB, orderID ids.ID) ([]byte, bool) {
 	t.Helper()
-	vals, err := h.dSM.Get(h.cChainID, [][]byte{intentID[:]})
+	vals, err := h.dSM.Get(h.cChainID, [][]byte{orderID[:]})
 	if err != nil || len(vals) != 1 || len(vals[0]) == 0 {
 		return nil, false
 	}
@@ -426,98 +426,98 @@ func (h *settleHarness) readCtoDObject(t testing.TB, intentID ids.ID) ([]byte, b
 }
 
 // settlementCalldata builds a Phase-B swap calldata that consumes a D->C object,
-// bound to a standing per-taker swap intent for the caller (auto-seeded with ample
+// bound to a standing per-taker swap order for the caller (auto-seeded with ample
 // principal + no deadline) so the per-taker cap (MEDIUM) is satisfied. Tests that
-// exercise the cap/deadline directly seed their own intent and use
-// settlementCalldataFor with a specific intent id.
+// exercise the cap/deadline directly seed their own order and use
+// settlementCalldataFor with a specific order id.
 func (h *settleHarness) settlementCalldata(outputID ids.ID, amount uint64) []byte {
-	intentID := h.standingIntent(amount)
-	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, intentID, h.recordedObject(outputID)))
+	orderID := h.standingOrder(amount)
+	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, orderID, h.recordedObject(outputID)))
 }
 
-// settlementCalldataFor builds a Phase-B swap calldata naming a SPECIFIC intent id
-// (for the per-taker cap / deadline tests). `amount` only sizes the standing intent in
+// settlementCalldataFor builds a Phase-B swap calldata naming a SPECIFIC order id
+// (for the per-taker cap / deadline tests). `amount` only sizes the standing order in
 // settlementCalldata; the settled value IS the carried object's amount, never a
 // separate wire field.
-func (h *settleHarness) settlementCalldataFor(outputID ids.ID, amount uint64, intentID ids.ID) []byte {
+func (h *settleHarness) settlementCalldataFor(outputID ids.ID, amount uint64, orderID ids.ID) []byte {
 	_ = amount // the amount is inside the object; the wire no longer restates it.
-	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, intentID, h.recordedObject(outputID)))
+	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, orderID, h.recordedObject(outputID)))
 }
 
-// intentCalldata builds a Phase-A swap calldata. After the decomplect EVERY swap routes to
-// the native C<->D atomic seam: a plain (empty-hookData) swap is ALSO a Phase-A intent, and
+// orderCalldata builds a Phase-A swap calldata. After the decomplect EVERY swap routes to
+// the native C<->D atomic seam: a plain (empty-hookData) swap is ALSO a Phase-A order, and
 // an explicit DI01 tag is the same phase carrying an optional deadline/nonce. The async-seam
 // tests drive the DI01-tagged form (deadline 0 => defaulted to a finite reclaim horizon,
 // nonce 0) so they can pin the deadline/nonce; there is no longer any synchronous matcher an
 // untagged swap could take instead.
-func (h *settleHarness) intentCalldata() []byte {
-	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(0, 0))
+func (h *settleHarness) orderCalldata() []byte {
+	return buildSwapCalldata(h.key, h.params, EncodeOrderHookData(0, 0))
 }
 
-// intentCalldataWithDeadline builds a Phase-A swap calldata carrying an explicit
+// orderCalldataWithDeadline builds a Phase-A swap calldata carrying an explicit
 // deadline in the hookData body (nonce 0; the V4 SwapParams tuple is unchanged).
-func (h *settleHarness) intentCalldataWithDeadline(deadline uint64) []byte {
-	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(deadline, 0))
+func (h *settleHarness) orderCalldataWithDeadline(deadline uint64) []byte {
+	return buildSwapCalldata(h.key, h.params, EncodeOrderHookData(deadline, 0))
 }
 
-// intentCalldataWithNonce builds a Phase-A swap calldata carrying an explicit nonce
-// (and optional deadline) in the DI01 hookData — the taker's intent disambiguator that
-// is folded into the (chain-observable) intent id.
-func (h *settleHarness) intentCalldataWithNonce(deadline, nonce uint64) []byte {
-	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(deadline, nonce))
+// orderCalldataWithNonce builds a Phase-A swap calldata carrying an explicit nonce
+// (and optional deadline) in the DI01 hookData — the taker's order disambiguator that
+// is folded into the (chain-observable) order id.
+func (h *settleHarness) orderCalldataWithNonce(deadline, nonce uint64) []byte {
+	return buildSwapCalldata(h.key, h.params, EncodeOrderHookData(deadline, nonce))
 }
 
-// standingIntent lazily seeds (once) a per-taker swap intent for the caller covering
+// standingOrder lazily seeds (once) a per-taker swap order for the caller covering
 // the OUTPUT asset with ample principal and NO deadline, and returns its id. It is the
-// default intent settlementCalldata binds to so existing settle tests (which assert the
+// default order settlementCalldata binds to so existing settle tests (which assert the
 // object-bind / replay / rail axes) satisfy the per-taker cap without each restating it.
-func (h *settleHarness) standingIntent(minPrincipal uint64) ids.ID {
-	id := ids.ID{0x57, 0x7A, 0x11} // a fixed standing-intent id for the harness.
+func (h *settleHarness) standingOrder(minPrincipal uint64) ids.ID {
+	id := ids.ID{0x57, 0x7A, 0x11} // a fixed standing-order id for the harness.
 	db := newPoolStateAdapter(h.state)
-	rec := loadSwapIntentRecord(db, id)
-	if rec.Status != swapIntentOpen || rec.Remaining < minPrincipal {
+	rec := loadSwapOrderRecord(db, id)
+	if rec.Status != swapOrderOpen || rec.Remaining < minPrincipal {
 		// (Re)seed with generous principal so the cap never spuriously bites the
-		// object-bind tests; cap-specific tests use seedSwapIntent with exact principal.
+		// object-bind tests; cap-specific tests use seedSwapOrder with exact principal.
 		principal := minPrincipal * 4
 		if principal < 1_000_000 {
 			principal = 1_000_000
 		}
-		putSwapIntentRecord(db, id, swapIntentRecord{
+		putSwapOrderRecord(db, id, swapOrderRecord{
 			Owner:     h.caller,
 			AssetIn:   h.outAssetID(), // bound only on owner; asset axis is not cross-checked.
 			Remaining: principal,
 			Deadline:  0,
-			Status:    swapIntentOpen,
+			Status:    swapOrderOpen,
 		})
 	}
 	return id
 }
 
-// seedSwapIntent writes a per-taker swap intent record directly (the test analog of
-// SubmitSwapIntent's record write) and returns its id, so the per-taker cap / deadline
-// / reclaim tests have a precise intent (exact owner/principal/deadline) to bind to.
-func (h *settleHarness) seedSwapIntent(owner common.Address, assetIn [32]byte, principal, deadline uint64, id ids.ID) ids.ID {
-	putSwapIntentRecord(newPoolStateAdapter(h.state), id, swapIntentRecord{
+// seedSwapOrder writes a per-taker swap order record directly (the test analog of
+// SubmitSwapOrder's record write) and returns its id, so the per-taker cap / deadline
+// / reclaim tests have a precise order (exact owner/principal/deadline) to bind to.
+func (h *settleHarness) seedSwapOrder(owner common.Address, assetIn [32]byte, principal, deadline uint64, id ids.ID) ids.ID {
+	putSwapOrderRecord(newPoolStateAdapter(h.state), id, swapOrderRecord{
 		Owner:     owner,
 		AssetIn:   assetIn,
 		Remaining: principal,
 		Deadline:  deadline,
-		Status:    swapIntentOpen,
+		Status:    swapOrderOpen,
 	})
 	return id
 }
 
-// seedSwapIntentLimit seeds an intent carrying the taker's OWN recorded slippage limit
-// (priceLimit float64 bits, limitIsUpper side) — what SubmitSwapIntent persists from the
+// seedSwapOrderLimit seeds an order carrying the taker's OWN recorded slippage limit
+// (priceLimit float64 bits, limitIsUpper side) — what SubmitSwapOrder persists from the
 // taker's V4 SqrtPriceLimitX96. The MEV-floor redteam test uses it to prove ImportSettlement
 // enforces the RECORDED limit (taker-authenticated), independent of any keeper relay value.
-func (h *settleHarness) seedSwapIntentLimit(owner common.Address, assetIn [32]byte, principal, deadline uint64, priceLimit uint64, limitIsUpper bool, id ids.ID) ids.ID {
-	putSwapIntentRecord(newPoolStateAdapter(h.state), id, swapIntentRecord{
+func (h *settleHarness) seedSwapOrderLimit(owner common.Address, assetIn [32]byte, principal, deadline uint64, priceLimit uint64, limitIsUpper bool, id ids.ID) ids.ID {
+	putSwapOrderRecord(newPoolStateAdapter(h.state), id, swapOrderRecord{
 		Owner:        owner,
 		AssetIn:      assetIn,
 		Remaining:    principal,
 		Deadline:     deadline,
-		Status:       swapIntentOpen,
+		Status:       swapOrderOpen,
 		PriceLimit:   priceLimit,
 		LimitIsUpper: limitIsUpper,
 	})

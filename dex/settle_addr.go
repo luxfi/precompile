@@ -16,7 +16,7 @@ import (
 const LXSettleAddress = "0x0000000000000000000000000000000000009999"
 
 // poolManagerAddr9999 is the 0x9999 settlement address as a common.Address. All
-// 0x9999 native-seam state (the C->D intent set, the D->C settlement-consumed set,
+// 0x9999 native-seam state (the C->D order set, the D->C settlement-consumed set,
 // halt, config, per-asset vault) lives under this address; cross-chain atomic
 // objects route to/from it.
 var poolManagerAddr9999 = common.HexToAddress(LXSettleAddress)

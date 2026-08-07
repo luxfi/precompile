@@ -20,7 +20,7 @@ import (
 //
 // WHY A SEED IS NEEDED (the liveness gap FIX-4 closes): a swap-rail D->C settlement
 // credits the taker out of seamReserve[assetOut] (creditSettlementOutput). seamReserve
-// is funded by the tokenIn legs of OPPOSING-direction intents (an A->B taker locks A
+// is funded by the tokenIn legs of OPPOSING-direction orders (an A->B taker locks A
 // into seamReserve[A], funding a later B->A taker's A-out). So a BALANCED two-sided
 // taker flow self-funds: every asset a taker receives was locked by an opposing taker.
 // But the FIRST matched swap of an output asset — or a persistently imbalanced market

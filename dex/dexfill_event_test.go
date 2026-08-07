@@ -64,23 +64,23 @@ func TestDEXFillEvent_EmittedOnPhaseBCredit(t *testing.T) {
 	}
 }
 
-// TestDEXFillEvent_NotEmittedOnPhaseAIntent proves a Phase-A intent (which only
+// TestDEXFillEvent_NotEmittedOnPhaseAOrder proves a Phase-A order (which only
 // LOCKS input and creates a C->D object — no output credited) does NOT emit a
 // DEXFill. A fill log must correspond to an actual settled output, never to an
-// unmatched intent.
-func TestDEXFillEvent_NotEmittedOnPhaseAIntent(t *testing.T) {
+// unmatched order.
+func TestDEXFillEvent_NotEmittedOnPhaseAOrder(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
 
-	if _, err := h.runSwap(t, h.intentCalldata(), false); err != nil {
-		t.Fatalf("phase-A intent: %v", err)
+	if _, err := h.runSwap(t, h.orderCalldata(), false); err != nil {
+		t.Fatalf("phase-A order: %v", err)
 	}
 
 	wantSig := common.BytesToHash(crypto.Keccak256([]byte("DEXFill(bytes32,address,uint256,uint256)")))
 	for _, lg := range h.state.stateDB.Logs() {
 		if len(lg.Topics) > 0 && lg.Topics[0] == wantSig {
-			t.Fatal("Phase-A intent must NOT emit a DEXFill (no output credited)")
+			t.Fatal("Phase-A order must NOT emit a DEXFill (no output credited)")
 		}
 	}
 }
