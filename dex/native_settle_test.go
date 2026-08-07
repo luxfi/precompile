@@ -75,12 +75,25 @@ func Test9999Swap_CreatesCToDAtomicIntent(t *testing.T) {
 	if !ok {
 		t.Fatal("C->D atomic object not found in shared memory after intent")
 	}
-	rail, owner, asset, amount, _, decOK := decodeAtomicObject(raw)
+	owner, asset, amount, op, decOK := decodeIntentObject(raw)
 	if !decOK {
-		t.Fatal("C->D object malformed")
+		t.Fatalf("C->D object malformed (len=%d, want %d)", len(raw), intentObjectSize9999)
 	}
-	if rail != railSwap {
-		t.Fatalf("a swap intent C->D object must be stamped railSwap, got rail=%d", rail)
+	// THE OPERATION rides with the value. Without it D credits the taker's account
+	// and stops — nothing places an order, nothing crosses, no proceeds exist, and
+	// no D->C settlement object is ever produced. That is the whole reason the seam
+	// was unreachable, so the operation is asserted here, not just the value.
+	if op.Market != h.key.ID() {
+		t.Fatalf("C->D op market = %x, want the swapped pool %x", op.Market[:8], func() []byte { m := h.key.ID(); return m[:8] }())
+	}
+	if op.Side != seamSideSell {
+		t.Fatalf("a ZeroForOne (currency0-in) swap is a SELL, got side=%d", op.Side)
+	}
+	if op.LimitPrice == 0 {
+		t.Fatal("C->D op carries no price limit: an unbounded cross-chain order must never be minted")
+	}
+	if op.Size != 100 {
+		t.Fatalf("C->D op size = %d, want the 100 base units the SELL locked", op.Size)
 	}
 	if owner != h.caller {
 		t.Fatalf("C->D object owner = %s, want caller %s", owner.Hex(), h.caller.Hex())
@@ -421,9 +434,12 @@ func Test9999RoundTrip_CToDMatchDToC(t *testing.T) {
 	if !ok {
 		t.Fatal("round-trip: D could not read the C->D object")
 	}
-	dRail, dOwner, dAsset, dAmount, _, _ := decodeAtomicObject(raw)
-	if dRail != railSwap || dOwner != h.caller || dAsset != h.inAssetID() || dAmount != 100 {
-		t.Fatalf("round-trip: C->D object mismatch on the D side (rail=%d)", dRail)
+	dOwner, dAsset, dAmount, dOp, dOK := decodeIntentObject(raw)
+	if !dOK || dOwner != h.caller || dAsset != h.inAssetID() || dAmount != 100 {
+		t.Fatalf("round-trip: C->D object mismatch on the D side (ok=%v)", dOK)
+	}
+	if dOp.Market != h.key.ID() || dOp.Side != seamSideSell || dOp.LimitPrice == 0 || dOp.Size != 100 {
+		t.Fatalf("round-trip: C->D operation mismatch on the D side: %+v", dOp)
 	}
 
 	// --- D: "match" 100 native-in for 90 token-out, EXPORT a D->C object. The dexvm

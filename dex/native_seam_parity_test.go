@@ -4,6 +4,7 @@
 package dex
 
 import (
+	"bytes"
 	"encoding/hex"
 	"testing"
 
@@ -103,5 +104,93 @@ func TestSeamWire_WrongWidthRejected(t *testing.T) {
 		if _, _, _, _, _, ok := decodeAtomicObject(make([]byte, n)); ok {
 			t.Fatalf("a %d-byte object must NOT decode (only the canonical %d is valid)", n, exportedOutputSize9999)
 		}
+	}
+}
+
+// --- the C->D SWAP INTENT object (value + operation) -----------------------------
+
+// intentParityGoldenHex is the CROSS-REPO golden for the 118-byte C->D swap intent:
+// the 69-byte value head (parityGoldenHex with spent=0, because a C->D leg has matched
+// nothing yet) followed by the 49-byte operation tail
+//
+//	market     = b0b1..cf   (32, ascending from 0xB0)
+//	side       = 01         (sell)
+//	limitPrice = 0x0000000077359400  (2.0 on the PriceInt x1e8 grid)
+//	size       = 0x00000000000003e8  (1000 base units)
+//
+// dex/pkg/dchain pins the IDENTICAL string. The two repos cannot import each other, so
+// this vector is the only thing keeping the operation wire in lockstep — and an
+// operation that decodes differently on the two sides is a taker's order executed at
+// terms they never authorized.
+const intentParityGoldenHex = "00" + // rail (swap)
+	"112233445566778899aabbccddeeff0102030405" + // owner (20)
+	"a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf" + // asset (32)
+	"0102030405060708" + // amount (8)
+	"0000000000000000" + // spent  (8) — always 0 on a C->D leg
+	"b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf" + // market (32)
+	"01" + // side (sell)
+	"000000000bebc200" + // limitPrice (8) = 2.0 * 1e8
+	"00000000000003e8" //   size       (8) = 1000
+
+func parityMarket() [32]byte {
+	var m [32]byte
+	for i := range m {
+		m[i] = byte(0xB0 + i)
+	}
+	return m
+}
+
+func parityOp() SeamOp {
+	return SeamOp{Market: parityMarket(), Side: seamSideSell, LimitPrice: 2 * priceScale, Size: 1000}
+}
+
+// TestIntentWire_GoldenMatchesDChain pins the intent encoder against the cross-repo
+// golden, and pins that the VALUE HEAD is byte-identical to the 69-byte object every
+// other consumer already reads. The head must not move: the settlement and LP rails
+// still decode exactly those bytes.
+func TestIntentWire_GoldenMatchesDChain(t *testing.T) {
+	want, err := hex.DecodeString(intentParityGoldenHex)
+	if err != nil {
+		t.Fatalf("bad golden hex: %v", err)
+	}
+	if len(want) != intentObjectSize9999 {
+		t.Fatalf("golden width %d != intentObjectSize9999 %d — the intent wire changed on ONE side "+
+			"only. Update precompile/dex and dex/pkg/dchain in lockstep.", len(want), intentObjectSize9999)
+	}
+	got := encodeIntentObject(parityOwner(), parityAsset(), 0x0102030405060708, parityOp())
+	if hex.EncodeToString(got) != intentParityGoldenHex {
+		t.Fatalf("C->D intent wire DIVERGED from the D-Chain golden:\n got=%s\nwant=%s",
+			hex.EncodeToString(got), intentParityGoldenHex)
+	}
+	// The value head is the SAME 69 bytes, spent=0.
+	head := encodeAtomicObjectSpent(railSwap, parityOwner(), parityAsset(), 0x0102030405060708, 0)
+	if !bytes.Equal(got[:exportedOutputSize9999], head) {
+		t.Fatal("the intent's value head diverged from the canonical 69-byte object: the settlement " +
+			"and LP rails decode exactly those bytes and would break")
+	}
+}
+
+// TestIntentWire_WidthIsTheDiscriminator pins the fail-closed property that makes the
+// two object generations safe to run past each other: a 69-byte VALUE object is NOT an
+// intent (no operation => nothing to execute => refuse rather than invent one), and a
+// 118-byte INTENT is not a settlement object.
+func TestIntentWire_WidthIsTheDiscriminator(t *testing.T) {
+	value := encodeAtomicObjectSpent(railSwap, parityOwner(), parityAsset(), 5, 0)
+	if _, _, _, _, ok := decodeIntentObject(value); ok {
+		t.Fatal("a 69-byte VALUE object decoded as an intent: D would have to invent the taker's " +
+			"market/side/limit — an order they never authorized")
+	}
+	intent := encodeIntentObject(parityOwner(), parityAsset(), 5, parityOp())
+	if _, _, _, _, _, ok := decodeAtomicObject(intent); ok {
+		t.Fatal("a 118-byte INTENT decoded as a settlement value object: the settlement rails must " +
+			"refuse it, not read 69 of its bytes")
+	}
+	if _, _, _, _, ok := decodeIntentObject(intent[:len(intent)-1]); ok {
+		t.Fatal("a truncated intent decoded")
+	}
+	// Round trip.
+	owner, asset, amount, op, ok := decodeIntentObject(intent)
+	if !ok || owner != parityOwner() || asset != parityAsset() || amount != 5 || op != parityOp() {
+		t.Fatalf("intent round trip lost a field: ok=%v owner=%s amount=%d op=%+v", ok, owner.Hex(), amount, op)
 	}
 }

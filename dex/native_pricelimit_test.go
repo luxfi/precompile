@@ -103,7 +103,10 @@ func TestBuildIntentRequest_CarriesPriceLimit(t *testing.T) {
 		t.Fatalf("MEDIUM NOT FIXED: buildIntentRequest dropped the slippage floor (PriceLimit=0) for a swap " +
 			"carrying a real SqrtPriceLimitX96.")
 	}
-	if !req.LimitIsUpper {
+	if req.Side != seamSideBuy {
+		t.Fatalf("a !zeroForOne intent must be a BUY (side=%d)", req.Side)
+	}
+	if !limitIsUpper(req.Side) {
 		t.Fatalf("a !zeroForOne (BUY) intent must carry an UPPER price bound")
 	}
 	if got := float64(req.PriceLimit) / priceScale; math.Abs(got-3.0) > 1e-6 {

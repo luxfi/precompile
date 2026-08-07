@@ -155,7 +155,11 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 		TickSpacing: 60,
 		Hooks:       common.Address{},
 	}
-	h.params = SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-100), SqrtPriceLimitX96: big.NewInt(0)}
+	// A cross-chain intent REQUIRES a price limit (see ErrNativeIntentNoPriceLimit):
+	// the taker's order executes on D, in a block they do not control, so the seam
+	// refuses an unbounded order. The default harness swap therefore carries a real
+	// SqrtPriceLimitX96 — the shape a router actually sends.
+	h.params = SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-100), SqrtPriceLimitX96: sqrtX96For(2.0)}
 
 	// The native-seam chain identity (networkID, cChainID) and the D-Chain peer are
 	// supplied at RUNTIME by the host via the AtomicState capability (nativeAtomicState

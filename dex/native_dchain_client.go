@@ -86,6 +86,15 @@ var (
 	ErrNativeFundsShort      = errors.New("dex: sender has insufficient balance to fund the C->D intent")
 	ErrNativeERC20Vault      = errors.New("dex: ERC-20 intent requires an erc20Vault-capable StateDB")
 	ErrNativeIntentReplay    = errors.New("dex: C->D intent id already submitted (replay)")
+	// ErrNativeIntentNoPriceLimit: a C->D swap intent with no price limit. Every seam
+	// order is a LIMIT IOC order — the taker cannot re-price mid-flight and their order
+	// executes in a block they do not control, so an unbounded cross-chain market order
+	// is refused rather than sent out naked (the spent-witness MEV floor is vacuous at a
+	// zero limit).
+	ErrNativeIntentNoPriceLimit = errors.New("dex: C->D swap intent requires a price limit (unbounded cross-chain market orders are refused)")
+	// ErrNativeIntentDustSize: the intent's base-unit size floors to zero at the taker's
+	// own limit — a swap too small to execute. Refused before any principal is locked.
+	ErrNativeIntentDustSize = errors.New("dex: C->D swap intent size floors to zero at the taker's price limit")
 	ErrNativeNoSettlement    = errors.New("dex: no D->C settlement object found for the claimed id")
 	ErrNativeSettleReplay    = errors.New("dex: D->C settlement object already consumed (replay)")
 	ErrNativeSettleMalformed = errors.New("dex: D->C settlement object is malformed")
@@ -167,15 +176,23 @@ type IntentRequest struct {
 	MinAmountOut *big.Int       // taker slippage floor (routing only; D enforces at match)
 	// PriceLimit is the taker's worst-acceptable CLOB price (quote-per-base, uint64
 	// FIXED-POINT ×priceScale on the PriceInt grid) derived from the V4 SqrtPriceLimitX96
-	// (priceLimitToCLOB). LimitIsUpper says which side it bounds (true = a BUY ceiling,
-	// false = a SELL floor). The keeper carries these onto the settling relay
-	// (RelayOrderTx.PriceLimit/LimitIsUpper) and the dexvm settle path REFUSES a fill worse
-	// than the limit — the bounded sandwich/MEV guard. Emitted in the routing event so the
-	// keeper does not re-derive them. 0 = no limit.
-	PriceLimit   uint64
-	LimitIsUpper bool
-	Recipient    common.Address // where the D->C settlement must credit (object owner on return)
-	Deadline     uint64         // order deadline (routing only)
+	// (priceLimitToCLOB). The dexvm settle path REFUSES a fill worse than the limit — the
+	// bounded sandwich/MEV guard — and Phase B re-checks it against the spent witness. It
+	// is REQUIRED on the swap seam: a cross-chain taker cannot re-price mid-flight and
+	// their order executes in a block they do not control, so an unbounded intent is
+	// refused at submission (ErrNativeIntentNoPriceLimit) rather than sent out naked.
+	PriceLimit uint64
+	// Side is the CLOB side the D order takes (seamSideBuy / seamSideSell) — the
+	// PRIMITIVE fact of the swap's direction. Which end the limit bounds follows from
+	// it (a BUY's limit is its ceiling, a SELL's its floor: limitIsUpper), so the bound
+	// is derived at its consumers rather than stored twice.
+	Side uint8
+	// Size is the base-unit quantity the D order trades. It, Market, Side and
+	// PriceLimit are the four facts the C->D intent object carries so D can place the
+	// taker's order without inventing any of it.
+	Size      uint64
+	Recipient common.Address // where the D->C settlement must credit (object owner on return)
+	Deadline  uint64         // order deadline (routing only)
 	// Nonce is the taker's intent disambiguator, carried in the swap's DI01 hookData and
 	// folded into DeriveIntentID. It makes the intent id CHAIN-OBSERVABLE (the off-chain
 	// keeper derives the same id from the same calldata — the watch-correlation fix) and
@@ -214,6 +231,16 @@ func (c *NativeDChainClient) SubmitSwapIntent(
 	}
 	if req.AmountIn == 0 {
 		return ids.Empty, ErrNativeBadAmount
+	}
+	// THE OPERATION MUST BE COMPLETE BEFORE ANY VALUE IS LOCKED. D executes the order
+	// this object describes and can invent none of it, so an intent missing a limit or
+	// a size is refused here — at the boundary, before the taker's principal moves —
+	// rather than travelling to D to be rejected there with the funds already locked.
+	if req.PriceLimit == 0 {
+		return ids.Empty, ErrNativeIntentNoPriceLimit
+	}
+	if req.Size == 0 {
+		return ids.Empty, ErrNativeIntentDustSize
 	}
 	stateDB := newPoolStateAdapter(state)
 
@@ -269,17 +296,26 @@ func (c *NativeDChainClient) SubmitSwapIntent(
 			Deadline:     req.Deadline,
 			Status:       swapIntentOpen,
 			PriceLimit:   req.PriceLimit,
-			LimitIsUpper: req.LimitIsUpper,
+			LimitIsUpper: limitIsUpper(req.Side),
 		})
 
-		// STAGE the C->D atomic object (rail=railSwap, owner=account, asset=assetIn,
-		// amount=locked) keyed by intentID under the D chain's partition. We do NOT Apply to
-		// shared memory here — a direct Apply commits OUTSIDE the EVM revert scope, so a tx
-		// that reverts after this would leave a C->D object with no backing C debit => MINT.
-		// Staging into StateDB is revert-aware (discarded atomically with a rolled-back lock);
-		// the host flushes staged Puts at BLOCK ACCEPT. The railSwap tag makes the swap's D->C
-		// settlement object consumable ONLY by ImportSettlement.
-		obj := encodeAtomicObject(railSwap, req.Account, req.AssetIn, locked)
+		// STAGE the C->D swap-intent object keyed by intentID under the D chain's
+		// partition. We do NOT Apply to shared memory here — a direct Apply commits OUTSIDE
+		// the EVM revert scope, so a tx that reverts after this would leave a C->D object
+		// with no backing C debit => MINT. Staging into StateDB is revert-aware (discarded
+		// atomically with a rolled-back lock); the host flushes staged Puts at BLOCK ACCEPT.
+		// The railSwap tag makes the swap's D->C settlement object consumable ONLY by
+		// ImportSettlement.
+		// The object carries the VALUE (rail/owner/asset/amount) and the OPERATION
+		// (market, side, limit, size) the taker authorized. The operation is what makes
+		// the intent executable on D: without it D can credit the taker's account and
+		// nothing else, which is exactly why the seam produced no trade.
+		obj := encodeIntentObject(req.Account, req.AssetIn, locked, SeamOp{
+			Market:     req.MarketID,
+			Side:       req.Side,
+			LimitPrice: req.PriceLimit,
+			Size:       req.Size,
+		})
 		stageAtomicPut(stateDB, dChainID, intentID, obj)
 
 		// Emit the routing metadata for the keeper that builds the D order.

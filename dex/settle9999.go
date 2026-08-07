@@ -306,16 +306,53 @@ func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, d
 	if !mag.IsUint64() || mag.Sign() <= 0 {
 		return IntentRequest{}, ErrInvalidAmount
 	}
-	priceLimit, limitIsUpper := priceLimitToCLOB(params)
+	// THE OPERATION the C->D object carries. The CLOB convention on a V4 pool is
+	// base = currency0, quote = currency1 (priceLimitToCLOB computes quote-per-base as
+	// currency1 per currency0), so the swap direction IS the side: ZeroForOne spends
+	// currency0 — the base — and is a SELL; the other direction spends quote and is a
+	// BUY. That is one derivation from one fact, not a second copy of it.
+	priceLimit, _ := priceLimitToCLOB(params)
+	side := seamSideBuy
+	if params.ZeroForOne {
+		side = seamSideSell
+	}
+	// A LIMIT is REQUIRED across the seam. The taker's order executes on D, in a block
+	// they do not control, and they cannot re-price mid-flight; an unbounded market
+	// order there is precisely the sandwich the spent-witness floor exists to refuse,
+	// and with priceLimit == 0 that floor is vacuous. Refuse at submission rather than
+	// lock the taker's principal behind a check that cannot protect them.
+	if priceLimit == 0 {
+		return IntentRequest{}, ErrNativeIntentNoPriceLimit
+	}
+	// SIZE in base units. A SELL spends the base it locked, so the locked amount IS the
+	// size. A BUY spends quote, so the size is the most base that quote can buy at the
+	// taker's own limit: floor(amountIn * priceScale / limit) — exact integer division
+	// on the PriceInt grid, so orderLock's ceil(size*limit/priceScale) can never exceed
+	// what was locked. A size that floors to zero is a swap too small to execute at the
+	// taker's own limit; refuse it rather than lock principal for a guaranteed no-op.
+	amountIn := mag.Uint64()
+	size := amountIn
+	if side == seamSideBuy {
+		q := new(big.Int).Mul(mag, big.NewInt(priceScale))
+		q.Quo(q, new(big.Int).SetUint64(priceLimit))
+		if !q.IsUint64() {
+			return IntentRequest{}, ErrInvalidAmount
+		}
+		size = q.Uint64()
+	}
+	if size == 0 {
+		return IntentRequest{}, ErrNativeIntentDustSize
+	}
 	return IntentRequest{
 		Account:      caller,
 		AssetIn:      in,
-		AmountIn:     mag.Uint64(),
+		AmountIn:     amountIn,
 		AssetInAddr:  assetAddress(in),
 		MarketID:     key.ID(),
 		MinAmountOut: minAmountOut(params),
 		PriceLimit:   priceLimit,
-		LimitIsUpper: limitIsUpper,
+		Side:         side,
+		Size:         size,
 		Recipient:    caller,
 		Deadline:     deadline,
 		Nonce:        nonce,
