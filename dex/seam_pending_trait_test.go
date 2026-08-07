@@ -27,9 +27,19 @@ import (
 // the D side with a comment naming this exact companion change, and the C side
 // never made it.
 //
-// The golden is sha256("lux.dex.native.intent.pending.v1") — the same domain
+// The golden is sha256("lux.dex.native.intent.pending.v2") — the same domain
 // string dex/pkg/dchain hashes.
-const seamPendingTraitGoldenHex = "6d4307f9774ca9f016f890486262e504f06bb756fae621fffe99876a569348f2"
+//
+// WHY .v2. A v1 intent object carried VALUE ONLY (69 bytes); a v2 intent carries
+// value + the CLOB OPERATION (118 bytes) so D can place the taker's order instead
+// of crediting an account and stopping. A node that cannot read the operation must
+// never import the value — it would have to invent the market/side/limit. Rotating
+// the domain makes the two generations mutually INVISIBLE rather than mutually
+// confusing: a v1 D node enumerates v1, sees no v2 object, and emits no import; a
+// v2 D node enumerates v2 and never touches a stale op-less v1 object. Neither can
+// execute the other's intent, so the changeover costs seam liveness alone — never a
+// divergent state root.
+const seamPendingTraitGoldenHex = "5f10f9ad8c53b78043df24cb69f8a5acb745351107470cb7e19f44748fe8bd5b"
 
 func TestSeamPendingTrait_MatchesDChainGolden(t *testing.T) {
 	want, err := hex.DecodeString(seamPendingTraitGoldenHex)

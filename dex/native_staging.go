@@ -26,12 +26,27 @@ import (
 //
 // CROSS-REPO CONTRACT. This value is byte-pinned against the D-Chain's own
 // constant (dex/pkg/dchain SeamPendingTrait, same domain string) the same way the
-// 69-byte object wire is pinned by golden vector. The two repos cannot import
-// each other, so drift here is a silent break — D would enumerate a trait C never
-// writes, find nothing, and every swap would sit unmatched forever with no error
-// anywhere. The golden test in this package is what makes that loud.
+// object wire is pinned by golden vector. The two repos cannot import each other,
+// so drift here is a silent break — D would enumerate a trait C never writes, find
+// nothing, and every swap would sit unmatched forever with no error anywhere. The
+// golden test in this package is what makes that loud.
+//
+// THE .v2 DOMAIN IS THE FLAG-DAY SWITCH. A v1 intent object carried VALUE ONLY
+// (69 bytes, no operation); a v2 intent carries value + operation (118 bytes), and
+// a node that cannot read the operation must never import the value — it would have
+// to invent the taker's market/side/limit. Rotating the domain makes the two
+// generations mutually invisible instead of mutually confusing:
+//
+//   - a v1 D node enumerates the v1 trait, finds no v2 object, emits no import, and
+//     goes on validating every non-seam block normally. Inert, never divergent.
+//   - a v2 D node enumerates the v2 trait, so a stale v1 object written by a
+//     not-yet-upgraded C node is never imported. Fail closed; the taker's principal
+//     is reclaimable on C after the intent deadline.
+//
+// So neither generation can ever execute the other's intent, and the changeover
+// costs liveness on the seam alone — never a divergent state root.
 var SeamPendingTrait = func() []byte {
-	d := sha256.Sum256([]byte("lux.dex.native.intent.pending.v1"))
+	d := sha256.Sum256([]byte("lux.dex.native.intent.pending.v2"))
 	return d[:]
 }()
 
@@ -295,11 +310,15 @@ func collectRange(stateDB stateKV, fromSeq, toSeq uint64) (map[ids.ID]*atomic.Re
 			copy(dChainID[:], rec[1:33])
 			copy(key[:], rec[33:65])
 			object := rec[65:]
-			// The object must be a well-formed atomic value (rail|owner|asset|amount).
-			// The owner Trait is read from the decoded value (offset past the rail byte),
-			// so the destination indexes the object by recipient — the same Trait the
-			// precompile/dexvm export side writes.
-			rail, owner, _, _, _, ok := decodeAtomicObject(object)
+			// The object must be a well-formed atomic object. Its VALUE HEAD is the
+			// same 69 bytes at both canonical widths (a 69-byte LP commit / D->C
+			// settlement, a 118-byte C->D swap intent), and the owner Trait is read
+			// from that head — so the destination indexes the object by recipient
+			// exactly as before, for both widths. Any other width is fatal.
+			if len(object) != exportedOutputSize9999 && len(object) != intentObjectSize9999 {
+				return nil, ErrStagedOpMalformed
+			}
+			rail, owner, _, _, _, ok := decodeObjectHead(object[:exportedOutputSize9999])
 			if !ok {
 				return nil, ErrStagedOpMalformed
 			}

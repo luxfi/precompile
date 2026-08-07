@@ -93,7 +93,7 @@ func emitNativeRoutingEvent(stateDB StateDB, objectID, dChainID ids.ID, req Inte
 	// priceLimit is the CLOB quote-per-base limit as float64 bits, limitIsUpper its side.
 	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(req.PriceLimit))...)
 	var limitFlag uint64
-	if req.LimitIsUpper {
+	if limitIsUpper(req.Side) {
 		limitFlag = 1
 	}
 	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(limitFlag))...)
