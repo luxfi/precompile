@@ -5,6 +5,7 @@ package dex
 
 import (
 	"bytes"
+	"errors"
 	"math/big"
 	"testing"
 
@@ -94,7 +95,7 @@ func Test9999Swap_CreatesCToDAtomicIntent(t *testing.T) {
 
 // Test9999Swap_DoesNotUseBLSReceiptPath — a hookData shaped like the OLD BLS settlement
 // envelope ("D991" tag) must NOT settle a fill from a "cert". After the decomplect that tag
-// is neither DI01 nor DS01, so decodeSwapPhase treats it as a PHASE A intent (opaque body
+// is neither DI01 nor DS02, so decodeSwapPhase treats it as a PHASE A intent (opaque body
 // ignored): the input is LOCKED and an intent id is returned — there is no synchronous
 // matcher and no BLS cert/receipt credit path. The decisive property: the caller is NEVER
 // credited an output. An opaque/unknown blob can, at most, lock input into a reclaimable
@@ -200,30 +201,55 @@ func Test9999Settle_ConsumesDToCAtomicOutputOnce(t *testing.T) {
 	}
 }
 
-// Test9999Settle_BindsDOutputAssetOwnerAmount — the credit is BOUND to the RECORDED
-// D->C object: a claim whose asset / owner / amount does not match the recorded
-// object reverts (the asset/owner-aliasing fix). Exercised via ImportSettlement
-// directly so each axis can be perturbed.
+// Test9999Settle_BindsDOutputAssetOwnerAmount — the credit is BOUND to the D->C object
+// bytes the TRANSACTION carries: a claim whose asset or owner disagrees with those bytes
+// reverts at execution (the asset/owner-aliasing fix). The AMOUNT axis moved one level up:
+// execution can no longer read shared memory (that read is what made a settled swap
+// unsyncable — see settle_import.go), so an object claiming more than D exported EXECUTES.
+// It is caught at Block.Verify, where the declaration this execution emitted fails to
+// authenticate against the recorded object and the BLOCK is rejected. Exercised via
+// ImportSettlement directly so each axis can be perturbed; each sub-case owns its outputID
+// because a sub-case that executes CONSUMES one.
 func Test9999Settle_BindsDOutputAssetOwnerAmount(t *testing.T) {
 	h := newSettleHarness(t)
 	h.fundVaultOut(10_000)
 	h.fundVaultNativeOut(10_000)
 
-	outputID := ids.ID{0xDE, 0x02}
-	// Recorded object: owner=caller, asset=outToken, amount=300.
-	h.putDtoCObject(t, h.caller, outputID, h.outAssetID(), 300)
-
-	// (a) AMOUNT mismatch: claim 301 against recorded 300 -> reject.
-	_, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Amount: 301, Recipient: h.caller,
+	// (a) AMOUNT: shared memory records 300; the transaction carries an object stating 301.
+	// Execution credits the CARRIED amount — it has nothing else to bind to — and DECLARES
+	// those bytes. The declaration is what convicts it: it commits to the 301-bytes while
+	// shared memory holds the 300-bytes, so the two hashes differ.
+	amountID := ids.ID{0xDE, 0x02}
+	h.putDtoCObject(t, h.caller, amountID, h.outAssetID(), 300)
+	credited, err := h.c.atomicImport(h.state, SettlementClaim{
+		OutputID: amountID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 301),
 	})
-	if err != ErrNativeSettleAmount {
-		t.Fatalf("amount mismatch must reject with ErrNativeSettleAmount, got: %v", err)
+	if err != nil {
+		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", err)
 	}
+	if credited != 301 {
+		t.Fatalf("execution credits the CARRIED object's amount: credited %d, want 301", credited)
+	}
+	imports := DecodeSettleImports(h.state.stateDB.Logs())
+	if len(imports) != 1 {
+		t.Fatalf("expected exactly 1 declared import, got %d", len(imports))
+	}
+	recorded, gerr := h.cSM.Get(h.dChainID, [][]byte{amountID[:]})
+	if gerr != nil || len(recorded) != 1 {
+		t.Fatalf("could not read the recorded object back: %v", gerr)
+	}
+	if SettleObjectHash(recorded[0]) == imports[0].ObjectHash {
+		t.Fatal("an inflated amount produced the SAME commitment as the recorded object — the block rule would be unenforceable")
+	}
+	// A host running verifyDexAtomicImports over these logs rejects the block here.
 
-	// (b) ASSET mismatch: claim native asset against a token-recorded object -> reject.
+	// (b) ASSET mismatch: claim the native asset against an object denominated in the
+	// output token -> reject. Both sides ride in the transaction, so this stays an
+	// execution-time refusal.
 	_, err = h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: [32]byte{}, AssetAddr: common.Address{}, Amount: 300, Recipient: h.caller,
+		OutputID: ids.ID{0xDE, 0x03}, Asset: [32]byte{}, AssetAddr: common.Address{}, Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 300),
 	})
 	if err != ErrNativeSettleAsset {
 		t.Fatalf("asset mismatch must reject with ErrNativeSettleAsset, got: %v", err)
@@ -233,16 +259,20 @@ func Test9999Settle_BindsDOutputAssetOwnerAmount(t *testing.T) {
 	// consume a victim's object).
 	attacker := common.HexToAddress("0x9999999999999999999999999999999999999999")
 	_, err = h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Amount: 300, Recipient: attacker,
+		OutputID: ids.ID{0xDE, 0x04}, Asset: h.outAssetID(), AssetAddr: h.outToken(), Recipient: attacker,
+		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 300),
 	})
 	if err != ErrNativeSettleOwner {
 		t.Fatalf("owner mismatch must reject with ErrNativeSettleOwner, got: %v", err)
 	}
 
 	// (d) the FULLY-bound claim succeeds and credits 300.
+	boundID := ids.ID{0xDE, 0x05}
+	h.putDtoCObject(t, h.caller, boundID, h.outAssetID(), 300)
 	before := h.tokenBal(h.outToken(), h.caller)
-	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Amount: 300, Recipient: h.caller,
+	credited, err = h.c.atomicImport(h.state, SettlementClaim{
+		OutputID: boundID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 300),
 	})
 	if err != nil {
 		t.Fatalf("fully-bound claim must succeed: %v", err)
@@ -314,7 +344,8 @@ func Test9999Collect_ImportsDExportToC(t *testing.T) {
 	h.putDtoCObject(t, h.caller, outputID, h.outAssetID(), 120)
 	before := h.tokenBal(h.outToken(), h.caller)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Amount: 120, Recipient: h.caller,
+		OutputID: outputID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 120),
 	})
 	if err != nil {
 		t.Fatalf("collect import: %v", err)
@@ -343,7 +374,8 @@ func Test9999Cancel_ImportsDRefundToC(t *testing.T) {
 	h.putDtoCObject(t, h.caller, outputID, h.inAssetID(), 75)
 	before := h.state.stateDB.GetBalance(h.caller).ToBig()
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: h.inAssetID(), AssetAddr: common.Address{}, Amount: 75, Recipient: h.caller,
+		OutputID: outputID, Asset: h.inAssetID(), AssetAddr: common.Address{}, Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, h.inAssetID(), 75),
 	})
 	if err != nil {
 		t.Fatalf("cancel refund import: %v", err)
@@ -417,12 +449,19 @@ func Test9999RoundTrip_CToDMatchDToC(t *testing.T) {
 	}
 }
 
-// TestRED_9999_LiveMatcherAnswerCannotCreditC — THE CRITICAL TEST. It proves the
-// ship rule: it is IMPOSSIBLE to credit C unless a D->C shared-memory object is
+// TestRED_9999_LiveMatcherAnswerCannotCreditC — THE CRITICAL TEST. It proves the ship
+// rule: it is IMPOSSIBLE to keep a C credit unless a D->C shared-memory object is
 // consumed. We hand the precompile every "live matcher answer" an attacker could
 // fabricate — a settlement claim naming a huge amount, the right asset, the right
-// recipient — but WITHOUT a real D->C object in shared memory. The credit MUST NOT
-// happen.
+// recipient — but WITHOUT a real D->C object in shared memory.
+//
+// The rule did not weaken, it MOVED. Execution keeps the refusals it can make on the
+// bytes the transaction carries (an absent object is not the canonical width), and it
+// can no longer read shared memory — that read is what made a settled swap unsyncable
+// (settle_import.go). So a WELL-FORMED forgery executes; what it cannot do is survive.
+// It necessarily DECLARES the bytes it used, shared memory holds nothing at that key,
+// and every validator — including the producer, which verifies its own block before
+// proposing it — rejects the BLOCK. Nothing it credited is ever accepted.
 func TestRED_9999_LiveMatcherAnswerCannotCreditC(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
@@ -438,26 +477,48 @@ func TestRED_9999_LiveMatcherAnswerCannotCreditC(t *testing.T) {
 	attackerOutBefore := h.tokenBal(h.outToken(), h.caller)
 	attackerNativeBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
 
-	// (1) Via the 0x9999 swap selector: a settlement-phase hookData naming an object
-	// id that was NEVER written to shared memory. ImportSettlement's Get returns no
-	// object -> revert, NO credit.
+	// (1) Via the 0x9999 swap selector: a settlement-phase hookData naming an object id
+	// that was NEVER written to shared memory. A keeper reads nothing off D for it, so the
+	// hookData carries no object bytes and the fixed-width body gate refuses it -> NO credit.
 	fakeID := ids.ID{0xBA, 0xD0}
-	if _, err := h.runSwap(t, h.settlementCalldata(fakeID, 999_999), false); err == nil {
-		t.Fatal("settle of a non-existent D->C object MUST revert (no object => no credit)")
+	if _, err := h.runSwap(t, h.settlementCalldata(fakeID, 999_999), false); !errors.Is(err, ErrSettleBodyMalformed) {
+		t.Fatalf("settle carrying no object bytes MUST fail closed, got: %v", err)
 	}
 
 	// (2) Directly via ImportSettlement with a fully-formed claim (the strongest
-	// "live matcher answer": correct asset, correct recipient, huge amount) but no
-	// object in shared memory. MUST revert ErrNativeNoSettlement.
+	// "live matcher answer": correct asset, correct recipient, huge amount) but no object
+	// bytes at all. Execution has no shared memory to consult, so the refusal it CAN make
+	// is on the bytes themselves: an absent object is not the canonical width.
 	_, err := h.c.atomicImport(h.state, SettlementClaim{
 		OutputID:  fakeID,
 		Asset:     h.outAssetID(),
 		AssetAddr: h.outToken(),
-		Amount:    999_999,
 		Recipient: h.caller,
+		// No object: nothing was ever exported at fakeID, so the claim carries none.
 	})
-	if err != ErrNativeNoSettlement {
-		t.Fatalf("a fabricated live-matcher answer with NO D->C object MUST revert ErrNativeNoSettlement, got: %v", err)
+	if !errors.Is(err, ErrImportObjectMalformed) {
+		t.Fatalf("a fabricated live-matcher answer carrying NO object bytes MUST fail closed, got: %v", err)
+	}
+
+	// (2b) The same attack with WELL-FORMED fabricated bytes — run in a FRESH harness so
+	// the balance assertions below stay clean. This one EXECUTES (it must: execution is a
+	// pure function of the block), but it DECLARES the bytes it used, and shared memory
+	// holds NOTHING at that key. Absence is itself the disproof: the declaration cannot
+	// authenticate, so the block is rejected and the credit is never accepted.
+	forgeH := newSettleHarness(t)
+	forgeH.registerMarket(t)
+	forgeH.fundVaultOut(1_000_000)
+	forged := encodeAtomicObjectSpent(railSwap, forgeH.caller, forgeH.outAssetID(), 999_999, 0)
+	forgedCalldata := buildSwapCalldata(forgeH.key, forgeH.params,
+		EncodeSettlementHookData(fakeID, forgeH.standingIntent(999_999), forged))
+	if _, ferr := forgeH.runSwap(t, forgedCalldata, false); ferr != nil {
+		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", ferr)
+	}
+	if n := len(DecodeSettleImports(forgeH.state.stateDB.Logs())); n != 1 {
+		t.Fatalf("a forged settlement must still DECLARE what it consumed; got %d declarations", n)
+	}
+	if vals, gerr := forgeH.cSM.Get(forgeH.dChainID, [][]byte{fakeID[:]}); gerr == nil && len(vals) == 1 && len(vals[0]) > 0 {
+		t.Fatal("the forged object must NOT be in shared memory — the test premise is broken")
 	}
 
 	// (3) Even a Phase-A intent (the only other swap path) credits NOTHING — it can
@@ -556,7 +617,9 @@ func (c *SettleContract) atomicImport(s *nativeAtomicState, claim SettlementClai
 		id[0], id[1], id[2] = 0x57, 0x7A, 0x11
 		copy(id[12:32], claim.Recipient.Bytes())
 		rec := loadSwapIntentRecord(db, id)
-		if rec.Status != swapIntentOpen || rec.Remaining < claim.Amount {
+		// The claimed value is the carried object's amount (no separate Amount field).
+		_, _, _, objAmount, _, _ := decodeAtomicObject(claim.Object)
+		if rec.Status != swapIntentOpen || rec.Remaining < objAmount {
 			putSwapIntentRecord(db, id, swapIntentRecord{
 				Owner: claim.Recipient, AssetIn: claim.Asset, Remaining: 1_000_000_000, Status: swapIntentOpen,
 			})

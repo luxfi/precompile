@@ -39,7 +39,8 @@ func TestFIX4_FirstFillRevertsWithoutSeed(t *testing.T) {
 	obj := ids.ID{0xF1, 0x00, 0x01}
 	h.putDtoCObjectRail(t, railSwap, h.caller, obj, native, 250)
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: native, AssetAddr: common.Address{}, Amount: 250, Recipient: h.caller,
+		OutputID: obj, Asset: native, AssetAddr: common.Address{}, Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, native, 250),
 	}); err != ErrNativeSettleUnbacked {
 		t.Fatalf("an unseeded first fill MUST revert ErrNativeSettleUnbacked, got: %v", err)
 	}
@@ -67,7 +68,8 @@ func TestFIX4_OperatorSeedBacksFirstFill(t *testing.T) {
 	h.putDtoCObjectRail(t, railSwap, h.caller, obj, native, 250)
 	before := h.state.stateDB.GetBalance(h.caller).ToBig()
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: native, AssetAddr: common.Address{}, Amount: 250, Recipient: h.caller,
+		OutputID: obj, Asset: native, AssetAddr: common.Address{}, Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, native, 250),
 	})
 	if err != nil || credited != 250 {
 		t.Fatalf("a seam-seeded first fill must settle 250: credited=%d err=%v", credited, err)

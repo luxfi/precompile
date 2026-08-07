@@ -204,7 +204,8 @@ func TestRED_RevertAfterDToCRemoveCannotBurnUserFunds(t *testing.T) {
 
 	// A settlement consume STAGES a Remove (and credited C in StateDB).
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Amount: 200, Recipient: h.caller,
+		OutputID: outputID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Recipient: h.caller,
+		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 200),
 	})
 	if err != nil || credited != 200 {
 		t.Fatalf("settle import: credited=%d err=%v", credited, err)

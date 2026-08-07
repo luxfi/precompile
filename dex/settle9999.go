@@ -200,7 +200,10 @@ func SettleSwap(
 	blockNumber := state.GetBlockContext().Number().Uint64()
 	blockTimestamp := state.GetBlockContext().Timestamp()
 
-	phase, body, taggedIntent := decodeSwapPhase(hookData)
+	phase, body, taggedIntent, perr := decodeSwapPhase(hookData)
+	if perr != nil {
+		return nil, suppliedGas, perr
+	}
 	switch phase {
 	case swapPhaseSettlement:
 		// PHASE B — consume a D->C atomic settlement object and credit C.
