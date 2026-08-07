@@ -55,11 +55,45 @@ import (
 //     ImportPositionCollect (railLP) consumes it ONCE and credits C value. C is
 //     credited ONLY by consuming a D->C object OF THE MATCHING RAIL.
 //
-// The 69-byte object carries the VALUE-BEARING identity (rail/owner/asset/amount)
-// the atomic conservation binds, plus the price-binding spent witness. The richer
-// order metadata (marketID, minAmountOut, recipient, deadline) is NOT value-bearing —
-// it rides in the C->D intent EVENT (events.go) the keeper reads to build the D order.
-// The atomic object alone moves value; the metadata only routes it.
+// THE OPERATION SEGMENT (the seam's missing half). The 69 bytes above are a VALUE:
+// "this much of this asset belongs to this owner on this rail". A value says what
+// moves; it does not say what to DO with it. That is why the D side could consume a
+// C->D intent, credit the taker's D account, and stop: it had been told nothing else.
+// Nothing placed an order, so nothing crossed, so no proceeds existed, so no D->C
+// settlement object was ever produced and the whole seam was unreachable by
+// construction.
+//
+// A C->D SWAP INTENT therefore carries a second, orthogonal segment — the OPERATION
+// the taker authorized on C:
+//
+//	market(32) | side(1) | limitPrice(8) | size(8)  = 49 bytes
+//
+// appended to the value, giving a 118-byte intent object. The two segments are
+// composed, not braided: the value head is byte-for-byte the same 69 bytes every
+// other consumer already reads (the golden vectors that pin it stay valid), and the
+// op tail is a separate value qualified by its own accessor. WIDTH IS THE
+// DISCRIMINATOR — 69 and 118 are distinct fixed widths, so a decode can never be
+// steered between the two readings:
+//
+//	69 bytes  -> a VALUE object: D->C settlements, D->C LP collects, C->D LP commits.
+//	            Those legs instruct nothing; they only move value. decodeAtomicObject.
+//	118 bytes -> a C->D SWAP INTENT: value + the CLOB operation. decodeIntentObject.
+//
+// WHY THE OPERATION MUST BE IN THE OBJECT AND NOWHERE ELSE. The atomic object is the
+// only authenticated C->D channel. D cannot read C's logs, so the routing EVENT is
+// not a source D may bind to; anything D is not handed in the object, D would have to
+// invent — and an invented market/side/limit is an order the taker never authorized.
+// Carrying it here makes the operation as strongly bound as the value: one object,
+// one atomic consumption, one authorization.
+//
+// isMarket and limitIsUpper are NOT carried, because they are not independent facts:
+// every seam order is a LIMIT order (the limit is required, see SeamOp), and a BUY's
+// limit is by definition its ceiling while a SELL's is its floor. Deriving them keeps
+// one declaration of each fact instead of two to cross-check.
+//
+// The remaining intent metadata (minAmountOut, recipient, deadline, nonce) is neither
+// value-bearing nor an instruction to the matcher; it rides in the C->D routing EVENT
+// (events.go) and is enforced on C at settlement.
 
 // Rail is the cross-chain object's lane discriminator (wire byte 0). It is the
 // H1-closing property that makes a D->C object UNAMBIGUOUSLY one rail, so a C-side
@@ -121,6 +155,118 @@ func encodeAtomicObjectSpent(rail Rail, owner common.Address, asset [32]byte, am
 	return v
 }
 
+// --- the OPERATION segment (C->D swap intents only) -----------------------------
+
+// Side is the CLOB side the taker's operation takes. The wire bytes are pinned to
+// the matcher's own constants (dex/pkg/zapwire, dex/pkg/dchain sideBuy/sideSell), so
+// the byte D reads out of the object is the byte D's order book consumes.
+const (
+	seamSideBuy  uint8 = 0
+	seamSideSell uint8 = 1
+)
+
+// seamOpSize is the fixed OPERATION segment width: market(32) | side(1) |
+// limitPrice(8) | size(8) = 49 bytes. IDENTICAL to dex/pkg/dchain seamOpSize.
+const seamOpSize = 32 + 1 + 8 + 8
+
+// intentObjectSize9999 is the fixed C->D SWAP INTENT object width: the 69-byte value
+// head plus the 49-byte operation tail = 118 bytes. IDENTICAL to dex/pkg/dchain
+// seamIntentObjectSize. A width that is neither 69 nor 118 is not an object of ours.
+const intentObjectSize9999 = exportedOutputSize9999 + seamOpSize
+
+// SeamOp is the CLOB operation a C->D swap intent instructs. Every field is a value
+// the taker fixed on C when they signed the swap:
+//
+//   - Market     : the D market (poolId) the order targets.
+//   - Side       : seamSideBuy / seamSideSell.
+//   - LimitPrice : the worst acceptable price on the PriceInt grid (quote-per-base
+//     x 1e8). REQUIRED, non-zero. Every seam order is a LIMIT IOC order:
+//     a cross-chain taker cannot re-price mid-flight and their order
+//     executes in a block they do not control, so an unbounded market
+//     order across the seam is exactly the unbounded-MEV case the spent
+//     witness exists to prevent. C refuses a zero limit at submission and
+//     D refuses a zero-limit op at import — the same rule, both ends.
+//   - Size       : the base-unit quantity to trade.
+type SeamOp struct {
+	Market     [32]byte
+	Side       uint8
+	LimitPrice uint64
+	Size       uint64
+}
+
+// limitIsUpper reports which end of the price range the taker's limit bounds: a BUY's
+// limit is a CEILING (reject a realized price above it), a SELL's is a FLOOR. It is a
+// pure function of Side, so the bound is never stored alongside the side as a second
+// copy of one fact.
+func limitIsUpper(side uint8) bool { return side == seamSideBuy }
+
+// encodeSeamOp serializes the operation segment. Fixed width, big-endian, no padding
+// — the same discipline as the value head.
+func encodeSeamOp(op SeamOp) []byte {
+	b := make([]byte, seamOpSize)
+	copy(b[0:32], op.Market[:])
+	b[32] = op.Side
+	binary.BigEndian.PutUint64(b[33:41], op.LimitPrice)
+	binary.BigEndian.PutUint64(b[41:49], op.Size)
+	return b
+}
+
+// decodeSeamOp is the inverse over an EXACTLY seamOpSize-wide tail.
+func decodeSeamOp(b []byte) (SeamOp, bool) {
+	if len(b) != seamOpSize {
+		return SeamOp{}, false
+	}
+	var op SeamOp
+	copy(op.Market[:], b[0:32])
+	op.Side = b[32]
+	op.LimitPrice = binary.BigEndian.Uint64(b[33:41])
+	op.Size = binary.BigEndian.Uint64(b[41:49])
+	return op, true
+}
+
+// encodeIntentObject serializes a C->D SWAP INTENT: the canonical value head with
+// spent=0 (a C->D leg has matched nothing yet), followed by the operation tail. This
+// is the ONLY object the swap rail writes C->D, and the ONLY one D's import consumes.
+func encodeIntentObject(owner common.Address, asset [32]byte, amount uint64, op SeamOp) []byte {
+	v := make([]byte, 0, intentObjectSize9999)
+	v = append(v, encodeAtomicObjectSpent(railSwap, owner, asset, amount, 0)...)
+	return append(v, encodeSeamOp(op)...)
+}
+
+// decodeIntentObject reads back a C->D swap intent. ok=false for any width other than
+// the canonical 118 — so a 69-byte VALUE object (an old, op-less intent, or a
+// settlement object misrouted here) is REFUSED rather than imported with an invented
+// operation. Fail closed: no operation, no import.
+func decodeIntentObject(v []byte) (owner common.Address, asset [32]byte, amount uint64, op SeamOp, ok bool) {
+	if len(v) != intentObjectSize9999 {
+		return common.Address{}, [32]byte{}, 0, SeamOp{}, false
+	}
+	rail, owner, asset, amount, _, headOK := decodeObjectHead(v[:exportedOutputSize9999])
+	if !headOK || rail != railSwap {
+		return common.Address{}, [32]byte{}, 0, SeamOp{}, false
+	}
+	op, opOK := decodeSeamOp(v[exportedOutputSize9999:])
+	if !opOK {
+		return common.Address{}, [32]byte{}, 0, SeamOp{}, false
+	}
+	return owner, asset, amount, op, true
+}
+
+// decodeObjectHead reads the 69-byte VALUE head. It is the single definition of the
+// head field offsets, shared by the value-object decoder and the intent decoder, so
+// the two readings of those bytes can never drift apart.
+func decodeObjectHead(v []byte) (rail Rail, owner common.Address, asset [32]byte, amount, spent uint64, ok bool) {
+	if len(v) != exportedOutputSize9999 {
+		return 0, common.Address{}, [32]byte{}, 0, 0, false
+	}
+	rail = Rail(v[0])
+	copy(owner[:], v[1:21])
+	copy(asset[:], v[21:53])
+	amount = binary.BigEndian.Uint64(v[53:61])
+	spent = binary.BigEndian.Uint64(v[61:69])
+	return rail, owner, asset, amount, spent, true
+}
+
 // decodeAtomicObject is the inverse: it reads back the (rail, owner, asset, amount,
 // spent) a consumed cross-chain object RECORDED in shared memory. ok=false for any
 // value that is not EXACTLY the canonical width, so a corrupt/garbage record is never
@@ -131,15 +277,7 @@ func encodeAtomicObjectSpent(rail Rail, owner common.Address, asset [32]byte, am
 // ONLY on a D->C swap proceeds leg (the MEV-floor witness ImportSettlement checks);
 // the LP-collect and staging consumers ignore it.
 func decodeAtomicObject(v []byte) (rail Rail, owner common.Address, asset [32]byte, amount, spent uint64, ok bool) {
-	if len(v) != exportedOutputSize9999 {
-		return 0, common.Address{}, [32]byte{}, 0, 0, false
-	}
-	rail = Rail(v[0])
-	copy(owner[:], v[1:21])
-	copy(asset[:], v[21:53])
-	amount = binary.BigEndian.Uint64(v[53:61])
-	spent = binary.BigEndian.Uint64(v[61:69])
-	return rail, owner, asset, amount, spent, true
+	return decodeObjectHead(v)
 }
 
 // DeriveIntentID computes the deterministic id of a C->D atomic intent object.
