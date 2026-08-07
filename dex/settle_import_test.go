@@ -39,7 +39,7 @@ func TestSettlementReExecutesWithoutSharedMemory(t *testing.T) {
 	live := newSettleHarness(t)
 	live.installDefaultMarketResolver(t)
 	live.fundVaultOut(int64(settled))
-	intentID := live.standingIntent(settled)
+	orderID := live.standingOrder(settled)
 	live.putDtoCObject(t, live.caller, outputID, live.outAssetID(), settled)
 
 	object := live.recordedObject(outputID)
@@ -47,7 +47,7 @@ func TestSettlementReExecutesWithoutSharedMemory(t *testing.T) {
 		t.Fatalf("harness produced a %d-byte object, want %d", len(object), exportedOutputSize9999)
 	}
 	calldata := buildSwapCalldata(live.key, live.params,
-		EncodeSettlementHookData(outputID, intentID, object))
+		EncodeSettlementHookData(outputID, orderID, object))
 
 	liveRet, _, liveErr := SettleSwap(live.state, live.caller, calldata, 1_000_000, false)
 	if liveErr != nil {
@@ -56,14 +56,14 @@ func TestSettlementReExecutesWithoutSharedMemory(t *testing.T) {
 	liveBal := live.state.stateDB.GetBalance(live.caller)
 
 	// --- Node 2: the REPLAY view. Shared memory is empty. -----------------------
-	// Same intent, same vault backing, same calldata — but nothing was ever put
+	// Same order, same vault backing, same calldata — but nothing was ever put
 	// into shared memory, exactly as a bootstrapping node sees it after the object
 	// has been consumed and removed by the accept that this block already caused.
 	replay := newSettleHarness(t)
 	replay.installDefaultMarketResolver(t)
 	replay.fundVaultOut(int64(settled))
-	if got := replay.seedSwapIntent(replay.caller, replay.inAssetID(), settled, 0, intentID); got != intentID {
-		t.Fatalf("replay harness seeded intent %s, want %s", got, intentID)
+	if got := replay.seedSwapOrder(replay.caller, replay.inAssetID(), settled, 0, orderID); got != orderID {
+		t.Fatalf("replay harness seeded order %s, want %s", got, orderID)
 	}
 	if _, err := replay.cSM.Get(replay.dChainID, [][]byte{outputID[:]}); err == nil {
 		t.Fatal("replay harness must start with the object ABSENT from shared memory")
@@ -95,11 +95,11 @@ func TestSettlementDeclarationAuthenticatesTheObject(t *testing.T) {
 	h := newSettleHarness(t)
 	h.installDefaultMarketResolver(t)
 	h.fundVaultOut(int64(settled))
-	intentID := h.standingIntent(settled)
+	orderID := h.standingOrder(settled)
 	h.putDtoCObject(t, h.caller, outputID, h.outAssetID(), settled)
 	object := h.recordedObject(outputID)
 
-	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, intentID, object))
+	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, orderID, object))
 	if _, _, err := SettleSwap(h.state, h.caller, calldata, 1_000_000, false); err != nil {
 		t.Fatalf("settlement failed: %v", err)
 	}
@@ -147,12 +147,12 @@ func TestForgedObjectIsDeclaredAndThereforeRejectable(t *testing.T) {
 	h := newSettleHarness(t)
 	h.installDefaultMarketResolver(t)
 	h.fundVaultOut(int64(inflated))
-	intentID := h.standingIntent(inflated)
+	orderID := h.standingOrder(inflated)
 	h.putDtoCObject(t, h.caller, outputID, h.outAssetID(), real)
 
 	// Fabricate an object claiming 1e6 where D exported 10.
 	forged := encodeAtomicObjectSpent(railSwap, h.caller, h.outAssetID(), inflated, 0)
-	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, intentID, forged))
+	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, orderID, forged))
 
 	if _, _, err := SettleSwap(h.state, h.caller, calldata, 1_000_000, false); err != nil {
 		t.Fatalf("execution should bind the carried bytes without consulting shared memory: %v", err)
@@ -180,10 +180,10 @@ func TestMalformedObjectRefusedAtExecution(t *testing.T) {
 	h := newSettleHarness(t)
 	h.installDefaultMarketResolver(t)
 	h.fundVaultOut(100)
-	intentID := h.standingIntent(50)
+	orderID := h.standingOrder(50)
 
 	short := make([]byte, exportedOutputSize9999-1)
-	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, intentID, short))
+	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, orderID, short))
 	_, _, err := SettleSwap(h.state, h.caller, calldata, 1_000_000, false)
 	// A short object shortens the whole hookData body, so the fixed-width body gate
 	// catches it first; either refusal is correct and both are hard errors.
@@ -195,16 +195,16 @@ func TestMalformedObjectRefusedAtExecution(t *testing.T) {
 	}
 }
 
-// TestRetiredDS01NeverBecomesAnIntent is the MIXED-FLEET safety test, and it guards
+// TestRetiredDS01NeverBecomesAnOrder is the MIXED-FLEET safety test, and it guards
 // the one outcome worse than a revert.
 //
 // decodeSwapPhase's fallback for unrecognized hookData is PHASE A. So a stale DS01
 // settlement arriving at a node running this build would, without an explicit
-// refusal, be silently re-read as an INTENT and LOCK the sender's input instead of
+// refusal, be silently re-read as an ORDER and LOCK the sender's input instead of
 // settling it. Refusing the retired tag by name is what keeps a rolling upgrade from
 // converting stale settle traffic into locked funds.
-func TestRetiredDS01NeverBecomesAnIntent(t *testing.T) {
-	// A DS01-tagged body of the old width: outputID | amount | intentID.
+func TestRetiredDS01NeverBecomesAnOrder(t *testing.T) {
+	// A DS01-tagged body of the old width: outputID | amount | orderID.
 	old := make([]byte, 0, 4+96)
 	old = append(old, 'D', 'S', '0', '1')
 	old = append(old, make([]byte, 96)...)
@@ -226,7 +226,7 @@ func TestRetiredDS01NeverBecomesAnIntent(t *testing.T) {
 		t.Fatalf("SettleSwap must refuse a retired DS01 hookData, got %v", serr)
 	}
 	if after := h.state.stateDB.GetBalance(h.caller); before.Cmp(after) != 0 {
-		t.Fatalf("a refused DS01 swap moved value: %s -> %s (it was re-read as an intent and locked funds)", before, after)
+		t.Fatalf("a refused DS01 swap moved value: %s -> %s (it was re-read as an order and locked funds)", before, after)
 	}
 }
 

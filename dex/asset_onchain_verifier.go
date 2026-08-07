@@ -53,7 +53,7 @@ type codeStater interface {
 // codeSizeAssetVerifier is the precompile's concrete dexcore.OnChainAssetVerifier. It
 // proves an ERC-20 has live code via the codeStater capability; native is always real;
 // a UTXO is deferred to the registry's X-Chain proof. It holds the code-size reader, not
-// the whole StateDB, so it is a thin, intent-revealing adapter.
+// the whole StateDB, so it is a thin, order-revealing adapter.
 type codeSizeAssetVerifier struct {
 	code codeStater
 }

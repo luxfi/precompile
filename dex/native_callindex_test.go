@@ -11,8 +11,8 @@ import (
 	"github.com/luxfi/ids"
 )
 
-// native_callindex_test.go is the intent-id regression suite for the CHAIN-OBSERVABLE id
-// model (the watch-correlation fix). DeriveIntentID now binds (networkID, cChainID,
+// native_callindex_test.go is the order-id regression suite for the CHAIN-OBSERVABLE id
+// model (the watch-correlation fix). DeriveOrderID now binds (networkID, cChainID,
 // dChainID, account, assetIn, amountIn, marketID, NONCE) — NO txID. The nonce is the
 // taker's own disambiguator, carried in the swap's DI01 hookData, so:
 //   - the id derives ONLY from values knowable BEFORE the tx lands (no post-landing
@@ -28,19 +28,19 @@ import (
 // no longer consumes it — the user nonce is the disambiguator.)
 
 // invokeSwapNonce drives ONE Phase-A SettleSwap invocation carrying `nonce` in its DI01
-// hookData. It returns the raw output (a 32-byte intent id for Phase A) and the error.
+// hookData. It returns the raw output (a 32-byte order id for Phase A) and the error.
 func (h *settleHarness) invokeSwapNonce(t testing.TB, nonce uint64, readOnly bool) ([]byte, error) {
 	t.Helper()
-	return h.runSwap(t, h.intentCalldataWithNonce(0, nonce), readOnly)
+	return h.runSwap(t, h.orderCalldataWithNonce(0, nonce), readOnly)
 }
 
-// TestIntentID_DeterministicAndCollisionFreeAcrossNonces — two real Phase-A swaps in ONE
+// TestOrderID_DeterministicAndCollisionFreeAcrossNonces — two real Phase-A swaps in ONE
 // tx with the SAME account/asset/amount/market but DISTINCT nonces must produce DISTINCT
-// intent ids (collision-free), and re-executing the identical calls reproduces
+// order ids (collision-free), and re-executing the identical calls reproduces
 // BYTE-IDENTICAL ids (deterministic, txID-independent).
-func TestIntentID_DeterministicAndCollisionFreeAcrossNonces(t *testing.T) {
+func TestOrderID_DeterministicAndCollisionFreeAcrossNonces(t *testing.T) {
 	// run executes both swaps once over a fresh harness with a given txID and returns the
-	// two intent ids in order. The txID is varied across runs to PROVE the id no longer
+	// two order ids in order. The txID is varied across runs to PROVE the id no longer
 	// depends on it (the watch-correlation fix).
 	run := func(txID ids.ID) (ids.ID, ids.ID) {
 		h := newSettleHarness(t)
@@ -71,10 +71,10 @@ func TestIntentID_DeterministicAndCollisionFreeAcrossNonces(t *testing.T) {
 
 	// COLLISION-FREE on the nonce axis: same params, nonces 1 vs 2 => distinct ids.
 	if a1 == a2 {
-		t.Fatal("COLLISION: two same-params swaps with distinct nonces must have distinct intent ids")
+		t.Fatal("COLLISION: two same-params swaps with distinct nonces must have distinct order ids")
 	}
 	if a1 == (ids.ID{}) || a2 == (ids.ID{}) {
-		t.Fatal("intent ids must be non-empty")
+		t.Fatal("order ids must be non-empty")
 	}
 
 	// TXID-INDEPENDENT + DETERMINISTIC: re-run with a DIFFERENT txID. The ids MUST be
@@ -82,18 +82,18 @@ func TestIntentID_DeterministicAndCollisionFreeAcrossNonces(t *testing.T) {
 	// off-chain side, which cannot know the txID before signing, derives the same id).
 	b1, b2 := run(ids.ID{0xEF, 0x01})
 	if a1 != b1 || a2 != b2 {
-		t.Fatalf("INTENT ID MUST BE TXID-INDEPENDENT (watch-correlation fix): the same (account,asset,"+
+		t.Fatalf("ORDER ID MUST BE TXID-INDEPENDENT (watch-correlation fix): the same (account,asset,"+
 			"amount,market,nonce) produced (%x,%x) under one txID but (%x,%x) under another — the id must "+
 			"derive only from chain-observable, pre-signing values.", a1, a2, b1, b2)
 	}
 }
 
-// TestIntentID_OffChainEqualsOnChain is the DECISIVE watch-correlation proof: the id the
+// TestOrderID_OffChainEqualsOnChain is the DECISIVE watch-correlation proof: the id the
 // off-chain keeper derives (from the economic tuple + nonce, with NO txID) EQUALS the id
-// the on-chain SubmitSwapIntent mints. Pre-fix the off-chain side substituted a zero txID
+// the on-chain SubmitSwapOrder mints. Pre-fix the off-chain side substituted a zero txID
 // while the chain used the real txID, so the two never matched and the watch could not
-// correlate. Now both call DeriveIntentID with the SAME chain-observable inputs.
-func TestIntentID_OffChainEqualsOnChain(t *testing.T) {
+// correlate. Now both call DeriveOrderID with the SAME chain-observable inputs.
+func TestOrderID_OffChainEqualsOnChain(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(10_000)
@@ -101,7 +101,7 @@ func TestIntentID_OffChainEqualsOnChain(t *testing.T) {
 
 	const nonce uint64 = 42
 
-	// ON-CHAIN: run the real Phase-A swap; it returns the minted intent id.
+	// ON-CHAIN: run the real Phase-A swap; it returns the minted order id.
 	out, err := h.invokeSwapNonce(t, nonce, false)
 	if err != nil {
 		t.Fatalf("on-chain swap: %v", err)
@@ -113,23 +113,23 @@ func TestIntentID_OffChainEqualsOnChain(t *testing.T) {
 	// cChainID, dChainID, account, assetIn, amountIn, marketID, nonce), WITHOUT the txID.
 	in, _ := swapAssetDirection(h.key, h.params)
 	amountIn := new(big.Int).Abs(h.params.AmountSpecified).Uint64()
-	offChain := DeriveIntentID(
+	offChain := DeriveOrderID(
 		h.state.NetworkID(), h.state.CChainID(), h.state.DChainID(),
 		h.caller, in, amountIn, h.key.ID(), nonce,
 	)
 
 	if offChain != onChain {
-		t.Fatalf("WATCH CORRELATION BROKEN: off-chain-derived id %x != on-chain id %x for the same intent. "+
+		t.Fatalf("WATCH CORRELATION BROKEN: off-chain-derived id %x != on-chain id %x for the same order. "+
 			"The keeper's watch keys on the off-chain id; if it differs from the chain's id, the watch never "+
 			"correlates against the live chain.", offChain, onChain)
 	}
 	t.Logf("WATCH CORRELATION OK: off-chain id == on-chain id == %x (txID-independent)", onChain)
 }
 
-// TestDeriveIntentID_PureOnNonce — DeriveIntentID is collision-free purely on the nonce
+// TestDeriveOrderID_PureOnNonce — DeriveOrderID is collision-free purely on the nonce
 // axis: holding every other field fixed, distinct nonces yield distinct ids and the same
 // nonce reproduces the same id. This is the algebraic core the disambiguation relies on.
-func TestDeriveIntentID_PureOnNonce(t *testing.T) {
+func TestDeriveOrderID_PureOnNonce(t *testing.T) {
 	net := uint32(1)
 	c := ids.ID{0xCC}
 	d := ids.ID{0xDD}
@@ -139,12 +139,12 @@ func TestDeriveIntentID_PureOnNonce(t *testing.T) {
 
 	seen := make(map[ids.ID]uint64)
 	for i := uint64(0); i < 256; i++ {
-		id := DeriveIntentID(net, c, d, acct, asset, 100, market, i)
+		id := DeriveOrderID(net, c, d, acct, asset, 100, market, i)
 		if prev, dup := seen[id]; dup {
-			t.Fatalf("COLLISION: nonce %d and %d derived the same intent id", prev, i)
+			t.Fatalf("COLLISION: nonce %d and %d derived the same order id", prev, i)
 		}
 		seen[id] = i
-		if id != DeriveIntentID(net, c, d, acct, asset, 100, market, i) {
+		if id != DeriveOrderID(net, c, d, acct, asset, 100, market, i) {
 			t.Fatalf("NON-DETERMINISTIC: nonce %d re-derivation differs", i)
 		}
 	}
@@ -174,7 +174,7 @@ func TestFIX4_SettleSwapIsNonReentrant(t *testing.T) {
 
 	// A SettleSwap entering while the guard is held must refuse — no lock, no object.
 	seqBefore := ReadStagedAtomicSeq(h.state.stateDB)
-	_, err := h.runSwap(t, h.intentCalldata(), false)
+	_, err := h.runSwap(t, h.orderCalldata(), false)
 	if err != ErrCustodyReentrant {
 		t.Fatalf("re-entrant SettleSwap must refuse with ErrCustodyReentrant, got: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestFIX4_SettleSwapIsNonReentrant(t *testing.T) {
 
 // TestFIX4_SettleSwapReleasesGuardForSequentialCalls — the guard is per-call (released
 // on exit), so SEQUENTIAL settles in distinct frames both succeed. Proves the FIX-4
-// guard does not wedge the normal two-phase flow (intent then settlement).
+// guard does not wedge the normal two-phase flow (order then settlement).
 func TestFIX4_SettleSwapReleasesGuardForSequentialCalls(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
@@ -196,8 +196,8 @@ func TestFIX4_SettleSwapReleasesGuardForSequentialCalls(t *testing.T) {
 		t.Fatalf("first settle: %v", err)
 	}
 	// The guard is free again — a second settle in a fresh frame succeeds. It carries a
-	// DISTINCT nonce so it is a distinct intent (the same nonce would be a replay of the
-	// first intent, correctly rejected — that is the intent-id one-time guard, not the
+	// DISTINCT nonce so it is a distinct order (the same nonce would be a replay of the
+	// first order, correctly rejected — that is the order-id one-time guard, not the
 	// custody guard this test exercises).
 	if _, err := h.invokeSwapNonce(t, 2, false); err != nil {
 		t.Fatalf("second sequential settle must succeed (guard released after the first): %v", err)

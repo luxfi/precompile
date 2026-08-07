@@ -31,7 +31,7 @@ import (
 // nested EVM Call:
 //
 //	PHASE A — ACCOUNTING (zero nested calls): record ALL 0x9999 state — the seam / committed
-//	  reserve, the dexcore ledger, intent / settlement records, atomic staging, logs — AND
+//	  reserve, the dexcore ledger, order / settlement records, atomic staging, logs — AND
 //	  move NATIVE value (SubBalance/AddBalance are plain journal writes, never nested calls).
 //	  Every write here precedes any nested call, so none can be dropped.
 //
@@ -210,9 +210,9 @@ func pushERC20Terminal(vault erc20Vault, token, to common.Address, amount *big.I
 
 // ───────────────────── composed two-phase input-lock helpers ────────────────────────
 
-// lockAssetIn is the Phase-A-then-Phase-B input lock for the swap-rail deposit / intent
+// lockAssetIn is the Phase-A-then-Phase-B input lock for the swap-rail deposit / order
 // paths. It (A) credits seamReserve and runs `record` — the caller's OWN 0x9999 accounting
-// (dexcore ledger credit, intent record, atomic staging, event) — so EVERY 0x9999 write is
+// (dexcore ledger credit, order record, atomic staging, event) — so EVERY 0x9999 write is
 // done BEFORE any nested call, then (B) settles the asset IN: native via balance ops, ERC-20
 // via the single TERMINAL transferFrom. Returns the amount locked (== requested; an ERC-20
 // under-delivery reverts the whole frame, `record` included). `record` may be nil and runs

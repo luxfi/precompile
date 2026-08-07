@@ -166,7 +166,7 @@ func (s *SettleContract) commitPosition(
 	// COMMIT to D: SubmitPositionCommit debits the caller's CSpendable balance into
 	// committedPositions, stages the C->D DL01 object, and emits the position-open
 	// routing event. Returns the commit object id (the shared-memory key D imports).
-	req := IntentRequest{
+	req := OrderRequest{
 		Account:     caller,
 		AssetIn:     lockedAsset,
 		AmountIn:    delta.Uint64(),

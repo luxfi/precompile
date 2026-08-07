@@ -33,7 +33,7 @@ import (
 //     so it is consensus-shared and reorg-safe.
 
 // coreStoreNamespace is the storage-key prefix for dexcore's KV rows under 0x9999.
-// It is DISTINCT from the async-seam records (intent/settled/seam/cpos) so the two
+// It is DISTINCT from the async-seam records (order/settled/seam/cpos) so the two
 // surfaces never collide on a slot; the synchronous router lives entirely in this
 // region.
 const coreStoreNamespace = settleStateNamespace + "core."

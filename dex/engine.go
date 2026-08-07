@@ -18,12 +18,12 @@ import (
 // operations against that local chain.
 //
 // MIGRATION (see DChainClient in dchain_client.go): this surface is being moved
-// onto DChainClient (SubmitOrder / SubmitSwapIntent / GetMarket / GetReceipt),
+// onto DChainClient (SubmitOrder / SubmitSwapOrder / GetMarket / GetReceipt),
 // the consensus-safe on-ramp model. The synchronous Swap below is the one method
 // that CANNOT be preserved consensus-safely — a live query to a separate chain's
 // moving book inside C-Chain block execution forks (each validator observes
 // independently-timed fills => divergent StateRoot). It is therefore STAGED for
-// replacement by SubmitSwapIntent (intent + async D->C settlement), not removed
+// replacement by SubmitSwapOrder (order + async D->C settlement), not removed
 // in this pass; see the package design.
 //
 // Two implementations live in-tree:

@@ -22,7 +22,7 @@ import (
 //     (a native seed with no delivered msg.value reverts), and
 //   - the LP-rail fee credit (creditPositionFee) is symmetric (gated + value-backed).
 
-// TestFIX4_FirstFillRevertsWithoutSeed — before any opposing-direction intent lock or
+// TestFIX4_FirstFillRevertsWithoutSeed — before any opposing-direction order lock or
 // operator seed, seamReserve[assetOut] is empty, so the first matched swap settlement
 // (consuming a real railSwap D->C object) reverts ErrNativeSettleUnbacked. No mint, no
 // raid of another pot — the credit needs the seam's OWN backing.

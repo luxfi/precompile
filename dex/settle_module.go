@@ -89,13 +89,13 @@ var (
 	// through here). Distinct selector, same orthogonal money-path discipline.
 	SelectorCollectPosition uint32 // collectPosition(bytes32,address,uint256,bytes32)
 
-	// SelectorReclaimIntent is the SWAP rail's deadline-reclaim liveness path:
-	// reclaimIntent(bytes32 intentID) refunds the remaining locked principal of a
-	// stranded swap intent (one D never settled) from seamReserve to the original
-	// locker, once the intent's deadline has passed. It is the swap-rail analog of the
+	// SelectorReclaimOrder is the SWAP rail's deadline-reclaim liveness path:
+	// reclaimIntent(bytes32 orderID) refunds the remaining locked principal of a
+	// stranded swap order (one D never settled) from seamReserve to the original
+	// locker, once the order's deadline has passed. It is the swap-rail analog of the
 	// LP collect path's exit guarantee — so locked swap input "can always exit" exactly
 	// like deposit/withdraw, never stranded by a non-settling D.
-	SelectorReclaimIntent uint32 // reclaimIntent(bytes32)
+	SelectorReclaimOrder uint32 // reclaimIntent(bytes32)
 )
 
 // SettleModule registers the 0x9999 precompile as ALWAYS-ON: it is active on every
@@ -132,7 +132,9 @@ func init() {
 	SelectorSetHaltMarket = keccak4("setHaltMarket(bytes32,bool)")
 	SelectorSetHaltAsset = keccak4("setHaltAsset(bytes32,bool)")
 	SelectorCollectPosition = keccak4("collectPosition(bytes32,address,uint256,bytes32)")
-	SelectorReclaimIntent = keccak4("reclaimIntent(bytes32)")
+	// reclaimIntent is the deployed ABI name and the signature is what hashes, so the
+	// string keeps its spelling while the identifier takes the current vocabulary.
+	SelectorReclaimOrder = keccak4("reclaimIntent(bytes32)")
 	SelectorSeedSeamReserve = keccak4("seedSeamReserve(address,uint256)")
 	SelectorCreditPositionFee = keccak4("creditPositionFee(bytes32,address,uint256)")
 
@@ -221,9 +223,9 @@ func (s *SettleContract) Run(
 		// THE money path — SETTLE-ONLY. 0x9999 NEVER matches on C. Every swap routes to the
 		// native C<->D atomic seam (SettleSwap, settle9999.go), keyed on the hookData phase:
 		//
-		//   - UNTAGGED / opaque / DI01 hookData => PHASE A (INTENT): lock the taker's input on
+		//   - UNTAGGED / opaque / DI01 hookData => PHASE A (ORDER): lock the taker's input on
 		//     C and write a C->D atomic object. D imports it and matches under ITS OWN
-		//     consensus. Phase A returns the intent id — NOT a fill; no output is credited here.
+		//     consensus. Phase A returns the order id — NOT a fill; no output is credited here.
 		//   - DS01-tagged hookData => PHASE B (SETTLEMENT): consume a real D->C atomic object
 		//     ONCE and credit the output. This is the ONLY path that credits C, and the credit
 		//     is the RECORDED object's amount — never a caller-supplied fill value.
@@ -253,13 +255,13 @@ func (s *SettleContract) Run(
 	case SelectorCollectPosition:
 		return s.runSettleCollectPosition(accessibleState, caller, data, suppliedGas, readOnly)
 
-	// SWAP-rail deadline reclaim (settle9999.go): refund a stranded swap intent's
+	// SWAP-rail deadline reclaim (settle9999.go): refund a stranded swap order's
 	// remaining locked principal to the locker once its deadline has passed and D never
 	// settled. The swap-rail analog of collectPosition's exit guarantee — locked swap
 	// input can always exit. NOT gated by the swap halt (funds must exit even when
 	// halted), exactly like deposit/withdraw.
-	case SelectorReclaimIntent:
-		return s.runSettleReclaimIntent(accessibleState, caller, data, suppliedGas, readOnly)
+	case SelectorReclaimOrder:
+		return s.runSettleReclaimOrder(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// donate is explicitly UNSUPPORTED in the receipt model (settle_views9999.go):
 	// LP fee growth is D-authoritative, so a safe C-only donate cannot exist.

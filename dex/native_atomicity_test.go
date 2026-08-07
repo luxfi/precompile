@@ -19,17 +19,17 @@ import (
 
 // Test9999AtomicFlush_UsesParentToCurrentSeqWindow — the flush set is exactly the
 // ops staged between the parent block's seq and the accepted block's seq, derived
-// from consensus state (not a node-local marker). Two intents staged across two
+// from consensus state (not a node-local marker). Two orders staged across two
 // "blocks" flush in their own windows, never re-flushing the prior block's ops.
 func Test9999AtomicFlush_UsesParentToCurrentSeqWindow(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(10_000)
 
-	// Block 1: one intent staged.
-	out1, err := h.runSwap(t, h.intentCalldata(), false)
+	// Block 1: one order staged.
+	out1, err := h.runSwap(t, h.orderCalldata(), false)
 	if err != nil {
-		t.Fatalf("intent1: %v", err)
+		t.Fatalf("order1: %v", err)
 	}
 	var id1 ids.ID
 	copy(id1[:], out1)
@@ -43,16 +43,16 @@ func Test9999AtomicFlush_UsesParentToCurrentSeqWindow(t *testing.T) {
 		t.Fatal("block1 object must be flushed")
 	}
 
-	// Block 2: a SECOND intent. A distinct NONCE makes the intent id differ; the seq
+	// Block 2: a SECOND order. A distinct NONCE makes the order id differ; the seq
 	// advances to 2. The flush window must be (1,2] — only block2's op.
-	out2, err := h.runSwap(t, h.intentCalldataWithNonce(0, 1), false) // nonce 1 -> distinct id
+	out2, err := h.runSwap(t, h.orderCalldataWithNonce(0, 1), false) // nonce 1 -> distinct id
 	if err != nil {
-		t.Fatalf("intent2: %v", err)
+		t.Fatalf("order2: %v", err)
 	}
 	var id2 ids.ID
 	copy(id2[:], out2)
 	if id2 == id1 {
-		t.Fatal("two intents must have distinct ids (nonce disambiguation)")
+		t.Fatal("two orders must have distinct ids (nonce disambiguation)")
 	}
 
 	// The window collected for block 2 must contain ONLY block2's op (1 Put), not
@@ -78,8 +78,8 @@ func Test9999AtomicFlush_RejectsSeqRegression(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
-	if _, err := h.runSwap(t, h.intentCalldata(), false); err != nil {
-		t.Fatalf("intent: %v", err)
+	if _, err := h.runSwap(t, h.orderCalldata(), false); err != nil {
+		t.Fatalf("order: %v", err)
 	}
 	// parent seq = current (1), but we pass a parent state whose seq is HIGHER (2)
 	// than the current (1) -> regression -> fatal.
@@ -126,9 +126,9 @@ func Test9999AtomicFlush_ExactlyOnceViaBatchMarker(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
-	out, err := h.runSwap(t, h.intentCalldata(), false)
+	out, err := h.runSwap(t, h.orderCalldata(), false)
 	if err != nil {
-		t.Fatalf("intent: %v", err)
+		t.Fatalf("order: %v", err)
 	}
 	var id ids.ID
 	copy(id[:], out)
@@ -161,16 +161,16 @@ func Test9999AtomicFlush_ExactlyOnceViaBatchMarker(t *testing.T) {
 // TestRED_RevertAfterCToDPutCannotFundD — THE CRITICAL atomicity RED test (C->D
 // leg): if the tx that staged a C->D Put REVERTS, the staged op is discarded with
 // the StateDB rollback, so NO C->D object reaches shared memory => D cannot be
-// funded by a reverted intent. We model the revert by discarding the staged seq
+// funded by a reverted order. We model the revert by discarding the staged seq
 // window (what the EVM snapshot/revert does to StateDB) before the flush.
 func TestRED_RevertAfterCToDPutCannotFundD(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
 
-	out, err := h.runSwap(t, h.intentCalldata(), false)
+	out, err := h.runSwap(t, h.orderCalldata(), false)
 	if err != nil {
-		t.Fatalf("intent: %v", err)
+		t.Fatalf("order: %v", err)
 	}
 	var id ids.ID
 	copy(id[:], out)
@@ -186,7 +186,7 @@ func TestRED_RevertAfterCToDPutCannotFundD(t *testing.T) {
 		t.Fatalf("flush after revert: %v", err)
 	}
 	if _, ok := h.readCtoDObject(t, id); ok {
-		t.Fatal("MINT RISK: a reverted C->D intent leaked an object to shared memory — D could be funded with no C lock")
+		t.Fatal("MINT RISK: a reverted C->D order leaked an object to shared memory — D could be funded with no C lock")
 	}
 }
 
@@ -233,9 +233,9 @@ func Test9999AtomicFlush_PutAndRemoveCommitInBatch(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
-	out, err := h.runSwap(t, h.intentCalldata(), false)
+	out, err := h.runSwap(t, h.orderCalldata(), false)
 	if err != nil {
-		t.Fatalf("intent: %v", err)
+		t.Fatalf("order: %v", err)
 	}
 	var id ids.ID
 	copy(id[:], out)

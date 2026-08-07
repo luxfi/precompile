@@ -13,7 +13,7 @@ import (
 // swap_minout.go carries the V4 slippage FLOOR (min-out) for the SYNCHRONOUS 0x9999
 // smart-order-router. The V4 swap ABI is UNCHANGED — `swap(PoolKey, SwapParams, bytes
 // hookData)` already passes `bytes hookData`; an exact-input swap's min-amount-out is
-// not in the SwapParams tuple, so (exactly as the async intent/settlement phases do) it
+// not in the SwapParams tuple, so (exactly as the async order/settlement phases do) it
 // rides in hookData behind a small tag. This is the source the H3 fix wires into
 // req.MinOut so dexcore's enforceProceedsPriceFloor / the MinOut floor BITES on the sync
 // SELL path.

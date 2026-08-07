@@ -24,7 +24,7 @@ func pricelimitPoolKey() PoolKey {
 
 // native_pricelimit_test.go proves the MEDIUM slippage-floor plumbing: the V4
 // SqrtPriceLimitX96 is converted to the CLOB price domain (quote-per-base float64) and
-// carried into the C->D intent with the correct DIRECTION, so the dexvm settle path can
+// carried into the C->D order with the correct DIRECTION, so the dexvm settle path can
 // refuse a fill worse than the taker's limit (bounded sandwich/MEV). Pre-fix the native
 // exact-input path DROPPED SqrtPriceLimitX96 entirely and carried no floor.
 
@@ -84,10 +84,10 @@ func TestPriceLimitToCLOB_SentinelsAreUnbounded(t *testing.T) {
 	}
 }
 
-// TestBuildIntentRequest_CarriesPriceLimit proves the V4 swap's slippage floor flows
-// into the C->D intent (previously DROPPED). A !zeroForOne exact-input swap at limit
-// price 3.0 must produce an intent carrying the CLOB limit (~3.0) as an UPPER bound.
-func TestBuildIntentRequest_CarriesPriceLimit(t *testing.T) {
+// TestBuildOrderRequest_CarriesPriceLimit proves the V4 swap's slippage floor flows
+// into the C->D order (previously DROPPED). A !zeroForOne exact-input swap at limit
+// price 3.0 must produce an order carrying the CLOB limit (~3.0) as an UPPER bound.
+func TestBuildOrderRequest_CarriesPriceLimit(t *testing.T) {
 	key := pricelimitPoolKey()
 	params := SwapParams{
 		ZeroForOne:        false,
@@ -95,25 +95,25 @@ func TestBuildIntentRequest_CarriesPriceLimit(t *testing.T) {
 		SqrtPriceLimitX96: sqrtX96For(3.0),
 	}
 	caller := common.HexToAddress("0x00000000000000000000000000000000000000AA")
-	req, err := buildIntentRequest(key, params, caller, 0, 7)
+	req, err := buildOrderRequest(key, params, caller, 0, 7)
 	if err != nil {
-		t.Fatalf("buildIntentRequest: %v", err)
+		t.Fatalf("buildOrderRequest: %v", err)
 	}
 	if req.PriceLimit == 0 {
-		t.Fatalf("MEDIUM NOT FIXED: buildIntentRequest dropped the slippage floor (PriceLimit=0) for a swap " +
+		t.Fatalf("MEDIUM NOT FIXED: buildOrderRequest dropped the slippage floor (PriceLimit=0) for a swap " +
 			"carrying a real SqrtPriceLimitX96.")
 	}
 	if req.Side != seamSideBuy {
-		t.Fatalf("a !zeroForOne intent must be a BUY (side=%d)", req.Side)
+		t.Fatalf("a !zeroForOne order must be a BUY (side=%d)", req.Side)
 	}
 	if !limitIsUpper(req.Side) {
-		t.Fatalf("a !zeroForOne (BUY) intent must carry an UPPER price bound")
+		t.Fatalf("a !zeroForOne (BUY) order must carry an UPPER price bound")
 	}
 	if got := float64(req.PriceLimit) / priceScale; math.Abs(got-3.0) > 1e-6 {
-		t.Fatalf("intent price limit = %g, want ~3.0", got)
+		t.Fatalf("order price limit = %g, want ~3.0", got)
 	}
 	// The nonce flows through too (the watch-correlation binding).
 	if req.Nonce != 7 {
-		t.Fatalf("intent nonce = %d, want 7", req.Nonce)
+		t.Fatalf("order nonce = %d, want 7", req.Nonce)
 	}
 }
