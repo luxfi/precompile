@@ -12,18 +12,18 @@ import (
 
 // native_swap_mevfloor_redteam_test.go is the RED suite for the TAKER-AUTHENTICATED MEV
 // floor on the swap rail's PROCEEDS leg. It pins the property that ImportSettlement enforces
-// the taker's OWN recorded slippage limit (intent.PriceLimit, recorded at SubmitSwapIntent
+// the taker's OWN recorded slippage limit (order.PriceLimit, recorded at SubmitSwapOrder
 // from the taker's V4 SqrtPriceLimitX96) against the realized fill price (out/spent),
 // INDEPENDENTLY of any keeper-relayed RelayOrderTx.PriceLimit.
 //
 // THE ATTACK (the gap this closes). Before the fix the slippage limit was KEEPER-asserted:
-// settleFromFills (D) enforced RelayOrderTx.PriceLimit, but swapIntentRecord DROPPED the
+// settleFromFills (D) enforced RelayOrderTx.PriceLimit, but swapOrderRecord DROPPED the
 // taker's PriceLimit at submit. So a malicious keeper that set priceLimit=0 in the relay
 // removed the D-side floor and could sandwich the taker — D would settle a bad-price fill and
 // export a proceeds object, and C credited it blindly. Now C records the taker's limit at
 // submit and re-checks the realized proceeds price against THAT limit, so the keeper's relay
 // value is irrelevant: a proceeds object whose realized price violates the recorded limit is
-// refused (ErrSettlePriceLimit), the intent stays Open, and the principal stays reclaimable.
+// refused (ErrSettlePriceLimit), the order stays Open, and the principal stays reclaimable.
 //
 // THE WITNESS. The realized price is reconstructed from the venue-ATTESTED object the keeper
 // cannot forge: spent = matched input, out = proceeds output (the 69-byte wire's trailing
@@ -31,7 +31,7 @@ import (
 // on a SELL (zeroForOne) and spent/out on a BUY (!zeroForOne).
 
 // priceUnits returns a quote-per-base price as a uint64 FIXED-POINT ×priceScale value —
-// the PriceInt grid the intent records and the floor compares in (priceLimitToCLOB's
+// the PriceInt grid the order records and the floor compares in (priceLimitToCLOB's
 // output domain). No float on the wire.
 func priceUnits(price float64) uint64 { return uint64(price * priceScale) }
 
@@ -50,7 +50,7 @@ func TestRED_MEVFloor_KeeperZeroedLimit_StillRejected(t *testing.T) {
 	// The taker SELLS base for quote (zeroForOne) and recorded a FLOOR of 2.0 quote/base
 	// (limitIsUpper=false). They locked 100 base. The keeper relayed priceLimit=0 to D (the
 	// sandwich), so D settled a fill realized at 1.5 quote/base: 100 base in -> 150 quote out.
-	intentID := h.seedSwapIntentLimit(h.caller, in, 100, 0, priceUnits(2.0), false, ids.ID{0x3E, 0x00, 0x01})
+	orderID := h.seedSwapOrderLimit(h.caller, in, 100, 0, priceUnits(2.0), false, ids.ID{0x3E, 0x00, 0x01})
 
 	// D exports the sandwiched proceeds object: out=150 quote, spent=100 base -> realized 1.5,
 	// WORSE than the taker's recorded floor of 2.0.
@@ -59,19 +59,19 @@ func TestRED_MEVFloor_KeeperZeroedLimit_StillRejected(t *testing.T) {
 
 	db := newPoolStateAdapter(h.state)
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: badObj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		OutputID: badObj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, OrderID: orderID,
 		Object: encodeAtomicObjectSpent(railSwap, h.caller, out, 150, 100),
 	}); err != ErrSettlePriceLimit {
 		t.Fatalf("MEV: a proceeds fill realized at 1.5 (< the taker's recorded floor 2.0) MUST revert "+
 			"ErrSettlePriceLimit even with a keeper-zeroed relay limit, got: %v", err)
 	}
 	// Fail-secure: the refused settle did NOT consume the object, did NOT credit, and left the
-	// intent Open with its principal intact (reclaimable after deadline).
+	// order Open with its principal intact (reclaimable after deadline).
 	if isSettlementConsumed(db, badObj) {
 		t.Fatal("MEV: a refused price-floor settle must NOT mark the object consumed")
 	}
-	if rec := loadSwapIntentRecord(db, intentID); rec.Status != swapIntentOpen || rec.Remaining != 100 {
-		t.Fatalf("MEV: a refused price-floor settle must leave the intent Open with principal intact (status=%d remaining=%d)",
+	if rec := loadSwapOrderRecord(db, orderID); rec.Status != swapOrderOpen || rec.Remaining != 100 {
+		t.Fatalf("MEV: a refused price-floor settle must leave the order Open with principal intact (status=%d remaining=%d)",
 			rec.Status, rec.Remaining)
 	}
 
@@ -80,7 +80,7 @@ func TestRED_MEVFloor_KeeperZeroedLimit_StillRejected(t *testing.T) {
 	okObj := ids.ID{0x3E, 0x00, 0x03}
 	h.putDtoCObjectRailSpent(t, railSwap, h.caller, okObj, out, 200, 100)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: okObj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		OutputID: okObj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, OrderID: orderID,
 		Object: encodeAtomicObjectSpent(railSwap, h.caller, out, 200, 100),
 	})
 	if err != nil || credited != 200 {
@@ -98,21 +98,21 @@ func TestRED_MEVFloor_BuyCeiling_Rejected(t *testing.T) {
 	h.fundVaultOut(1_000_000)
 	// BUY: input = quote (currency1), output = base (currency0). For the harness pool
 	// currency0 is native (the inAssetID) and currency1 is the token; on a BUY the taker
-	// locks the token (quote) and receives native (base). The intent's AssetIn is the LOCKED
+	// locks the token (quote) and receives native (base). The order's AssetIn is the LOCKED
 	// asset = quote = the token's asset id; the proceeds asset = base = native.
 	quote := h.outAssetID() // the token (currency1) — locked on a BUY
 	base := h.inAssetID()   // native (currency0) — received on a BUY
 	h.fundVaultNativeOut(1_000_000)
 
 	// Taker recorded a CEILING of 2.0 quote/base (limitIsUpper=true). Locked 1000 quote.
-	intentID := h.seedSwapIntentLimit(h.caller, quote, 1000, 0, priceUnits(2.0), true, ids.ID{0x4B, 0x00, 0x01})
+	orderID := h.seedSwapOrderLimit(h.caller, quote, 1000, 0, priceUnits(2.0), true, ids.ID{0x4B, 0x00, 0x01})
 
 	// D exports a proceeds object realized at 2.5 quote/base (WORSE for a buyer than the 2.0
 	// ceiling): spent=200 quote in, out=80 base -> 200/80 = 2.5.
 	badObj := ids.ID{0x4B, 0x00, 0x02}
 	h.putDtoCObjectRailSpent(t, railSwap, h.caller, badObj, base, 80, 200)
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: badObj, Asset: base, AssetAddr: assetAddress(base), Recipient: h.caller, IntentID: intentID,
+		OutputID: badObj, Asset: base, AssetAddr: assetAddress(base), Recipient: h.caller, OrderID: orderID,
 		Object: encodeAtomicObjectSpent(railSwap, h.caller, base, 80, 200),
 	}); err != ErrSettlePriceLimit {
 		t.Fatalf("MEV: a BUY fill realized at 2.5 (> the taker's recorded ceiling 2.0) MUST revert ErrSettlePriceLimit, got: %v", err)
@@ -122,7 +122,7 @@ func TestRED_MEVFloor_BuyCeiling_Rejected(t *testing.T) {
 	okObj := ids.ID{0x4B, 0x00, 0x03}
 	h.putDtoCObjectRailSpent(t, railSwap, h.caller, okObj, base, 100, 200)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: okObj, Asset: base, AssetAddr: assetAddress(base), Recipient: h.caller, IntentID: intentID,
+		OutputID: okObj, Asset: base, AssetAddr: assetAddress(base), Recipient: h.caller, OrderID: orderID,
 		Object: encodeAtomicObjectSpent(railSwap, h.caller, base, 100, 200),
 	})
 	if err != nil || credited != 100 {
@@ -140,13 +140,13 @@ func TestRED_MEVFloor_ZeroSpentFailsSecure(t *testing.T) {
 	out := h.outAssetID()
 	in := h.inAssetID()
 
-	intentID := h.seedSwapIntentLimit(h.caller, in, 100, 0, priceUnits(2.0), false, ids.ID{0x5C, 0x00, 0x01})
+	orderID := h.seedSwapOrderLimit(h.caller, in, 100, 0, priceUnits(2.0), false, ids.ID{0x5C, 0x00, 0x01})
 
 	// Proceeds object with spent=0 (price unprovable) under a non-zero limit -> fail secure.
 	obj := ids.ID{0x5C, 0x00, 0x02}
 	h.putDtoCObjectRailSpent(t, railSwap, h.caller, obj, out, 200, 0)
 	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, OrderID: orderID,
 		Object: encodeAtomicObjectSpent(railSwap, h.caller, out, 200, 0),
 	}); err != ErrSettlePriceLimit {
 		t.Fatalf("MEV: a proceeds object with spent=0 under a real limit MUST fail secure (ErrSettlePriceLimit), got: %v", err)
@@ -166,11 +166,11 @@ func TestRED_MEVFloor_NoLimitIsUnbounded(t *testing.T) {
 
 	// No limit recorded (PriceLimit=0). Even a wildly bad realized price (1 quote for 100
 	// base) is credited — the taker accepted any price by setting none.
-	intentID := h.seedSwapIntentLimit(h.caller, in, 100, 0, 0, false, ids.ID{0x6D, 0x00, 0x01})
+	orderID := h.seedSwapOrderLimit(h.caller, in, 100, 0, 0, false, ids.ID{0x6D, 0x00, 0x01})
 	obj := ids.ID{0x6D, 0x00, 0x02}
 	h.putDtoCObjectRailSpent(t, railSwap, h.caller, obj, out, 1, 100)
 	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, IntentID: intentID,
+		OutputID: obj, Asset: out, AssetAddr: assetAddress(out), Recipient: h.caller, OrderID: orderID,
 		Object: encodeAtomicObjectSpent(railSwap, h.caller, out, 1, 100),
 	})
 	if err != nil || credited != 1 {
@@ -179,8 +179,8 @@ func TestRED_MEVFloor_NoLimitIsUnbounded(t *testing.T) {
 }
 
 // TestRED_MEVFloor_RecordedLimitSurvivesSubmit is the PLUMBING proof: the taker's V4
-// SqrtPriceLimitX96 actually lands in the persisted swapIntentRecord through the REAL submit
-// path (SubmitSwapIntent), not just when a test hand-seeds it. Before the fix swapIntentRecord
+// SqrtPriceLimitX96 actually lands in the persisted swapOrderRecord through the REAL submit
+// path (SubmitSwapOrder), not just when a test hand-seeds it. Before the fix swapOrderRecord
 // dropped PriceLimit, so the floor had nothing to enforce.
 func TestRED_MEVFloor_RecordedLimitSurvivesSubmit(t *testing.T) {
 	h := newSettleHarness(t)
@@ -197,19 +197,19 @@ func TestRED_MEVFloor_RecordedLimitSurvivesSubmit(t *testing.T) {
 	if limitBits == 0 {
 		t.Fatal("precondition: the test's V4 limit must convert to a non-zero CLOB limit")
 	}
-	req, err := buildIntentRequest(h.key, params, h.caller, 0, 42)
+	req, err := buildOrderRequest(h.key, params, h.caller, 0, 42)
 	if err != nil {
-		t.Fatalf("buildIntentRequest: %v", err)
+		t.Fatalf("buildOrderRequest: %v", err)
 	}
-	intentID, serr := nativeClient.SubmitSwapIntent(h.state, h.state, req)
+	orderID, serr := nativeClient.SubmitSwapOrder(h.state, h.state, req)
 	if serr != nil {
-		t.Fatalf("SubmitSwapIntent: %v", serr)
+		t.Fatalf("SubmitSwapOrder: %v", serr)
 	}
 
 	// The persisted record must carry the taker's limit (the gap this fix closes).
-	rec := loadSwapIntentRecord(newPoolStateAdapter(h.state), intentID)
-	if rec.Status != swapIntentOpen {
-		t.Fatalf("submit must persist an Open intent, got status=%d", rec.Status)
+	rec := loadSwapOrderRecord(newPoolStateAdapter(h.state), orderID)
+	if rec.Status != swapOrderOpen {
+		t.Fatalf("submit must persist an Open order, got status=%d", rec.Status)
 	}
 	if rec.PriceLimit != limitBits || rec.LimitIsUpper != limitIsUpper {
 		t.Fatalf("PLUMBING: submit dropped the taker's recorded limit — record has (bits=%d upper=%v), want (bits=%d upper=%v)",

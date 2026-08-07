@@ -14,22 +14,24 @@ import (
 
 // native_events.go emits the ROUTING events for the native C<->D atomic seam. The
 // atomic shared-memory object alone moves value; these events only tell the keeper
-// (a relayer with NO custody authority) how to route an intent into a D order, or
+// (a relayer with NO custody authority) how to route an order into a D order, or
 // that a cancel/collect/reclaim was requested. A keeper that drops every event cannot
 // lose or steal value — the value is already locked in shared memory; the worst case
 // is a swap settlement that no one builds, which the LOCKER RECLAIMS DIRECTLY via the
-// reclaimIntent selector once the intent's deadline passes (no keeper required — the
+// reclaimIntent selector once the order's deadline passes (no keeper required — the
 // reclaim refunds the locked principal from the seam reserve on the locker's own tx).
 //
 // Events are emitted from the 0x9999 settlement address so an indexer keyed to the
-// money path sees the full intent->settlement/reclaim lifecycle in one place.
+// money path sees the full order->settlement/reclaim lifecycle in one place.
 
+// The event names below are the deployed ABI and hash to topic0, so IntentSubmitted
+// and IntentReclaimed keep their spelling even though the value they carry is an order.
 var (
-	// IntentSubmitted(bytes32 intentID, bytes32 dChainID, address account, bytes32 assetIn, uint256 amountIn, bytes32 marketID, uint256 minAmountOut, address recipient, uint64 deadline, uint8 kind, uint64 priceLimit, uint8 limitIsUpper)
+	// IntentSubmitted(bytes32 orderID, bytes32 dChainID, address account, bytes32 assetIn, uint256 amountIn, bytes32 marketID, uint256 minAmountOut, address recipient, uint64 deadline, uint8 kind, uint64 priceLimit, uint8 limitIsUpper)
 	// priceLimit (CLOB quote-per-base float64 bits) + limitIsUpper let the keeper carry
 	// the taker's slippage floor onto the settling relay (the bounded-MEV guard) without
 	// re-deriving it from the V4 sqrt limit.
-	nativeIntentEventSig = common.BytesToHash(crypto.Keccak256([]byte(
+	nativeOrderEventSig = common.BytesToHash(crypto.Keccak256([]byte(
 		"IntentSubmitted(bytes32,bytes32,address,bytes32,uint256,bytes32,uint256,address,uint64,uint8,uint64,uint8)")))
 	// CancelSubmitted(bytes32 orderID, bytes32 marketID, address owner)
 	nativeCancelEventSig = common.BytesToHash(crypto.Keccak256([]byte(
@@ -37,37 +39,37 @@ var (
 	// CollectSubmitted(bytes32 positionID, bytes32 marketID, address owner)
 	nativeCollectEventSig = common.BytesToHash(crypto.Keccak256([]byte(
 		"CollectSubmitted(bytes32,bytes32,address)")))
-	// IntentReclaimed(bytes32 intentID, address owner, bytes32 assetIn, uint256 amount)
+	// IntentReclaimed(bytes32 orderID, address owner, bytes32 assetIn, uint256 amount)
 	nativeReclaimEventSig = common.BytesToHash(crypto.Keccak256([]byte(
 		"IntentReclaimed(bytes32,address,bytes32,uint256)")))
 )
 
-// nativeIntentKind distinguishes a taker swap intent from an LP position-open
-// intent so the keeper builds the right D order. Carried in the event (non-value).
-type nativeIntentKind uint8
+// nativeOrderKind distinguishes a taker swap order from an LP position-open
+// order so the keeper builds the right D order. Carried in the event (non-value).
+type nativeOrderKind uint8
 
 const (
-	intentKindSwap     nativeIntentKind = 0
-	intentKindPosition nativeIntentKind = 1
+	orderKindSwap     nativeOrderKind = 0
+	orderKindPosition nativeOrderKind = 1
 )
 
-// emitNativeIntentEvent logs a C->D SWAP intent's routing metadata for the keeper.
-// The intentID is the indexed topic so a keeper subscribes per-intent; the rest is
+// emitNativeOrderEvent logs a C->D SWAP order's routing metadata for the keeper.
+// The orderID is the indexed topic so a keeper subscribes per-order; the rest is
 // the taker order the keeper submits to D against the locked collateral. Kind is
-// fixed intentKindSwap — this is the taker rail; the LP rail uses
-// emitNativePositionCommitEvent (kind intentKindPosition).
-func emitNativeIntentEvent(stateDB StateDB, intentID, dChainID ids.ID, req IntentRequest, locked uint64) {
-	emitNativeRoutingEvent(stateDB, intentID, dChainID, req, locked, intentKindSwap)
+// fixed orderKindSwap — this is the taker rail; the LP rail uses
+// emitNativePositionCommitEvent (kind orderKindPosition).
+func emitNativeOrderEvent(stateDB StateDB, orderID, dChainID ids.ID, req OrderRequest, locked uint64) {
+	emitNativeRoutingEvent(stateDB, orderID, dChainID, req, locked, orderKindSwap)
 }
 
 // emitNativePositionCommitEvent logs a C->D LP POSITION-COMMIT (DL01) routing event
-// for the keeper. Identical wire to the swap intent event but kind=intentKindPosition,
+// for the keeper. Identical wire to the swap order event but kind=orderKindPosition,
 // so the keeper OPENS a funded D position (range = the tick window carried in the
 // position record) against the committed collateral instead of placing a taker order.
 // The atomic commit object alone moves the value; this event only routes it into the
 // D position-open. positionID is the C->D object key (the indexed topic).
-func emitNativePositionCommitEvent(stateDB StateDB, positionID, dChainID ids.ID, req IntentRequest, locked uint64) {
-	emitNativeRoutingEvent(stateDB, positionID, dChainID, req, locked, intentKindPosition)
+func emitNativePositionCommitEvent(stateDB StateDB, positionID, dChainID ids.ID, req OrderRequest, locked uint64) {
+	emitNativeRoutingEvent(stateDB, positionID, dChainID, req, locked, orderKindPosition)
 }
 
 // emitNativeRoutingEvent is the SINGLE DRY emitter for both C->D rails: it logs the
@@ -75,7 +77,7 @@ func emitNativePositionCommitEvent(stateDB StateDB, positionID, dChainID ids.ID,
 // routing metadata under the object id. kind selects the rail (swap vs position) so
 // the keeper builds the right D op; the value-bearing identity is in the staged
 // atomic object, never here.
-func emitNativeRoutingEvent(stateDB StateDB, objectID, dChainID ids.ID, req IntentRequest, locked uint64, kind nativeIntentKind) {
+func emitNativeRoutingEvent(stateDB StateDB, objectID, dChainID ids.ID, req OrderRequest, locked uint64, kind nativeOrderKind) {
 	data := make([]byte, 0, 9*32)
 	data = append(data, abiEncodeAddress(req.Account)...)
 	data = append(data, abiEncodeBytes32(req.AssetIn)...)
@@ -100,7 +102,7 @@ func emitNativeRoutingEvent(stateDB StateDB, objectID, dChainID ids.ID, req Inte
 	stateDB.AddLog(&ethtypes.Log{
 		Address: poolManagerAddr9999,
 		Topics: []common.Hash{
-			nativeIntentEventSig,
+			nativeOrderEventSig,
 			common.BytesToHash(objectID[:]),
 			common.BytesToHash(dChainID[:]),
 		},
@@ -136,11 +138,11 @@ func emitNativeCollectEvent(stateDB StateDB, positionID ids.ID, marketID [32]byt
 	})
 }
 
-// emitNativeReclaimEvent logs a completed intent reclaim: the locker recovered
-// `amount` of `assetIn` for the stranded `intentID` (deadline-gated). This is a
+// emitNativeReclaimEvent logs a completed order reclaim: the locker recovered
+// `amount` of `assetIn` for the stranded `orderID` (deadline-gated). This is a
 // settled value-movement signal (the refund already happened on this tx), not a
-// keeper request — an indexer surfaces it as the intent's terminal exit.
-func emitNativeReclaimEvent(stateDB StateDB, intentID ids.ID, owner common.Address, assetIn [32]byte, amount uint64) {
+// keeper request — an indexer surfaces it as the order's terminal exit.
+func emitNativeReclaimEvent(stateDB StateDB, orderID ids.ID, owner common.Address, assetIn [32]byte, amount uint64) {
 	data := make([]byte, 0, 3*32)
 	data = append(data, abiEncodeAddress(owner)...)
 	data = append(data, abiEncodeBytes32(assetIn)...)
@@ -149,7 +151,7 @@ func emitNativeReclaimEvent(stateDB StateDB, intentID ids.ID, owner common.Addre
 		Address: poolManagerAddr9999,
 		Topics: []common.Hash{
 			nativeReclaimEventSig,
-			common.BytesToHash(intentID[:]),
+			common.BytesToHash(orderID[:]),
 		},
 		Data: data,
 	})

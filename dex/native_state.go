@@ -12,7 +12,7 @@ import (
 )
 
 // native_state.go holds the DURABLE state of the native C<->D atomic seam: the
-// configured D-Chain target id, the C->D intent replay set, and the D->C
+// configured D-Chain target id, the C->D order replay set, and the D->C
 // settlement consumed set. All live under the 0x9999 settlement namespace
 // (dex.precompile.v1.9999.*) so the money path's state is one auditable region,
 // and all are content-addressed by the cross-chain object id so a re-executed /
@@ -26,22 +26,23 @@ import (
 // to the precompile via contract.AtomicState.DChainID(). ids.Empty (no dexvm on this
 // network) closes the on-ramp; the client refuses to move value rather than guess a peer.
 
-// --- C->D intent replay set: an intent id is submitted at most once. Keyed by the
-// intent id (== the object's shared-memory key), value = blockNumber+1 sentinel.
-var intentSubmittedPrefix = []byte(settleStateNamespace + "intent")
+// --- C->D order replay set: an order id is submitted at most once. Keyed by the
+// order id (== the object's shared-memory key), value = blockNumber+1 sentinel.
+// The "intent" suffix is on-disk key bytes: renaming it orphans the replay set.
+var orderSubmittedPrefix = []byte(settleStateNamespace + "intent")
 
-func intentSubmittedKey(intentID ids.ID) common.Hash {
-	return makeStorageKey(intentSubmittedPrefix, intentID[:])
+func orderSubmittedKey(orderID ids.ID) common.Hash {
+	return makeStorageKey(orderSubmittedPrefix, orderID[:])
 }
 
-func isIntentSubmitted(stateDB stateKV, intentID ids.ID) bool {
-	return stateDB.GetState(poolManagerAddr9999, intentSubmittedKey(intentID)) != (common.Hash{})
+func isOrderSubmitted(stateDB stateKV, orderID ids.ID) bool {
+	return stateDB.GetState(poolManagerAddr9999, orderSubmittedKey(orderID)) != (common.Hash{})
 }
 
-func markIntentSubmitted(stateDB stateKV, intentID ids.ID, blockNumber uint64) {
+func markOrderSubmitted(stateDB stateKV, orderID ids.ID, blockNumber uint64) {
 	var v common.Hash
 	uint256.NewInt(blockNumber + 1).WriteToSlice(v[:])
-	stateDB.SetState(poolManagerAddr9999, intentSubmittedKey(intentID), v)
+	stateDB.SetState(poolManagerAddr9999, orderSubmittedKey(orderID), v)
 }
 
 // --- D->C settlement consumed set: a settlement object is consumed at most once
@@ -63,20 +64,20 @@ func markSettlementConsumed(stateDB stateKV, outputID ids.ID, blockNumber uint64
 	stateDB.SetState(poolManagerAddr9999, settlementConsumedKey(outputID), v)
 }
 
-// --- Per-intent SWAP escrow record (the swap-rail analog of the LP RestingOrder).
-// ONE record, created at SubmitSwapIntent, drives BOTH the per-taker settlement cap
+// --- Per-order SWAP escrow record (the swap-rail analog of the LP RestingOrder).
+// ONE record, created at SubmitSwapOrder, drives BOTH the per-taker settlement cap
 // (MEDIUM — bound a settlement credit by this taker's OWN remaining locked principal,
 // so an over-export for taker X can never draw on other takers' pooled tokenIn) AND
 // the deadline reclaim (HIGH — refund the remaining principal to the locker once the
-// deadline passes and D has not settled). It is content-addressed by the intent id
+// deadline passes and D has not settled). It is content-addressed by the order id
 // (the C->D object key), consensus-shared, durable, and reverted atomically with the
 // tx — exactly like every other 0x9999 native-seam record.
 //
-// FIELDS (each its own fine-grained slot under the intent id; no global hot write):
+// FIELDS (each its own fine-grained slot under the order id; no global hot write):
 //   - owner      : the taker who locked the principal (the C tx caller). The sole
-//     account whose settlement may draw against this intent and the sole
+//     account whose settlement may draw against this order and the sole
 //     reclaim payee. Equality-checked against the recorded D->C object's
-//     owner so a settlement cannot bind a victim's intent.
+//     owner so a settlement cannot bind a victim's order.
 //   - assetIn    : the LOCKED (input) asset — the numeraire the remaining principal is
 //     measured in and the asset the reclaim refunds.
 //   - remaining  : the still-unsettled locked principal (in assetIn units). Starts at
@@ -93,31 +94,31 @@ func markSettlementConsumed(stateDB stateKV, outputID ids.ID, blockNumber uint64
 //     (out/spent) — INDEPENDENTLY of the keeper-relayed RelayOrderTx.PriceLimit — so a
 //     keeper that zeroes the relay limit to sandwich the taker still produces a proceeds
 //     object C refuses to credit. This is the TAKER-AUTHENTICATED MEV floor: the binding
-//     authority is the taker's recorded intent, not the keeper's relay. 0 = no limit.
+//     authority is the taker's recorded order, not the keeper's relay. 0 = no limit.
 var (
-	swapIntentPrefix          = []byte(settleStateNamespace + "swint") // swapIntent[intentID][suffix]
-	swapIntentReclaimedPrefix = []byte(settleStateNamespace + "swrcl") // reclaimed-set: intentID -> blockNumber+1
+	swapOrderPrefix          = []byte(settleStateNamespace + "swint") // swapOrder[orderID][suffix]
+	swapOrderReclaimedPrefix = []byte(settleStateNamespace + "swrcl") // reclaimed-set: orderID -> blockNumber+1
 )
 
-// swapIntentStatus is the per-intent lifecycle: an intent is Open from submission
+// swapOrderStatus is the per-order lifecycle: an order is Open from submission
 // until either fully settled/reclaimed. Reclaimed is terminal (one-time, replay-safe).
-type swapIntentStatus uint8
+type swapOrderStatus uint8
 
 const (
-	swapIntentNone      swapIntentStatus = 0 // never submitted (no record)
-	swapIntentOpen      swapIntentStatus = 1 // submitted; remaining principal settlable/reclaimable
-	swapIntentReclaimed swapIntentStatus = 2 // principal reclaimed to the locker (terminal)
+	swapOrderNone      swapOrderStatus = 0 // never submitted (no record)
+	swapOrderOpen      swapOrderStatus = 1 // submitted; remaining principal settlable/reclaimable
+	swapOrderReclaimed swapOrderStatus = 2 // principal reclaimed to the locker (terminal)
 )
 
-// swapIntentRecord is the in-memory image of the per-intent escrow record.
-type swapIntentRecord struct {
+// swapOrderRecord is the in-memory image of the per-order escrow record.
+type swapOrderRecord struct {
 	Owner     common.Address
 	AssetIn   [32]byte
 	Remaining uint64
 	Deadline  uint64
-	Status    swapIntentStatus
+	Status    swapOrderStatus
 	// PriceLimit is the taker's OWN worst-acceptable CLOB price (quote-per-base, IEEE-754
-	// float64 bits) recorded at SubmitSwapIntent from the taker's V4 SqrtPriceLimitX96.
+	// float64 bits) recorded at SubmitSwapOrder from the taker's V4 SqrtPriceLimitX96.
 	// 0 = no limit. ImportSettlement enforces it against the realized proceeds price so the
 	// floor is TAKER-authenticated, not keeper-relayed (the MEV sandwich fix).
 	PriceLimit uint64
@@ -126,30 +127,30 @@ type swapIntentRecord struct {
 	LimitIsUpper bool
 }
 
-// swap-intent record slot suffixes (one concern per slot, mirroring the LP order).
+// swap-order record slot suffixes (one concern per slot, mirroring the LP order).
 var (
-	swapIntentOwnerSuffix  = []byte("o") // owner (address)
-	swapIntentAssetSuffix  = []byte("a") // assetIn (bytes32)
-	swapIntentMetaSuffix   = []byte("m") // status(1) | limitIsUpper(1) | deadline(uint64, big-endian in low 8 bytes)
-	swapIntentRemainSuffix = []byte("r") // remaining principal (uint64)
-	swapIntentLimitSuffix  = []byte("l") // taker's recorded CLOB price limit (float64 bits, uint64)
+	swapOrderOwnerSuffix  = []byte("o") // owner (address)
+	swapOrderAssetSuffix  = []byte("a") // assetIn (bytes32)
+	swapOrderMetaSuffix   = []byte("m") // status(1) | limitIsUpper(1) | deadline(uint64, big-endian in low 8 bytes)
+	swapOrderRemainSuffix = []byte("r") // remaining principal (uint64)
+	swapOrderLimitSuffix  = []byte("l") // taker's recorded CLOB price limit (float64 bits, uint64)
 )
 
-func swapIntentSlot(intentID ids.ID, suffix []byte) common.Hash {
+func swapOrderSlot(orderID ids.ID, suffix []byte) common.Hash {
 	id := make([]byte, 0, 32+len(suffix))
-	id = append(id, intentID[:]...)
+	id = append(id, orderID[:]...)
 	id = append(id, suffix...)
-	return makeStorageKey(swapIntentPrefix, id)
+	return makeStorageKey(swapOrderPrefix, id)
 }
 
-// putSwapIntentRecord persists a swap-intent escrow record across its slots. The meta
+// putSwapOrderRecord persists a swap-order escrow record across its slots. The meta
 // word packs status(byte 0) | limitIsUpper(byte 1) | deadline(low 8 bytes); the taker's
 // recorded price limit rides its own slot so the floor is durable, consensus-shared, and
 // reverted atomically with the submit tx — exactly like every other field of the record.
-func putSwapIntentRecord(stateDB stateKV, intentID ids.ID, r swapIntentRecord) {
-	stateDB.SetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentOwnerSuffix),
+func putSwapOrderRecord(stateDB stateKV, orderID ids.ID, r swapOrderRecord) {
+	stateDB.SetState(poolManagerAddr9999, swapOrderSlot(orderID, swapOrderOwnerSuffix),
 		common.BytesToHash(r.Owner.Bytes()))
-	stateDB.SetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentAssetSuffix),
+	stateDB.SetState(poolManagerAddr9999, swapOrderSlot(orderID, swapOrderAssetSuffix),
 		common.BytesToHash(r.AssetIn[:]))
 	var meta common.Hash
 	meta[0] = byte(r.Status)
@@ -157,50 +158,50 @@ func putSwapIntentRecord(stateDB stateKV, intentID ids.ID, r swapIntentRecord) {
 		meta[1] = 1
 	}
 	putU64(meta[24:32], r.Deadline)
-	stateDB.SetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentMetaSuffix), meta)
+	stateDB.SetState(poolManagerAddr9999, swapOrderSlot(orderID, swapOrderMetaSuffix), meta)
 	var rem common.Hash
 	putU64(rem[24:32], r.Remaining)
-	stateDB.SetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentRemainSuffix), rem)
+	stateDB.SetState(poolManagerAddr9999, swapOrderSlot(orderID, swapOrderRemainSuffix), rem)
 	var lim common.Hash
 	putU64(lim[24:32], r.PriceLimit)
-	stateDB.SetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentLimitSuffix), lim)
+	stateDB.SetState(poolManagerAddr9999, swapOrderSlot(orderID, swapOrderLimitSuffix), lim)
 }
 
-// loadSwapIntentRecord reads a swap-intent record. Status swapIntentNone means no
-// such intent was ever submitted (every slot zero).
-func loadSwapIntentRecord(stateDB stateKV, intentID ids.ID) swapIntentRecord {
-	meta := stateDB.GetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentMetaSuffix))
-	var r swapIntentRecord
-	r.Status = swapIntentStatus(meta[0])
+// loadSwapOrderRecord reads a swap-order record. Status swapOrderNone means no
+// such order was ever submitted (every slot zero).
+func loadSwapOrderRecord(stateDB stateKV, orderID ids.ID) swapOrderRecord {
+	meta := stateDB.GetState(poolManagerAddr9999, swapOrderSlot(orderID, swapOrderMetaSuffix))
+	var r swapOrderRecord
+	r.Status = swapOrderStatus(meta[0])
 	r.LimitIsUpper = meta[1] != 0
 	r.Deadline = bytesToU64(meta[24:32])
-	if r.Status == swapIntentNone {
+	if r.Status == swapOrderNone {
 		return r
 	}
-	r.Owner = common.BytesToAddress(stateDB.GetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentOwnerSuffix)).Bytes())
-	copy(r.AssetIn[:], stateDB.GetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentAssetSuffix)).Bytes())
-	r.Remaining = bytesToU64(stateDB.GetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentRemainSuffix)).Bytes())
-	r.PriceLimit = bytesToU64(stateDB.GetState(poolManagerAddr9999, swapIntentSlot(intentID, swapIntentLimitSuffix)).Bytes())
+	r.Owner = common.BytesToAddress(stateDB.GetState(poolManagerAddr9999, swapOrderSlot(orderID, swapOrderOwnerSuffix)).Bytes())
+	copy(r.AssetIn[:], stateDB.GetState(poolManagerAddr9999, swapOrderSlot(orderID, swapOrderAssetSuffix)).Bytes())
+	r.Remaining = bytesToU64(stateDB.GetState(poolManagerAddr9999, swapOrderSlot(orderID, swapOrderRemainSuffix)).Bytes())
+	r.PriceLimit = bytesToU64(stateDB.GetState(poolManagerAddr9999, swapOrderSlot(orderID, swapOrderLimitSuffix)).Bytes())
 	return r
 }
 
-// --- Reclaim-set: an intent's principal is reclaimed at most once. Keyed by the
-// intent id, value = blockNumber+1 sentinel. The record's Status (Reclaimed) is the
+// --- Reclaim-set: an order's principal is reclaimed at most once. Keyed by the
+// order id, value = blockNumber+1 sentinel. The record's Status (Reclaimed) is the
 // authoritative terminal marker; this set is the explicit one-time replay guard the
 // reclaim path checks (mirroring the settlement-consumed set), so a re-submitted /
 // reorged reclaim tx is a guaranteed no-op rather than a second refund.
-func swapIntentReclaimedKey(intentID ids.ID) common.Hash {
-	return makeStorageKey(swapIntentReclaimedPrefix, intentID[:])
+func swapOrderReclaimedKey(orderID ids.ID) common.Hash {
+	return makeStorageKey(swapOrderReclaimedPrefix, orderID[:])
 }
 
-func isSwapIntentReclaimed(stateDB stateKV, intentID ids.ID) bool {
-	return stateDB.GetState(poolManagerAddr9999, swapIntentReclaimedKey(intentID)) != (common.Hash{})
+func isSwapOrderReclaimed(stateDB stateKV, orderID ids.ID) bool {
+	return stateDB.GetState(poolManagerAddr9999, swapOrderReclaimedKey(orderID)) != (common.Hash{})
 }
 
-func markSwapIntentReclaimed(stateDB stateKV, intentID ids.ID, blockNumber uint64) {
+func markSwapOrderReclaimed(stateDB stateKV, orderID ids.ID, blockNumber uint64) {
 	var v common.Hash
 	uint256.NewInt(blockNumber + 1).WriteToSlice(v[:])
-	stateDB.SetState(poolManagerAddr9999, swapIntentReclaimedKey(intentID), v)
+	stateDB.SetState(poolManagerAddr9999, swapOrderReclaimedKey(orderID), v)
 }
 
 // --- Seam reserve: the seam's OWN per-asset pot inside the 0x9999 vault, tracked

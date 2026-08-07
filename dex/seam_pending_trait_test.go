@@ -11,17 +11,17 @@ import (
 	"github.com/luxfi/ids"
 )
 
-// seam_pending_trait_test.go pins the C->D intent DISCOVERY trait against the
+// seam_pending_trait_test.go pins the C->D order DISCOVERY trait against the
 // D-Chain's own constant, and pins that the flush actually attaches it.
 //
-// WHY A GOLDEN. The D-Chain proposer enumerates pending intents with
+// WHY A GOLDEN. The D-Chain proposer enumerates pending orders with
 // atomic.SharedMemory.Indexed under a trait it derives itself (dex/pkg/dchain
 // drive.go SeamPendingTrait). The two repos cannot import each other — the same
 // module-cycle constraint that already forced a golden vector for the 69-byte
 // object wire — so nothing but a shared vector keeps them equal.
 //
 // Drift here is silent in the worst way. D would query a trait C never writes,
-// enumerate nothing, and every swap intent would sit unmatched forever with no
+// enumerate nothing, and every swap order would sit unmatched forever with no
 // error logged on either side. That is indistinguishable from "nobody is
 // trading", which is precisely how it went unnoticed: the constant existed on
 // the D side with a comment naming this exact companion change, and the C side
@@ -30,14 +30,14 @@ import (
 // The golden is sha256("lux.dex.native.intent.pending.v2") — the same domain
 // string dex/pkg/dchain hashes.
 //
-// WHY .v2. A v1 intent object carried VALUE ONLY (69 bytes); a v2 intent carries
+// WHY .v2. A v1 order object carried VALUE ONLY (69 bytes); a v2 order carries
 // value + the CLOB OPERATION (118 bytes) so D can place the taker's order instead
 // of crediting an account and stopping. A node that cannot read the operation must
 // never import the value — it would have to invent the market/side/limit. Rotating
 // the domain makes the two generations mutually INVISIBLE rather than mutually
 // confusing: a v1 D node enumerates v1, sees no v2 object, and emits no import; a
 // v2 D node enumerates v2 and never touches a stale op-less v1 object. Neither can
-// execute the other's intent, so the changeover costs seam liveness alone — never a
+// execute the other's order, so the changeover costs seam liveness alone — never a
 // divergent state root.
 const seamPendingTraitGoldenHex = "5f10f9ad8c53b78043df24cb69f8a5acb745351107470cb7e19f44748fe8bd5b"
 
@@ -57,10 +57,10 @@ func TestSeamPendingTrait_MatchesDChainGolden(t *testing.T) {
 	}
 }
 
-// TestCollectStaged_SwapIntentCarriesDiscoveryTrait proves the FLUSH attaches
+// TestCollectStaged_SwapOrderCarriesDiscoveryTrait proves the FLUSH attaches
 // the trait to a real staged swap-rail export. The constant existing is worth
 // nothing if collectRange does not write it — that omission is the actual defect.
-func TestCollectStaged_SwapIntentCarriesDiscoveryTrait(t *testing.T) {
+func TestCollectStaged_SwapOrderCarriesDiscoveryTrait(t *testing.T) {
 	db := NewMockStateDB()
 	dChainID := ids.ID{0xD1}
 	key := ids.ID{0x1A}
@@ -91,7 +91,7 @@ func TestCollectStaged_SwapIntentCarriesDiscoveryTrait(t *testing.T) {
 		t.Error("owner trait missing — the per-recipient index broke")
 	}
 	if !haveDiscovery {
-		t.Error("discovery trait missing — the D-Chain import drive cannot enumerate this intent, so it is never matched and no fill is ever produced")
+		t.Error("discovery trait missing — the D-Chain import drive cannot enumerate this order, so it is never matched and no fill is ever produced")
 	}
 }
 

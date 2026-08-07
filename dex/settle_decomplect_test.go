@@ -9,8 +9,8 @@ import (
 	"math/big"
 	"testing"
 
-	dexcore "github.com/luxfi/dex/pkg/dex"
 	"github.com/holiman/uint256"
+	dexcore "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/ids"
 )
@@ -84,9 +84,9 @@ func TestDecomplect_NoReceiptNoSettle(t *testing.T) {
 	forgeH.registerMarket(t)
 	forgeH.fundVaultOut(1_000_000)
 	forged := encodeAtomicObjectSpent(railSwap, forgeH.caller, forgeH.outAssetID(), 500, 0)
-	intentID := forgeH.standingIntent(500)
+	orderID := forgeH.standingOrder(500)
 	forgedCalldata := buildSwapCalldata(forgeH.key, forgeH.params,
-		EncodeSettlementHookData(phantom, intentID, forged))
+		EncodeSettlementHookData(phantom, orderID, forged))
 	if _, ferr := forgeH.runSwap(t, forgedCalldata, false); ferr != nil {
 		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", ferr)
 	}
@@ -110,11 +110,11 @@ func TestDecomplect_NoReceiptNoSettle(t *testing.T) {
 	}
 }
 
-// TestDecomplect_UntaggedSwapIsIntentNotFill proves the positive half: a PLAIN swap (empty
-// hookData — no DI01/DS02 tag) is treated as a PHASE A INTENT. It LOCKS the taker's input and
-// returns a 32-byte intent id; it does NOT match, does NOT credit any output. There is no
+// TestDecomplect_UntaggedSwapIsOrderNotFill proves the positive half: a PLAIN swap (empty
+// hookData — no DI01/DS02 tag) is treated as a PHASE A ORDER. It LOCKS the taker's input and
+// returns a 32-byte order id; it does NOT match, does NOT credit any output. There is no
 // synchronous in-trie fill. (Before the decomplect this routed to the embedded sync matcher.)
-func TestDecomplect_UntaggedSwapIsIntentNotFill(t *testing.T) {
+func TestDecomplect_UntaggedSwapIsOrderNotFill(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
@@ -123,23 +123,23 @@ func TestDecomplect_UntaggedSwapIsIntentNotFill(t *testing.T) {
 	callerNativeBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
 	callerOutBefore := h.tokenBal(h.outToken(), h.caller)
 
-	// Empty hookData: the common plain-swap case. Post-decomplect this is a Phase A intent.
+	// Empty hookData: the common plain-swap case. Post-decomplect this is a Phase A order.
 	out, _, err := runWithEVMSnapshot(h.c, h.state, h.caller, poolManagerAddr9999,
 		prependSelector(SelectorSwap, buildSwapCalldata(h.key, h.params, nil)), 5_000_000, false)
 	if err != nil {
-		t.Fatalf("a plain (empty-hookData) swap must create a Phase A intent, got err: %v", err)
+		t.Fatalf("a plain (empty-hookData) swap must create a Phase A order, got err: %v", err)
 	}
 	if len(out) != 32 {
-		t.Fatalf("Phase A intent must return a 32-byte intent id, got %d bytes", len(out))
+		t.Fatalf("Phase A order must return a 32-byte order id, got %d bytes", len(out))
 	}
 	// Input was LOCKED (debited) — |AmountSpecified| = 100 in the standard harness params.
 	callerNativeAfter := h.state.stateDB.GetBalance(h.caller).ToBig()
 	if new(big.Int).Sub(callerNativeBefore, callerNativeAfter).Sign() <= 0 {
-		t.Fatal("a Phase A intent must LOCK (debit) the taker's input")
+		t.Fatal("a Phase A order must LOCK (debit) the taker's input")
 	}
-	// NO output credited — an intent is not a fill.
+	// NO output credited — an order is not a fill.
 	if got := h.tokenBal(h.outToken(), h.caller); got.Cmp(callerOutBefore) != 0 {
-		t.Fatalf("an intent must NOT credit output; credited %s", new(big.Int).Sub(got, callerOutBefore))
+		t.Fatalf("an order must NOT credit output; credited %s", new(big.Int).Sub(got, callerOutBefore))
 	}
 }
 

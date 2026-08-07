@@ -55,7 +55,7 @@ import (
 
 // exportedObjectHashDomain domain-separates the object commitment so an object
 // hash can never be confused with any other 32-byte digest on the seam (an
-// intent id, a pool id, a market id). The commitment is over the FULL canonical
+// order id, a pool id, a market id). The commitment is over the FULL canonical
 // object bytes, so equality of hashes is equality of (rail, owner, asset, amount,
 // spent) under keccak collision resistance.
 var exportedObjectHashDomain = []byte("lux.dex.native.import.object.v1")

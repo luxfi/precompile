@@ -29,11 +29,11 @@ func (h *settleHarness) runSwap(t testing.TB, calldata []byte, readOnly bool) ([
 	return out, err
 }
 
-// Test9999Swap_CreatesCToDAtomicIntent — PHASE A: a plain swap (empty hookData)
+// Test9999Swap_CreatesCToDAtomicOrder — PHASE A: a plain swap (empty hookData)
 // LOCKS the taker's input into the 0x9999 escrow and writes a C->D atomic object
-// into shared memory, returning the intent id (NOT a fill). It must NOT credit any
+// into shared memory, returning the order id (NOT a fill). It must NOT credit any
 // output to the caller.
-func Test9999Swap_CreatesCToDAtomicIntent(t *testing.T) {
+func Test9999Swap_CreatesCToDAtomicOrder(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(1000) // taker funds the native input leg.
@@ -41,17 +41,17 @@ func Test9999Swap_CreatesCToDAtomicIntent(t *testing.T) {
 	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
 	vaultBefore := h.state.stateDB.GetBalance(poolManagerAddr9999).ToBig()
 
-	out, err := h.runSwap(t, h.intentCalldata(), false)
+	out, err := h.runSwap(t, h.orderCalldata(), false)
 	if err != nil {
-		t.Fatalf("intent swap: %v", err)
+		t.Fatalf("order swap: %v", err)
 	}
 	if len(out) != 32 {
-		t.Fatalf("intent must return a 32-byte intent id, got %d bytes", len(out))
+		t.Fatalf("order must return a 32-byte order id, got %d bytes", len(out))
 	}
-	var intentID ids.ID
-	copy(intentID[:], out)
-	if intentID == ids.Empty {
-		t.Fatal("intent id must be non-zero")
+	var orderID ids.ID
+	copy(orderID[:], out)
+	if orderID == ids.Empty {
+		t.Fatal("order id must be non-zero")
 	}
 
 	// The input (|AmountSpecified| = 100) was DEBITED from the caller into the vault.
@@ -64,20 +64,20 @@ func Test9999Swap_CreatesCToDAtomicIntent(t *testing.T) {
 		t.Fatalf("vault must be credited exactly 100, credited %s", new(big.Int).Sub(vaultAfter, vaultBefore))
 	}
 
-	// The intent STAGED the C->D object (revert-aware); the host flushes it to shared
+	// The order STAGED the C->D object (revert-aware); the host flushes it to shared
 	// memory at block accept. Simulate that flush, then assert the object is readable.
 	h.flushStaged(t)
 
-	// A C->D atomic object MUST now be readable by D via Get(cChainID, intentID),
+	// A C->D atomic object MUST now be readable by D via Get(cChainID, orderID),
 	// recording owner=caller, asset=native(0), amount=100. This is the funding D
 	// will consume — D is funded ONLY by this object.
-	raw, ok := h.readCtoDObject(t, intentID)
+	raw, ok := h.readCtoDObject(t, orderID)
 	if !ok {
-		t.Fatal("C->D atomic object not found in shared memory after intent")
+		t.Fatal("C->D atomic object not found in shared memory after order")
 	}
-	owner, asset, amount, op, decOK := decodeIntentObject(raw)
+	owner, asset, amount, op, decOK := decodeOrderObject(raw)
 	if !decOK {
-		t.Fatalf("C->D object malformed (len=%d, want %d)", len(raw), intentObjectSize9999)
+		t.Fatalf("C->D object malformed (len=%d, want %d)", len(raw), orderObjectSize9999)
 	}
 	// THE OPERATION rides with the value. Without it D credits the taker's account
 	// and stops — nothing places an order, nothing crosses, no proceeds exist, and
@@ -108,11 +108,11 @@ func Test9999Swap_CreatesCToDAtomicIntent(t *testing.T) {
 
 // Test9999Swap_DoesNotUseBLSReceiptPath — a hookData shaped like the OLD BLS settlement
 // envelope ("D991" tag) must NOT settle a fill from a "cert". After the decomplect that tag
-// is neither DI01 nor DS02, so decodeSwapPhase treats it as a PHASE A intent (opaque body
-// ignored): the input is LOCKED and an intent id is returned — there is no synchronous
+// is neither DI01 nor DS02, so decodeSwapPhase treats it as a PHASE A order (opaque body
+// ignored): the input is LOCKED and an order id is returned — there is no synchronous
 // matcher and no BLS cert/receipt credit path. The decisive property: the caller is NEVER
 // credited an output. An opaque/unknown blob can, at most, lock input into a reclaimable
-// intent; it can never produce an output credit. The BLS receipt path is gone from the value
+// order; it can never produce an output credit. The BLS receipt path is gone from the value
 // path.
 func Test9999Swap_DoesNotUseBLSReceiptPath(t *testing.T) {
 	h := newSettleHarness(t)
@@ -128,16 +128,16 @@ func Test9999Swap_DoesNotUseBLSReceiptPath(t *testing.T) {
 	}
 
 	// A blob with the legacy BLS envelope tag ("D991") + garbage. It is NOT a recognized
-	// cross-chain phase tag, so it is treated as a plain PHASE A intent (opaque body ignored):
-	// input locked, intent id returned. No fill, no cert credit.
+	// cross-chain phase tag, so it is treated as a plain PHASE A order (opaque body ignored):
+	// input locked, order id returned. No fill, no cert credit.
 	blsLike := append([]byte("D991"), bytes.Repeat([]byte{0xAB}, 200)...)
 	out, _, err := runWithEVMSnapshot(h.c, h.state, h.caller, poolManagerAddr9999,
 		prependSelector(SelectorSwap, buildSwapCalldata(h.key, h.params, blsLike)), 5_000_000, false)
 	if err != nil {
-		t.Fatalf("an unknown-tag swap must be treated as a Phase A intent (lock-only), got err: %v", err)
+		t.Fatalf("an unknown-tag swap must be treated as a Phase A order (lock-only), got err: %v", err)
 	}
 	if len(out) != 32 {
-		t.Fatalf("Phase A intent must return a 32-byte intent id, got %d bytes", len(out))
+		t.Fatalf("Phase A order must return a 32-byte order id, got %d bytes", len(out))
 	}
 	// The decisive invariant: the caller received NO output token. The BLS-cert credit path
 	// is gone — an opaque blob cannot settle a fill.
@@ -154,7 +154,7 @@ func Test9999Swap_DoesNotUseBLSReceiptPath(t *testing.T) {
 // Test9999Swap_DoesNotUseEngineZAPValuePath — the synchronous Engine.Swap (the
 // deprecated ZAP value backend) is NOT the 0x9999 value path. Even with a native
 // client installed whose Engine.Swap refuses, the 0x9999 swap selector settles via
-// the atomic seam (intent/settlement), never via a synchronous engine fill.
+// the atomic seam (order/settlement), never via a synchronous engine fill.
 func Test9999Swap_DoesNotUseEngineZAPValuePath(t *testing.T) {
 	// The native client's Engine.Swap MUST refuse (a synchronous in-block fill forks
 	// consensus). Assert it does, proving the value path is not the engine.
@@ -164,17 +164,17 @@ func Test9999Swap_DoesNotUseEngineZAPValuePath(t *testing.T) {
 		t.Fatalf("native client Engine.Swap must refuse (no synchronous value path), got: %v", err)
 	}
 
-	// And the 0x9999 swap selector still works via the atomic seam (Phase A intent),
+	// And the 0x9999 swap selector still works via the atomic seam (Phase A order),
 	// confirming the money path is the atomic seam, not Engine.Swap.
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(500)
-	out, serr := h.runSwap(t, h.intentCalldata(), false)
+	out, serr := h.runSwap(t, h.orderCalldata(), false)
 	if serr != nil {
 		t.Fatalf("0x9999 swap must settle via the atomic seam: %v", serr)
 	}
 	if len(out) != 32 {
-		t.Fatal("0x9999 swap must return an intent id via the atomic seam")
+		t.Fatal("0x9999 swap must return an order id via the atomic seam")
 	}
 }
 
@@ -306,7 +306,7 @@ func Test9999ModifyLiquidity_CommitsCToDAtomicFunds(t *testing.T) {
 	h.fundCallerNative(2000)
 
 	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
-	positionID, err := h.c.atomicModifyLiquidity(h.state, IntentRequest{
+	positionID, err := h.c.atomicModifyLiquidity(h.state, OrderRequest{
 		Account:      h.caller,
 		AssetIn:      h.inAssetID(),
 		AmountIn:     500,
@@ -405,7 +405,7 @@ func Test9999Cancel_ImportsDRefundToC(t *testing.T) {
 // Test9999RoundTrip_CToDMatchDToC — the FULL native round trip across the real
 // shared-memory channel:
 //
-//	C creates a C->D intent (locks input, writes C->D object)
+//	C creates a C->D order (locks input, writes C->D object)
 //	  -> the D side reads the C->D object (executeImport semantics) and "matches"
 //	     -> the D side writes a D->C settlement object (executeExport semantics)
 //	       -> C imports the D->C object and credits the taker.
@@ -418,23 +418,23 @@ func Test9999RoundTrip_CToDMatchDToC(t *testing.T) {
 	h.fundCallerNative(1000) // taker funds the native input.
 	h.fundVaultOut(10_000)   // the vault backs the output credit (maker-seeded reserve).
 
-	// --- C: PHASE A intent. Locks 100 native, writes the C->D object. ---
-	out, err := h.runSwap(t, h.intentCalldata(), false)
+	// --- C: PHASE A order. Locks 100 native, writes the C->D object. ---
+	out, err := h.runSwap(t, h.orderCalldata(), false)
 	if err != nil {
-		t.Fatalf("round-trip intent: %v", err)
+		t.Fatalf("round-trip order: %v", err)
 	}
-	var intentID ids.ID
-	copy(intentID[:], out)
+	var orderID ids.ID
+	copy(orderID[:], out)
 
 	// Host flushes the staged C->D object to shared memory at block accept.
 	h.flushStaged(t)
 
 	// --- D: read the C->D object (what dexvm.executeImport consumes to fund) ---
-	raw, ok := h.readCtoDObject(t, intentID)
+	raw, ok := h.readCtoDObject(t, orderID)
 	if !ok {
 		t.Fatal("round-trip: D could not read the C->D object")
 	}
-	dOwner, dAsset, dAmount, dOp, dOK := decodeIntentObject(raw)
+	dOwner, dAsset, dAmount, dOp, dOK := decodeOrderObject(raw)
 	if !dOK || dOwner != h.caller || dAsset != h.inAssetID() || dAmount != 100 {
 		t.Fatalf("round-trip: C->D object mismatch on the D side (ok=%v)", dOK)
 	}
@@ -486,7 +486,7 @@ func TestRED_9999_LiveMatcherAnswerCannotCreditC(t *testing.T) {
 	// result meaningful: the ONLY thing missing is the D->C object.
 	h.fundVaultOut(1_000_000)
 	h.fundVaultNativeOut(1_000_000)
-	// Fund the caller BEFORE the baseline so the Phase-A intent's lock (a debit) and
+	// Fund the caller BEFORE the baseline so the Phase-A order's lock (a debit) and
 	// any (impossible) settlement credit are the ONLY post-baseline deltas measured.
 	h.fundCallerNative(1000)
 
@@ -526,7 +526,7 @@ func TestRED_9999_LiveMatcherAnswerCannotCreditC(t *testing.T) {
 	forgeH.fundVaultOut(1_000_000)
 	forged := encodeAtomicObjectSpent(railSwap, forgeH.caller, forgeH.outAssetID(), 999_999, 0)
 	forgedCalldata := buildSwapCalldata(forgeH.key, forgeH.params,
-		EncodeSettlementHookData(fakeID, forgeH.standingIntent(999_999), forged))
+		EncodeSettlementHookData(fakeID, forgeH.standingOrder(999_999), forged))
 	if _, ferr := forgeH.runSwap(t, forgedCalldata, false); ferr != nil {
 		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", ferr)
 	}
@@ -537,19 +537,19 @@ func TestRED_9999_LiveMatcherAnswerCannotCreditC(t *testing.T) {
 		t.Fatal("the forged object must NOT be in shared memory — the test premise is broken")
 	}
 
-	// (3) Even a Phase-A intent (the only other swap path) credits NOTHING — it can
-	// only LOCK input + create a C->D object; it returns an intent id, never output.
-	out, ierr := h.runSwap(t, h.intentCalldata(), false)
+	// (3) Even a Phase-A order (the only other swap path) credits NOTHING — it can
+	// only LOCK input + create a C->D object; it returns an order id, never output.
+	out, ierr := h.runSwap(t, h.orderCalldata(), false)
 	if ierr != nil {
-		t.Fatalf("intent: %v", ierr)
+		t.Fatalf("order: %v", ierr)
 	}
 	if len(out) != 32 {
-		t.Fatal("intent must return an id, not a fill")
+		t.Fatal("order must return an id, not a fill")
 	}
 
 	// FINAL ASSERTION: across every path tried, the caller's OUTPUT balance is
 	// unchanged (no token credited) — C cannot be credited without consuming a real
-	// D->C object. (The native balance only DECREASED by the intent lock, never
+	// D->C object. (The native balance only DECREASED by the order lock, never
 	// increased from a fabricated settlement.)
 	attackerOutAfter := h.tokenBal(h.outToken(), h.caller)
 	if attackerOutAfter.Cmp(attackerOutBefore) != 0 {
@@ -564,7 +564,7 @@ func TestRED_9999_LiveMatcherAnswerCannotCreditC(t *testing.T) {
 }
 
 // TestRED_9999_AtomicOpsAreDeferredNotImmediate — proves the CROSS-DOMAIN
-// ATOMICITY fix: a swap intent (and a settlement consume) does NOT touch shared
+// ATOMICITY fix: a swap order (and a settlement consume) does NOT touch shared
 // memory MID-TX; it STAGES the atomic op in StateDB and the host flushes it at
 // block accept. This is what makes the op revert-safe: a tx that reverts rolls back
 // its StateDB staging (geth snapshot/revert), so NOTHING reaches shared memory —
@@ -575,29 +575,29 @@ func TestRED_9999_AtomicOpsAreDeferredNotImmediate(t *testing.T) {
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
 
-	out, err := h.runSwap(t, h.intentCalldata(), false)
+	out, err := h.runSwap(t, h.orderCalldata(), false)
 	if err != nil {
-		t.Fatalf("intent: %v", err)
+		t.Fatalf("order: %v", err)
 	}
-	var intentID ids.ID
-	copy(intentID[:], out)
+	var orderID ids.ID
+	copy(orderID[:], out)
 
 	// BEFORE the host flush: the C->D object must NOT be in shared memory yet (the
-	// intent only STAGED it in StateDB). A direct sm.Apply would have made it visible
+	// order only STAGED it in StateDB). A direct sm.Apply would have made it visible
 	// here — and a subsequent tx revert could not undo it. Deferral is the fix.
-	if _, ok := h.readCtoDObject(t, intentID); ok {
+	if _, ok := h.readCtoDObject(t, orderID); ok {
 		t.Fatal("ATOMICITY VIOLATED: C->D object reached shared memory mid-tx (must be staged until block accept)")
 	}
 
 	// The staged op IS present in StateDB (revert-aware) — collectible by the host.
 	staged := CollectStagedAtomic(newPoolStateAdapter(h.state))
 	if len(staged) == 0 {
-		t.Fatal("intent must stage a C->D op in StateDB for the host to flush at accept")
+		t.Fatal("order must stage a C->D op in StateDB for the host to flush at accept")
 	}
 
 	// AFTER the host flush (block accept): the object reaches shared memory.
 	h.flushStaged(t)
-	if _, ok := h.readCtoDObject(t, intentID); !ok {
+	if _, ok := h.readCtoDObject(t, orderID); !ok {
 		t.Fatal("host flush at accept must make the staged C->D object visible to D")
 	}
 
@@ -606,14 +606,14 @@ func TestRED_9999_AtomicOpsAreDeferredNotImmediate(t *testing.T) {
 	h2 := newSettleHarness(t)
 	h2.registerMarket(t)
 	h2.fundCallerNative(1000)
-	out2, _ := h2.runSwap(t, h2.intentCalldata(), false)
-	var intent2 ids.ID
-	copy(intent2[:], out2)
+	out2, _ := h2.runSwap(t, h2.orderCalldata(), false)
+	var order2 ids.ID
+	copy(order2[:], out2)
 	// "revert": clear the staged ops without flushing (StateDB rollback equivalent).
 	ClearStagedAtomic(newPoolStateAdapter(h2.state))
 	h2.flushStaged(t) // nothing staged -> nothing applied.
-	if _, ok := h2.readCtoDObject(t, intent2); ok {
-		t.Fatal("ATOMICITY VIOLATED: a reverted (staging-discarded) intent leaked a C->D object to shared memory")
+	if _, ok := h2.readCtoDObject(t, order2); ok {
+		t.Fatal("ATOMICITY VIOLATED: a reverted (staging-discarded) order leaked a C->D object to shared memory")
 	}
 }
 
@@ -621,30 +621,30 @@ func TestRED_9999_AtomicOpsAreDeferredNotImmediate(t *testing.T) {
 // atomic state, so a test does not have to thread (state, atomicState) twice.
 
 func (c *SettleContract) atomicImport(s *nativeAtomicState, claim SettlementClaim) (uint64, error) {
-	// Auto-bind to a standing per-taker intent for the recipient (ample principal, no
+	// Auto-bind to a standing per-taker order for the recipient (ample principal, no
 	// deadline) when the caller didn't name one, so the object-bind / replay / rail
 	// axis tests satisfy the per-taker cap (MEDIUM) without each restating it. Cap /
-	// deadline tests set claim.IntentID explicitly to a precisely-seeded intent.
-	if claim.IntentID == ([32]byte{}) {
+	// deadline tests set claim.OrderID explicitly to a precisely-seeded order.
+	if claim.OrderID == ([32]byte{}) {
 		db := newPoolStateAdapter(s)
-		// Per-recipient standing intent id (no cross-recipient contamination): derive a
+		// Per-recipient standing order id (no cross-recipient contamination): derive a
 		// stable id from the recipient so owner-mismatch tests still bind owner==recipient.
 		var id ids.ID
 		id[0], id[1], id[2] = 0x57, 0x7A, 0x11
 		copy(id[12:32], claim.Recipient.Bytes())
-		rec := loadSwapIntentRecord(db, id)
+		rec := loadSwapOrderRecord(db, id)
 		// The claimed value is the carried object's amount (no separate Amount field).
 		_, _, _, objAmount, _, _ := decodeAtomicObject(claim.Object)
-		if rec.Status != swapIntentOpen || rec.Remaining < objAmount {
-			putSwapIntentRecord(db, id, swapIntentRecord{
-				Owner: claim.Recipient, AssetIn: claim.Asset, Remaining: 1_000_000_000, Status: swapIntentOpen,
+		if rec.Status != swapOrderOpen || rec.Remaining < objAmount {
+			putSwapOrderRecord(db, id, swapOrderRecord{
+				Owner: claim.Recipient, AssetIn: claim.Asset, Remaining: 1_000_000_000, Status: swapOrderOpen,
 			})
 		}
-		claim.IntentID = id
+		claim.OrderID = id
 	}
 	return nativeClient.ImportSettlement(s, s, claim)
 }
-func (c *SettleContract) atomicModifyLiquidity(s *nativeAtomicState, req IntentRequest) (ids.ID, error) {
+func (c *SettleContract) atomicModifyLiquidity(s *nativeAtomicState, req OrderRequest) (ids.ID, error) {
 	return nativeClient.SubmitModifyLiquidity(s, s, req)
 }
 func (c *SettleContract) atomicCancel(s *nativeAtomicState, orderID ids.ID, marketID [32]byte, owner common.Address) error {
