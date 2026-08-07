@@ -71,7 +71,7 @@ var SeamPendingTrait = func() []byte {
 // commits; nothing needs it mid-block, so deferral costs nothing.)
 //
 // STAGED RECORD LAYOUTS (in StateDB, under the 0x9999 namespace):
-//   - C->D PUT:    stagePutPrefix | seq      -> dChainID(32) | key(32) | object(60)
+//   - C->D PUT:    stagePutPrefix | seq      -> dChainID(32) | key(32) | object(69|118)
 //   - D->C REMOVE: stageRemovePrefix | seq   -> dChainID(32) | key(32)
 //   - a monotonic per-block seq counter (stageSeqKey) orders them deterministically.
 //
@@ -97,8 +97,10 @@ func setStageSeq(stateDB stateKV, n uint64) {
 }
 
 // stagePutKey / stageRemoveKey key a staged op by its sequence number. We store the
-// variable-length record across consecutive 32-byte slots (the EVM word size) since
-// a staged Put record is dChainID(32)|key(32)|object(60) = 124 bytes = 4 words.
+// variable-length record across consecutive 32-byte slots (the EVM word size). A
+// staged Put record is version(1)|dChainID(32)|key(32)|object, and the object is 69
+// bytes (a value object) or 118 (a swap intent) — so the record spans 4 or 6 words.
+// The length lives in slot 0, so no caller assumes a fixed word count.
 func stageSlotKey(prefix []byte, seq uint64, word int) common.Hash {
 	id := make([]byte, 0, 16)
 	var s [8]byte
@@ -130,7 +132,8 @@ const (
 const stagedOpVersion byte = 1
 
 // stageAtomicPut stages a C->D Put (revert-aware): version|dChainID|key|object. The
-// object (encodeAtomicObject: owner|asset|amount) is the value bound at flush.
+// object is either the 69-byte value object (LP commit) or the 118-byte swap intent
+// (value + the taker's operation); the flush binds whichever was staged.
 func stageAtomicPut(stateDB stateKV, dChainID ids.ID, key ids.ID, object []byte) {
 	seq := stageSeq(stateDB)
 	writeBytesToSlots(stateDB, stagePutPrefix, seq, packPut(dChainID, key, object))
@@ -156,7 +159,7 @@ func markStageKind(stateDB stateKV, seq uint64, kind byte) {
 // leading version byte so a future layout change is an explicit new version (and an
 // unknown version fails the flush rather than silently mis-decoding value).
 //
-//	Put:    version(1) | dChainID(32) | key(32) | object(60)
+//	Put:    version(1) | dChainID(32) | key(32) | object(69 value | 118 swap intent)
 //	Remove: version(1) | dChainID(32) | key(32)
 func packPut(dChainID, key ids.ID, object []byte) []byte {
 	b := make([]byte, 1+32+32+len(object))
