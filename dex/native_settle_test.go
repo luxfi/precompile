@@ -41,7 +41,7 @@ func Test9999Swap_CreatesCToDAtomicOrder(t *testing.T) {
 	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
 	vaultBefore := h.state.stateDB.GetBalance(poolManagerAddr9999).ToBig()
 
-	out, err := h.runSwap(t, h.orderCalldata(), false)
+	out, err := h.runSwap(t, h.crossCalldata(), false)
 	if err != nil {
 		t.Fatalf("order swap: %v", err)
 	}
@@ -75,25 +75,15 @@ func Test9999Swap_CreatesCToDAtomicOrder(t *testing.T) {
 	if !ok {
 		t.Fatal("C->D atomic object not found in shared memory after order")
 	}
-	owner, asset, amount, op, decOK := decodeOrderObject(raw)
+	owner, asset, amount, decOK := decodeClaim(raw)
 	if !decOK {
-		t.Fatalf("C->D object malformed (len=%d, want %d)", len(raw), orderObjectSize9999)
+		t.Fatalf("C->D object malformed (len=%d, want %d)", len(raw), claimSize)
 	}
-	// THE OPERATION rides with the value. Without it D credits the taker's account
-	// and stops — nothing places an order, nothing crosses, no proceeds exist, and
-	// no D->C settlement object is ever produced. That is the whole reason the seam
-	// was unreachable, so the operation is asserted here, not just the value.
-	if op.Market != h.key.ID() {
-		t.Fatalf("C->D op market = %x, want the swapped pool %x", op.Market[:8], func() []byte { m := h.key.ID(); return m[:8] }())
-	}
-	if op.Side != seamSideSell {
-		t.Fatalf("a ZeroForOne (currency0-in) swap is a SELL, got side=%d", op.Side)
-	}
-	if op.LimitPrice == 0 {
-		t.Fatal("C->D op carries no price limit: an unbounded cross-chain order must never be minted")
-	}
-	if op.Size != 100 {
-		t.Fatalf("C->D op size = %d, want the 100 base units the SELL locked", op.Size)
+	// THE OBJECT IS THE WHOLE MESSAGE, and it says only what moved. If any market,
+	// side, price or size could be read back out of it, the crossing would be carrying
+	// an order again.
+	if len(raw) != claimSize {
+		t.Fatalf("a crossing wrote %d bytes; the funding object is %d and carries value only", len(raw), claimSize)
 	}
 	if owner != h.caller {
 		t.Fatalf("C->D object owner = %s, want caller %s", owner.Hex(), h.caller.Hex())
@@ -169,7 +159,7 @@ func Test9999Swap_DoesNotUseEngineZAPValuePath(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(500)
-	out, serr := h.runSwap(t, h.orderCalldata(), false)
+	out, serr := h.runSwap(t, h.crossCalldata(), false)
 	if serr != nil {
 		t.Fatalf("0x9999 swap must settle via the atomic seam: %v", serr)
 	}
@@ -234,9 +224,9 @@ func Test9999Settle_BindsDOutputAssetOwnerAmount(t *testing.T) {
 	// shared memory holds the 300-bytes, so the two hashes differ.
 	amountID := ids.ID{0xDE, 0x02}
 	h.putDtoCObject(t, h.caller, amountID, h.outAssetID(), 300)
-	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: amountID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Recipient: h.caller,
-		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 301),
+	credited, err := h.c.atomicImport(h.state, Claim{
+		ID: amountID, Asset: h.outAssetID(), Beneficiary: h.caller,
+		Object: encodeClaim(h.caller, h.outAssetID(), 301),
 	})
 	if err != nil {
 		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", err)
@@ -260,32 +250,32 @@ func Test9999Settle_BindsDOutputAssetOwnerAmount(t *testing.T) {
 	// (b) ASSET mismatch: claim the native asset against an object denominated in the
 	// output token -> reject. Both sides ride in the transaction, so this stays an
 	// execution-time refusal.
-	_, err = h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: ids.ID{0xDE, 0x03}, Asset: [32]byte{}, AssetAddr: common.Address{}, Recipient: h.caller,
-		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 300),
+	_, err = h.c.atomicImport(h.state, Claim{
+		ID: ids.ID{0xDE, 0x03}, Asset: [32]byte{}, Beneficiary: h.caller,
+		Object: encodeClaim(h.caller, h.outAssetID(), 300),
 	})
-	if err != ErrNativeSettleAsset {
-		t.Fatalf("asset mismatch must reject with ErrNativeSettleAsset, got: %v", err)
+	if err != ErrImportAsset {
+		t.Fatalf("asset mismatch must reject with ErrImportAsset, got: %v", err)
 	}
 
 	// (c) OWNER mismatch: claim recipient = a different account -> reject (a tx cannot
 	// consume a victim's object).
 	attacker := common.HexToAddress("0x9999999999999999999999999999999999999999")
-	_, err = h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: ids.ID{0xDE, 0x04}, Asset: h.outAssetID(), AssetAddr: h.outToken(), Recipient: attacker,
-		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 300),
+	_, err = h.c.atomicImport(h.state, Claim{
+		ID: ids.ID{0xDE, 0x04}, Asset: h.outAssetID(), Beneficiary: attacker,
+		Object: encodeClaim(h.caller, h.outAssetID(), 300),
 	})
-	if err != ErrNativeSettleOwner {
-		t.Fatalf("owner mismatch must reject with ErrNativeSettleOwner, got: %v", err)
+	if err != ErrImportBeneficiary {
+		t.Fatalf("owner mismatch must reject with ErrImportBeneficiary, got: %v", err)
 	}
 
 	// (d) the FULLY-bound claim succeeds and credits 300.
 	boundID := ids.ID{0xDE, 0x05}
 	h.putDtoCObject(t, h.caller, boundID, h.outAssetID(), 300)
 	before := h.tokenBal(h.outToken(), h.caller)
-	credited, err = h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: boundID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Recipient: h.caller,
-		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 300),
+	credited, err = h.c.atomicImport(h.state, Claim{
+		ID: boundID, Asset: h.outAssetID(), Beneficiary: h.caller,
+		Object: encodeClaim(h.caller, h.outAssetID(), 300),
 	})
 	if err != nil {
 		t.Fatalf("fully-bound claim must succeed: %v", err)
@@ -299,21 +289,19 @@ func Test9999Settle_BindsDOutputAssetOwnerAmount(t *testing.T) {
 	}
 }
 
-// Test9999ModifyLiquidity_CommitsCToDAtomicFunds — SubmitModifyLiquidity LOCKS the
-// LP's funds on C and writes a C->D atomic object so D opens a FUNDED position.
+// Test9999ModifyLiquidity_CommitsCToDAtomicFunds — an LP crossing LOCKS the LP's
+// funds on C and writes a C->D claim so D can open a position against a funded
+// account. The crossing itself opens nothing.
 func Test9999ModifyLiquidity_CommitsCToDAtomicFunds(t *testing.T) {
 	h := newSettleHarness(t)
 	h.fundCallerNative(2000)
 
 	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
-	positionID, err := h.c.atomicModifyLiquidity(h.state, OrderRequest{
-		Account:      h.caller,
-		AssetIn:      h.inAssetID(),
-		AmountIn:     500,
-		AssetInAddr:  common.Address{},
-		MarketID:     h.key.ID(),
-		MinAmountOut: big.NewInt(0),
-		Recipient:    h.caller,
+	positionID, _, err := nativeClient.Export(h.state, h.state, Transfer{
+		Owner:       h.caller,
+		Beneficiary: h.caller,
+		Asset:       h.inAssetID(),
+		Amount:      500,
 	})
 	if err != nil {
 		t.Fatalf("modifyLiquidity commit: %v", err)
@@ -334,9 +322,9 @@ func Test9999ModifyLiquidity_CommitsCToDAtomicFunds(t *testing.T) {
 	if !ok {
 		t.Fatal("C->D position-funding object not found in shared memory")
 	}
-	rail, owner, asset, amount, _, _ := decodeAtomicObject(raw)
-	if rail != railLP || owner != h.caller || asset != h.inAssetID() || amount != 500 {
-		t.Fatalf("C->D position object mismatch: rail=%d owner=%s asset=%x amount=%d", rail, owner.Hex(), asset, amount)
+	owner, asset, amount, _ := decodeClaim(raw)
+	if owner != h.caller || asset != h.inAssetID() || amount != 500 {
+		t.Fatalf("C->D position object mismatch: owner=%s asset=%x amount=%d", owner.Hex(), asset, amount)
 	}
 }
 
@@ -356,9 +344,9 @@ func Test9999Collect_ImportsDExportToC(t *testing.T) {
 	outputID := ids.ID{0xC0, 0x11}
 	h.putDtoCObject(t, h.caller, outputID, h.outAssetID(), 120)
 	before := h.tokenBal(h.outToken(), h.caller)
-	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: h.outAssetID(), AssetAddr: h.outToken(), Recipient: h.caller,
-		Object: encodeAtomicObject(railSwap, h.caller, h.outAssetID(), 120),
+	credited, err := h.c.atomicImport(h.state, Claim{
+		ID: outputID, Asset: h.outAssetID(), Beneficiary: h.caller,
+		Object: encodeClaim(h.caller, h.outAssetID(), 120),
 	})
 	if err != nil {
 		t.Fatalf("collect import: %v", err)
@@ -386,9 +374,9 @@ func Test9999Cancel_ImportsDRefundToC(t *testing.T) {
 	outputID := ids.ID{0xCA, 0x22}
 	h.putDtoCObject(t, h.caller, outputID, h.inAssetID(), 75)
 	before := h.state.stateDB.GetBalance(h.caller).ToBig()
-	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: h.inAssetID(), AssetAddr: common.Address{}, Recipient: h.caller,
-		Object: encodeAtomicObject(railSwap, h.caller, h.inAssetID(), 75),
+	credited, err := h.c.atomicImport(h.state, Claim{
+		ID: outputID, Asset: h.inAssetID(), Beneficiary: h.caller,
+		Object: encodeClaim(h.caller, h.inAssetID(), 75),
 	})
 	if err != nil {
 		t.Fatalf("cancel refund import: %v", err)
@@ -419,7 +407,7 @@ func Test9999RoundTrip_CToDMatchDToC(t *testing.T) {
 	h.fundVaultOut(10_000)   // the vault backs the output credit (maker-seeded reserve).
 
 	// --- C: PHASE A order. Locks 100 native, writes the C->D object. ---
-	out, err := h.runSwap(t, h.orderCalldata(), false)
+	out, err := h.runSwap(t, h.crossCalldata(), false)
 	if err != nil {
 		t.Fatalf("round-trip order: %v", err)
 	}
@@ -434,12 +422,12 @@ func Test9999RoundTrip_CToDMatchDToC(t *testing.T) {
 	if !ok {
 		t.Fatal("round-trip: D could not read the C->D object")
 	}
-	dOwner, dAsset, dAmount, dOp, dOK := decodeOrderObject(raw)
+	dOwner, dAsset, dAmount, dOK := decodeClaim(raw)
 	if !dOK || dOwner != h.caller || dAsset != h.inAssetID() || dAmount != 100 {
 		t.Fatalf("round-trip: C->D object mismatch on the D side (ok=%v)", dOK)
 	}
-	if dOp.Market != h.key.ID() || dOp.Side != seamSideSell || dOp.LimitPrice == 0 || dOp.Size != 100 {
-		t.Fatalf("round-trip: C->D operation mismatch on the D side: %+v", dOp)
+	if len(raw) != claimSize {
+		t.Fatalf("round-trip: D was handed %d bytes; a crossing carries %d and instructs nothing", len(raw), claimSize)
 	}
 
 	// --- D: "match" 100 native-in for 90 token-out, EXPORT a D->C object. The dexvm
@@ -505,11 +493,10 @@ func TestRED_9999_LiveMatcherAnswerCannotCreditC(t *testing.T) {
 	// "live matcher answer": correct asset, correct recipient, huge amount) but no object
 	// bytes at all. Execution has no shared memory to consult, so the refusal it CAN make
 	// is on the bytes themselves: an absent object is not the canonical width.
-	_, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID:  fakeID,
+	_, err := h.c.atomicImport(h.state, Claim{
+		ID:  fakeID,
 		Asset:     h.outAssetID(),
-		AssetAddr: h.outToken(),
-		Recipient: h.caller,
+		Beneficiary: h.caller,
 		// No object: nothing was ever exported at fakeID, so the claim carries none.
 	})
 	if !errors.Is(err, ErrImportObjectMalformed) {
@@ -524,9 +511,9 @@ func TestRED_9999_LiveMatcherAnswerCannotCreditC(t *testing.T) {
 	forgeH := newSettleHarness(t)
 	forgeH.registerMarket(t)
 	forgeH.fundVaultOut(1_000_000)
-	forged := encodeAtomicObjectSpent(railSwap, forgeH.caller, forgeH.outAssetID(), 999_999, 0)
+	forged := encodeClaim(forgeH.caller, forgeH.outAssetID(), 999_999)
 	forgedCalldata := buildSwapCalldata(forgeH.key, forgeH.params,
-		EncodeSettlementHookData(fakeID, forgeH.standingOrder(999_999), forged))
+		EncodeSettlementHookData(fakeID, forged))
 	if _, ferr := forgeH.runSwap(t, forgedCalldata, false); ferr != nil {
 		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", ferr)
 	}
@@ -539,7 +526,7 @@ func TestRED_9999_LiveMatcherAnswerCannotCreditC(t *testing.T) {
 
 	// (3) Even a Phase-A order (the only other swap path) credits NOTHING — it can
 	// only LOCK input + create a C->D object; it returns an order id, never output.
-	out, ierr := h.runSwap(t, h.orderCalldata(), false)
+	out, ierr := h.runSwap(t, h.crossCalldata(), false)
 	if ierr != nil {
 		t.Fatalf("order: %v", ierr)
 	}
@@ -575,7 +562,7 @@ func TestRED_9999_AtomicOpsAreDeferredNotImmediate(t *testing.T) {
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
 
-	out, err := h.runSwap(t, h.orderCalldata(), false)
+	out, err := h.runSwap(t, h.crossCalldata(), false)
 	if err != nil {
 		t.Fatalf("order: %v", err)
 	}
@@ -606,7 +593,7 @@ func TestRED_9999_AtomicOpsAreDeferredNotImmediate(t *testing.T) {
 	h2 := newSettleHarness(t)
 	h2.registerMarket(t)
 	h2.fundCallerNative(1000)
-	out2, _ := h2.runSwap(t, h2.orderCalldata(), false)
+	out2, _ := h2.runSwap(t, h2.crossCalldata(), false)
 	var order2 ids.ID
 	copy(order2[:], out2)
 	// "revert": clear the staged ops without flushing (StateDB rollback equivalent).
@@ -620,41 +607,17 @@ func TestRED_9999_AtomicOpsAreDeferredNotImmediate(t *testing.T) {
 // --- test-only thin wrappers exposing the native client ops with the harness's
 // atomic state, so a test does not have to thread (state, atomicState) twice.
 
-func (c *SettleContract) atomicImport(s *nativeAtomicState, claim SettlementClaim) (uint64, error) {
-	// Auto-bind to a standing per-taker order for the recipient (ample principal, no
-	// deadline) when the caller didn't name one, so the object-bind / replay / rail
-	// axis tests satisfy the per-taker cap (MEDIUM) without each restating it. Cap /
-	// deadline tests set claim.OrderID explicitly to a precisely-seeded order.
-	if claim.OrderID == ([32]byte{}) {
-		db := newPoolStateAdapter(s)
-		// Per-recipient standing order id (no cross-recipient contamination): derive a
-		// stable id from the recipient so owner-mismatch tests still bind owner==recipient.
-		var id ids.ID
-		id[0], id[1], id[2] = 0x57, 0x7A, 0x11
-		copy(id[12:32], claim.Recipient.Bytes())
-		rec := loadSwapOrderRecord(db, id)
-		// The claimed value is the carried object's amount (no separate Amount field).
-		_, _, _, objAmount, _, _ := decodeAtomicObject(claim.Object)
-		if rec.Status != swapOrderOpen || rec.Remaining < objAmount {
-			putSwapOrderRecord(db, id, swapOrderRecord{
-				Owner: claim.Recipient, AssetIn: claim.Asset, Remaining: 1_000_000_000, Status: swapOrderOpen,
-			})
-		}
-		claim.OrderID = id
-	}
-	return nativeClient.ImportSettlement(s, s, claim)
-}
-func (c *SettleContract) atomicModifyLiquidity(s *nativeAtomicState, req OrderRequest) (ids.ID, error) {
-	return nativeClient.SubmitModifyLiquidity(s, s, req)
+func (c *SettleContract) atomicImport(s *nativeAtomicState, cl Claim) (uint64, error) {
+	return nativeClient.Import(s, s, cl)
 }
 func (c *SettleContract) atomicCancel(s *nativeAtomicState, orderID ids.ID, marketID [32]byte, owner common.Address) error {
 	// Cancel is a keeper-routing notification emitted at the withdraw lifecycle site
 	// (requestPositionWithdraw); the test exercises the resulting D->C refund import.
-	emitNativeCancelEvent(newPoolStateAdapter(s), orderID, marketID, owner)
+	emitPositionClosing(newPoolStateAdapter(s), orderID, marketID, owner)
 	return nil
 }
 func (c *SettleContract) atomicCollect(s *nativeAtomicState, positionID ids.ID, marketID [32]byte, owner common.Address) error {
-	emitNativeCollectEvent(newPoolStateAdapter(s), positionID, marketID, owner)
+	emitPositionCollecting(newPoolStateAdapter(s), positionID, marketID, owner)
 	return nil
 }
 

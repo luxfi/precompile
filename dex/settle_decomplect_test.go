@@ -83,10 +83,9 @@ func TestDecomplect_NoReceiptNoSettle(t *testing.T) {
 	forgeH := newSettleHarness(t)
 	forgeH.registerMarket(t)
 	forgeH.fundVaultOut(1_000_000)
-	forged := encodeAtomicObjectSpent(railSwap, forgeH.caller, forgeH.outAssetID(), 500, 0)
-	orderID := forgeH.standingOrder(500)
+	forged := encodeClaim(forgeH.caller, forgeH.outAssetID(), 500)
 	forgedCalldata := buildSwapCalldata(forgeH.key, forgeH.params,
-		EncodeSettlementHookData(phantom, orderID, forged))
+		EncodeSettlementHookData(phantom, forged))
 	if _, ferr := forgeH.runSwap(t, forgedCalldata, false); ferr != nil {
 		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", ferr)
 	}
@@ -260,7 +259,7 @@ func TestDecomplect_DAOControllerCannotMintOrMoveUserFunds(t *testing.T) {
 	controller := h.operator() // == the runtime-resolved DEX governance controller
 
 	native := [32]byte{}
-	seamBefore := loadSeamReserve(newPoolStateAdapter(h.state), native).Uint64()
+	seamBefore := loadCustody(newPoolStateAdapter(h.state), native).Uint64()
 
 	// (a) Controller calls seedSeamReserve(native, 1_000_000) but the host frame delivers NO
 	// msg.value. A mint would inflate seamReserve; the observed-delta discipline yields 0
@@ -274,7 +273,7 @@ func TestDecomplect_DAOControllerCannotMintOrMoveUserFunds(t *testing.T) {
 	if !errors.Is(err, ErrSeedUndelivered) {
 		t.Fatalf("expected ErrSeedUndelivered (no mint), got: %v", err)
 	}
-	if got := loadSeamReserve(newPoolStateAdapter(h.state), native).Uint64(); got != seamBefore {
+	if got := loadCustody(newPoolStateAdapter(h.state), native).Uint64(); got != seamBefore {
 		t.Fatalf("seam reserve changed on an undelivered seed: %d -> %d (mint)", seamBefore, got)
 	}
 
@@ -289,22 +288,22 @@ func TestDecomplect_DAOControllerCannotMintOrMoveUserFunds(t *testing.T) {
 		t.Fatalf("depositor deposit: %v", derr)
 	}
 	// (i) fabricated object: no privileged path to mint a settlement object.
-	credited, ierr := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: [32]byte{0xAB}, Asset: native, AssetAddr: common.Address{}, Recipient: controller,
+	credited, ierr := h.c.atomicImport(h.state, Claim{
+		ID: [32]byte{0xAB}, Asset: native, Beneficiary: controller,
 	})
 	if ierr == nil || credited != 0 {
 		t.Fatalf("controller credited itself from a fabricated settlement object: credited=%d err=%v", credited, ierr)
 	}
-	// (ii) a REAL D->C object exists, but seamReserve[native] is empty (only the depositor pot
+	// (ii) a REAL D->C object exists, but custody[native] is empty (only the depositor pot
 	// holds native). The credit must revert UNBACKED — it cannot draw the depositor pot.
 	realObj := [32]byte{0xCD, 0xEF}
 	h.putDtoCObject(t, controller, realObj, native, 500)
-	credited2, ierr2 := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: realObj, Asset: native, AssetAddr: common.Address{}, Recipient: controller,
-		Object: encodeAtomicObject(railSwap, controller, native, 500),
+	credited2, ierr2 := h.c.atomicImport(h.state, Claim{
+		ID: realObj, Asset: native, Beneficiary: controller,
+		Object: encodeClaim(controller, native, 500),
 	})
-	if ierr2 != ErrNativeSettleUnbacked {
-		t.Fatalf("controller raided the depositor pot via a real object with empty seam: credited=%d err=%v (must be ErrNativeSettleUnbacked)", credited2, ierr2)
+	if ierr2 != ErrCustodyUnbacked {
+		t.Fatalf("controller raided the depositor pot via a real object with empty seam: credited=%d err=%v (must be ErrCustodyUnbacked)", credited2, ierr2)
 	}
 	if loadDepositorClaim(newPoolStateAdapter(h.state), depositor, native).Int64() != 1000 {
 		t.Fatal("depositor claim moved after controller's raid attempt (do-not-ship)")

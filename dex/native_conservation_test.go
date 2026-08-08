@@ -45,10 +45,9 @@ func (h *settleHarness) vaultInvariantNative(t testing.TB, where string) {
 	native := [32]byte{}
 	real := h.state.stateDB.GetBalance(poolManagerAddr9999).ToBig()
 	sum := new(big.Int).Set(loadSettleVault(db, native))
-	sum.Add(sum, loadSeamReserve(db, native))
-	sum.Add(sum, loadCommittedPositions(db, native))
+	sum.Add(sum, loadCustody(db, native))
 	if real.Cmp(sum) != 0 {
-		t.Fatalf("%s: vault-account invariant violated: realHolding=%s != settleVault+seamReserve+committedPositions=%s", where, real, sum)
+		t.Fatalf("%s: vault-account invariant violated: realHolding=%s != settleVault+custody=%s", where, real, sum)
 	}
 }
 
@@ -95,7 +94,7 @@ func TestFIX3_SettlementCannotRaidDepositorClaim(t *testing.T) {
 	if loadDepositorClaim(newPoolStateAdapter(h.state), depositor, native).Int64() != 1000 {
 		t.Fatal("depositor claim must be 1000")
 	}
-	if loadSeamReserve(newPoolStateAdapter(h.state), native).Sign() != 0 {
+	if loadCustody(newPoolStateAdapter(h.state), native).Sign() != 0 {
 		t.Fatal("seam reserve must be ZERO (no operator seed, no order locks)")
 	}
 	h.vaultInvariantNative(t, "after deposit")
@@ -105,12 +104,12 @@ func TestFIX3_SettlementCannotRaidDepositorClaim(t *testing.T) {
 	outputID := ids.ID{0x5E, 0x77}
 	h.putDtoCObject(t, h.caller, outputID, native, 500)
 
-	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: native, AssetAddr: common.Address{}, Recipient: h.caller,
-		Object: encodeAtomicObject(railSwap, h.caller, native, 500),
+	credited, err := h.c.atomicImport(h.state, Claim{
+		ID: outputID, Asset: native, Beneficiary: h.caller,
+		Object: encodeClaim(h.caller, native, 500),
 	})
-	if err != ErrNativeSettleUnbacked {
-		t.Fatalf("BLAST RADIUS: a settlement with empty seam reserve must REVERT (ErrNativeSettleUnbacked), not raid the depositor pot; got credited=%d err=%v", credited, err)
+	if err != ErrCustodyUnbacked {
+		t.Fatalf("BLAST RADIUS: a settlement with empty seam reserve must REVERT (ErrCustodyUnbacked), not raid the depositor pot; got credited=%d err=%v", credited, err)
 	}
 	// The depositor's claim is untouched — they can still withdraw all 1000.
 	if loadDepositorClaim(newPoolStateAdapter(h.state), depositor, native).Int64() != 1000 {
@@ -129,7 +128,7 @@ func TestFIX3_WithdrawCannotStrandSettlement(t *testing.T) {
 	native := [32]byte{}
 
 	// Operator seeds the SEAM reserve (counterparty backing for settlements).
-	h.fundVaultNativeOut(500) // -> seamReserve[native] = 500, real += 500
+	h.fundVaultNativeOut(500) // -> custody[native] = 500, real += 500
 	// A depositor independently funds their claim (depositor pot).
 	h.depositNative(t, depositor, 1000) // -> settleVault[native] = 1000, real += 1000
 	h.vaultInvariantNative(t, "after seed + deposit")
@@ -140,8 +139,8 @@ func TestFIX3_WithdrawCannotStrandSettlement(t *testing.T) {
 	if loadDepositorClaim(db, depositor, native).Sign() != 0 {
 		t.Fatal("depositor claim must be 0 after full withdraw")
 	}
-	if loadSeamReserve(db, native).Int64() != 500 {
-		t.Fatalf("seam reserve must remain 500 after the depositor's withdraw, got %s", loadSeamReserve(db, native))
+	if loadCustody(db, native).Int64() != 500 {
+		t.Fatalf("seam reserve must remain 500 after the depositor's withdraw, got %s", loadCustody(db, native))
 	}
 	h.vaultInvariantNative(t, "after full withdraw")
 
@@ -149,14 +148,14 @@ func TestFIX3_WithdrawCannotStrandSettlement(t *testing.T) {
 	// reserve was never raided by the withdraw.
 	outputID := ids.ID{0x5E, 0x78}
 	h.putDtoCObject(t, h.caller, outputID, native, 500)
-	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: native, AssetAddr: common.Address{}, Recipient: h.caller,
-		Object: encodeAtomicObject(railSwap, h.caller, native, 500),
+	credited, err := h.c.atomicImport(h.state, Claim{
+		ID: outputID, Asset: native, Beneficiary: h.caller,
+		Object: encodeClaim(h.caller, native, 500),
 	})
 	if err != nil || credited != 500 {
 		t.Fatalf("a seam-backed settlement must succeed after a depositor withdraw: credited=%d err=%v", credited, err)
 	}
-	if loadSeamReserve(db, native).Sign() != 0 {
+	if loadCustody(db, native).Sign() != 0 {
 		t.Fatal("seam reserve must be 0 after the settlement consumed it")
 	}
 	h.vaultInvariantNative(t, "after backed settlement")
@@ -187,11 +186,11 @@ func TestFIX3_VaultInvariantAcrossBothSubsystems(t *testing.T) {
 	// reserve (the caller funds it). seamReserve grows; settleVault (depositor) is
 	// untouched.
 	h.fundCallerNative(1000)
-	seamBeforeLock := loadSeamReserve(newPoolStateAdapter(h.state), native)
-	if _, err := h.runSwap(t, h.orderCalldata(), false); err != nil {
+	seamBeforeLock := loadCustody(newPoolStateAdapter(h.state), native)
+	if _, err := h.runSwap(t, h.crossCalldata(), false); err != nil {
 		t.Fatalf("phase-A order: %v", err)
 	}
-	seamAfterLock := loadSeamReserve(newPoolStateAdapter(h.state), native)
+	seamAfterLock := loadCustody(newPoolStateAdapter(h.state), native)
 	if new(big.Int).Sub(seamAfterLock, seamBeforeLock).Int64() != 100 { // AmountSpecified = -100
 		t.Fatalf("order must add 100 to the seam reserve, delta=%s", new(big.Int).Sub(seamAfterLock, seamBeforeLock))
 	}
@@ -203,15 +202,15 @@ func TestFIX3_VaultInvariantAcrossBothSubsystems(t *testing.T) {
 	// 4) A backed Phase-B settlement credits the taker out of the seam reserve only.
 	outputID := ids.ID{0x5E, 0x79}
 	h.putDtoCObject(t, h.caller, outputID, native, 1500)
-	seamBeforeCredit := loadSeamReserve(newPoolStateAdapter(h.state), native)
-	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: outputID, Asset: native, AssetAddr: common.Address{}, Recipient: h.caller,
-		Object: encodeAtomicObject(railSwap, h.caller, native, 1500),
+	seamBeforeCredit := loadCustody(newPoolStateAdapter(h.state), native)
+	credited, err := h.c.atomicImport(h.state, Claim{
+		ID: outputID, Asset: native, Beneficiary: h.caller,
+		Object: encodeClaim(h.caller, native, 1500),
 	})
 	if err != nil || credited != 1500 {
 		t.Fatalf("backed settlement: credited=%d err=%v", credited, err)
 	}
-	seamAfterCredit := loadSeamReserve(newPoolStateAdapter(h.state), native)
+	seamAfterCredit := loadCustody(newPoolStateAdapter(h.state), native)
 	if new(big.Int).Sub(seamBeforeCredit, seamAfterCredit).Int64() != 1500 {
 		t.Fatalf("settlement must debit 1500 from the seam reserve, delta=%s", new(big.Int).Sub(seamBeforeCredit, seamAfterCredit))
 	}

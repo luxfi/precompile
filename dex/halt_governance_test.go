@@ -202,7 +202,7 @@ func TestHIGH3_HaltBitesARealSwap(t *testing.T) {
 
 	// A real swap (Phase-A order) now reverts with the market-halt error — checkHalt gates
 	// the money path BEFORE any input is locked (no strand on a halted swap).
-	if _, err := h.runSwap(t, h.orderCalldata(), false); !errors.Is(err, ErrMarketHalted) {
+	if _, err := h.runSwap(t, h.crossCalldata(), false); !errors.Is(err, ErrMarketHalted) {
 		t.Fatalf("halted market must refuse a swap with ErrMarketHalted, got: %v", err)
 	}
 
@@ -215,7 +215,7 @@ func TestHIGH3_HaltBitesARealSwap(t *testing.T) {
 	}
 
 	// With the halt lifted, the same swap proceeds (creates its C->D order).
-	out, err := h.runSwap(t, h.orderCalldata(), false)
+	out, err := h.runSwap(t, h.crossCalldata(), false)
 	if err != nil {
 		t.Fatalf("after governance lifted the halt, the swap must succeed, got: %v", err)
 	}
