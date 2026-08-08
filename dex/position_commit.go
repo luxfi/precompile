@@ -25,28 +25,26 @@ import (
 //
 //	CSpendable   — a unit in the LP's normal EVM balance (spendable on C).
 //	DCommitted   — a unit backing a live D position: it has LEFT the LP's balance,
-//	               sits in the 0x9999 vault classified as committedPositions[asset],
+//	               sits in the 0x9999 vault as custody[asset],
 //	               and a C->D commit object funds the position on D.
 //	(transient)  DPendingCollect — a unit D has exported as a D->C object, not yet
 //	               consumed on C; CSettled — consumed and credited back to CSpendable.
 //
-// THE SHIP RULE (LP extension, enforced structurally): a D position is funded ONLY by
-// consuming a C->D commit object (SubmitPositionCommit -> dexvm executeImport); a C
-// balance is credited (collect/withdraw) ONLY by consuming a D->C export object
-// (ImportPositionCollect). No fill/fee VALUE a relayer hands the precompile can
-// credit C — the credit is a RECORDED D->C object's amount, drawn from the LP rail's
-// OWN committedPositions pot, and absent a real object in shared memory it reverts.
+// THE RULE, ENFORCED STRUCTURALLY: a D position is funded ONLY by consuming a C->D
+// claim; a C balance is credited (collect/withdraw) ONLY by consuming a D->C claim.
+// No fee or fill amount a caller hands the precompile can credit C — the credit is a
+// recorded claim's amount, drawn from custody, and a forged claim kills the block.
 //
-// ORTHOGONALITY: this rail composes the SAME atomic primitives (encodeAtomicObject,
-// DerivePositionCommitID, stageAtomicPut/Remove, the consumed/submitted replay sets)
-// and the SAME position RECORD storage (RestingOrder + the owner index in
-// settle_maker.go), and it owns its OWN value pot (committedPositions, native_state.go)
-// distinct from the swap rail's seamReserve, the depositor settleVault, and the
-// legacy makerLockedVault. Each pot backs only its own credits (the FIX-3 discipline).
+// AN LP CROSSING IS AN ORDINARY CROSSING. It uses the SAME funding rail as every
+// other one — the same claim wire, the same custody pot, the same consumed set — and
+// there is no LP lane. A position is a D-side object; the record here is C-side
+// bookkeeping that FOLLOWS the value rather than gating it (collectPositionRecord),
+// because what backs a credit is custody and what stops a second one is the claim
+// being consumable once. Both are properties of the value, not of a position.
 
 // OrderStatusClosing marks a position whose withdraw/collect was REQUESTED: a D->C
 // object is expected and the recorded owner is still a legitimate collector (so
-// ImportPositionCollect's per-object gate accepts a collect naming THIS record) until
+// collectPositionRecord applies the collect to THIS record) until
 // the position is fully drained, at which point collectPositionRecord flips it to
 // Closed. It extends the OrderStatus lifecycle (None=0, Open=1=Committed,
 // Cancelled=2=Closed, Closing=3).
@@ -73,7 +71,7 @@ var (
 
 // orderCommitObjSuffix stores the C->D commit OBJECT id of a position record, so an
 // auditor/keeper can correlate the C-side record (keyed by MakerOrderID) with the
-// shared-memory commit object D imported (keyed by DerivePositionCommitID). Two ids,
+// shared-memory commit object D imported (keyed by DeriveClaimID). Two ids,
 // two purposes: the record id is re-derivable from (owner,pool,salt,range) for
 // lifecycle ops; the object id is injective over the tx identity for replay safety.
 var orderCommitObjSuffix = []byte("c") // commit object id (bytes32)
@@ -146,7 +144,7 @@ func (s *SettleContract) runSettleModifyLiquidity(
 // commitPosition handles the ADD leg: it COMMITS delta of the LP's CSpendable balance
 // to a funded D position via a C->D commit object, records/tops-up the position, and
 // returns (orderID, lockedAmt). The value LEAVES the caller's balance and becomes
-// DCommitted (committedPositions[lockedAsset]); D is funded ONLY by importing the
+// DCommitted (custody[lockedAsset]); D is funded ONLY by importing the
 // staged commit object.
 func (s *SettleContract) commitPosition(
 	state contract.AccessibleState, atomicState contract.AtomicState, stateDB *poolStateAdapter,
@@ -184,7 +182,7 @@ func (s *SettleContract) commitPosition(
 	// Track the per-owner committed reserve (the LP's own committed total of this
 	// asset) — the same fine-grained accumulator the prior model used for locked
 	// reserve, now meaning "committed to D positions". Defense-in-depth bookkeeping
-	// alongside the authoritative committedPositions[asset] pot.
+	// alongside the authoritative custody[asset] pot.
 	storeLockedReserve(stateDB, caller, lockedAsset,
 		new(big.Int).Add(loadLockedReserve(stateDB, caller, lockedAsset), new(big.Int).SetUint64(committed)))
 
@@ -250,7 +248,7 @@ func (s *SettleContract) requestPositionWithdraw(
 
 // runSettleCollectPosition is the 0x9999 LP D->C COLLECT/WITHDRAW handler — the
 // Phase-B analog for the LP rail. It consumes a D->C atomic object EXACTLY ONCE and
-// credits the caller out of the committedPositions pot (DPendingCollect -> CSettled).
+// credits the caller out of custody (DPendingCollect -> CSettled).
 // This is the SOLE C-credit path for an LP: collect, decrease, burn, and cancel all
 // return funds through here, by consuming a D->C object D exported.
 //
@@ -266,8 +264,8 @@ func (s *SettleContract) requestPositionWithdraw(
 //	               // it. Carried by the tx so execution never reads shared memory and
 //	               // the block replays identically; Verify proves it (settle_import.go).
 //
-// The recipient is the CALLER (day-1, no delegation). ImportPositionCollect binds the
-// object's RAIL (must be railLP — a swap-fill object is refused), its
+// The recipient is the CALLER (day-1, no delegation). Import binds the
+// claim's recorded value (beneficiary, asset, amount), its
 // owner/asset/amount, AND the named position record, so a claim cannot invent value,
 // consume a victim's object, re-denominate it, consume a swap-rail object on the LP
 // pot, or draw beyond the object owner's OWN committed backing.
