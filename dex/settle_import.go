@@ -53,11 +53,18 @@ import (
 // value: nothing it credited is ever accepted.
 
 // exportedObjectHashDomain domain-separates the object commitment so an object
-// hash can never be confused with any other 32-byte digest on the seam (an
+// hash can never be confused with any other 32-byte digest on the rail (an
 // order id, a pool id, a market id). The commitment is over the FULL canonical
-// object bytes, so equality of hashes is equality of (rail, owner, asset, amount,
-// spent) under keccak collision resistance.
-var exportedObjectHashDomain = []byte("lux.dex.native.import.object.v1")
+// object bytes, so equality of hashes is equality of (beneficiary, asset, amount)
+// under keccak collision resistance.
+//
+// THE DOMAIN CARRIES THE OBJECT'S VERSION, so it rotates whenever the object does.
+// v2 is the 60-byte funding claim; v1 was the 118-byte braided object, and the domain
+// stayed at v1 across that change. A declaration is a hash plus a promise about what
+// was hashed, and the domain is where that promise lives — leaving it behind lets a
+// commitment from one era be presented as a commitment from another, and the whole
+// point of the digest is that the two sides cannot drift.
+var exportedObjectHashDomain = []byte("lux.dex.native.import.object.v2")
 
 // SettleObjectHash is the CANONICAL commitment to a cross-chain object's bytes.
 // It is the single definition both sides use: the precompile commits to the bytes
