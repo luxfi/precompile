@@ -5,9 +5,7 @@ package dex
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
-	"math/big"
 
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/ids"
@@ -180,68 +178,4 @@ func EncodeSettlementHookData(claimID ids.ID, object []byte) []byte {
 	return out
 }
 
-// orderBodyLen is the Phase-A body width with a deadline only: deadline(32).
-// orderBodyLenWithNonce adds the nonce word: deadline(32) | nonce(32). An empty body
-// (the common plain-swap case) means deadline 0, nonce 0.
-const (
-	orderBodyLen          = 32
-	orderBodyLenWithNonce = 64
-)
 
-// decodeOrderBody parses the OPTIONAL Phase-A order body into (deadline, nonce). An
-// empty body => (0, 0) — the plain-swap default. A 32-byte body carries only a deadline
-// (nonce 0). A 64-byte body carries deadline + nonce. Any other width, or a value that
-// does not fit uint64, is malformed (a swap that carries garbage where a deadline/nonce
-// should be reverts rather than silently dropping it and deriving a mismatched id /
-// stranding funds with no reclaim horizon).
-func decodeOrderBody(body []byte) (deadline, nonce uint64, err error) {
-	switch len(body) {
-	case 0:
-		return 0, 0, nil
-	case orderBodyLen:
-		d := new(big.Int).SetBytes(body[0:32])
-		if !d.IsUint64() {
-			return 0, 0, ErrOrderBadDeadline
-		}
-		return d.Uint64(), 0, nil
-	case orderBodyLenWithNonce:
-		d := new(big.Int).SetBytes(body[0:32])
-		n := new(big.Int).SetBytes(body[32:64])
-		if !d.IsUint64() || !n.IsUint64() {
-			return 0, 0, ErrOrderBadDeadline
-		}
-		return d.Uint64(), n.Uint64(), nil
-	default:
-		return 0, 0, ErrOrderBodyMalformed
-	}
-}
-
-// EncodeOrderHookData builds an explicit Phase-A hookData: the tag, plus deadline and
-// nonce words. A plain empty hookData also selects Phase A with deadline 0, nonce 0.
-// The encoding is MINIMAL-WIDTH so the off-chain (zap/dexsession) and on-chain encoders
-// produce byte-identical calldata for the same (deadline, nonce):
-//   - deadline==0 && nonce==0 -> tag only (4 bytes)
-//   - nonce==0                -> tag | deadline[32]
-//   - else                    -> tag | deadline[32] | nonce[32]
-func EncodeOrderHookData(deadline, nonce uint64) []byte {
-	if deadline == 0 && nonce == 0 {
-		out := make([]byte, 4)
-		copy(out, orderPhaseTag[:])
-		return out
-	}
-	var d [32]byte
-	binary.BigEndian.PutUint64(d[24:32], deadline)
-	if nonce == 0 {
-		out := make([]byte, 0, 4+orderBodyLen)
-		out = append(out, orderPhaseTag[:]...)
-		out = append(out, d[:]...)
-		return out
-	}
-	var n [32]byte
-	binary.BigEndian.PutUint64(n[24:32], nonce)
-	out := make([]byte, 0, 4+orderBodyLenWithNonce)
-	out = append(out, orderPhaseTag[:]...)
-	out = append(out, d[:]...)
-	out = append(out, n[:]...)
-	return out
-}

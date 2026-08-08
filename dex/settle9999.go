@@ -5,7 +5,6 @@ package dex
 
 import (
 	"errors"
-	"math"
 	"math/big"
 
 	"github.com/luxfi/geth/common"
@@ -101,26 +100,7 @@ const (
 	GasNativeSettlement uint64 = 50_000 // decode + SM get/bind + replay slot + credit + SM remove + DEXFill log (Phase B).
 )
 
-// maxOrderTTL is the FINITE reclaim horizon applied to any value-path swap order that
-// did NOT name an explicit deadline (a plain swap(), or a DI01 body with deadline 0). It
-// bounds how long a taker's locked principal can sit unsettled before reclaimIntent can
-// refund it. Seven days (in seconds) is generous enough for any honest cross-domain
-// settlement to land yet guarantees the principal is never permanently stranded — the
-// structural fix for the deadline-0 fund-lock. A taker who wants a tighter window passes an
-// explicit DI01 deadline; this is only the floor for those who pass none.
-const maxOrderTTL uint64 = 7 * 24 * 60 * 60 // 604800s = 7 days
 
-// defaultedReclaimDeadline returns the finite deadline to stamp on an order that supplied
-// none: blockTimestamp + maxOrderTTL, saturating at the uint64 max so the addition can
-// never wrap to a SMALL (already-past) value (which would let reclaim fire immediately, or —
-// worse — a wrapped tiny deadline could let a Phase-B settlement be rejected as "late" right
-// away). Saturation keeps the horizon in the future for every realistic block time.
-func defaultedReclaimDeadline(blockTimestamp uint64) uint64 {
-	if blockTimestamp > math.MaxUint64-maxOrderTTL {
-		return math.MaxUint64
-	}
-	return blockTimestamp + maxOrderTTL
-}
 
 // isNativeAsset reports whether an injective AssetID is native LUX (all-zero).
 func isNativeAsset(id [32]byte) bool { return id == ([32]byte{}) }
@@ -290,73 +270,10 @@ func buildTransfer(key PoolKey, params SwapParams, caller common.Address) (Trans
 	}, nil
 }
 
-// priceScale is the fixed-point scale of the CLOB price wire (price × 1e8) — the
-// matcher's PriceInt grid, byte-identical with dex/pkg/zapwire.PriceScale (==
-// lx.PriceMultiplier) and the chains/dexvm proxy's PriceScale. Quote-per-base limits
-// and Fill prices cross the C<->D seam as EXACT integers on this grid; there is NO
-// float64 on the value path (its out-of-range int conversion is architecture-
-// dependent and forks — the cross-arch consensus bug the integer wire closes).
-const priceScale = 100000000
-
-// priceLimitToCLOB converts the V4 SqrtPriceLimitX96 into the CLOB price domain the
-// dexvm settles in — quote-per-base as a uint64 FIXED-POINT ×priceScale value (the
-// PriceInt grid), computed as an EXACT integer so no float→int conversion ever
-// touches the value the settle path compares against. It is the slippage floor the
-// matcher / settle path enforces: a fill WORSE than this is refused (bounded MEV).
-//
-//	price (quote/base) = (sqrtPriceX96 / 2^96)^2 = currency1 per currency0,
-//	grid value         = round(price × priceScale) = round(s^2 × priceScale / 2^192).
-//
-// Round-to-NEAREST (not floor): the client's sqrtPriceLimitX96 is a floored sqrt, so its
-// exact square sits an epsilon below the intended price; flooring the grid value would
-// quantize a "50" limit to 49.99999999 and fail to cross a maker resting AT 50. Rounding
-// to the nearest PriceInt quantizes to the price the taker meant, deterministically.
-//
-// DIRECTION. limitIsUpper reports which side the limit bounds, matching the dexvm's
-// fill-side convention:
-//   - zeroForOne (sell currency0/base for currency1/quote => CLOB SELL): the V4 limit is
-//     the MINIMUM sqrt price, i.e. a price FLOOR — reject fills BELOW it (limitIsUpper=false).
-//   - !zeroForOne (buy currency0/base with currency1/quote => CLOB BUY): the V4 limit is
-//     the MAXIMUM sqrt price, i.e. a price CEILING — reject fills ABOVE it (limitIsUpper=true).
-//
-// A SqrtPriceLimitX96 at/beyond the V4 sentinel bounds (MinSqrtRatio for zeroForOne,
-// MaxSqrtRatio for !zeroForOne) means "no limit" — returns 0 so the settle path imposes
-// no floor (the pre-existing unbounded behavior, preserved).
-func priceLimitToCLOB(params SwapParams) (priceLimitUnits uint64, limitIsUpper bool) {
-	limitIsUpper = !params.ZeroForOne
-	s := params.SqrtPriceLimitX96
-	if s == nil || s.Sign() <= 0 {
-		return 0, limitIsUpper // unset => no limit
-	}
-	// Treat the V4 "no limit" sentinels as unbounded: a zeroForOne floor at/below
-	// MinSqrtRatio, or a !zeroForOne ceiling at/above MaxSqrtRatio, imposes nothing.
-	if params.ZeroForOne {
-		if s.Cmp(MinSqrtRatio) <= 0 {
-			return 0, limitIsUpper
-		}
-	} else {
-		if s.Cmp(MaxSqrtRatio) >= 0 {
-			return 0, limitIsUpper
-		}
-	}
-	// grid = round(s^2 × priceScale / 2^192), EXACT big.Int arithmetic (add 2^191 before
-	// the >>192 floor-divide = round-half-up). The matcher's crossing loop may project this
-	// back to a float for display, but the CONSENSUS value the settle floor compares against
-	// is this exact PriceInt grid integer.
-	units := new(big.Int).Mul(s, s)
-	units.Mul(units, big.NewInt(priceScale))
-	units.Add(units, new(big.Int).Lsh(big.NewInt(1), 191)) // + 2^191 for round-to-nearest
-	units.Rsh(units, 192)
-	if units.Sign() <= 0 || !units.IsUint64() {
-		return 0, limitIsUpper // degenerate / out of range => no limit (unbounded)
-	}
-	return units.Uint64(), limitIsUpper
-}
-
 
 // balanceDeltaForOutput maps a credited output amount to the V4 BalanceDelta
-// convention (output paid out to taker = negative on the output side; the input
-// side already moved at Phase A so it is zero on the settlement leg).
+// convention (output paid out to caller = negative on the output side; the input
+// side already moved when the value crossed, so it is zero on the import leg).
 func balanceDeltaForOutput(params SwapParams, amountOut *big.Int) BalanceDelta {
 	out := new(big.Int).Neg(amountOut)
 	if params.ZeroForOne {
@@ -364,15 +281,6 @@ func balanceDeltaForOutput(params SwapParams, amountOut *big.Int) BalanceDelta {
 		return BalanceDelta{Amount0: big.NewInt(0), Amount1: out}
 	}
 	return BalanceDelta{Amount0: out, Amount1: big.NewInt(0)}
-}
-
-// minAmountOut derives the swap's slippage floor from V4 SwapParams (exact-output
-// names the floor; exact-input leaves it to the D price limit). Routing only.
-func minAmountOut(params SwapParams) *big.Int {
-	if params.AmountSpecified != nil && params.AmountSpecified.Sign() > 0 {
-		return new(big.Int).Set(params.AmountSpecified)
-	}
-	return big.NewInt(0)
 }
 
 // swapAssetDirection returns the (tokenIn, tokenOut) injective AssetIDs implied by
