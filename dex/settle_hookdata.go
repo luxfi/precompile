@@ -143,46 +143,39 @@ func decodeSwapPhase(hookData []byte) (phase swapPhase, body []byte, taggedOrder
 	return swapPhaseOrder, nil, false, nil
 }
 
-// settlementBodyLen is the fixed Phase-B body width: outputID(32) | orderID(32) |
-// object(69).
-const settlementBodyLen = 32 + 32 + exportedOutputSize9999
+// settlementBodyLen is the fixed Phase-B body width: claimID(32) | claim(60).
+const settlementBodyLen = 32 + claimSize
 
-// decodeSettlementBody parses a Phase-B body into a SettlementClaim, DERIVING the
-// asset from the swap output direction and the recipient from the caller, and
-// carrying the SUPPLIED object bytes through untouched. The claim is bound against
-// those bytes in ImportSettlement (which the host proves are the recorded object at
-// Verify), and its credit is capped by the named order record's remaining principal.
-func decodeSettlementBody(body []byte, key PoolKey, params SwapParams, caller common.Address) (SettlementClaim, error) {
+// decodeSettlementBody parses a Phase-B body into a Claim, DERIVING the asset from
+// the swap output direction and the beneficiary from the caller, and carrying the
+// SUPPLIED object bytes through untouched. The claim is bound against those bytes in
+// Import (which the host proves are the recorded object at Verify).
+func decodeSettlementBody(body []byte, key PoolKey, params SwapParams, caller common.Address) (Claim, error) {
 	if len(body) != settlementBodyLen {
-		return SettlementClaim{}, ErrSettleBodyMalformed
+		return Claim{}, ErrSettleBodyMalformed
 	}
-	var outputID ids.ID
-	copy(outputID[:], body[0:32])
-	var orderID [32]byte
-	copy(orderID[:], body[32:64])
+	var claimID ids.ID
+	copy(claimID[:], body[0:32])
 	// Output asset = the pool's output side for this swap direction (the asset the
-	// taker receives). Derived, not wire-supplied, so a claim cannot name a foreign
-	// asset; ImportSettlement still equality-checks it against the object.
+	// caller receives). Derived, not wire-supplied, so a transaction cannot name a
+	// foreign asset; Import still equality-checks it against the object.
 	_, outAsset := swapAssetDirection(key, params)
-	return SettlementClaim{
-		OutputID:  outputID,
-		Asset:     outAsset,
-		AssetAddr: assetAddress(outAsset),
-		Recipient: caller, // day-1: no delegation; recipient is the caller.
-		OrderID:   orderID,
-		Object:    append([]byte(nil), body[64:settlementBodyLen]...),
+	return Claim{
+		ID:          claimID,
+		Asset:       outAsset,
+		Beneficiary: caller, // day-1: no delegation; the beneficiary is the caller.
+		Object:      append([]byte(nil), body[32:settlementBodyLen]...),
 	}, nil
 }
 
-// EncodeSettlementHookData builds a Phase-B hookData for tests and the keeper's
-// settle-tx builder: tag + outputID + orderID + object. The inverse of
-// decodeSettlementBody (asset/recipient are derived at decode, not encoded; the
-// amount is inside the object and is never restated).
-func EncodeSettlementHookData(outputID ids.ID, orderID ids.ID, object []byte) []byte {
+// EncodeSettlementHookData builds a Phase-B hookData for tests and a client's
+// import-tx builder: tag + claimID + claim. The inverse of decodeSettlementBody
+// (asset/beneficiary are derived at decode, not encoded; the amount is inside the
+// object and is never restated).
+func EncodeSettlementHookData(claimID ids.ID, object []byte) []byte {
 	out := make([]byte, 0, 4+settlementBodyLen)
 	out = append(out, settlementPhaseTag[:]...)
-	out = append(out, outputID[:]...)
-	out = append(out, orderID[:]...)
+	out = append(out, claimID[:]...)
 	out = append(out, object...)
 	return out
 }
