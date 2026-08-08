@@ -13,8 +13,8 @@ import (
 	"github.com/luxfi/precompile/precompileconfig"
 )
 
-// 0x9999 settlement governance (setHaltGlobal/Market/Asset, seedSeamReserve,
-// creditPositionFee) is gated to the per-NETWORK DEX GOVERNANCE CONTROLLER, resolved
+// 0x9999 settlement governance (setHaltGlobal/Market/Asset, seedSeamReserve) is
+// gated to the per-NETWORK DEX GOVERNANCE CONTROLLER, resolved
 // at RUNTIME from contract.AtomicState.GovernanceController() (the SAME runtime seam
 // networkID/cChainID/dChainID flow through) — see governanceController in halt9999.go.
 //
@@ -125,7 +125,6 @@ func init() {
 	SelectorSetHaltAsset = keccak4("setHaltAsset(bytes32,bool)")
 	SelectorCollectPosition = keccak4("collectPosition(bytes32,address,uint256,bytes32)")
 	SelectorSeedSeamReserve = keccak4("seedSeamReserve(address,uint256)")
-	SelectorCreditPositionFee = keccak4("creditPositionFee(bytes32,address,uint256)")
 
 	// No governance authority is set here: it is NOT a hardcoded key. The settlement
 	// governance authority is the per-network DEX governance controller, resolved at
@@ -283,13 +282,12 @@ func (s *SettleContract) Run(
 	case SelectorSetHaltAsset:
 		return s.runSetHaltScoped(accessibleState, caller, data, suppliedGas, readOnly, SetHaltAsset)
 
-	// Operator funding of the settlement pots (governance-controller-gated). The swap
-	// custody counterparty seed (FIX-4 liveness: a market's first matched
-	// swap settles without manual state-poking) and the LP rail's per-owner fee credit.
+	// Operator funding of the settlement pots (governance-controller-gated): the swap
+	// custody counterparty seed (FIX-4 liveness — a market's first matched swap settles
+	// without manual state-poking). It is the ONLY way value enters custody other than
+	// a C->D export, which is what makes the custody identity in native_state.go hold.
 	case SelectorSeedSeamReserve:
 		return s.runSeedSeamReserve(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorCreditPositionFee:
-		return s.runCreditPositionFee(accessibleState, caller, data, suppliedGas, readOnly)
 
 	default:
 		return nil, suppliedGas, errors.New("dex: unknown 0x9999 selector")
