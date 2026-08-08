@@ -258,7 +258,7 @@ func (a *poolStateAdapter) SetState(addr common.Address, key common.Hash, value 
 	// account NON-EMPTY before persisting ANY of its storage, so an EIP-158
 	// Finalise(deleteEmptyObjects=true) cannot reap the account and the slot together (the live
 	// ERC-20 fund-strand: an ERC-20-only deposit leaves 0x9999 with zero native balance/nonce/
-	// code => empty => reaped with seamReserve). One nonce bump per frame at the first 0x9999
+	// code => empty => reaped with custody). One nonce bump per frame at the first 0x9999
 	// write; see ensureVaultAccountPersists (native_zap.go).
 	if addr == poolManagerAddr9999 && !a.vaultMarked {
 		a.vaultMarked = true

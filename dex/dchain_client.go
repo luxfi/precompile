@@ -21,7 +21,7 @@ import (
 //
 // This interface is the canonical seam that surface migrates onto. It is the
 // Stage-1 target (see the package design): the synchronous V4 swap path is moved
-// off the live-query Engine surface and onto SubmitSwapOrder (Pattern A: a
+// off the live-query Engine surface and onto Export (Pattern A: a
 // C tx records a D-Chain order order; the local dexvm executes it under D
 // consensus; the result settles asynchronously through the D->C atomic boundary)
 // or GetReceipt (Pattern B: a C tx carries a committed D receipt that 0x9010
@@ -41,10 +41,10 @@ type DChainClient interface {
 	// matched synchronously here.
 	SubmitOrder(ctx context.Context, o Order) (orderID uint64, err error)
 
-	// SubmitSwapOrder records a marketable (taker) swap ORDER on the local
+	// Export records a marketable (taker) swap ORDER on the local
 	// D-Chain (Pattern A) and returns a receipt id the caller polls / observes
 	// for the asynchronous settlement. It does NOT return an in-block fill.
-	SubmitSwapOrder(ctx context.Context, in SwapOrder) (receiptID [32]byte, err error)
+	Export(ctx context.Context, in SwapOrder) (receiptID [32]byte, err error)
 
 	// GetMarket returns the committed market (order book) metadata for marketID,
 	// a read of already-committed D state (safe to fold into a C read path).

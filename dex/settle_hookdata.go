@@ -25,52 +25,12 @@ import (
 //	tag "DS02" + body            -> PHASE B (SETTLEMENT): consume a D->C object.
 //	tag "DS01" + anything        -> RETIRED. Hard error, never re-read as Phase A.
 //
-// PHASE A body layout (optional, two recognized widths; absent => deadline 0, nonce 0):
-//
-//	deadline[32]                 // swap deadline as a block timestamp (uint256; fits uint64)
-//	deadline[32] | nonce[32]     // + the order nonce (uint256; fits uint64)
-//
-// The deadline is persisted in the per-order escrow record so (a) Phase-B settlement
-// past it is refused and (b) reclaimIntent can refund the locked principal once it
-// passes and D has not settled. The NONCE is the taker's order disambiguator: it is
-// folded into DeriveOrderID so the order id is CHAIN-OBSERVABLE (derivable off-chain
-// before the txID exists — the watch-correlation fix) and so two otherwise-identical
-// swaps get distinct ids. Both ride in hookData (the V4 SwapParams tuple is UNCHANGED) —
-// neither is value-bearing, only routing/liveness/identity. A body with the deadline but
-// no nonce derives the id with nonce 0 (back-compatible with a plain single-swap order).
-//
-// PHASE B body layout (deterministic, fixed width, bounds-checked):
-//
-//	outputID[32]   // the D->C atomic object's shared-memory key
-//	orderID[32]   // the originating C->D order id this settlement draws against
-//	object[69]     // THE OBJECT ITSELF: rail|owner|asset|amount|spent, exactly as D
-//	               // exported it (native_wire.go encodeAtomicObjectSpent)
-//
-// WHY THE OBJECT RIDES IN THE CALLDATA (the change that makes this path syncable).
-// The settlement's value used to be read from shared memory DURING EVM execution,
-// while the matching Remove landed at block accept. A node re-executing that block
-// later — bootstrapping, state-syncing, re-tracing — found the object gone and
-// computed a different receipt than the network had accepted, so it could never sync
-// past a settled swap. Carrying the object IN the transaction makes execution a pure
-// function of the block, replayable byte-identically forever. The proof that these
-// bytes are the real recorded object is a BLOCK rule now (see settle_import.go): the
-// host authenticates every declared consumption against shared memory at Verify, and
-// a forged object REJECTS THE BLOCK rather than diverging a receipt. This is the
-// primary network's own ImportTx discipline — the object travels in the transaction,
-// shared memory is consulted at Verify.
-//
-// There is NO separate `amount` field: the amount IS the object's amount. One
-// declaration of a fact, never two that must be cross-checked.
-//
-// The output ASSET and RECIPIENT are NOT free wire fields: the asset is DERIVED
-// from the swap direction (the pool's output side) and the recipient is the CALLER
-// (day-1, no operator delegation). This keeps the claim from naming a victim's
-// object or a re-denominated asset — ImportSettlement then binds these against the
-// SUPPLIED object (which Verify proves is the recorded one), so even the derived
-// values must match what D actually exported.
-// The orderID binds the credit to the taker's OWN order record so it is capped by
-// that taker's remaining locked principal (the per-taker cap, the swap-rail analog of
-// the LP per-position bound).
+// PHASE A carries NO BODY. A crossing moves value: the beneficiary, asset and amount
+// are everything it needs, and all three are derived from the call itself. There is
+// no deadline (a claim is delivered when someone delivers it, and until then the
+// value is C's), and no nonce (the transaction is the disambiguator — a claim id is
+// derived from the source transaction and the call's index within it). Anything a
+// hook contract puts in hookData for its own purposes is simply not read here.
 
 // Phase tags. A hookData that does not begin with a known tag and is non-empty is
 // rejected (a hook contract's opaque bytes will not collide with these 4-byte
