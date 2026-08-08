@@ -23,36 +23,25 @@ import (
 // THE V4 swap selector is two-phase, keyed on hookData (the V4 ABI is UNCHANGED —
 // web/mobile already pass `bytes hookData`; only its CONTENTS select the phase):
 //
-//   - PHASE A — ORDER (hookData empty, or tagged ORDER): lock the taker's input
-//     on C and write a C->D atomic order object. Returns the order id (NOT a
-//     fill). D imports the object and matches under its own consensus.
-//   - PHASE B — SETTLEMENT (hookData tagged SETTLE, carrying a D->C object ref):
-//     consume the D->C atomic settlement object ONCE and credit the output. This
-//     is the ONLY path that credits C.
+//   - PHASE A — CROSSING IN (hookData empty): debit the caller's C value into
+//     custody and write a C->D claim. Returns the claim id (NOT a fill). D consumes
+//     the claim and credits the beneficiary's own account; what they then trade is a
+//     D-local decision they take with their own D transactions.
+//   - PHASE B — CROSSING OUT (hookData tagged SETTLE, carrying a D->C claim):
+//     consume the claim ONCE and credit its beneficiary. This is the ONLY path that
+//     credits C.
 //
-// THE SHIP RULE (enforced structurally, not by trust): a C balance can be credited
-// by 0x9999 ONLY by consuming a D->C atomic object (Phase B / ImportSettlement); a
-// D order/position can be funded ONLY by consuming a C->D atomic object (Phase A /
-// SubmitSwapOrder -> dexvm executeImport). No fill VALUE returned by any live
-// matcher can credit C — Phase B has no fill-amount parameter; the credit is the
-// RECORDED atomic object's amount, and absent a real object in shared memory it
-// reverts.
+// THE RULE, ENFORCED STRUCTURALLY: a C balance can be credited by 0x9999 ONLY by
+// consuming a D->C claim; a D balance can be funded ONLY by consuming a C->D claim.
+// No amount any caller states can credit C — Phase B has no amount parameter, the
+// credit is the RECORDED object's, and a forged object kills the block.
 //
-// WHAT C ENFORCES INDEPENDENTLY vs RELIES ON D FOR (the swap rail, precisely):
-//   - C enforces, with NO trust in D: the credit binds to the RECORDED object's
-//     owner/asset/amount (no aliasing/re-denomination), the object's rail is railSwap
-//     (no cross-rail pot drain), the object is consumed at most once (replay), the
-//     credit is drawn ONLY from seamReserve (never a depositor/maker/LP pot), AND —
-//     the per-taker cap (MEDIUM) — the credit is bounded by the taker's OWN order's
-//     remaining locked principal, so an over-export for one taker can never draw on
-//     other takers' pooled tokenIn. C ALSO guarantees liveness independently: a locked
-//     order's principal can always exit via reclaimIntent once its deadline passes,
-//     with no dependence on D or the keeper.
-//   - C relies on D for: WHICH fills occurred and their amounts (D is the matcher;
-//     conservation of proceeds vs refund within a single taker's locked principal is
-//     enforced on D by settleFromFills' spent<=locked). C does NOT re-derive the match;
-//     it bounds the blast radius of a faulty/hostile D export to the taker's OWN stake
-//     (the per-taker cap) and refuses anything past the deadline.
+// WHAT C ENFORCES vs WHAT D ENFORCES. C enforces, with no trust in D: the credit
+// binds to the recorded object's beneficiary/asset/amount, the claim is consumed at
+// most once, and custody must already back it. D enforces the other half: an export
+// debits a real balance and refuses an over-debit, so C is never asked to credit more
+// than D held. Between the two, value is conserved across the boundary without either
+// side re-deriving the other's ledger.
 
 // --- 0x9999 native-seam chain identity (networkID, cChainID, dChainID). It is NOT
 // configured and NOT persisted: 0x9999 is ALWAYS-ON with zero per-net config, so the

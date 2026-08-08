@@ -281,7 +281,7 @@ func (p *PositionManagerContract) routeLifecycle(
 // withdrawable principal + fees). It moves NO C value — the value returns when the LP
 // consumes the resulting D->C object via 0x9999 collectPosition. The owner bind here
 // is defense-in-depth; the value credit is bound again to the recorded object in
-// ImportPositionCollect, so a non-owner cannot collect another LP's funds.
+// Import, so a non-owner cannot collect another LP's funds.
 func (p *PositionManagerContract) routeCollectRequest(
 	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
 ) ([]byte, uint64, error) {

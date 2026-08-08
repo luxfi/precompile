@@ -13,18 +13,17 @@ import (
 )
 
 // settle_seed.go is the PRODUCTION operator-funding surface for the two settlement
-// pots a D->C credit draws on — the swap rail's seamReserve and the LP rail's
-// committedPositions — replacing the test-only fundVaultOut / seedCommittedNative
+// pots a D->C credit draws on — custody — replacing the test-only fundVaultOut / seedCommittedNative
 // helpers with real, operator-gated, value-backed selectors (FIX-4 / the LP fee
 // analog).
 //
 // WHY A SEED IS NEEDED (the liveness gap FIX-4 closes): a swap-rail D->C settlement
-// credits the taker out of seamReserve[assetOut] (creditSettlementOutput). seamReserve
+// credits the taker out of custody[assetOut] (creditAsset). custody
 // is funded by the tokenIn legs of OPPOSING-direction orders (an A->B taker locks A
-// into seamReserve[A], funding a later B->A taker's A-out). So a BALANCED two-sided
+// into custody[A], funding a later B->A taker's A-out). So a BALANCED two-sided
 // taker flow self-funds: every asset a taker receives was locked by an opposing taker.
 // But the FIRST matched swap of an output asset — or a persistently imbalanced market
-// — has no opposing lock yet, so seamReserve[assetOut] is empty and the first fill
+// — has no opposing lock yet, so custody[assetOut] is empty and the first fill
 // would revert ErrNativeSettleUnbacked. The operator seeds the counterparty backing
 // once at market bring-up; thereafter opposing flow sustains it. This selector is the
 // real (not test-only) path for that seed, gated to the protocolFeeController.
@@ -32,20 +31,19 @@ import (
 // CONSERVATION: a seed moves REAL value INTO the 0x9999 vault (native via the host
 // call frame's msg.value, observed-delta-checked exactly like deposit; ERC-20 via the
 // vault transferFrom observed delta) and records it in the target pot, so the
-// vault-account invariant (realHolding == settleVault + makerLockedVault + seamReserve
-// + committedPositions) is preserved — the seed is backed by deposited value, never a
+// vault-account invariant (realHolding == settleVault + makerLockedVault + custody) is preserved — the seed is backed by deposited value, never a
 // bookkeeping mint. A seed is NOT withdrawable as a depositor claim; it is the
 // operator's committed counterparty/fee backing for that rail.
 
 const gasSeedReserve uint64 = 30_000
 
 var (
-	// SelectorSeedSeamReserve funds the SWAP rail's seamReserve[asset] (operator
+	// SelectorSeedSeamReserve funds the SWAP rail's custody[asset] (operator
 	// counterparty backing): seedSeamReserve(address asset, uint256 amount). Gated to
 	// the protocolFeeController.
 	SelectorSeedSeamReserve uint32 // seedSeamReserve(address,uint256)
 	// SelectorCreditPositionFee credits an LP position's earned fees into BOTH the
-	// position record's withdrawable backing and the LP rail's committedPositions pot:
+	// position record's withdrawable backing and the LP rail's custody:
 	// creditPositionFee(bytes32 positionID, address asset, uint256 amount). It is the
 	// keeper's per-owner reflection of fees the D-Chain CLOB credited a maker, so the
 	// LP can collect principal+fees while the per-owner committed bound (FIX-2) still
@@ -61,7 +59,7 @@ var (
 	ErrFeeNoPosition   = errors.New("dex: creditPositionFee names no open/closing position")
 )
 
-// runSeedSeamReserve funds seamReserve[asset] from operator-delivered value. Native:
+// runSeedSeamReserve funds custody[asset] from operator-delivered value. Native:
 // observed-delta (the host frame moved msg.value into 0x9999; delivered = realBal −
 // Σpots), exactly the deposit discipline so a value==0 seed delivers 0 and reverts.
 // ERC-20: transferFrom observed delta. Gated to the per-network DEX governance

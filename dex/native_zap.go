@@ -21,7 +21,7 @@ import (
 // precompile's SUBSEQUENT writes to its OWN 0x9999 storage are DROPPED at commit (the nested
 // frame's snapshot/journal swallows the caller-precompile's later same-StateDB writes). So a
 // deposit that did `transferFrom THEN storeSeamReserve` moved the token (balanceOf(0x9999)
-// rose to 6000) yet lost the accounting (seamReserve stayed 0) ⇒ stranded funds, zero fill.
+// rose to 6000) yet lost the accounting (custody stayed 0) ⇒ stranded funds, zero fill.
 // The NATIVE path has no nested call, so it ALWAYS persisted; the trigger is exclusively the
 // ERC-20 leg's mid-frame env.Call. (Host root-cause is a separate geth-host concern — the
 // owner's directive is to DISSOLVE the trigger here, not patch geth.)
@@ -62,8 +62,8 @@ import (
 // discriminator is the empty account, never the nested call). geth's Finalise(deleteEmpty-
 // Objects=true) deletes any account that is empty (nonce==0 && balance==0 && code==∅) AND ALL
 // of its storage. An ERC-20 deposit credits 0x9999 the TOKEN (the token contract's storage),
-// leaving 0x9999's OWN account empty (zero native balance/nonce/code), so the seamReserve /
-// dexcore / halt slots written on 0x9999 are reaped at end-of-tx ⇒ seamReserve=0 while the
+// leaving 0x9999's OWN account empty (zero native balance/nonce/code), so the custody /
+// dexcore / halt slots written on 0x9999 are reaped at end-of-tx ⇒ custody=0 while the
 // token sits in the vault. A NATIVE deposit credits 0x9999's native balance (non-empty), which
 // is exactly why native persisted and ERC-20 did not.
 //

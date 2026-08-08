@@ -54,7 +54,7 @@ var settleConfigKey = "dexSettleConfig"
 // originCaller, caller) — self is the caller's context, not the target). Under
 // DELEGATECALL the token's msg.sender would become the delegating contract, breaking
 // the conservation invariant (realHolding == settleVault + makerLockedVault +
-// seamReserve + committedPositions) and stranding the caller's own funds. Pinning
+// custody) and stranding the caller's own funds. Pinning
 // addr == 0x9999 at the top of Run rejects exactly DELEGATECALL while CALL and CALLCODE
 // (both bind self = 0x9999) pass.
 var ErrSettleWrongContext = errors.New("dex: 0x9999 must be entered with self == 0x9999 (CALL/CALLCODE); DELEGATECALL from a delegating contract is rejected")
@@ -81,12 +81,11 @@ var (
 	SelectorSetHaltMarket uint32 // setHaltMarket(bytes32,bool)
 	SelectorSetHaltAsset  uint32 // setHaltAsset(bytes32,bool)
 
-	// SelectorCollectPosition is the LP rail's D->C collect/withdraw money path:
-	// collectPosition(bytes32 outputID, address asset, uint256 amount, bytes32
-	// positionID) consumes a D->C railLP object ONCE and credits the caller out of the
-	// committedPositions pot, bounded by the named position record's backing. It is the
-	// SOLE C-credit path for an LP (collect, decrease, burn, cancel all return funds
-	// through here). Distinct selector, same orthogonal money-path discipline.
+	// SelectorCollectPosition is a position's D->C money path: collectPosition(bytes32
+	// claimID, address asset, uint256 amount, bytes32 positionID) consumes a D->C claim
+	// ONCE and credits its beneficiary out of custody, then applies the collect to the
+	// named C-side position record. It is the SOLE C-credit path for an LP (collect,
+	// decrease, burn and cancel all return funds through here).
 	SelectorCollectPosition uint32 // collectPosition(bytes32,address,uint256,bytes32)
 
 )
@@ -240,7 +239,7 @@ func (s *SettleContract) Run(
 		return s.runSettleModifyLiquidity(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// LP D->C collect/withdraw money path (position_commit.go): consume a D->C atomic
-	// object ONCE and credit the caller out of committedPositions. The SOLE C-credit
+	// claim ONCE and credit its beneficiary out of custody. The SOLE C-credit
 	// path for an LP — collect/decrease/burn/cancel all return funds through here.
 	case SelectorCollectPosition:
 		return s.runSettleCollectPosition(accessibleState, caller, data, suppliedGas, readOnly)
@@ -285,7 +284,7 @@ func (s *SettleContract) Run(
 		return s.runSetHaltScoped(accessibleState, caller, data, suppliedGas, readOnly, SetHaltAsset)
 
 	// Operator funding of the settlement pots (governance-controller-gated). The swap
-	// rail's seamReserve counterparty seed (FIX-4 liveness: a market's first matched
+	// custody counterparty seed (FIX-4 liveness: a market's first matched
 	// swap settles without manual state-poking) and the LP rail's per-owner fee credit.
 	case SelectorSeedSeamReserve:
 		return s.runSeedSeamReserve(accessibleState, caller, data, suppliedGas, readOnly)
