@@ -122,7 +122,7 @@ func TestFIX2_ReAcceptAfterCommittedWindowIsCleanNoOp(t *testing.T) {
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
 
-	out, err := h.runSwap(t, h.orderCalldata(), false)
+	out, err := h.runSwap(t, h.crossCalldata(), false)
 	if err != nil {
 		t.Fatalf("order: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestFIX2_CrashBeforeCommitReAppliesCleanly(t *testing.T) {
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
 
-	out, err := h.runSwap(t, h.orderCalldata(), false)
+	out, err := h.runSwap(t, h.crossCalldata(), false)
 	if err != nil {
 		t.Fatalf("order: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestFIX2_MarkerAndApplyShareOneBatch(t *testing.T) {
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
 
-	if _, err := h.runSwap(t, h.orderCalldata(), false); err != nil {
+	if _, err := h.runSwap(t, h.crossCalldata(), false); err != nil {
 		t.Fatalf("order: %v", err)
 	}
 

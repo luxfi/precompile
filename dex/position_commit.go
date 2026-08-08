@@ -311,11 +311,9 @@ func (s *SettleContract) runSettleCollectPosition(
 	}
 	defer exitCustodyKV(stateDB)
 
-	// The position record is C-side bookkeeping for a D-side position; the VALUE comes
-	// through the one funding rail, like every other crossing. positionID identifies
-	// which record this collect settles, and is not consulted to authorize the credit
-	// — the claim's own beneficiary is.
-	_ = positionID
+	// The VALUE comes through the one funding rail, like every other crossing: the
+	// claim names its own beneficiary and custody backs it. Nothing about a position
+	// authorizes the credit.
 	credited, ierr := nativeClient.Import(state, atomicState, Claim{
 		ID:          claimID,
 		Asset:       asset,
@@ -325,6 +323,11 @@ func (s *SettleContract) runSettleCollectPosition(
 	if ierr != nil {
 		return nil, gasLeft, ierr
 	}
+	// The position record is C-side bookkeeping for a position that lives on D. It
+	// follows the value rather than gating it: the collected amount leaves the record's
+	// withdrawable and the owner's committed total, and the record closes once it is
+	// fully collected.
+	collectPositionRecord(stateDB, positionID, credited)
 	out := make([]byte, 32)
 	new(big.Int).SetUint64(credited).FillBytes(out)
 	return out, gasLeft, nil
@@ -345,3 +348,42 @@ func EncodeCollectPositionInput(claimID ids.ID, asset [32]byte, positionID [32]b
 // collectPositionInputLen is the fixed collectPosition calldata width:
 // claimID(32) | asset(32) | positionID(32) | claim(60).
 const collectPositionInputLen = 32 + 32 + 32 + claimSize
+
+// collectPositionRecord applies a collect to the named position record and the
+// owner's committed total: it subtracts the collected amount from the record's
+// LockedAmt and from loadLockedReserve(owner, asset), and marks the record Closed
+// once its LockedAmt reaches 0.
+//
+// This is BOOKKEEPING, not a gate. It used to bound the credit — a collect could not
+// exceed the record's LockedAmt — and that bound was expressed in position terms on
+// what is now a funding rail. What backs the credit is custody, and what stops a
+// double credit is the claim being consumable exactly once; both are properties of
+// the value, not of a position. So the record follows the value: it never refuses a
+// credit, and it never has to be consulted to authorize one.
+//
+// A record already at zero (or absent) simply stays there — the claim was for value
+// this record does not track, which the rail is entitled to move regardless.
+func collectPositionRecord(stateDB stateKV, positionID [32]byte, amount uint64) {
+	order := loadRestingOrder(stateDB, positionID)
+	if order.Status != OrderStatusOpen && order.Status != OrderStatusClosing {
+		return
+	}
+	amt := new(big.Int).SetUint64(amount)
+	if order.LockedAmt == nil {
+		order.LockedAmt = new(big.Int)
+	}
+	if order.LockedAmt.Cmp(amt) < 0 {
+		amt = new(big.Int).Set(order.LockedAmt)
+	}
+	order.LockedAmt = new(big.Int).Sub(order.LockedAmt, amt)
+	if order.LockedAmt.Sign() == 0 {
+		order.Status = OrderStatusCancelled // == Closed (terminal): fully collected.
+	}
+	storeRestingOrder(stateDB, positionID, order)
+
+	reserve := loadLockedReserve(stateDB, order.Owner, order.LockedAsset)
+	if reserve.Cmp(amt) < 0 {
+		reserve = new(big.Int).Set(amt)
+	}
+	storeLockedReserve(stateDB, order.Owner, order.LockedAsset, new(big.Int).Sub(reserve, amt))
+}

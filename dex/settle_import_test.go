@@ -39,15 +39,14 @@ func TestSettlementReExecutesWithoutSharedMemory(t *testing.T) {
 	live := newSettleHarness(t)
 	live.installDefaultMarketResolver(t)
 	live.fundVaultOut(int64(settled))
-	orderID := live.standingOrder(settled)
 	live.putDtoCObject(t, live.caller, outputID, live.outAssetID(), settled)
 
 	object := live.recordedObject(outputID)
-	if len(object) != exportedOutputSize9999 {
-		t.Fatalf("harness produced a %d-byte object, want %d", len(object), exportedOutputSize9999)
+	if len(object) != claimSize {
+		t.Fatalf("harness produced a %d-byte object, want %d", len(object), claimSize)
 	}
 	calldata := buildSwapCalldata(live.key, live.params,
-		EncodeSettlementHookData(outputID, orderID, object))
+		EncodeSettlementHookData(outputID, object))
 
 	liveRet, _, liveErr := SettleSwap(live.state, live.caller, calldata, 1_000_000, false)
 	if liveErr != nil {
@@ -62,9 +61,6 @@ func TestSettlementReExecutesWithoutSharedMemory(t *testing.T) {
 	replay := newSettleHarness(t)
 	replay.installDefaultMarketResolver(t)
 	replay.fundVaultOut(int64(settled))
-	if got := replay.seedSwapOrder(replay.caller, replay.inAssetID(), settled, 0, orderID); got != orderID {
-		t.Fatalf("replay harness seeded order %s, want %s", got, orderID)
-	}
 	if _, err := replay.cSM.Get(replay.dChainID, [][]byte{outputID[:]}); err == nil {
 		t.Fatal("replay harness must start with the object ABSENT from shared memory")
 	}
@@ -95,11 +91,10 @@ func TestSettlementDeclarationAuthenticatesTheObject(t *testing.T) {
 	h := newSettleHarness(t)
 	h.installDefaultMarketResolver(t)
 	h.fundVaultOut(int64(settled))
-	orderID := h.standingOrder(settled)
 	h.putDtoCObject(t, h.caller, outputID, h.outAssetID(), settled)
 	object := h.recordedObject(outputID)
 
-	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, orderID, object))
+	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, object))
 	if _, _, err := SettleSwap(h.state, h.caller, calldata, 1_000_000, false); err != nil {
 		t.Fatalf("settlement failed: %v", err)
 	}
@@ -147,12 +142,11 @@ func TestForgedObjectIsDeclaredAndThereforeRejectable(t *testing.T) {
 	h := newSettleHarness(t)
 	h.installDefaultMarketResolver(t)
 	h.fundVaultOut(int64(inflated))
-	orderID := h.standingOrder(inflated)
 	h.putDtoCObject(t, h.caller, outputID, h.outAssetID(), real)
 
 	// Fabricate an object claiming 1e6 where D exported 10.
-	forged := encodeAtomicObjectSpent(railSwap, h.caller, h.outAssetID(), inflated, 0)
-	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, orderID, forged))
+	forged := encodeClaim(h.caller, h.outAssetID(), inflated)
+	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, forged))
 
 	if _, _, err := SettleSwap(h.state, h.caller, calldata, 1_000_000, false); err != nil {
 		t.Fatalf("execution should bind the carried bytes without consulting shared memory: %v", err)
@@ -180,10 +174,9 @@ func TestMalformedObjectRefusedAtExecution(t *testing.T) {
 	h := newSettleHarness(t)
 	h.installDefaultMarketResolver(t)
 	h.fundVaultOut(100)
-	orderID := h.standingOrder(50)
 
-	short := make([]byte, exportedOutputSize9999-1)
-	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, orderID, short))
+	short := make([]byte, claimSize-1)
+	calldata := buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, short))
 	_, _, err := SettleSwap(h.state, h.caller, calldata, 1_000_000, false)
 	// A short object shortens the whole hookData body, so the fixed-width body gate
 	// catches it first; either refusal is correct and both are hard errors.
@@ -235,7 +228,7 @@ func TestRetiredDS01NeverBecomesAnOrder(t *testing.T) {
 // 0x9999, so a log carrying the declaration topic from any other address is ignored.
 func TestDeclarationIsAddressBound(t *testing.T) {
 	outputID := ids.ID{0x51, 0xDD}
-	object := encodeAtomicObjectSpent(railSwap, common.HexToAddress("0xdead"), [32]byte{}, 99, 0)
+	object := encodeClaim(common.HexToAddress("0xdead"), [32]byte{}, 99)
 	h := SettleObjectHash(object)
 
 	data := make([]byte, 0, settleImportDataLen)

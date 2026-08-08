@@ -73,7 +73,7 @@ func TestDEXFillEvent_NotEmittedOnPhaseAOrder(t *testing.T) {
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
 
-	if _, err := h.runSwap(t, h.orderCalldata(), false); err != nil {
+	if _, err := h.runSwap(t, h.crossCalldata(), false); err != nil {
 		t.Fatalf("phase-A order: %v", err)
 	}
 

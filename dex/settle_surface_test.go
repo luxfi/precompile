@@ -193,7 +193,7 @@ func TestModifyLiquidity_CommitConservation(t *testing.T) {
 	h.fundCallerNative(1000)
 
 	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
-	committedBefore := loadCommittedPositions(db, bidAsset)
+	committedBefore := loadCustody(db, bidAsset)
 	h.vaultInvariantNative(t, "before commit")
 
 	var salt [32]byte
@@ -210,7 +210,7 @@ func TestModifyLiquidity_CommitConservation(t *testing.T) {
 		t.Fatal("modifyLiquidity must return (positionID, committed)")
 	}
 	callerAfter := h.state.stateDB.GetBalance(h.caller).ToBig()
-	committedAfter := loadCommittedPositions(db, bidAsset)
+	committedAfter := loadCustody(db, bidAsset)
 	if new(big.Int).Sub(callerBefore, callerAfter).Int64() != 400 {
 		t.Fatalf("commit must debit caller CSpendable by exactly 400, got %s", new(big.Int).Sub(callerBefore, callerAfter))
 	}
@@ -238,7 +238,7 @@ func TestModifyLiquidity_CommitConservation(t *testing.T) {
 	}
 	// committedPositions is UNCHANGED by the withdraw request (the debit happens only
 	// when the LP consumes the D->C collect object). Conservation still holds.
-	if loadCommittedPositions(db, bidAsset).Int64() != committedAfter.Int64() {
+	if loadCustody(db, bidAsset).Int64() != committedAfter.Int64() {
 		t.Fatal("a withdraw request must not change committedPositions (D->C collect debits it)")
 	}
 	h.vaultInvariantNative(t, "after withdraw request")
@@ -306,7 +306,7 @@ func TestModifyLiquidity_ReentrancyGuard(t *testing.T) {
 	var salt [32]byte
 	salt[31] = 0x21
 	balBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
-	committedBefore := loadCommittedPositions(db, bidAsset)
+	committedBefore := loadCustody(db, bidAsset)
 	if _, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
 		modLiqCalldata(h.key, -60, 60, big.NewInt(100), salt, MakerSideBid), 5_000_000, false); err != ErrCustodyReentrant {
 		t.Fatalf("nested modifyLiquidity must revert ErrCustodyReentrant, got: %v", err)
@@ -314,7 +314,7 @@ func TestModifyLiquidity_ReentrancyGuard(t *testing.T) {
 	if h.state.stateDB.GetBalance(h.caller).ToBig().Cmp(balBefore) != 0 {
 		t.Fatal("reentrant-refused modifyLiquidity must move no value")
 	}
-	if loadCommittedPositions(db, bidAsset).Cmp(committedBefore) != 0 {
+	if loadCustody(db, bidAsset).Cmp(committedBefore) != 0 {
 		t.Fatal("reentrant-refused modifyLiquidity must not commit to the LP pot")
 	}
 }
@@ -409,7 +409,7 @@ func TestQuoter_QuoteAndNoMutation(t *testing.T) {
 	// must be unchanged — the Quoter is write-incapable by construction.
 	db := newPoolStateAdapter(h.state)
 	recBefore := loadMarket(db, h.key.ID())
-	consumedSlotBefore := db.GetState(poolManagerAddr9999, settlementConsumedKey(ids.ID{0xAB}))
+	consumedSlotBefore := db.GetState(poolManagerAddr9999, claimConsumedKey(ids.ID{0xAB}))
 	if _, _, err := q.Run(h.state, h.caller, quoterAddr, quoteCalldata(SelQExactInput, h.key, amount, true), 5_000_000, false /*NOT read-only*/); err != nil {
 		t.Fatalf("quote (readOnly=false) must still succeed: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestQuoter_QuoteAndNoMutation(t *testing.T) {
 	if recAfter.Status != recBefore.Status || recAfter.SqrtPriceX96.Cmp(recBefore.SqrtPriceX96) != 0 || recAfter.Tick != recBefore.Tick {
 		t.Fatal("Quoter must NOT mutate the market record even with readOnly=false")
 	}
-	if db.GetState(poolManagerAddr9999, settlementConsumedKey(ids.ID{0xAB})) != consumedSlotBefore {
+	if db.GetState(poolManagerAddr9999, claimConsumedKey(ids.ID{0xAB})) != consumedSlotBefore {
 		t.Fatal("Quoter must NOT write any 0x9999 slot")
 	}
 
@@ -530,7 +530,7 @@ func TestPositionManager_EnumerateAndCancelRoutesTo9999(t *testing.T) {
 		pmLifecycleCalldata(SelectorPMOpenPosition, h.key, -120, 120, big.NewInt(500), salt, MakerSideBid), 5_000_000, false); err != nil {
 		t.Fatalf("openPosition: %v", err)
 	}
-	if loadCommittedPositions(db, bidAsset).Int64() != 500 {
+	if loadCustody(db, bidAsset).Int64() != 500 {
 		t.Fatal("openPosition must commit to D via the 0x9999 kernel (committedPositions += 500)")
 	}
 	orderID := MakerOrderID(h.caller, h.key.ID(), salt, -120, 120)
