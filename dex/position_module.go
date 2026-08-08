@@ -308,7 +308,7 @@ func (p *PositionManagerContract) routeCollectRequest(
 	}
 	// Emit the collect routing event (reuse the native collect event — the keeper
 	// forwards it to D to export the maker's withdrawable balance for this position).
-	emitNativeCollectEvent(stateDB, ids.ID(orderID), poolID, caller)
+	emitPositionCollecting(stateDB, ids.ID(orderID), poolID, caller)
 	out := make([]byte, 32)
 	copy(out, orderID[:])
 	return out, gasLeft, nil

@@ -98,7 +98,7 @@ func (s *SettleContract) runSeedSeamReserve(
 	// PHASE A (record) credits seamReserve BEFORE the terminal ERC-20 pull, so the seed's
 	// accounting is never dropped by the geth nested-call host bug.
 	delivered, derr := receiveOperatorValue(stateDB, caller, asset, aid, amount, func(amt *big.Int) error {
-		storeSeamReserve(stateDB, aid, new(big.Int).Add(loadSeamReserve(stateDB, aid), amt))
+		storeCustody(stateDB, aid, new(big.Int).Add(loadCustody(stateDB, aid), amt))
 		return nil
 	})
 	if derr != nil {
@@ -165,7 +165,7 @@ func (s *SettleContract) runCreditPositionFee(
 	// before the transfer is the geth nested-call fund-loss fix (the prior order dropped these
 	// writes for an ERC-20 fee credit).
 	delivered, derr := receiveOperatorValue(stateDB, caller, asset, aid, amount, func(amt *big.Int) error {
-		storeCommittedPositions(stateDB, aid, new(big.Int).Add(loadCommittedPositions(stateDB, aid), amt))
+		storeCustody(stateDB, aid, new(big.Int).Add(loadCustody(stateDB, aid), amt))
 		order.LockedAmt = new(big.Int).Add(order.LockedAmt, amt)
 		storeRestingOrder(stateDB, positionID, order)
 		storeLockedReserve(stateDB, order.Owner, aid,
@@ -205,8 +205,8 @@ func receiveOperatorValue(stateDB StateDB, caller common.Address, asset Currency
 		// with the vault's real native balance.
 		realBal := stateDB.GetBalance(poolManagerAddr9999).ToBig()
 		tracked := new(big.Int).Set(loadSettleVault(stateDB, aid))
-		tracked.Add(tracked, loadSeamReserve(stateDB, aid))
-		tracked.Add(tracked, loadCommittedPositions(stateDB, aid))
+		tracked.Add(tracked, loadCustody(stateDB, aid))
+		tracked.Add(tracked, loadCustody(stateDB, aid))
 		delivered := new(big.Int).Sub(realBal, tracked)
 		if delivered.Sign() < 0 || delivered.Cmp(amount) < 0 {
 			return nil, ErrSeedUndelivered

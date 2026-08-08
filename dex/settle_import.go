@@ -12,8 +12,7 @@ import (
 	"github.com/luxfi/ids"
 )
 
-// settle_import.go is THE ONE PLACE a D->C atomic object enters C, for BOTH rails
-// (railSwap via ImportSettlement, railLP via ImportPositionCollect).
+// settle_import.go is THE ONE PLACE a D->C claim enters C.
 //
 // WHY IT EXISTS — EXECUTION MUST BE A PURE FUNCTION OF THE BLOCK.
 //
@@ -156,26 +155,22 @@ var ErrImportObjectMalformed = errors.New("dex: supplied cross-chain object is m
 // It deliberately does NOT read shared memory. The value a consumer credits is the
 // value in these bytes; whether these bytes are the real recorded object is proven
 // one level up, on the block. Every C-side consume path goes through here, so the
-// declaration can never be omitted and the two rails can never drift apart.
+// declaration can never be omitted.
 func bindImportObject(
 	stateDB StateDB,
-	sourceChainID, outputID ids.ID,
+	sourceChainID, claimID ids.ID,
 	object []byte,
-) (rail Rail, owner common.Address, asset [32]byte, amount, spent uint64, err error) {
-	rail, owner, asset, amount, spent, ok := decodeAtomicObject(object)
+) (beneficiary common.Address, asset [32]byte, amount uint64, err error) {
+	beneficiary, asset, amount, ok := decodeClaim(object)
 	if !ok {
-		return 0, common.Address{}, [32]byte{}, 0, 0, ErrImportObjectMalformed
+		return common.Address{}, [32]byte{}, 0, ErrImportObjectMalformed
 	}
-	// A ZERO-AMOUNT object is not a value object, and refusing it HERE rather than in
-	// each rail matters for a specific reason: an absent object that some caller
-	// zero-pads to the canonical width decodes as a well-formed all-zero object on
-	// rail 0. Caught at this single binding point it is always the same clear refusal;
-	// left to the rails it surfaced as whichever per-rail check happened to run first
-	// (the LP rail reported a cross-rail violation for what was really "no object").
-	// One check, one meaning, both rails.
+	// A ZERO-AMOUNT object is not a value transfer, and refusing it HERE is what makes
+	// "no object" a single clear refusal: an absent object that some caller zero-pads
+	// to the canonical width decodes as a well-formed all-zero claim.
 	if amount == 0 {
-		return 0, common.Address{}, [32]byte{}, 0, 0, ErrNativeSettleAmount
+		return common.Address{}, [32]byte{}, 0, ErrImportAmount
 	}
-	emitSettleImportDeclaration(stateDB, sourceChainID, outputID, object)
-	return rail, owner, asset, amount, spent, nil
+	emitSettleImportDeclaration(stateDB, sourceChainID, claimID, object)
+	return beneficiary, asset, amount, nil
 }

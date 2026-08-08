@@ -121,14 +121,13 @@ func moveNativeIntoVault(stateDB StateDB, caller common.Address, amount uint64) 
 }
 
 // moveNativeOutOfVault releases `amount` native LUX from the 0x9999 vault to `recipient`.
-// The caller MUST have already decremented the asset's reserve accounting (recordSeamRelease
-// / recordCommittedRelease), which bounds amount to the vault's real holding; the underflow
+// The caller MUST have already decremented the asset's reserve accounting (recordCustodyOut), which bounds amount to the vault's real holding; the underflow
 // guard here is defense-in-depth (SubBalance is uint256-modular from a precompile and would
 // otherwise wrap rather than revert). Phase-A op (no nested call).
 func moveNativeOutOfVault(stateDB StateDB, recipient common.Address, amount uint64) error {
 	u := uint256.NewInt(amount)
 	if stateDB.GetBalance(poolManagerAddr9999).Cmp(u) < 0 {
-		return ErrNativeSettleUnbacked
+		return ErrCustodyUnbacked
 	}
 	stateDB.SubBalance(poolManagerAddr9999, u)
 	stateDB.AddBalance(recipient, u)
@@ -139,41 +138,25 @@ func moveNativeOutOfVault(stateDB StateDB, recipient common.Address, amount uint
 // Pure 0x9999 storage writes (never nested calls). The matching value movement is a
 // separate Phase-A (native) or Phase-B (ERC-20) settle.
 
-// recordSeamLock credits seamReserve[asset] by amount (the swap-rail input lock).
-func recordSeamLock(stateDB stateKV, assetID [32]byte, amount uint64) {
-	before := loadSeamReserve(stateDB, assetID)
-	storeSeamReserve(stateDB, assetID, new(big.Int).Add(before, new(big.Int).SetUint64(amount)))
+// recordCustodyIn credits custody[asset] by amount — value entering the funding
+// rail's pot on its way to D.
+func recordCustodyIn(stateDB stateKV, assetID [32]byte, amount uint64) {
+	before := loadCustody(stateDB, assetID)
+	storeCustody(stateDB, assetID, new(big.Int).Add(before, new(big.Int).SetUint64(amount)))
 }
 
-// recordSeamRelease debits seamReserve[asset] by amount, refusing (NO MINT, NO RAID) if the
-// seam's own pot cannot back it. Returns ErrNativeSettleUnbacked when the seam reserve is
-// short — exactly the conservation gate creditSettlementOutput enforced, now callable on its
-// own so a handler can record the release BEFORE the terminal payout.
-func recordSeamRelease(stateDB stateKV, assetID [32]byte, amount uint64) error {
-	held := loadSeamReserve(stateDB, assetID)
+// recordCustodyOut debits custody[asset] by amount, refusing (NO MINT, NO RAID) if
+// the rail's own pot cannot back it. This is the C-side conservation floor: a credit
+// can only ever pay out value C is already holding on D's behalf, never a depositor's
+// claim or a maker's reserve. Callable on its own so a handler records the release
+// BEFORE the terminal payout.
+func recordCustodyOut(stateDB stateKV, assetID [32]byte, amount uint64) error {
+	held := loadCustody(stateDB, assetID)
 	amt := new(big.Int).SetUint64(amount)
 	if held.Cmp(amt) < 0 {
-		return ErrNativeSettleUnbacked
+		return ErrCustodyUnbacked
 	}
-	storeSeamReserve(stateDB, assetID, new(big.Int).Sub(held, amt))
-	return nil
-}
-
-// recordCommittedLock / recordCommittedRelease are the LP-rail analogs on the
-// committedPositions pot — orthogonal to seamReserve (a swap settle and an LP collect can
-// never raid each other). Same Phase-A discipline.
-func recordCommittedLock(stateDB stateKV, assetID [32]byte, amount uint64) {
-	before := loadCommittedPositions(stateDB, assetID)
-	storeCommittedPositions(stateDB, assetID, new(big.Int).Add(before, new(big.Int).SetUint64(amount)))
-}
-
-func recordCommittedRelease(stateDB stateKV, assetID [32]byte, amount uint64) error {
-	held := loadCommittedPositions(stateDB, assetID)
-	amt := new(big.Int).SetUint64(amount)
-	if held.Cmp(amt) < 0 {
-		return ErrLPCollectUnbacked
-	}
-	storeCommittedPositions(stateDB, assetID, new(big.Int).Sub(held, amt))
+	storeCustody(stateDB, assetID, new(big.Int).Sub(held, amt))
 	return nil
 }
 
@@ -202,7 +185,7 @@ func pullERC20Terminal(vault erc20Vault, token, from common.Address, amount *big
 
 // pushERC20Terminal moves `amount` of `token` from the 0x9999 vault to `to` as a TERMINAL
 // frame effect (OpenZeppelin SafeERC20 semantics). The caller MUST have already debited the
-// asset's reserve accounting (recordSeamRelease / recordCommittedRelease) so this can never
+// asset's reserve accounting (recordCustodyOut) so this can never
 // pay out unbacked value. Zero 0x9999 storage writes.
 func pushERC20Terminal(vault erc20Vault, token, to common.Address, amount *big.Int) error {
 	return safeTransferTokenTo(vault, token, to, amount)
@@ -210,17 +193,17 @@ func pushERC20Terminal(vault erc20Vault, token, to common.Address, amount *big.I
 
 // ───────────────────── composed two-phase input-lock helpers ────────────────────────
 
-// lockAssetIn is the Phase-A-then-Phase-B input lock for the swap-rail deposit / order
-// paths. It (A) credits seamReserve and runs `record` — the caller's OWN 0x9999 accounting
-// (dexcore ledger credit, order record, atomic staging, event) — so EVERY 0x9999 write is
-// done BEFORE any nested call, then (B) settles the asset IN: native via balance ops, ERC-20
-// via the single TERMINAL transferFrom. Returns the amount locked (== requested; an ERC-20
-// under-delivery reverts the whole frame, `record` included). `record` may be nil and runs
-// before the terminal pull, so its writes are never dropped.
+// lockAsset is the Phase-A-then-Phase-B input lock for the funding rail's export
+// leg. It (A) credits custody and runs `record` — the caller's OWN 0x9999 accounting
+// (claim staging, event) — so EVERY 0x9999 write is done BEFORE any nested call, then
+// (B) settles the asset IN: native via balance ops, ERC-20 via the single TERMINAL
+// transferFrom. Returns the amount locked (== requested; an ERC-20 under-delivery
+// reverts the whole frame, `record` included). `record` may be nil and runs before
+// the terminal pull, so its writes are never dropped.
 //
-// This is the ONE structural fix for the deposit/lock family: the transferFrom is the frame's
+// This is the ONE structural fix for the lock family: the transferFrom is the frame's
 // terminal external effect with ALL 0x9999 accounting written before it.
-func lockAssetIn(stateDB StateDB, caller common.Address, assetID [32]byte, assetAddr common.Address, amount uint64, record func() error) (uint64, error) {
+func lockAsset(stateDB StateDB, caller common.Address, assetID [32]byte, assetAddr common.Address, amount uint64, record func() error) (uint64, error) {
 	if amount == 0 {
 		return 0, ErrNativeBadAmount
 	}
@@ -232,7 +215,7 @@ func lockAssetIn(stateDB StateDB, caller common.Address, assetID [32]byte, asset
 		return 0, ErrNativeFundsShort
 	}
 	// PHASE A — accounting (no nested calls).
-	recordSeamLock(stateDB, assetID, amount)
+	recordCustodyIn(stateDB, assetID, amount)
 	if record != nil {
 		if err := record(); err != nil {
 			return 0, err
@@ -246,44 +229,6 @@ func lockAssetIn(stateDB StateDB, caller common.Address, assetID [32]byte, asset
 		return amount, nil
 	}
 	// PHASE B — terminal ERC-20 pull (nothing writes 0x9999 after this).
-	vault, ok := stateDBERC20(stateDB)
-	if !ok {
-		return 0, ErrNativeERC20Vault
-	}
-	if err := pullERC20Terminal(vault, assetAddr, caller, new(big.Int).SetUint64(amount)); err != nil {
-		return 0, err
-	}
-	return amount, nil
-}
-
-// commitAssetIn is the LP-rail analog of lockAssetIn on the committedPositions pot: it
-// records the committed lock + runs `record` in Phase A, then settles the asset IN
-// terminally in Phase B. Returns the amount committed (== requested; ERC-20 under-delivery
-// reverts). The orthogonal-pot rule holds: an LP commit can never appear in the swap rail's
-// seam reserve.
-func commitAssetIn(stateDB StateDB, caller common.Address, assetID [32]byte, assetAddr common.Address, amount uint64, record func() error) (uint64, error) {
-	if amount == 0 {
-		return 0, ErrNativeBadAmount
-	}
-	// Native fail-fast (see lockAssetIn): refuse an underfunded commit BEFORE any 0x9999 write so
-	// no committed-positions accounting and no C->D commit object is staged for an unbacked commit.
-	if isNativeAsset(assetID) && stateDB.GetBalance(caller).Cmp(uint256.NewInt(amount)) < 0 {
-		return 0, ErrNativeFundsShort
-	}
-	// PHASE A — accounting (no nested calls).
-	recordCommittedLock(stateDB, assetID, amount)
-	if record != nil {
-		if err := record(); err != nil {
-			return 0, err
-		}
-	}
-	if isNativeAsset(assetID) {
-		if err := moveNativeIntoVault(stateDB, caller, amount); err != nil {
-			return 0, err
-		}
-		return amount, nil
-	}
-	// PHASE B — terminal ERC-20 pull.
 	vault, ok := stateDBERC20(stateDB)
 	if !ok {
 		return 0, ErrNativeERC20Vault

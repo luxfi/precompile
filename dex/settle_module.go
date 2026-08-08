@@ -89,13 +89,6 @@ var (
 	// through here). Distinct selector, same orthogonal money-path discipline.
 	SelectorCollectPosition uint32 // collectPosition(bytes32,address,uint256,bytes32)
 
-	// SelectorReclaimOrder is the SWAP rail's deadline-reclaim liveness path:
-	// reclaimIntent(bytes32 orderID) refunds the remaining locked principal of a
-	// stranded swap order (one D never settled) from seamReserve to the original
-	// locker, once the order's deadline has passed. It is the swap-rail analog of the
-	// LP collect path's exit guarantee — so locked swap input "can always exit" exactly
-	// like deposit/withdraw, never stranded by a non-settling D.
-	SelectorReclaimOrder uint32 // reclaimIntent(bytes32)
 )
 
 // SettleModule registers the 0x9999 precompile as ALWAYS-ON: it is active on every
@@ -132,9 +125,6 @@ func init() {
 	SelectorSetHaltMarket = keccak4("setHaltMarket(bytes32,bool)")
 	SelectorSetHaltAsset = keccak4("setHaltAsset(bytes32,bool)")
 	SelectorCollectPosition = keccak4("collectPosition(bytes32,address,uint256,bytes32)")
-	// reclaimIntent is the deployed ABI name and the signature is what hashes, so the
-	// string keeps its spelling while the identifier takes the current vocabulary.
-	SelectorReclaimOrder = keccak4("reclaimIntent(bytes32)")
 	SelectorSeedSeamReserve = keccak4("seedSeamReserve(address,uint256)")
 	SelectorCreditPositionFee = keccak4("creditPositionFee(bytes32,address,uint256)")
 
@@ -260,8 +250,6 @@ func (s *SettleContract) Run(
 	// settled. The swap-rail analog of collectPosition's exit guarantee — locked swap
 	// input can always exit. NOT gated by the swap halt (funds must exit even when
 	// halted), exactly like deposit/withdraw.
-	case SelectorReclaimOrder:
-		return s.runSettleReclaimOrder(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// donate is explicitly UNSUPPORTED in the receipt model (settle_views9999.go):
 	// LP fee growth is D-authoritative, so a safe C-only donate cannot exist.
