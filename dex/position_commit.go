@@ -67,6 +67,10 @@ var (
 	// salt/range — re-arming a Closing record back to Open is the lifecycle hole FIX-3
 	// closes.
 	ErrLPCommitWhileClosing = errors.New("dex: cannot commit to a position with a withdraw in flight (closing); use a fresh range or collect first")
+	// ErrLPForeignPosition is returned when a collect names a live position record
+	// belonging to somebody else. The claim proves whose VALUE it is; it says nothing
+	// about whose RECORD this is, and those are different questions.
+	ErrLPForeignPosition = errors.New("dex: collectPosition names a position record owned by another account")
 )
 
 // orderCommitObjSuffix stores the C->D commit OBJECT id of a position record, so an
@@ -324,8 +328,11 @@ func (s *SettleContract) runSettleCollectPosition(
 	// The position record is C-side bookkeeping for a position that lives on D. It
 	// follows the value rather than gating it: the collected amount leaves the record's
 	// withdrawable and the owner's committed total, and the record closes once it is
-	// fully collected.
-	collectPositionRecord(stateDB, positionID, credited)
+	// fully collected. It follows the CALLER'S value into the CALLER'S record — the
+	// claim proved whose value this is and says nothing about whose record that is.
+	if rerr := collectPositionRecord(stateDB, positionID, caller, credited); rerr != nil {
+		return nil, gasLeft, rerr
+	}
 	out := make([]byte, 32)
 	new(big.Int).SetUint64(credited).FillBytes(out)
 	return out, gasLeft, nil
@@ -361,10 +368,23 @@ const collectPositionInputLen = 32 + 32 + 32 + claimSize
 //
 // A record already at zero (or absent) simply stays there — the claim was for value
 // this record does not track, which the rail is entitled to move regardless.
-func collectPositionRecord(stateDB stateKV, positionID [32]byte, amount uint64) {
+//
+// IT IS NOT A GATE, WHICH IS EXACTLY WHY IT NEEDS AN OWNER. The record is bookkeeping,
+// so it never refuses a credit — and the positionID that selects it rode in as calldata,
+// checked against nothing. A stranger with a legitimate one-wei claim of their own could
+// name any LP's live record and this would faithfully apply their collect to it, driving
+// it to a terminal status. The LP's value is on D and the record that brings it back is
+// closed, so the only way out is committing new money. The claim authenticates whose
+// VALUE moved; whose RECORD it lands in is a separate fact, and taking it from the
+// calldata is taking it from the attacker. So the owner is a parameter: there is no way
+// to call this without saying whose record it is.
+func collectPositionRecord(stateDB stateKV, positionID [32]byte, owner common.Address, amount uint64) error {
 	order := loadRestingOrder(stateDB, positionID)
 	if order.Status != OrderStatusOpen && order.Status != OrderStatusClosing {
-		return
+		return nil
+	}
+	if order.Owner != owner {
+		return ErrLPForeignPosition
 	}
 	amt := new(big.Int).SetUint64(amount)
 	if order.LockedAmt == nil {
@@ -384,4 +404,5 @@ func collectPositionRecord(stateDB stateKV, positionID [32]byte, amount uint64) 
 		reserve = new(big.Int).Set(amt)
 	}
 	storeLockedReserve(stateDB, order.Owner, order.LockedAsset, new(big.Int).Sub(reserve, amt))
+	return nil
 }
