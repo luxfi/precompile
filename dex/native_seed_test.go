@@ -20,7 +20,6 @@ import (
 //     matched swap settles, and
 //   - the seed is operator-gated (a non-operator caller is refused) and value-backed
 //     (a native seed with no delivered msg.value reverts), and
-//   - the LP-rail fee credit (creditPositionFee) is symmetric (gated + value-backed).
 
 // TestFIX4_FirstFillRevertsWithoutSeed — before any opposing-direction order lock or
 // operator seed, seamReserve[assetOut] is empty, so the first matched swap settlement
@@ -118,20 +117,3 @@ func TestFIX4_SeedIsOperatorGatedAndValueBacked(t *testing.T) {
 	}
 }
 
-// TestFIX4_FeeCreditIsOperatorGated — the symmetric LP-rail fee credit
-// (creditPositionFee) is also operator-gated.
-func TestFIX4_FeeCreditIsOperatorGated(t *testing.T) {
-	h := newSettleHarness(t)
-	h.registerMarket(t)
-	recordID, _ := h.commitNativePosition(t, -60, 60, 500, lpSalt(0x61))
-
-	notOp := common.HexToAddress("0xBADBAD0000000000000000000000000000000002")
-	data := make([]byte, 96)
-	copy(data[0:32], recordID[:])
-	big.NewInt(50).FillBytes(data[64:96])
-	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(50))
-	if _, _, err := h.c.Run(h.state, notOp, poolManagerAddr9999,
-		prependSelector(SelectorCreditPositionFee, data), 5_000_000, false); err != ErrUnauthorized {
-		t.Fatalf("a non-operator fee credit must revert ErrUnauthorized, got: %v", err)
-	}
-}

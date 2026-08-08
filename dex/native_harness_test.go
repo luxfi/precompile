@@ -258,24 +258,6 @@ func (h *settleHarness) fundVaultNativeOut(amount int64) {
 	}
 }
 
-// creditPositionFeeNative credits `amount` of NATIVE earned fees into a SPECIFIC LP
-// position via the REAL operator-gated creditPositionFee selector (the keeper's
-// per-owner reflection of D-Chain maker-fee credits). It raises the named record's
-// withdrawable + the owner reserve + the custody pot together, so the LP
-// can collect principal+fees while the per-owner committed bound (FIX-2) stays exact.
-func (h *settleHarness) creditPositionFeeNative(t testing.TB, positionID [32]byte, amount int64) {
-	t.Helper()
-	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(uint64(amount))) // host frame moved msg.value
-	data := make([]byte, 96)
-	copy(data[0:32], positionID[:])
-	// asset word: native == address(0) in the right 20 bytes (left-padded), so word stays zero.
-	big.NewInt(amount).FillBytes(data[64:96])
-	if _, _, err := h.c.Run(h.state, h.operator(), poolManagerAddr9999,
-		prependSelector(SelectorCreditPositionFee, data), 5_000_000, false); err != nil {
-		t.Fatalf("creditPositionFeeNative: %v", err)
-	}
-}
-
 // commitNativePosition drives a native LP COMMIT through the 0x9999 modifyLiquidity
 // selector: it funds the caller, runs the ADD, flushes the staged C->D object, and
 // returns the position record id (MakerOrderID) and the C->D commit object id
