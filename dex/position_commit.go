@@ -264,7 +264,7 @@ func (s *SettleContract) requestPositionWithdraw(
 //	positionID[32] // the position RECORD id (MakerOrderID) the collect draws against
 //	               // — the object's owner must hold THIS position (Open/Closing) and
 //	               // the credit is bounded by its remaining committed backing
-//	object[69]     // THE OBJECT ITSELF: rail|owner|asset|amount|spent, as D exported
+//	object[60]     // THE OBJECT ITSELF: beneficiary|asset|amount, as D exported
 //	               // it. Carried by the tx so execution never reads shared memory and
 //	               // the block replays identically; Verify proves it (settle_import.go).
 //

@@ -90,7 +90,15 @@ const (
 
 // stagedOpVersion is the only staged-op record version the flush accepts. A record
 // with any other version is malformed and FAILS block accept (never skipped).
-const stagedOpVersion byte = 1
+//
+// v2 is the 60-byte funding claim: beneficiary|asset|amount. v1 was the 118-byte
+// object the braided seam carried, and the byte stayed at 1 across that change — which
+// is the one thing it exists to prevent. A version byte that does not move when the
+// layout moves is not a version byte, it is a constant; the record it stamps decodes by
+// width alone, and two layouts that happen to agree on width decode into each other's
+// value. Nothing has ever flushed a staged Put on any live network, so this rotation
+// migrates nothing. It makes the stamp true again before anything depends on it.
+const stagedOpVersion byte = 2
 
 // stageAtomicPut stages a C->D Put (revert-aware): version|dChainID|key|claim.
 func stageAtomicPut(stateDB stateKV, dChainID ids.ID, key ids.ID, object []byte) {
