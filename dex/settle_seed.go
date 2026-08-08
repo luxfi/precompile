@@ -95,7 +95,7 @@ func (s *SettleContract) runSeedSeamReserve(
 	defer exitCustodyKV(stateDB)
 
 	aid := assetID(asset)
-	// PHASE A (record) credits seamReserve BEFORE the terminal ERC-20 pull, so the seed's
+	// PHASE A (record) credits custody BEFORE the terminal ERC-20 pull, so the seed's
 	// accounting is never dropped by the geth nested-call host bug.
 	delivered, derr := receiveOperatorValue(stateDB, caller, asset, aid, amount, func(amt *big.Int) error {
 		storeCustody(stateDB, aid, new(big.Int).Add(loadCustody(stateDB, aid), amt))
@@ -110,8 +110,8 @@ func (s *SettleContract) runSeedSeamReserve(
 }
 
 // runCreditPositionFee credits an LP position's earned fees: it receives operator
-// value into the vault, adds it to committedPositions[asset] (the LP-rail pot backing
-// the collect), raises the NAMED position record's LockedAmt and the owner's per-asset
+// value into the vault, adds it to custody[asset] (the pot backing the collect),
+// raises the NAMED position record's LockedAmt and the owner's per-asset
 // committed reserve by the same amount. So a maker's withdrawable rises with the fees
 // the D-Chain credited them, the per-owner committed bound stays exact (a collect can
 // still only pull up to THIS owner's record), and conservation holds (the fee credit
@@ -160,8 +160,7 @@ func (s *SettleContract) runCreditPositionFee(
 		return nil, gasLeft, ErrFeeNoPosition // fees credit the position's own locked asset.
 	}
 	// PHASE A (record): back the collect BEFORE the terminal ERC-20 pull — the pot, the
-	// record's withdrawable, and the owner reserve all rise by the credited fee, keeping
-	// committedPositions == Σ live records' LockedAmt and the per-owner bound exact. Recording
+	// record's withdrawable, and the owner reserve all rise by the credited fee. Recording
 	// before the transfer is the geth nested-call fund-loss fix (the prior order dropped these
 	// writes for an ERC-20 fee credit).
 	delivered, derr := receiveOperatorValue(stateDB, caller, asset, aid, amount, func(amt *big.Int) error {
@@ -184,7 +183,7 @@ func (s *SettleContract) runCreditPositionFee(
 // the target pot via `record` using the NATIVE-ZAP two-phase discipline (the geth nested-call
 // fund-loss fix): the pot write (Phase A, via `record`) happens BEFORE the ERC-20 transferFrom
 // (Phase B, terminal), so the host bug cannot drop the seed's accounting (which it did — the
-// ERC-20 seed moved the token but lost the seamReserve/committedPositions credit => a stranded,
+// ERC-20 seed moved the token but lost the custody credit => a stranded,
 // liveness-ineffective seed).
 //
 //   - NATIVE: observed-delta read (the host frame already moved msg.value into 0x9999; delivered
@@ -200,12 +199,11 @@ func receiveOperatorValue(stateDB StateDB, caller common.Address, asset Currency
 		if _, of := uint256.FromBig(amount); of {
 			return nil, ErrSeedBadAmount
 		}
-		// delivered = realBal − (settleVault + seamReserve + committedPositions): the native
-		// this call carried, since every native-moving path keeps the three pots in lock-step
-		// with the vault's real native balance.
+		// delivered = realBal − (settleVault + custody): the native this call carried,
+		// since every native-moving path keeps the pots in lock-step with the vault's
+		// real native balance.
 		realBal := stateDB.GetBalance(poolManagerAddr9999).ToBig()
 		tracked := new(big.Int).Set(loadSettleVault(stateDB, aid))
-		tracked.Add(tracked, loadCustody(stateDB, aid))
 		tracked.Add(tracked, loadCustody(stateDB, aid))
 		delivered := new(big.Int).Sub(realBal, tracked)
 		if delivered.Sign() < 0 || delivered.Cmp(amount) < 0 {
