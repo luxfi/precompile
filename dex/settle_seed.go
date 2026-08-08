@@ -35,6 +35,30 @@ import (
 // bookkeeping mint. A seed is NOT withdrawable as a depositor claim; it is the
 // operator's committed counterparty/fee backing for that rail.
 
+// THERE IS NO FEE CREDIT HERE, AND THERE CANNOT BE ONE.
+//
+// creditPositionFee used to sit beside the seed: governance delivered real value and
+// it raised custody[a], an LP record's withdrawable, and that owner's reserve, as "the
+// keeper's per-owner reflection of fees the D-Chain CLOB credited a maker". The D-Chain
+// credits no maker fees. Its settlement path has no fee engine at all and says so
+// (dex pkg/dchain/settle.go: "deliberately does NOT model a full fee/tick/lot/
+// minNotional engine"). The function reflected an event that does not occur.
+//
+// It could not have worked even if it did. An LP collects only by consuming a D->C
+// claim, and D can only export what a D account holds; value credited on C never
+// reached D, so nothing on D could ever export it. The record promised a withdrawable
+// the rail had no way to deliver, and the real value went into the shared pot, where it
+// backed everyone's claims instead of that LP's. The test that covered it had to
+// hand-write a D->C object for an amount D never held — the fabrication was the feature.
+//
+// It was also the fourth term in custody[a], which native_state.go documents as
+// seed + Σ exported − Σ imported. With it gone the identity holds as written, and the
+// seed below is the only way value enters custody other than a C->D export.
+//
+// When D grows fees they will be D-side balance in the maker's own account and will
+// leave by the ordinary export, like every other unit. Move once, trade many: the way
+// out already exists, and it is the only one.
+
 const gasSeedReserve uint64 = 30_000
 
 var (
@@ -42,21 +66,12 @@ var (
 	// counterparty backing): seedSeamReserve(address asset, uint256 amount). Gated to
 	// the protocolFeeController.
 	SelectorSeedSeamReserve uint32 // seedSeamReserve(address,uint256)
-	// SelectorCreditPositionFee credits an LP position's earned fees into BOTH the
-	// position record's withdrawable backing and the LP rail's custody:
-	// creditPositionFee(bytes32 positionID, address asset, uint256 amount). It is the
-	// keeper's per-owner reflection of fees the D-Chain CLOB credited a maker, so the
-	// LP can collect principal+fees while the per-owner committed bound (FIX-2) still
-	// holds (fees raise THIS owner's record, never the shared pot's principal slice).
-	// Gated to the protocolFeeController.
-	SelectorCreditPositionFee uint32 // creditPositionFee(bytes32,address,uint256)
 )
 
 var (
 	ErrSeedShortInput  = errors.New("dex: seed input too short")
 	ErrSeedBadAmount   = errors.New("dex: seed amount out of range")
 	ErrSeedUndelivered = errors.New("dex: native seed requires msg.value == amount (value not delivered this call)")
-	ErrFeeNoPosition   = errors.New("dex: creditPositionFee names no open/closing position")
 )
 
 // runSeedSeamReserve funds custody[asset] from operator-delivered value. Native:
@@ -97,76 +112,6 @@ func (s *SettleContract) runSeedSeamReserve(
 	// accounting is never dropped by the geth nested-call host bug.
 	delivered, derr := receiveOperatorValue(stateDB, caller, asset, aid, amount, func(amt *big.Int) error {
 		storeCustody(stateDB, aid, new(big.Int).Add(loadCustody(stateDB, aid), amt))
-		return nil
-	})
-	if derr != nil {
-		return nil, gasLeft, derr
-	}
-	out := make([]byte, 32)
-	delivered.FillBytes(out)
-	return out, gasLeft, nil
-}
-
-// runCreditPositionFee credits an LP position's earned fees: it receives operator
-// value into the vault, adds it to custody[asset] (the pot backing the collect),
-// raises the NAMED position record's LockedAmt and the owner's per-asset
-// committed reserve by the same amount. So a maker's withdrawable rises with the fees
-// the D-Chain credited them, the per-owner committed bound stays exact (a collect can
-// still only pull up to THIS owner's record), and conservation holds (the fee credit
-// is backed by deposited value). Gated to the per-network DEX governance controller
-// (governanceController), resolved from the runtime AtomicState — never a hardcoded
-// key; fail-closed when no governance controller is configured.
-func (s *SettleContract) runCreditPositionFee(
-	state contract.AccessibleState, caller common.Address, input []byte, gas uint64, readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, gas, errors.New("dex: cannot credit fees in read-only mode")
-	}
-	if gas < gasSeedReserve {
-		return nil, 0, errors.New("dex: out of gas")
-	}
-	gasLeft := gas - gasSeedReserve
-	gov, gerr := governanceController(state)
-	if gerr != nil {
-		return nil, gasLeft, gerr
-	}
-	if caller != gov {
-		return nil, gasLeft, ErrUnauthorized
-	}
-	if len(input) < 96 {
-		return nil, gasLeft, ErrSeedShortInput
-	}
-	var positionID [32]byte
-	copy(positionID[:], input[0:32])
-	asset := Currency{Address: common.BytesToAddress(input[44:64])}
-	amount := new(big.Int).SetBytes(input[64:96])
-	if amount.Sign() <= 0 || !isWord(amount) {
-		return nil, gasLeft, ErrSeedBadAmount
-	}
-	stateDB := newPoolStateAdapter(state)
-	if !enterCustodyKV(stateDB) {
-		return nil, gasLeft, ErrCustodyReentrant
-	}
-	defer exitCustodyKV(stateDB)
-
-	order := loadRestingOrder(stateDB, positionID)
-	if order.Status != OrderStatusOpen && order.Status != OrderStatusClosing {
-		return nil, gasLeft, ErrFeeNoPosition
-	}
-	aid := assetID(asset)
-	if aid != order.LockedAsset {
-		return nil, gasLeft, ErrFeeNoPosition // fees credit the position's own locked asset.
-	}
-	// PHASE A (record): back the collect BEFORE the terminal ERC-20 pull — the pot, the
-	// record's withdrawable, and the owner reserve all rise by the credited fee. Recording
-	// before the transfer is the geth nested-call fund-loss fix (the prior order dropped these
-	// writes for an ERC-20 fee credit).
-	delivered, derr := receiveOperatorValue(stateDB, caller, asset, aid, amount, func(amt *big.Int) error {
-		storeCustody(stateDB, aid, new(big.Int).Add(loadCustody(stateDB, aid), amt))
-		order.LockedAmt = new(big.Int).Add(order.LockedAmt, amt)
-		storeRestingOrder(stateDB, positionID, order)
-		storeLockedReserve(stateDB, order.Owner, aid,
-			new(big.Int).Add(loadLockedReserve(stateDB, order.Owner, aid), amt))
 		return nil
 	})
 	if derr != nil {

@@ -342,44 +342,45 @@ func TestLP_NeverCSpendableAndDCommitted(t *testing.T) {
 	}
 }
 
-// TestLP_FeeAccrualCollectableOnlyViaDToCObject — fees (value earned on D beyond the
-// LP's principal) are collectable ONLY by consuming a D->C object, and only up
-// to the LP's OWN recorded backing. The keeper reflects the D-Chain maker-fee credit
-// onto the LP's position via creditPositionFee (raising THAT record's withdrawable +
-// the pot together), so a principal+fees collect succeeds against a real object; once
-// the record is fully collected (Closed) a further collect reverts (no mint, no raid,
-// no per-object backing).
-func TestLP_FeeAccrualCollectableOnlyViaDToCObject(t *testing.T) {
+// TestLP_CollectIsBoundedByCustody — an LP collects by consuming a D->C object, and
+// what backs the credit is the custody pot, not the record. Once the pot is empty a
+// further collect reverts even though the object is real and names the caller: value
+// can only leave C if C is already holding it on D's behalf.
+//
+// This used to run a fee credit through the position first, and had to hand-write a
+// D->C object for principal+fees — value D never held, because D has no fee engine and
+// nothing on C can put value on D. The conservation floor below is what the test was
+// always really proving.
+func TestLP_CollectIsBoundedByCustody(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	native := h.inAssetID()
 	db := newPoolStateAdapter(h.state)
 	salt := lpSalt(0x07)
 
-	// LP commits 1000 principal; the keeper credits 50 of earned fees to THIS position
-	// (raises the record's withdrawable to 1050 AND the LP pot to 1050).
+	// LP commits 1000 principal. That is the whole of custody: nothing else can put
+	// value in the pot but a seed, and no seed ran here.
 	recordID, _ := h.commitNativePosition(t, -60, 60, 1000, salt)
-	h.creditPositionFeeNative(t, recordID, 50)
-	if loadCustody(db, native).Int64() != 1050 {
-		t.Fatalf("custody must be 1000 principal + 50 fee backing, got %s", loadCustody(db, native))
+	if loadCustody(db, native).Int64() != 1000 {
+		t.Fatalf("custody must be exactly the committed principal, got %s", loadCustody(db, native))
 	}
-	if loadRestingOrder(db, recordID).LockedAmt.Int64() != 1050 {
-		t.Fatalf("the position's withdrawable must rise to 1050 with the fee credit, got %s", loadRestingOrder(db, recordID).LockedAmt)
+	if loadRestingOrder(db, recordID).LockedAmt.Int64() != 1000 {
+		t.Fatalf("the position's withdrawable must be the committed principal, got %s", loadRestingOrder(db, recordID).LockedAmt)
 	}
-	h.vaultInvariantNative(t, "after commit + fee credit")
+	h.vaultInvariantNative(t, "after commit")
 
-	// D exports a D->C collect object for principal+fees = 1050. The LP collects.
+	// D exports a D->C collect object for the principal. The LP collects.
 	outputID := ids.ID{0xFE, 0xE5}
-	h.putDtoCObject(t, h.caller, outputID, native, 1050)
+	h.putDtoCObject(t, h.caller, outputID, native, 1000)
 	callerBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
-	if _, err := h.collectNative(outputID, 1050, recordID); err != nil {
-		t.Fatalf("fee+principal collect via D->C object: %v", err)
+	if _, err := h.collectNative(outputID, 1000, recordID); err != nil {
+		t.Fatalf("collect via D->C object: %v", err)
 	}
-	if new(big.Int).Sub(h.state.stateDB.GetBalance(h.caller).ToBig(), callerBefore).Int64() != 1050 {
-		t.Fatal("collect must credit principal+fees = 1050 to the LP")
+	if new(big.Int).Sub(h.state.stateDB.GetBalance(h.caller).ToBig(), callerBefore).Int64() != 1000 {
+		t.Fatal("collect must credit the full principal to the LP")
 	}
 	if loadCustody(db, native).Sign() != 0 {
-		t.Fatalf("custody must be 0 after collecting 1050, got %s", loadCustody(db, native))
+		t.Fatalf("custody must be 0 after collecting 1000, got %s", loadCustody(db, native))
 	}
 
 	// A SECOND collect now reverts: custody is empty, so nothing backs the credit.
@@ -537,11 +538,10 @@ func TestRED_LP_CollectCannotCreditWithoutDToCObject(t *testing.T) {
 }
 
 // TestLP_ConservationAcrossCommitMatchCollect — end-to-end conservation: an LP
-// commits, a position is funded on D (the C->D object), value is matched/earned on D
-// (modeled as the operator fee backing the LP rail), and the LP collects via a D->C
-// object. After the full cycle, the LP's net CSpendable change equals (collected −
-// committed), the custody pot returns to its post-fee-seed baseline minus
-// what was collected, and the vault-account invariant holds at every step.
+// commits, a position is funded on D (the C->D object), and the LP collects it back via
+// a D->C object. After the full cycle the LP's net CSpendable change is (collected −
+// committed), the custody pot returns to its baseline, and the vault-account invariant
+// holds at every step.
 func TestLP_ConservationAcrossCommitMatchCollect(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
@@ -568,26 +568,21 @@ func TestLP_ConservationAcrossCommitMatchCollect(t *testing.T) {
 	}
 	h.vaultInvariantNative(t, "after commit")
 
-	// 2) D imports the C->D object and matches (modeled): the LP earns 80 fees. The
-	// keeper reflects the 80 onto THIS position (raises its withdrawable + the LP pot),
-	// the cross-rail settlement of taker flow into the maker's collectable balance.
-	h.creditPositionFeeNative(t, recordID, 80)
-	h.vaultInvariantNative(t, "after match (fee backing)")
-
-	// 3) COLLECT the full withdrawable: principal 1200 + fees 80 = 1280, via a railLP object.
+	// 2) COLLECT the full withdrawable back, via a D->C object for what D holds.
 	outputID := ids.ID{0x0A, 0xCC}
-	h.putDtoCObject(t, h.caller, outputID, native, 1280)
-	if _, err := h.collectNative(outputID, 1280, recordID); err != nil {
-		t.Fatalf("collect principal+fees: %v", err)
+	h.putDtoCObject(t, h.caller, outputID, native, 1200)
+	if _, err := h.collectNative(outputID, 1200, recordID); err != nil {
+		t.Fatalf("collect: %v", err)
 	}
 	h.vaultInvariantNative(t, "after collect")
 
-	// Net CSpendable change = collected(1280) − committed(1200) = +80 (the earned fee).
+	// A round trip moves value out and back and creates none: the LP is exactly where
+	// they started. Every unit that came back crossed twice and was minted neither time.
 	netCaller := new(big.Int).Sub(h.state.stateDB.GetBalance(h.caller).ToBig(), startCaller)
-	if netCaller.Int64() != 80 {
-		t.Fatalf("LP net CSpendable change must equal earned fees (+80), got %s", netCaller)
+	if netCaller.Sign() != 0 {
+		t.Fatalf("a commit and a full collect must be value-neutral for the LP, net %s", netCaller)
 	}
-	// custody fully drained (1200 principal + 80 fee backing − 1280 collect).
+	// custody fully drained (1200 committed − 1200 collected).
 	if loadCustody(db, native).Sign() != 0 {
 		t.Fatalf("custody must be 0 after full collect, got %s", loadCustody(db, native))
 	}
