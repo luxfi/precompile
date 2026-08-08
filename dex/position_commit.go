@@ -163,19 +163,17 @@ func (s *SettleContract) commitPosition(
 		return nil, gasLeft, ErrMakerAmountRange
 	}
 
-	// COMMIT to D: SubmitPositionCommit debits the caller's CSpendable balance into
-	// committedPositions, stages the C->D DL01 object, and emits the position-open
-	// routing event. Returns the commit object id (the shared-memory key D imports).
-	req := OrderRequest{
-		Account:     caller,
-		AssetIn:     lockedAsset,
-		AmountIn:    delta.Uint64(),
-		AssetInAddr: assetAddress(lockedAsset),
-		MarketID:    key.ID(),
-		Recipient:   caller,
-		Deadline:    0,
-	}
-	commitObjID, committed, cerr := nativeClient.SubmitPositionCommit(state, atomicState, req)
+	// FUND D: Export debits the caller's C balance into custody and stages a C->D
+	// claim naming them as beneficiary. Returns the claim id (the shared-memory key D
+	// imports). The POSITION is opened on D against the funded account; the crossing
+	// itself opens nothing.
+	commitObjID, committed, cerr := nativeClient.Export(state, atomicState, Transfer{
+		Owner:       caller,
+		Beneficiary: caller,
+		Asset:       lockedAsset,
+		AssetAddr:   assetAddress(lockedAsset),
+		Amount:      delta.Uint64(),
+	})
 	if cerr != nil {
 		return nil, gasLeft, cerr
 	}
@@ -246,7 +244,7 @@ func (s *SettleContract) requestPositionWithdraw(
 	// the withdraw request for the keeper; the funds return via collectPosition.
 	order.Status = OrderStatusClosing
 	storeRestingOrder(stateDB, orderID, order)
-	emitNativeCancelEvent(stateDB, ids.ID(orderID), order.PoolID, caller)
+	emitPositionClosing(stateDB, ids.ID(orderID), order.PoolID, caller)
 	return encodeOrderResult(orderID, order.LockedAmt), gasLeft, nil
 }
 
@@ -288,15 +286,15 @@ func (s *SettleContract) runSettleCollectPosition(
 	if !ok || atomicState.AtomicMemory() == nil {
 		return nil, gasLeft, ErrLPNoAtomicState
 	}
-	// FIXED width: outputID(32) | asset(32) | positionID(32) | object(69). The object
+	// FIXED width: claimID(32) | asset(32) | positionID(32) | claim(60). The object
 	// rides in the CALLDATA for the same reason the swap rail's does — execution must
 	// never read shared memory, or a node can never re-execute this block. There is no
 	// separate `amount` word: the amount IS the object's amount.
 	if len(input) != collectPositionInputLen {
 		return nil, gasLeft, ErrLPBadCollectInput
 	}
-	var outputID ids.ID
-	copy(outputID[:], input[0:32])
+	var claimID ids.ID
+	copy(claimID[:], input[0:32])
 	var asset [32]byte
 	copy(asset[:], input[32:64])
 	var positionID [32]byte
@@ -313,15 +311,17 @@ func (s *SettleContract) runSettleCollectPosition(
 	}
 	defer exitCustodyKV(stateDB)
 
-	claim := SettlementClaim{
-		OutputID:   outputID,
-		Asset:      asset,
-		AssetAddr:  assetAddress(asset), // routing only; the transfer token is derived from the object's asset (FIX-5).
-		Recipient:  caller,              // day-1: no delegation; recipient is the caller.
-		PositionID: positionID,
-		Object:     object,
-	}
-	credited, ierr := nativeClient.ImportPositionCollect(state, atomicState, claim)
+	// The position record is C-side bookkeeping for a D-side position; the VALUE comes
+	// through the one funding rail, like every other crossing. positionID identifies
+	// which record this collect settles, and is not consulted to authorize the credit
+	// — the claim's own beneficiary is.
+	_ = positionID
+	credited, ierr := nativeClient.Import(state, atomicState, Claim{
+		ID:          claimID,
+		Asset:       asset,
+		Beneficiary: caller, // day-1: no delegation; the beneficiary is the caller.
+		Object:      object,
+	})
 	if ierr != nil {
 		return nil, gasLeft, ierr
 	}
@@ -330,12 +330,12 @@ func (s *SettleContract) runSettleCollectPosition(
 	return out, gasLeft, nil
 }
 
-// EncodeCollectPositionInput builds collectPosition calldata (outputID, asset,
+// EncodeCollectPositionInput builds collectPosition calldata (claimID, asset,
 // amount, positionID) for the keeper's collect-tx builder and tests. The inverse of
 // the decode in runSettleCollectPosition.
-func EncodeCollectPositionInput(outputID ids.ID, asset [32]byte, positionID [32]byte, object []byte) []byte {
+func EncodeCollectPositionInput(claimID ids.ID, asset [32]byte, positionID [32]byte, object []byte) []byte {
 	out := make([]byte, collectPositionInputLen)
-	copy(out[0:32], outputID[:])
+	copy(out[0:32], claimID[:])
 	copy(out[32:64], asset[:])
 	copy(out[64:96], positionID[:])
 	copy(out[96:collectPositionInputLen], object)
@@ -343,5 +343,5 @@ func EncodeCollectPositionInput(outputID ids.ID, asset [32]byte, positionID [32]
 }
 
 // collectPositionInputLen is the fixed collectPosition calldata width:
-// outputID(32) | asset(32) | positionID(32) | object(69).
-const collectPositionInputLen = 32 + 32 + 32 + exportedOutputSize9999
+// claimID(32) | asset(32) | positionID(32) | claim(60).
+const collectPositionInputLen = 32 + 32 + 32 + claimSize

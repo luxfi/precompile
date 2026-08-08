@@ -4,7 +4,6 @@
 package dex
 
 import (
-	"crypto/sha256"
 	"errors"
 
 	"github.com/luxfi/database"
@@ -12,46 +11,6 @@ import (
 	"github.com/luxfi/ids"
 	"github.com/luxfi/vm/chains/atomic"
 )
-
-// SeamPendingTrait is the FIXED, owner-agnostic discovery trait every C->D swap
-// order carries in shared memory, so the D-Chain proposer can ENUMERATE pending
-// orders without already knowing their owners.
-//
-// WHY IT IS NEEDED. atomic.SharedMemory.Indexed can only return keys that possess
-// a trait the caller names. The per-owner trait this flush already writes is
-// useless for discovery: D would have to know the owner set to query for it. One
-// shared constant that the writer tags and the reader queries is what closes
-// that, and it is domain-separated to 32 bytes so it can never collide with a
-// 20-byte owner trait.
-//
-// CROSS-REPO CONTRACT. This value is byte-pinned against the D-Chain's own
-// constant (dex/pkg/dchain SeamPendingTrait, same domain string) the same way the
-// object wire is pinned by golden vector. The two repos cannot import each other,
-// so drift here is a silent break — D would enumerate a trait C never writes, find
-// nothing, and every swap would sit unmatched forever with no error anywhere. The
-// golden test in this package is what makes that loud.
-//
-// THE .v2 DOMAIN IS THE FLAG-DAY SWITCH. A v1 order object carried VALUE ONLY
-// (69 bytes, no operation); a v2 order carries value + operation (118 bytes), and
-// a node that cannot read the operation must never import the value — it would have
-// to invent the taker's market/side/limit. Rotating the domain makes the two
-// generations mutually invisible instead of mutually confusing:
-//
-//   - a v1 D node enumerates the v1 trait, finds no v2 object, emits no import, and
-//     goes on validating every non-seam block normally. Inert, never divergent.
-//   - a v2 D node enumerates the v2 trait, so a stale v1 object written by a
-//     not-yet-upgraded C node is never imported. Fail closed; the taker's principal
-//     is reclaimable on C after the order deadline.
-//
-// So neither generation can ever execute the other's order, and the changeover
-// costs liveness on the seam alone — never a divergent state root.
-//
-// The literal is the hash input: it stays .intent.pending.v2 so both repos keep
-// deriving the same trait.
-var SeamPendingTrait = func() []byte {
-	d := sha256.Sum256([]byte("lux.dex.native.intent.pending.v2"))
-	return d[:]
-}()
 
 // native_staging.go solves the CROSS-DOMAIN ATOMICITY problem of the native seam.
 //
@@ -74,7 +33,7 @@ var SeamPendingTrait = func() []byte {
 // commits; nothing needs it mid-block, so deferral costs nothing.)
 //
 // STAGED RECORD LAYOUTS (in StateDB, under the 0x9999 namespace):
-//   - C->D PUT:    stagePutPrefix | seq      -> dChainID(32) | key(32) | object(69|118)
+//   - C->D PUT:    stagePutPrefix | seq      -> dChainID(32) | key(32) | claim(60)
 //   - D->C REMOVE: stageRemovePrefix | seq   -> dChainID(32) | key(32)
 //   - a monotonic per-block seq counter (stageSeqKey) orders them deterministically.
 //
@@ -101,9 +60,8 @@ func setStageSeq(stateDB stateKV, n uint64) {
 
 // stagePutKey / stageRemoveKey key a staged op by its sequence number. We store the
 // variable-length record across consecutive 32-byte slots (the EVM word size). A
-// staged Put record is version(1)|dChainID(32)|key(32)|object, and the object is 69
-// bytes (a value object) or 118 (a swap order) — so the record spans 4 or 6 words.
-// The length lives in slot 0, so no caller assumes a fixed word count.
+// staged Put record is version(1)|dChainID(32)|key(32)|claim(60). The length lives
+// in slot 0, so no caller assumes a fixed word count.
 func stageSlotKey(prefix []byte, seq uint64, word int) common.Hash {
 	id := make([]byte, 0, 16)
 	var s [8]byte
@@ -134,9 +92,7 @@ const (
 // with any other version is malformed and FAILS block accept (never skipped).
 const stagedOpVersion byte = 1
 
-// stageAtomicPut stages a C->D Put (revert-aware): version|dChainID|key|object. The
-// object is either the 69-byte value object (LP commit) or the 118-byte swap order
-// (value + the taker's operation); the flush binds whichever was staged.
+// stageAtomicPut stages a C->D Put (revert-aware): version|dChainID|key|claim.
 func stageAtomicPut(stateDB stateKV, dChainID ids.ID, key ids.ID, object []byte) {
 	seq := stageSeq(stateDB)
 	writeBytesToSlots(stateDB, stagePutPrefix, seq, packPut(dChainID, key, object))
@@ -162,7 +118,7 @@ func markStageKind(stateDB stateKV, seq uint64, kind byte) {
 // leading version byte so a future layout change is an explicit new version (and an
 // unknown version fails the flush rather than silently mis-decoding value).
 //
-//	Put:    version(1) | dChainID(32) | key(32) | object(69 value | 118 swap order)
+//	Put:    version(1) | dChainID(32) | key(32) | claim(60)
 //	Remove: version(1) | dChainID(32) | key(32)
 func packPut(dChainID, key ids.ID, object []byte) []byte {
 	b := make([]byte, 1+32+32+len(object))
@@ -308,44 +264,24 @@ func collectRange(stateDB stateKV, fromSeq, toSeq uint64) (map[ids.ID]*atomic.Re
 		switch kindWord[31] {
 		case stageKindPut:
 			rec := readBytesFromSlots(stateDB, stagePutPrefix, i)
-			// version(1)|dChainID(32)|key(32)|object(>=61). Reject malformed (fatal).
-			if len(rec) < 1+32+32+exportedOutputSize9999 || rec[0] != stagedOpVersion {
+			// version(1)|dChainID(32)|key(32)|claim(60). Reject malformed (fatal).
+			if len(rec) != 1+32+32+claimSize || rec[0] != stagedOpVersion {
 				return nil, ErrStagedOpMalformed
 			}
 			var dChainID, key ids.ID
 			copy(dChainID[:], rec[1:33])
 			copy(key[:], rec[33:65])
 			object := rec[65:]
-			// The object must be a well-formed atomic object. Its VALUE HEAD is the
-			// same 69 bytes at both canonical widths (a 69-byte LP commit / D->C
-			// settlement, a 118-byte C->D swap order), and the owner Trait is read
-			// from that head — so the destination indexes the object by recipient
-			// exactly as before, for both widths. Any other width is fatal.
-			if len(object) != exportedOutputSize9999 && len(object) != orderObjectSize9999 {
-				return nil, ErrStagedOpMalformed
-			}
-			rail, owner, _, _, _, ok := decodeObjectHead(object[:exportedOutputSize9999])
+			// The object must be a well-formed claim. Its beneficiary is written as the
+			// destination Trait, so the far side indexes the claim by recipient — the
+			// only lookup the rail needs. A deposit is delivered by whoever holds the
+			// claim id; nothing has to scan for it. Any other width is fatal.
+			beneficiary, _, _, ok := decodeClaim(object)
 			if !ok {
 				return nil, ErrStagedOpMalformed
 			}
 			req := forChain(dChainID)
-			traits := [][]byte{append([]byte(nil), owner[:]...)}
-			// DISCOVERY TRAIT (swap rail only). The owner trait alone cannot be
-			// enumerated: atomic.SharedMemory.Indexed looks up keys by a trait the
-			// caller already knows, and D does not know the owner set in advance.
-			// So a real Phase-A order tagged only by owner is INVISIBLE to the
-			// D-Chain's autonomous import drive — it enumerates by this fixed,
-			// owner-agnostic tag inside BuildBlock. Without it the drive finds
-			// nothing, no order is ever imported, and no fill is ever produced,
-			// which is a second reason the seam is dark that survives fixing the
-			// transport.
-			//
-			// Swap rail only, deliberately: the LP rail's collect/withdraw
-			// lifecycle is driven by the position record, not by enumeration, and
-			// tagging it would put LP objects into the swap drive's queue.
-			if rail == railSwap {
-				traits = append(traits, append([]byte(nil), SeamPendingTrait...))
-			}
+			traits := [][]byte{append([]byte(nil), beneficiary[:]...)}
 			req.PutRequests = append(req.PutRequests, &atomic.Element{
 				Key:    append([]byte(nil), key[:]...),
 				Value:  append([]byte(nil), object...),

@@ -198,9 +198,8 @@ func SettleSwap(
 	defer exitCustodyKV(stateDB)
 
 	blockNumber := state.GetBlockContext().Number().Uint64()
-	blockTimestamp := state.GetBlockContext().Timestamp()
 
-	phase, body, taggedOrder, perr := decodeSwapPhase(hookData)
+	phase, body, _, perr := decodeSwapPhase(hookData)
 	if perr != nil {
 		return nil, suppliedGas, perr
 	}
@@ -220,7 +219,7 @@ func SettleSwap(
 		if derr != nil {
 			return nil, gasLeft, derr
 		}
-		credited, ierr := nativeClient.ImportSettlement(state, atomicState, claim)
+		credited, ierr := nativeClient.Import(state, atomicState, claim)
 		if ierr != nil {
 			return nil, gasLeft, ierr
 		}
@@ -239,7 +238,10 @@ func SettleSwap(
 		return PackBalanceDelta(delta.Amount0, delta.Amount1), gasLeft, nil
 
 	default:
-		// PHASE A — lock input on C and create a C->D atomic order.
+		// PHASE A — cross value C->D. It funds the caller's D account and creates NO
+		// order: what they trade, at what price and in what size is a D-local decision
+		// they take with their own D transactions, against money that is already
+		// theirs. That is what makes a million trades cost zero further crossings.
 		if suppliedGas < GasNativeOrder {
 			return nil, 0, errors.New("dex: out of gas")
 		}
@@ -248,114 +250,43 @@ func SettleSwap(
 		if herr := checkHalt(stateDB, key, params); herr != nil {
 			return nil, gasLeft, herr
 		}
-		// The OPTIONAL deadline + nonce ride in an EXPLICIT DI01 order body (the V4
-		// SwapParams tuple is unchanged). They are read ONLY for a DI01-tagged order; an
-		// untagged / opaque hook body carries neither (taggedOrder=false => body ignored),
-		// so a hook contract's arbitrary bytes are never mis-parsed. The deadline gates late
-		// settlement + reclaim; the NONCE is folded into the order id so it is
-		// chain-observable (the off-chain keeper derives the SAME id from the SAME calldata —
-		// the watch-correlation fix) and disambiguates otherwise-identical swaps.
-		var deadline, nonce uint64
-		if taggedOrder {
-			d, n, derr := decodeOrderBody(body)
-			if derr != nil {
-				return nil, gasLeft, derr
-			}
-			deadline, nonce = d, n
-		}
-		// FIX (do-not-ship fund-lock): a plain swap() — and any order that did not name an
-		// explicit deadline — MUST still carry a FINITE reclaim horizon. Without it the taker's
-		// full input is locked under SubmitSwapOrder with Deadline==0, and reclaimIntent then
-		// PERMANENTLY refuses (ErrReclaimNoDeadline) => the principal can never exit if D never
-		// settles. We default a missing deadline to block.timestamp + maxOrderTTL so EVERY
-		// value-path order is reclaimable after a bounded wait. An explicit deadline (DI01) is
-		// honored as-is. This is the structural guarantee that swap() can never strand funds.
-		if deadline == 0 {
-			deadline = defaultedReclaimDeadline(blockTimestamp)
-		}
-		req, berr := buildOrderRequest(key, params, caller, deadline, nonce)
+		t, berr := buildTransfer(key, params, caller)
 		if berr != nil {
 			return nil, gasLeft, berr
 		}
-		orderID, serr := nativeClient.SubmitSwapOrder(state, atomicState, req)
+		claimID, _, serr := nativeClient.Export(state, atomicState, t)
 		if serr != nil {
 			return nil, gasLeft, serr
 		}
-		// Return the order id (32 bytes) so the caller / keeper can track the
-		// async D->C settlement. NOT a fill — Phase A returns no output value.
+		// Return the claim id (32 bytes) so the caller can track the crossing and
+		// deliver it on D. NOT a fill — a crossing produces no output value.
 		out := make([]byte, 32)
-		copy(out, orderID[:])
+		copy(out, claimID[:])
 		return out, gasLeft, nil
 	}
 }
 
-// buildOrderRequest derives the C->D order from the V4 swap: the taker is the
-// caller, the input asset/amount come from the swap direction + amountSpecified
-// (exact-input magnitude), the market is the pool id, the recipient defaults to the
-// caller, and the deadline is the (optional) value parsed from the Phase-A hookData
-// body. A non-zero deadline is persisted in the per-order record so Phase-B refuses
-// a late settlement and the locker can reclaim the principal past it.
-func buildOrderRequest(key PoolKey, params SwapParams, caller common.Address, deadline, nonce uint64) (OrderRequest, error) {
+// buildTransfer derives the C->D crossing from the V4 swap: the owner and the
+// beneficiary are the caller, and the asset/amount come from the swap direction plus
+// amountSpecified (exact-input magnitude). Nothing else is read, because nothing else
+// crosses.
+func buildTransfer(key PoolKey, params SwapParams, caller common.Address) (Transfer, error) {
 	in, _ := swapAssetDirection(key, params)
-	// Exact-input: AmountSpecified < 0, magnitude is the input. Exact-output is a P4
-	// router concern; the native order locks the exact input the taker commits.
+	// Exact-input: AmountSpecified < 0, magnitude is the input. Exact-output is a
+	// router concern; a crossing moves the exact amount the caller commits.
 	if params.AmountSpecified == nil || params.AmountSpecified.Sign() == 0 {
-		return OrderRequest{}, ErrInvalidAmount
+		return Transfer{}, ErrInvalidAmount
 	}
 	mag := new(big.Int).Abs(params.AmountSpecified)
 	if !mag.IsUint64() || mag.Sign() <= 0 {
-		return OrderRequest{}, ErrInvalidAmount
+		return Transfer{}, ErrInvalidAmount
 	}
-	// THE OPERATION the C->D object carries. The CLOB convention on a V4 pool is
-	// base = currency0, quote = currency1 (priceLimitToCLOB computes quote-per-base as
-	// currency1 per currency0), so the swap direction IS the side: ZeroForOne spends
-	// currency0 — the base — and is a SELL; the other direction spends quote and is a
-	// BUY. That is one derivation from one fact, not a second copy of it.
-	priceLimit, _ := priceLimitToCLOB(params)
-	side := seamSideBuy
-	if params.ZeroForOne {
-		side = seamSideSell
-	}
-	// A LIMIT is REQUIRED across the seam. The taker's order executes on D, in a block
-	// they do not control, and they cannot re-price mid-flight; an unbounded market
-	// order there is precisely the sandwich the spent-witness floor exists to refuse,
-	// and with priceLimit == 0 that floor is vacuous. Refuse at submission rather than
-	// lock the taker's principal behind a check that cannot protect them.
-	if priceLimit == 0 {
-		return OrderRequest{}, ErrNativeOrderNoPriceLimit
-	}
-	// SIZE in base units. A SELL spends the base it locked, so the locked amount IS the
-	// size. A BUY spends quote, so the size is the most base that quote can buy at the
-	// taker's own limit: floor(amountIn * priceScale / limit) — exact integer division
-	// on the PriceInt grid, so orderLock's ceil(size*limit/priceScale) can never exceed
-	// what was locked. A size that floors to zero is a swap too small to execute at the
-	// taker's own limit; refuse it rather than lock principal for a guaranteed no-op.
-	amountIn := mag.Uint64()
-	size := amountIn
-	if side == seamSideBuy {
-		q := new(big.Int).Mul(mag, big.NewInt(priceScale))
-		q.Quo(q, new(big.Int).SetUint64(priceLimit))
-		if !q.IsUint64() {
-			return OrderRequest{}, ErrInvalidAmount
-		}
-		size = q.Uint64()
-	}
-	if size == 0 {
-		return OrderRequest{}, ErrNativeOrderDustSize
-	}
-	return OrderRequest{
-		Account:      caller,
-		AssetIn:      in,
-		AmountIn:     amountIn,
-		AssetInAddr:  assetAddress(in),
-		MarketID:     key.ID(),
-		MinAmountOut: minAmountOut(params),
-		PriceLimit:   priceLimit,
-		Side:         side,
-		Size:         size,
-		Recipient:    caller,
-		Deadline:     deadline,
-		Nonce:        nonce,
+	return Transfer{
+		Owner:       caller,
+		Beneficiary: caller,
+		Asset:       in,
+		AssetAddr:   assetAddress(in),
+		Amount:      mag.Uint64(),
 	}, nil
 }
 
@@ -422,59 +353,6 @@ func priceLimitToCLOB(params SwapParams) (priceLimitUnits uint64, limitIsUpper b
 	return units.Uint64(), limitIsUpper
 }
 
-// runSettleReclaimOrder is the reclaimIntent(bytes32 orderID) handler: the swap
-// rail's deadline-reclaim. It decodes the order id, takes the shared custody
-// non-reentrant guard (the refund moves value through the seam reserve, and an ERC-20
-// transfer can re-enter), and calls ReclaimOrder which refunds the remaining locked
-// principal to the caller (the locker) once the deadline has passed. Returns the
-// refunded amount. NOT gated by the swap halt — funds must always be able to exit.
-func (s *SettleContract) runSettleReclaimOrder(
-	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, gas, errors.New("dex: cannot reclaimIntent in read-only mode")
-	}
-	if gas < GasNativeSettlement {
-		return nil, 0, errors.New("dex: out of gas")
-	}
-	gasLeft := gas - GasNativeSettlement
-
-	atomicState, ok := state.(contract.AtomicState)
-	if !ok || atomicState.AtomicMemory() == nil {
-		return nil, gasLeft, ErrSettleNoAtomicState
-	}
-	if len(data) < 32 {
-		return nil, gasLeft, ErrReclaimBadInput
-	}
-	var orderID ids.ID
-	copy(orderID[:], data[0:32])
-
-	stateDB := newPoolStateAdapter(state)
-	if !enterCustodyKV(stateDB) {
-		return nil, gasLeft, ErrCustodyReentrant
-	}
-	defer exitCustodyKV(stateDB)
-
-	refunded, rerr := nativeClient.ReclaimOrder(state, atomicState, caller, orderID)
-	if rerr != nil {
-		return nil, gasLeft, rerr
-	}
-	out := make([]byte, 32)
-	new(big.Int).SetUint64(refunded).FillBytes(out)
-	return out, gasLeft, nil
-}
-
-// EncodeReclaimOrderInput builds reclaimIntent(bytes32) calldata for the locker's
-// reclaim tx and tests.
-func EncodeReclaimOrderInput(orderID ids.ID) []byte {
-	out := make([]byte, 32)
-	copy(out, orderID[:])
-	return out
-}
-
-// ErrReclaimBadInput is returned when reclaimIntent calldata is too short to carry an
-// order id.
-var ErrReclaimBadInput = errors.New("dex: reclaimIntent input too short (need bytes32 orderID)")
 
 // balanceDeltaForOutput maps a credited output amount to the V4 BalanceDelta
 // convention (output paid out to taker = negative on the output side; the input
