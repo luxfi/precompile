@@ -41,7 +41,7 @@ env:
 jobs:
   test:
     runs-on: [lux-build-linux-amd64]
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -80,6 +80,11 @@ jobs:
       - run: make build
       - run: make test
       - run: make vet
+
+      # The heavy tests skip under -short, so the fast job above never runs them.
+      # Left unrun they are not tests; the FHE comparison suite sat unexecuted in
+      # CI while it was failing half its runs locally.
+      - run: make test-long
 
   govulncheck:
     runs-on: [lux-build-linux-amd64]
