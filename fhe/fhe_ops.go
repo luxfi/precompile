@@ -27,6 +27,23 @@ import (
 	"github.com/luxfi/fhe"
 )
 
+// Params is the network's FHE parameter set — the one value every FHE surface reads,
+// so the CPU evaluator, the GPU NTT binding and the key ceremony cannot drift apart.
+//
+// PN11QP54, not PN10QP27. The comparison circuit is the deepest one here (a bit-by-bit
+// borrow chain), and under PN10QP27's 27-bit modulus its noise crosses the decryption
+// threshold often enough to decrypt the WRONG BOOLEAN: a soak of the comparison suite
+// failed 4 of 8 runs, a different case each run — lt, le, gt and ge all appeared, while
+// eq and ne never did. The same soak under PN11QP54 failed 0 of 5. A comparison that is
+// usually right is not a comparison, so the correct trade is the slower parameter set:
+// Add 14.92s -> 24.58s, Mul 77.74s -> 239.99s (M1 Max), and the gas constants in
+// contract.go are re-derived from those measurements.
+//
+// Changing this value re-genesises every FHE key: the installed public/bootstrap keys
+// come from an F-Chain DKG run under exactly these params.
+// (a var only because luxfi/fhe declares its literals as vars; treat it as a constant.)
+var Params = fhe.PN11QP54
+
 var (
 	// params is the public FHE parameter set. Deterministic and key-independent,
 	// so it is safe to derive in-process; it must match the params the F-Chain
@@ -47,7 +64,7 @@ var (
 // ensureParams initializes the public FHE parameter set exactly once.
 func ensureParams() (fhe.Parameters, error) {
 	paramsOnce.Do(func() {
-		params, paramsErr = fhe.NewParametersFromLiteral(fhe.PN10QP27)
+		params, paramsErr = fhe.NewParametersFromLiteral(Params)
 	})
 	return params, paramsErr
 }

@@ -47,8 +47,14 @@ build:
 test:
 	go test -count=1 -short -timeout 300s ./...
 
+# The FHE tests are the reason this target exists and the reason it is slow. A
+# single homomorphic multiply is ~240s of wall clock at the network's parameter
+# set, so the full suite runs ~28 minutes and 600s could never have covered it.
+# They skip under -short, so `make test` does not run them at all -- which is how
+# a comparison that decrypted the wrong boolean in half of all runs stayed
+# invisible while CI stayed green.
 test-long:
-	go test -count=1 -timeout 600s ./...
+	go test -count=1 -timeout 3600s ./...
 
 vet:
 	go vet ./...

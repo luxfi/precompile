@@ -78,7 +78,7 @@ const (
 
 	// MinSafeGasMulRatio is the minimum gasLimit/GasMul ratio the FHE
 	// module.Configure activation gate will accept. Set to 1 because
-	// even a single Mul takes 78 s wall-clock on commodity ARM —
+	// even a single Mul takes 240 s wall-clock on commodity ARM —
 	// allowing more than one Mul per block guarantees a chain halt.
 	MinSafeGasMulRatio uint64 = 1
 )
@@ -91,8 +91,8 @@ const (
 // to keep the chain safe on the worst-case validator. Re-measure on each
 // arch and bump per-arch if the worst-case moves.
 const (
-	WallClockMsAddUint8 uint64 = 15_000 // measured 14.92 s (TFHE PN10QP27, FheUint8)
-	WallClockMsMulUint8 uint64 = 78_000 // measured 77.74 s (TFHE PN10QP27, FheUint8)
+	WallClockMsAddUint8 uint64 = 25_000  // measured 24.58 s (TFHE PN11QP54, FheUint8)
+	WallClockMsMulUint8 uint64 = 240_000 // measured 239.99 s (TFHE PN11QP54, FheUint8)
 )
 
 // Gas costs for FHE operations.
