@@ -304,7 +304,14 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 		if offset+MessageLenSize > len(input) {
 			return nil, remainingGas, fmt.Errorf("%w: entry %d truncated at msglen", ErrInvalidInputLength, i)
 		}
-		msgLen := int(readUint256(input[offset : offset+MessageLenSize]))
+		// Stay in uint64, as the single-verify path above does. Narrowing an
+		// attacker-chosen 256-bit word to int makes any value with bit 63 set
+		// NEGATIVE, and a negative length passes `offset+msgLen > len(input)`
+		// because the sum is smaller than the length, not larger. The slice
+		// expression below then panics on a negative bound, unrecovered, inside
+		// block verification -- so one transaction halts every validator that
+		// verifies the block carrying it.
+		msgLen := readUint256(input[offset : offset+MessageLenSize])
 		offset += MessageLenSize
 
 		// signature
@@ -314,12 +321,14 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 		signatures[i] = input[offset : offset+sigSize]
 		offset += sigSize
 
-		// message
-		if offset+msgLen > len(input) {
+		// message. Compared in uint64 so a huge length cannot wrap into a value
+		// that looks in-bounds; after this passes, msgLen fits an int by
+		// construction because it is bounded by len(input)-offset.
+		if uint64(offset)+msgLen > uint64(len(input)) {
 			return nil, remainingGas, fmt.Errorf("%w: entry %d truncated at message", ErrInvalidInputLength, i)
 		}
-		messages[i] = input[offset : offset+msgLen]
-		offset += msgLen
+		messages[i] = input[offset : offset+int(msgLen)]
+		offset += int(msgLen)
 	}
 
 	if offset != len(input) {
