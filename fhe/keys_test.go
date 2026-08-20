@@ -37,7 +37,7 @@ var (
 // precompile and stashes the SECRET half in a test-only decryptor. Idempotent.
 func initTFHE() error {
 	testKeyOnce.Do(func() {
-		params, err := fhe.NewParametersFromLiteral(fhe.PN10QP27)
+		params, err := fhe.NewParametersFromLiteral(Params)
 		if err != nil {
 			testKeyErr = err
 			return

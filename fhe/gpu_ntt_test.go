@@ -3,7 +3,11 @@
 
 package fhe
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/luxfi/fhe"
+)
 
 // These tests pin the determinism gate's decision logic and the default-build
 // posture. They carry NO build tag and require NO GPU, so they run on every CI
@@ -80,7 +84,13 @@ func TestByteEqualCorpus_FailClosedOnDivergence(t *testing.T) {
 // let a divergence slip past the gate on one node but not another.
 func TestDeterministicVec_StableAndInRange(t *testing.T) {
 	const N = 1024
-	const Q = uint64(0x7fff801) // FHE bootstrap modulus (PN10QP27)
+	// FHE bootstrap modulus, read from Params so a parameter change cannot leave
+	// this test exercising a ring the precompile no longer uses.
+	qp, qerr := fhe.NewParametersFromLiteral(Params)
+	if qerr != nil {
+		t.Fatalf("load Params: %v", qerr)
+	}
+	Q := qp.QBR()
 	a := deterministicVec(42, N, Q)
 	b := deterministicVec(42, N, Q)
 	if len(a) != N {
