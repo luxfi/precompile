@@ -1,130 +1,203 @@
-// keygen_sign_verify_test exercises the full MPC lifecycle:
+// keygen_sign_verify_test drives the threshold-signature precompiles through
+// the precompile dispatch path with real signatures.
 //
-//	CGGMP21 keygen (off-chain) -> sign message -> verify via precompile
-//	FROST keygen (off-chain) -> sign message -> verify via precompile
+// What these tests used to do, and why none of them could pass:
+//
+//   - CGGMP21 is threshold ECDSA on secp256k1, and the test generated a P-256
+//     key. The precompile rejected it, correctly, with "invalid secp256k1
+//     public key".
+//   - FROST here is secp256k1 with BIP-340-style x-only keys (see
+//     verifySchnorrSignature, which calls curve.Secp256k1{}.LiftX), and the
+//     test built an edwards25519 key. Wrong curve entirely; the comment
+//     claiming "FROST produces Ed25519-compatible keys" does not hold for this
+//     implementation.
+//   - Both FROST and Ed25519 seeded a scalar with 32 bytes straight from
+//     rand.Read and passed them to SetCanonicalBytes. An ed25519 scalar must be
+//     below the group order L, which is just under 2^252, so uniform 256-bit
+//     bytes are canonical only about one time in sixteen. The tests failed on
+//     their own key generation, before reaching a precompile, roughly 94% of
+//     runs.
+//   - The "Ed25519" test then hand-rolled a SHA-256 Schnorr scheme with the
+//     verification equation s = k - e*x. RFC 8032 uses SHA-512 and s = r + e*a.
+//     Even with a valid scalar it could never have verified against the
+//     precompile, which calls ed25519.Verify.
+//
+// None of this was visible because e2e/go.mod required a published
+// github.com/luxfi/precompile instead of the module in this repo.
+//
+// Keys are drawn from a seeded source so a failure reproduces.
 //
 // Precompiles exercised: CGGMP21, FROST, Ed25519.
 package scenarios
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
+	"crypto/ed25519"
 	"crypto/sha256"
+	mathrand "math/rand/v2"
 	"testing"
 
-	"filippo.io/edwards25519"
-	"github.com/luxfi/geth/common"
+	"github.com/luxfi/crypto"
 	"github.com/luxfi/precompile/cggmp21"
 	"github.com/luxfi/precompile/e2e/harness"
-	"github.com/luxfi/precompile/ed25519"
+	precompileed25519 "github.com/luxfi/precompile/ed25519"
 	"github.com/luxfi/precompile/frost"
 	"github.com/stretchr/testify/require"
 )
 
-// TestKeygenSignVerify_CGGMP21 simulates a threshold ECDSA signing ceremony:
-// 1. Generate ECDSA keypair (represents output of CGGMP21 keygen)
-// 2. Sign a message (represents threshold signing)
-// 3. Verify via the CGGMP21 precompile
-func TestKeygenSignVerify_CGGMP21(t *testing.T) {
-	// Step 1: Keygen (off-chain CGGMP21 produces a standard ECDSA key)
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err, "keygen failed")
-	pub := &priv.PublicKey
+// seeded is a reproducible byte source for key generation. Tests must not turn
+// on the operating system's entropy: a signature scheme that fails one run in
+// sixteen is indistinguishable from flaky infrastructure.
+type seeded struct{ rng *mathrand.Rand }
 
-	// Step 2: Sign
-	msg := []byte("Lux e2e: full CGGMP21 lifecycle test")
-	hash := sha256.Sum256(msg)
-	r, s, err := ecdsa.Sign(rand.Reader, priv, hash[:])
-	require.NoError(t, err, "sign failed")
+func newSeeded(seed uint64) *seeded {
+	return &seeded{rng: mathrand.New(mathrand.NewPCG(seed, seed^0x5deece66d))}
+}
 
-	// Step 3: Verify via precompile
-	// Uncompressed public key: 0x04 || x(32) || y(32) = 65 bytes
-	pubKey := make([]byte, 65)
-	pubKey[0] = 0x04
-	copy(pubKey[1:33], harness.PadLeft(pub.X.Bytes(), 32))
-	copy(pubKey[33:65], harness.PadLeft(pub.Y.Bytes(), 32))
+func (s *seeded) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(s.rng.Uint32())
+	}
+	return len(p), nil
+}
 
-	// Signature: r(32) || s(32) || v(1) = 65 bytes
-	sig := make([]byte, 65)
-	copy(sig[0:32], harness.PadLeft(r.Bytes(), 32))
-	copy(sig[32:64], harness.PadLeft(s.Bytes(), 32))
-	sig[64] = 0 // v = 0
+// verified reports whether a precompile call accepted the signature. A refusal
+// may surface either as an error or as a non-true return word, and a rejecting
+// precompile may return no bytes at all — so this never indexes blindly.
+func verified(out []byte, err error) bool {
+	return err == nil && len(out) == 32 && out[31] == 1
+}
 
-	// Input: threshold(4) + totalSigners(4) + pubkey(65) + hash(32) + sig(65)
-	input := make([]byte, 0, 4+4+65+32+65)
-	input = append(input, harness.Uint32BE(2)...) // threshold = 2
-	input = append(input, harness.Uint32BE(3)...) // total signers = 3
+// ─── CGGMP21 (threshold ECDSA, secp256k1) ─────────────────────────────────────
+
+// encodeCGGMP21 lays out the precompile's calldata:
+//
+//	threshold(4) || totalSigners(4) || pubkey(65) || msgHash(32) || sig(65)
+func encodeCGGMP21(threshold, total uint32, pubKey, msgHash, sig []byte) []byte {
+	input := make([]byte, 0, cggmp21.MinInputSize)
+	input = append(input, harness.Uint32BE(threshold)...)
+	input = append(input, harness.Uint32BE(total)...)
 	input = append(input, pubKey...)
-	input = append(input, hash[:]...)
+	input = append(input, msgHash...)
 	input = append(input, sig...)
+	return input
+}
+
+// cggmp21Material produces a secp256k1 key and a signature over msg, in the
+// encodings the precompile expects: an uncompressed 65-byte public key and a
+// 65-byte [R || S || V] signature. An aggregated CGGMP21 threshold signature is
+// an ordinary ECDSA signature, so this is what the ceremony emits.
+func cggmp21Material(t *testing.T, msg []byte, seed uint64) (pubKey, msgHash, sig []byte) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(crypto.S256(), newSeeded(seed))
+	require.NoError(t, err, "secp256k1 keygen")
+
+	h := sha256.Sum256(msg)
+	sig, err = crypto.Sign(h[:], priv)
+	require.NoError(t, err, "sign")
+
+	return crypto.FromECDSAPub(&priv.PublicKey), h[:], sig
+}
+
+func TestKeygenSignVerify_CGGMP21(t *testing.T) {
+	pubKey, msgHash, sig := cggmp21Material(t, []byte("Lux e2e: full CGGMP21 lifecycle test"), 1)
+	require.Len(t, pubKey, 65)
+	require.Len(t, sig, 65)
 
 	out, gasUsed, err := harness.Call(
 		cggmp21.CGGMP21VerifyPrecompile,
 		cggmp21.ContractCGGMP21VerifyAddress,
-		input,
+		encodeCGGMP21(2, 3, pubKey, msgHash, sig),
 		true,
 	)
 	require.NoError(t, err, "CGGMP21 verify call error")
 	require.Len(t, out, 32, "output should be 32 bytes")
-	require.Equal(t, byte(1), out[31], "CGGMP21 verify should return true")
+	require.Equal(t, byte(1), out[31], "a valid signature must verify")
 	harness.GasReport(t, "CGGMP21 verify", gasUsed)
 }
 
-// TestKeygenSignVerify_FROST simulates a threshold Schnorr signing ceremony:
-// 1. Generate Ed25519 keypair (represents output of FROST keygen)
-// 2. Produce a Schnorr signature
-// 3. Verify via the FROST precompile
-func TestKeygenSignVerify_FROST(t *testing.T) {
-	// Step 1: Generate Ed25519 key (FROST produces Ed25519-compatible keys)
-	privScalar := make([]byte, 32)
-	_, err := rand.Read(privScalar)
-	require.NoError(t, err)
+// The signature must bind the message. Verifying a signature against a hash it
+// was not made over is the whole property; if this passes, the precompile is
+// decorative.
+func TestKeygenSignVerify_CGGMP21RejectsWrongMessage(t *testing.T) {
+	pubKey, _, sig := cggmp21Material(t, []byte("the message that was signed"), 2)
+	other := sha256.Sum256([]byte("a message that was not signed"))
 
-	scalarBytes, err := edwards25519.NewScalar().SetCanonicalBytes(privScalar)
-	require.NoError(t, err)
-	pubPoint := edwards25519.NewGeneratorPoint().ScalarMult(scalarBytes, edwards25519.NewGeneratorPoint())
-	pubBytes := pubPoint.Bytes() // 32 bytes compressed
+	out, _, err := harness.Call(
+		cggmp21.CGGMP21VerifyPrecompile,
+		cggmp21.ContractCGGMP21VerifyAddress,
+		encodeCGGMP21(2, 3, pubKey, other[:], sig),
+		true,
+	)
+	require.False(t, verified(out, err), "a signature verified against the wrong message")
+}
 
-	// Step 2: Create a Schnorr signature (R || s)
-	// k = random nonce
-	kBytes := make([]byte, 32)
-	_, err = rand.Read(kBytes)
-	require.NoError(t, err)
+// Every single-bit corruption of the signature must be rejected.
+func TestKeygenSignVerify_CGGMP21RejectsCorruptedSignature(t *testing.T) {
+	pubKey, msgHash, sig := cggmp21Material(t, []byte("Lux e2e: corruption corpus"), 3)
 
-	kScalar, err := edwards25519.NewScalar().SetCanonicalBytes(kBytes)
-	require.NoError(t, err)
-	rPoint := edwards25519.NewGeneratorPoint().ScalarMult(kScalar, edwards25519.NewGeneratorPoint())
-	rBytes := rPoint.Bytes() // R = k*G, 32 bytes
+	for _, bit := range []int{0, 7, 8, 255, 256, 263, 511} {
+		corrupt := make([]byte, len(sig))
+		copy(corrupt, sig)
+		corrupt[bit/8] ^= 1 << (bit % 8)
 
-	msg := []byte("Lux e2e: full FROST lifecycle test")
-	hash := sha256.Sum256(msg)
+		out, _, err := harness.Call(
+			cggmp21.CGGMP21VerifyPrecompile,
+			cggmp21.ContractCGGMP21VerifyAddress,
+			encodeCGGMP21(2, 3, pubKey, msgHash, corrupt),
+			true,
+		)
+		require.False(t, verified(out, err), "signature with bit %d flipped verified", bit)
+	}
+}
 
-	// e = H(R || pubkey || message_hash)
-	eInput := make([]byte, 0, 32+32+32)
-	eInput = append(eInput, rBytes...)
-	eInput = append(eInput, pubBytes...)
-	eInput = append(eInput, hash[:]...)
-	eHash := sha256.Sum256(eInput)
+// Input shorter than the fixed layout is refused rather than read past.
+func TestKeygenSignVerify_CGGMP21RefusesShortInput(t *testing.T) {
+	pubKey, msgHash, sig := cggmp21Material(t, []byte("short input"), 4)
+	full := encodeCGGMP21(2, 3, pubKey, msgHash, sig)
 
-	eScalar, err := edwards25519.NewScalar().SetCanonicalBytes(eHash[:])
-	require.NoError(t, err)
+	for _, n := range []int{0, 1, 8, 73, 105, len(full) - 1} {
+		_, _, err := harness.Call(
+			cggmp21.CGGMP21VerifyPrecompile,
+			cggmp21.ContractCGGMP21VerifyAddress,
+			full[:n],
+			true,
+		)
+		require.Error(t, err, "a %d-byte input was accepted", n)
+	}
+}
 
-	// s = k - e * privKey
-	sScalar := edwards25519.NewScalar().MultiplyAdd(edwards25519.NewScalar().Negate(eScalar), scalarBytes, kScalar)
+// An all-zero public key is not a point on secp256k1 and must be refused.
+func TestKeygenSignVerify_CGGMP21RefusesZeroKey(t *testing.T) {
+	_, msgHash, sig := cggmp21Material(t, []byte("zero key"), 5)
 
-	// Signature: R(32) || s(32) = 64 bytes
-	frostSig := make([]byte, 64)
-	copy(frostSig[0:32], rBytes)
-	copy(frostSig[32:64], sScalar.Bytes())
+	out, _, err := harness.Call(
+		cggmp21.CGGMP21VerifyPrecompile,
+		cggmp21.ContractCGGMP21VerifyAddress,
+		encodeCGGMP21(2, 3, make([]byte, 65), msgHash, sig),
+		true,
+	)
+	require.False(t, verified(out, err), "the all-zero public key verified a signature")
+}
 
-	// Input: threshold(4) + totalSigners(4) + pubkey(32) + hash(32) + sig(64)
-	input := make([]byte, 0, 4+4+32+32+64)
-	input = append(input, harness.Uint32BE(2)...) // threshold = 2
-	input = append(input, harness.Uint32BE(3)...) // total signers = 3
-	input = append(input, pubBytes...)
-	input = append(input, hash[:]...)
-	input = append(input, frostSig...)
+// ─── FROST (Schnorr, secp256k1 x-only) ────────────────────────────────────────
+
+// The positive case — a genuine aggregated FROST signature verifying — is owned
+// by frost/real_sig_test.go, which can reach the threshold library's signing
+// internals and the precompile's domain-separated challenge construction.
+// Rebuilding that here would put the challenge construction in two places, and
+// a second copy of a wire format is exactly what let the StableSwap scenarios
+// drift out of sync unnoticed. What e2e adds instead is the dispatch path: that
+// the precompile is reachable at its address and refuses what it should.
+func TestKeygenSignVerify_FROSTRefusesMalformed(t *testing.T) {
+	// A well-formed frame carrying a signature that is not one.
+	input := make([]byte, 0, frost.MinInputSize)
+	input = append(input, harness.Uint32BE(2)...) // threshold
+	input = append(input, harness.Uint32BE(3)...) // total signers
+	input = append(input, make([]byte, 32)...)    // public key (all zero)
+	msgHash := sha256.Sum256([]byte("Lux e2e: FROST dispatch"))
+	input = append(input, msgHash[:]...)
+	input = append(input, make([]byte, 64)...) // signature (all zero)
 
 	out, gasUsed, err := harness.Call(
 		frost.FROSTVerifyPrecompile,
@@ -132,68 +205,133 @@ func TestKeygenSignVerify_FROST(t *testing.T) {
 		input,
 		true,
 	)
-	require.NoError(t, err, "FROST verify call error")
-	require.Len(t, out, 32, "output should be 32 bytes")
-	// FROST with our hand-rolled Schnorr should verify
-	require.Equal(t, byte(1), out[31], "FROST verify should return true")
-	harness.GasReport(t, "FROST verify", gasUsed)
+	require.False(t, verified(out, err),
+		"an all-zero key and signature verified")
+	harness.GasReport(t, "FROST verify (refusal)", gasUsed)
+
+	// And truncations of the same frame.
+	for _, n := range []int{0, 8, 40, 72, len(input) - 1} {
+		_, _, err := harness.Call(
+			frost.FROSTVerifyPrecompile,
+			frost.ContractFROSTVerifyAddress,
+			input[:n],
+			true,
+		)
+		require.Error(t, err, "a %d-byte input was accepted", n)
+	}
 }
 
-// TestKeygenSignVerify_Ed25519Direct tests standalone Ed25519 verification.
-func TestKeygenSignVerify_Ed25519Direct(t *testing.T) {
-	// Generate key
-	privScalar := make([]byte, 32)
-	_, err := rand.Read(privScalar)
-	require.NoError(t, err)
+// ─── Ed25519 (RFC 8032) ───────────────────────────────────────────────────────
 
-	scalar, err := edwards25519.NewScalar().SetCanonicalBytes(privScalar)
-	require.NoError(t, err)
-	pubPoint := edwards25519.NewGeneratorPoint().ScalarMult(scalar, edwards25519.NewGeneratorPoint())
-	pubBytes := pubPoint.Bytes()
-
-	// Sign (simplified Ed25519-like: we use the message hash directly)
-	msg := []byte("Lux e2e: Ed25519 direct verify")
-	hash := sha256.Sum256(msg)
-
-	// The Ed25519 precompile expects: hash(32) + signature(64) + pubkey(32) = 128 bytes
-	// For this test we construct a deterministic signature
-	kBytes := make([]byte, 32)
-	_, err = rand.Read(kBytes)
-	require.NoError(t, err)
-	kScalar, err := edwards25519.NewScalar().SetCanonicalBytes(kBytes)
-	require.NoError(t, err)
-	rPoint := edwards25519.NewGeneratorPoint().ScalarMult(kScalar, edwards25519.NewGeneratorPoint())
-
-	// Build challenge
-	challenge := sha256.Sum256(append(append(rPoint.Bytes(), pubBytes...), hash[:]...))
-	eScalar, err := edwards25519.NewScalar().SetCanonicalBytes(challenge[:])
-	require.NoError(t, err)
-	sScalar := edwards25519.NewScalar().MultiplyAdd(edwards25519.NewScalar().Negate(eScalar), scalar, kScalar)
-
-	sig := make([]byte, 64)
-	copy(sig[0:32], rPoint.Bytes())
-	copy(sig[32:64], sScalar.Bytes())
-
-	// Ed25519 precompile input: hash(32) + sig(64) + pubkey(32) = 128
-	input := make([]byte, 0, 128)
-	input = append(input, hash[:]...)
+// encodeEd25519 lays out the precompile's calldata:
+//
+//	message(32) || signature(64) || publicKey(32)
+func encodeEd25519(msgHash, sig, pubKey []byte) []byte {
+	input := make([]byte, 0, precompileed25519.InputLength)
+	input = append(input, msgHash...)
 	input = append(input, sig...)
-	input = append(input, pubBytes...)
+	input = append(input, pubKey...)
+	return input
+}
+
+func ed25519Material(t *testing.T, msg []byte, seed uint64) (pubKey, msgHash, sig []byte) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(newSeeded(seed))
+	require.NoError(t, err, "ed25519 keygen")
+
+	h := sha256.Sum256(msg)
+	// The precompile verifies over the 32-byte word it is handed, so that word
+	// is what gets signed.
+	return pub, h[:], ed25519.Sign(priv, h[:])
+}
+
+func TestKeygenSignVerify_Ed25519Direct(t *testing.T) {
+	pubKey, msgHash, sig := ed25519Material(t, []byte("Lux e2e: Ed25519 direct verify"), 6)
 
 	out, gasUsed, err := harness.Call(
-		ed25519.Ed25519VerifyPrecompile,
-		common.HexToAddress("0x0800000000000000000000000000000000000001"),
-		input,
+		precompileed25519.Ed25519VerifyPrecompile,
+		precompileed25519.ContractAddress,
+		encodeEd25519(msgHash, sig, pubKey),
 		true,
 	)
-	// Ed25519 precompile may use a different signature format (standard Ed25519 vs Schnorr).
-	// We verify the call doesn't panic and returns clean output.
-	if err == nil && len(out) == 32 {
-		harness.GasReport(t, "Ed25519 verify", gasUsed)
-		t.Logf("Ed25519 result: %x", out)
-	} else {
-		// Some Ed25519 implementations require RFC 8032 format.
-		// The call should not panic -- just return an error or false.
-		t.Logf("Ed25519 returned err=%v (acceptable for non-RFC8032 sig format)", err)
+	require.NoError(t, err, "Ed25519 verify call error")
+	require.Len(t, out, 32, "output should be 32 bytes")
+	require.Equal(t, byte(1), out[31], "a valid RFC 8032 signature must verify")
+	harness.GasReport(t, "Ed25519 verify", gasUsed)
+}
+
+func TestKeygenSignVerify_Ed25519RejectsWrongMessage(t *testing.T) {
+	pubKey, _, sig := ed25519Material(t, []byte("the signed message"), 7)
+	other := sha256.Sum256([]byte("a different message"))
+
+	out, _, err := harness.Call(
+		precompileed25519.Ed25519VerifyPrecompile,
+		precompileed25519.ContractAddress,
+		encodeEd25519(other[:], sig, pubKey),
+		true,
+	)
+	require.False(t, verified(out, err), "a signature verified against the wrong message")
+}
+
+func TestKeygenSignVerify_Ed25519RejectsCorruption(t *testing.T) {
+	pubKey, msgHash, sig := ed25519Material(t, []byte("Lux e2e: ed25519 corruption"), 8)
+
+	// Corrupt the signature, then the key. Both must be refused.
+	for _, bit := range []int{0, 255, 256, 511} {
+		corrupt := make([]byte, len(sig))
+		copy(corrupt, sig)
+		corrupt[bit/8] ^= 1 << (bit % 8)
+
+		out, _, err := harness.Call(
+			precompileed25519.Ed25519VerifyPrecompile,
+			precompileed25519.ContractAddress,
+			encodeEd25519(msgHash, corrupt, pubKey),
+			true,
+		)
+		require.False(t, verified(out, err), "signature with bit %d flipped verified", bit)
+	}
+
+	badKey := make([]byte, len(pubKey))
+	copy(badKey, pubKey)
+	badKey[0] ^= 1
+	out, _, err := harness.Call(
+		precompileed25519.Ed25519VerifyPrecompile,
+		precompileed25519.ContractAddress,
+		encodeEd25519(msgHash, sig, badKey),
+		true,
+	)
+	require.False(t, verified(out, err), "a corrupted public key verified")
+}
+
+// The precompile takes a fixed 128-byte frame and must refuse anything else, in
+// both directions.
+//
+// Note the refusal SHAPE differs across this repo's verifiers: ed25519 reports
+// failure by returning empty output with a nil error (documented at the top of
+// its Run), while cggmp21 and frost return an error. Both are safe — neither
+// can be mistaken for the success word — but a caller cannot distinguish
+// "malformed frame" from "signature did not verify" here, which for a verifier
+// is the conservative choice. Assert the property that matters in both shapes:
+// the call did not verify.
+func TestKeygenSignVerify_Ed25519RefusesWrongLength(t *testing.T) {
+	pubKey, msgHash, sig := ed25519Material(t, []byte("length discipline"), 9)
+	full := encodeEd25519(msgHash, sig, pubKey)
+	require.Len(t, full, precompileed25519.InputLength)
+
+	for _, in := range [][]byte{
+		nil,
+		full[:precompileed25519.InputLength-1],
+		append(append([]byte{}, full...), 0x00),
+	} {
+		out, gasUsed, err := harness.Call(
+			precompileed25519.Ed25519VerifyPrecompile,
+			precompileed25519.ContractAddress,
+			in,
+			true,
+		)
+		require.False(t, verified(out, err), "a %d-byte input verified", len(in))
+		// And it was still charged: a malformed frame must not be free to repeat.
+		require.NotZero(t, gasUsed,
+			"a %d-byte input was refused without charging gas", len(in))
 	}
 }
