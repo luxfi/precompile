@@ -135,6 +135,25 @@ func TestZzmpInitializeRefusesMalformedKeysAndPrices(t *testing.T) {
 	if MarketExists(db, tooRich) || MarketExists(db, unsorted) {
 		t.Fatal("a refused initialize left a market record behind")
 	}
+
+	// ORDERING: the pure input validation runs BEFORE any state read, so a malformed
+	// call against an ALREADY-REGISTERED pool still reports the malformed input rather
+	// than the registry's idempotency refusal. Without its own range check the handler
+	// would reach the idempotency read first and answer ErrPoolAlreadyInitialized, which
+	// tells the caller nothing about the price it actually sent.
+	live := zzmpFreshKey(h, 1050)
+	if _, _, err := zzmpRun(h, h.caller, SelectorInitialize, zzmpInitData(live, new(big.Int).Set(Q96)), 5_000_000, false); err != nil {
+		t.Fatalf("initialize the live pool: %v", err)
+	}
+	for _, price := range []*big.Int{
+		big.NewInt(0),
+		new(big.Int).Sub(MinSqrtRatio, big.NewInt(1)),
+		new(big.Int).Set(MaxSqrtRatio),
+	} {
+		if _, _, err := zzmpRun(h, h.caller, SelectorInitialize, zzmpInitData(live, price), 5_000_000, false); !errors.Is(err, ErrInitSqrtRange) {
+			t.Fatalf("an out-of-range price (%s) on a live pool must be refused for its PRICE, not deferred to the idempotency read: got %v", price, err)
+		}
+	}
 }
 
 // TestZzmpInitializeIsIdempotentAndDeterministic pins BOTH registry invariants: a

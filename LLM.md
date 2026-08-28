@@ -432,6 +432,45 @@ The standalone LX DEX (CLOB) is ideal for:
 - Implemented `tickToSqrtPriceX96()` for bidirectional tick/price conversion
 - Added `ErrReentrant` and `ErrNoLiquidity` errors
 
+## Reading calldata — two orthogonal bounds, both in `contract/`
+
+A precompile's input is a two-index slice of EVM memory (`Memory.GetPtr` in
+opCall), never copied, so `len` is what the caller paid for and `cap` is the rest
+of memory — which that caller filled with MSTORE. Two independent things can go
+wrong, and there is one primitive for each. Do not hand-write either.
+
+**How many bytes** — `contract.Cursor` (`contract/cursor.go`). `Read(b)` then
+`Bytes/Byte/Uint16/Uint32/Uint64/Fields/Rest/End`. Every read is bounded against
+`Len`, never against `cap`, and returns a three-index slice so it cannot be
+re-sliced forward. `Fields(n, w)` divides rather than multiplying, so a declared
+count cannot size an allocation the calldata never justified — and it is the
+right read for a fixed run of ABI slots (`Fields(5, 32)` is one bound for a whole
+PoolKey, against five). Build adversarial fixtures with
+`contract.Poisoned(b, spare)` — a fixture built by `append` leaves the spare
+region zeroed, and a test over one passes whether or not the bound it means to
+exercise exists.
+
+**Which values** — `contract.Unsigned(x, bits)` and `contract.Signed(x, bits)`
+(`contract/word.go`), returning `ErrRange` (which wraps `ErrInvalidInput`). The
+EVM word is 256 bits; wherever a wire format declares something narrower, the
+word that does not fit is malformed input. `big.Int.Uint64`/`Int64` are
+documented "if x cannot be represented … the result is undefined", so on
+attacker-chosen input a bare narrowing is not a lossy conversion to reason about,
+it is a value substitution. Note there are usually TWO truncations in series —
+`uint24(w.Uint64())` drops bits 64+ at `Uint64` and bits 32+ at the conversion —
+so checking only one concludes the site is safe.
+
+`uint24`/`int24` are **aliases** for `uint32`/`int32` (`dex/types.go`), so the
+compiler enforces nothing and `EncodePoolKeyABI` writes only 3 bytes. Making them
+defined types would not help: `uint24(1<<30)` still compiles. What makes
+`PoolKey.ID` injective is that `DecodePoolKey` refuses a word wider than the
+field, so no key outside the encodable domain can be built from calldata.
+
+Rule of thumb: refuse at the decode boundary, once, so no downstream caller has
+to remember which of its arguments were bounded. Where a value genuinely needs
+256 bits — a leverage compared against a ceiling, a fee clamped against a maximum
+— keep it 256 bits and narrow only after a check proves it fits.
+
 ---
 
 *Last Updated: 2025-12-31*
