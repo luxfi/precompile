@@ -250,16 +250,19 @@ func (v *StateViewContract) Run(
 		}
 		owner := common.BytesToAddress(data[12:32])
 		ids := OwnerOrderIDs(rv, owner)
+		// Per-order gas (each is an SLOAD-equivalent), charged BEFORE the reads it
+		// pays for. The order count is known from the index alone, so the caller is
+		// billed for the record loop before the loop runs — the sibling enumeration
+		// on 0x9996 (positionsOf) charges at the same point.
+		extra := GasStateView * uint64(len(ids))
+		if suppliedGas < GasStateView+extra {
+			return nil, 0, errors.New("dex: out of gas")
+		}
 		open := make([][32]byte, 0, len(ids))
 		for _, id := range ids {
 			if loadRestingOrder(rv, id).Status == OrderStatusOpen {
 				open = append(open, id)
 			}
-		}
-		// Per-order gas (each is an SLOAD-equivalent).
-		extra := GasStateView * uint64(len(ids))
-		if suppliedGas < GasStateView+extra {
-			return nil, 0, errors.New("dex: out of gas")
 		}
 		return encodeBytes32Array(open), suppliedGas - GasStateView - extra, nil
 

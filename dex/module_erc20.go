@@ -4,6 +4,7 @@
 package dex
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -166,8 +167,7 @@ func (a *poolStateAdapter) TransferTokenFrom(token, from, to common.Address, amo
 	input = append(input, common.LeftPadBytes(from.Bytes(), 32)...)
 	input = append(input, common.LeftPadBytes(to.Bytes(), 32)...)
 	input = append(input, common.LeftPadBytes(amount.Bytes(), 32)...)
-	ret, _, err := c.Call(token, input, erc20GasBudget, nil)
-	return checkERC20Return(ret, err)
+	return a.moveToken(c, token, input)
 }
 
 // TransferTokenTo pushes amount of token from the vault (the precompile self, 0x9999) to
@@ -185,6 +185,26 @@ func (a *poolStateAdapter) TransferTokenTo(token, to common.Address, amount *big
 	input = append(input, selERC20Transfer...)
 	input = append(input, common.LeftPadBytes(to.Bytes(), 32)...)
 	input = append(input, common.LeftPadBytes(amount.Bytes(), 32)...)
+	return a.moveToken(c, token, input)
+}
+
+// ErrERC20NoCode refuses a token move against an address carrying no contract code.
+// The EVM answers a CALL into such an address with success and no return data,
+// which is also how a non-compliant ERC-20 reports success — so the return alone
+// cannot tell the two apart, and reading it as a transfer retires value against a
+// move that never happened. OpenZeppelin's SafeERC20 resolves it the same way, by
+// requiring code at the target before an empty return may mean success.
+var ErrERC20NoCode = errors.New("dex: ERC-20 token address carries no contract code in the executing state; refusing to move tokens against it")
+
+// moveToken issues an ERC-20 transfer sub-call and applies SafeERC20 return
+// semantics to the result. It is the one place a token move happens, so the code
+// requirement and the return reading cannot drift apart between the pull and the
+// push. A StateDB that cannot report code size (CodeSizeOf < 0) leaves the check to
+// the return alone, exactly as before — the requirement binds where it is knowable.
+func (a *poolStateAdapter) moveToken(c callableEnv, token common.Address, input []byte) error {
+	if a.CodeSizeOf(token) == 0 {
+		return ErrERC20NoCode
+	}
 	ret, _, err := c.Call(token, input, erc20GasBudget, nil)
 	return checkERC20Return(ret, err)
 }

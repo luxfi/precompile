@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 	"strings"
@@ -1172,29 +1173,23 @@ func TestZzstStoreIndexShrinkThenGrowHasNoGhosts(t *testing.T) {
 }
 
 // =========================================================================
-// 7. DEFECT characterisation — an unvalidated length read out of state
+// 7. A length read out of state is bounded before it sizes an allocation
 // =========================================================================
 
-// Get reads its record length straight out of a storage word and hands it to
-// make([]byte, n) with no bound. For every length a Put can produce this is fine,
-// and for a moderately corrupt word Get still returns a value rather than reading
-// past anything. But a word with the top bits set converts to a negative or
-// absurd int and make PANICS inside a precompile call frame.
-//
-// This test pins BOTH halves: the safe range must stay non-panicking, and the
-// unbounded range is asserted to panic TODAY so the defect cannot be forgotten.
-// core_store.go:74 is the line that needs a bound; when it gets one, this test
-// must be updated to assert the refusal instead. See the report accompanying
-// this file set — this is a characterisation test, not an endorsement.
-func TestZzstStoreGetUnvalidatedLengthDEFECT(t *testing.T) {
+// Get, indexIDs and readBytesFromSlots each read a length or a count out of a
+// storage word and size an allocation with it. int(uint64) is negative above 2^63,
+// and make takes a negative length as a panic — which from a precompile is a chain
+// halt rather than a refusal. slotLen is the one bound: below it a record reads
+// normally, above it the record reads as absent.
+func TestZzstStoreBoundsALengthReadOutOfState(t *testing.T) {
 	setLen := func(sdb *MockStateDB, st *evmStore, key []byte, n uint64) {
 		var w common.Hash
 		putU64(w[24:32], n)
 		sdb.SetState(poolManagerAddr9999, st.valueSlot(key, 0), w)
 	}
 
-	// Safe half: a corrupt-but-small length returns a value of that length (the
-	// unwritten data slots read as zero) and never panics.
+	// In range: a corrupt-but-addressable length returns a value of that length
+	// (the unwritten data slots read as zero).
 	for _, n := range []uint64{1, 31, 32, 33, 1000, 1 << 16} {
 		sdb, st := zzstStore()
 		key := []byte("corrupt")
@@ -1208,19 +1203,56 @@ func TestZzstStoreGetUnvalidatedLengthDEFECT(t *testing.T) {
 		}
 	}
 
-	// Unbounded half: these panic today.
-	for _, n := range []uint64{1 << 62, ^uint64(0)} {
-		func() {
-			defer func() {
-				if r := recover(); r == nil {
-					t.Fatalf("core_store.go:74 Get with length word %#x no longer panics — the bound was "+
-						"added; update this characterisation test to assert the refusal", n)
-				}
-			}()
-			sdb, st := zzstStore()
-			key := []byte("corrupt")
-			setLen(sdb, st, key, n)
-			_, _ = st.Get(key)
-		}()
+	// Out of range: the record is absent, and the read never allocates.
+	for _, n := range []uint64{math.MaxInt32 + 1, 1 << 62, ^uint64(0)} {
+		sdb, st := zzstStore()
+		key := []byte("corrupt")
+		setLen(sdb, st, key, n)
+		zzstNoPanic(t, "Get", func() {
+			got, err := st.Get(key)
+			if !errors.Is(err, database.ErrNotFound) {
+				t.Errorf("Get with length word %#x: want ErrNotFound, got (%d bytes, %v)", n, len(got), err)
+			}
+		})
 	}
+
+	// The order-id index answers the same way: a count it cannot address is no list.
+	for _, n := range []uint64{math.MaxInt32 + 1, ^uint64(0)} {
+		sdb, st := zzstStore()
+		poolID := [32]byte{0xC0, 0x11}
+		var w common.Hash
+		putU64(w[24:32], n)
+		sdb.SetState(poolManagerAddr9999, st.indexSlot(poolID, 0), w)
+		zzstNoPanic(t, "indexIDs", func() {
+			if got := st.indexIDs(poolID); got != nil {
+				t.Errorf("indexIDs with count word %#x returned %d ids, want none", n, len(got))
+			}
+		})
+	}
+
+	// And so does the staging reader, which sizes its buffer the same way.
+	for _, n := range []uint64{math.MaxInt32 + 1, ^uint64(0)} {
+		sdb, _ := zzstStore()
+		var w common.Hash
+		putU64(w[24:32], n)
+		sdb.SetState(poolManagerAddr9999, stageSlotKey(stagePutPrefix, 1, 0), w)
+		zzstNoPanic(t, "readBytesFromSlots", func() {
+			if got := readBytesFromSlots(sdb, stagePutPrefix, 1); got != nil {
+				t.Errorf("readBytesFromSlots with length word %#x returned %d bytes, want none", n, len(got))
+			}
+		})
+	}
+}
+
+// zzstNoPanic turns a panic escaping a consensus read into a named failure. A panic
+// inside a precompile frame aborts the block, so it is never an acceptable answer to
+// a malformed record.
+func zzstNoPanic(t *testing.T, ctx string, fn func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("PANIC escaped %s (a chain halt, not a refusal): %v", ctx, r)
+		}
+	}()
+	fn()
 }
