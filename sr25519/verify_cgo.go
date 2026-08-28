@@ -12,6 +12,10 @@ package sr25519
 import "C"
 import "unsafe"
 
+// backend names the verifier this build linked. The two builds must return the
+// same verdict for every input; see the parity corpus in the tests.
+const backend = "sr25519-donna (cgo)"
+
 // verifySR25519 verifies an sr25519 Schnorrkel signature using the
 // sr25519-donna C library. Signing context is hardcoded to "substrate".
 func verifySR25519(publicKey, signature, message []byte) bool {

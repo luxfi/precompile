@@ -47,6 +47,7 @@ var (
 	ErrJobNotFound       = errors.New("job not found")
 	ErrJobAlreadyClaimed = errors.New("job already claimed")
 	ErrReadOnlyState     = errors.New("state modification in read-only context")
+	ErrPriceOverflow     = errors.New("quoted price exceeds 256 bits")
 )
 
 const (
@@ -65,6 +66,9 @@ const (
 	StatusOpen     = 0
 	StatusClaimed  = 1
 	StatusVerified = 2
+
+	// pricePerByte is the base quote rate, in wei per byte of input.
+	pricePerByte = 1000
 )
 
 type computeMarketPrecompile struct{}
@@ -116,6 +120,14 @@ func (p *computeMarketPrecompile) Run(
 		return claimReward(accessibleState, caller, data, gas)
 
 	case OpVerifyCompute:
+		// verifyCompute flips a job's status to verified, so it is a writer and
+		// must refuse a read-only context like every other writer here. Without
+		// this, a STATICCALL mutates state: the EVM guarantees a static frame
+		// makes no state change, and a precompile that writes anyway leaves the
+		// caller's snapshot disagreeing with the world.
+		if readOnly {
+			return nil, suppliedGas, ErrReadOnlyState
+		}
 		gas, err := contract.DeductGas(suppliedGas, GasVerify)
 		if err != nil {
 			return nil, 0, err
@@ -273,7 +285,12 @@ func verifyCompute(state contract.AccessibleState, data []byte, gas uint64) ([]b
 
 // getPrice: data = [modelHash (32)] [inputSize (32)]
 // Returns: price in wei (32 bytes)
-// Base price = 1000 wei per input byte, scaled by model complexity
+// Base price = 1000 wei per input byte.
+//
+// inputSize comes straight from calldata, so it can be any 256-bit value. A
+// price that does not fit in 256 bits is refused rather than returned modulo
+// 2^256: wrapping would let a caller choose an inputSize whose truncated price
+// is arbitrarily small, quoting a near-zero price for unbounded work.
 func getPrice(data []byte, gas uint64) ([]byte, uint64, error) {
 	if len(data) < 64 {
 		return nil, gas, ErrInvalidInput
@@ -281,7 +298,10 @@ func getPrice(data []byte, gas uint64) ([]byte, uint64, error) {
 	inputSize := new(big.Int).SetBytes(data[32:64])
 
 	// Price = inputSize * 1000 (base rate per byte)
-	price := new(big.Int).Mul(inputSize, big.NewInt(1000))
+	price := new(big.Int).Mul(inputSize, big.NewInt(pricePerByte))
+	if price.BitLen() > 256 {
+		return nil, gas, ErrPriceOverflow
+	}
 	return padTo32(price.Bytes()), gas, nil
 }
 
@@ -290,6 +310,9 @@ func storageSlot(prefix string, key []byte) common.Hash {
 	return common.BytesToHash(crypto.Keccak256([]byte(prefix), key))
 }
 
+// padTo32 left-pads a big-endian value to 32 bytes. A longer value is reduced
+// to its low 32 bytes, which is the modular behaviour a nonce wants; every
+// caller that must not wrap checks its own range first (see getPrice).
 func padTo32(b []byte) []byte {
 	if len(b) >= 32 {
 		return b[len(b)-32:]

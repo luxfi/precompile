@@ -45,6 +45,18 @@ var _ contract.StatefulPrecompiledContract = &hqcPrecompile{}
 // the ML-KEM precompile.
 const SeedSize = 32
 
+// OpEncapsulate is the only operation. Decapsulate would need the private
+// key in calldata, which every validator can read.
+const OpEncapsulate uint8 = 0x01
+
+// Mode bytes select the parameter set, mirroring the ML-KEM precompile's
+// ordering (128 / 192 / 256 as 0x00 / 0x01 / 0x02).
+const (
+	ModeHQC128 uint8 = 0x00
+	ModeHQC192 uint8 = 0x01
+	ModeHQC256 uint8 = 0x02
+)
+
 // Gas schedule. HQC encapsulation is dominated by polynomial multiplication
 // in F_2[X]/(X^n - 1) with n ≈ 17-58 K bits depending on mode. Charge a
 // flat base plus a per-byte cost.
@@ -53,12 +65,13 @@ const (
 	PerByteGas         uint64 = 10
 )
 
-// Error sentinels.
+// Error sentinels. A backend that is not wired reports itself: the
+// precompile passes luxfi/crypto/hqc.ErrBackendNotWired straight through
+// rather than restating it under a second name.
 var (
 	ErrInvalidInputLength = errors.New("hqc: invalid input length")
 	ErrInvalidMode        = errors.New("hqc: invalid mode byte")
 	ErrInvalidOperation   = errors.New("hqc: invalid operation byte")
-	ErrBackendNotWired    = errors.New("hqc: backend not wired (see luxfi/crypto/hqc; build with hqc_pqclean or hqc_circl)")
 )
 
 // deterministicReader — same construction as mlkem's. SHA-256 over
@@ -101,8 +114,8 @@ func (*hqcPrecompile) RequiredGas(input []byte) uint64 {
 
 // Wire format
 //
-//	[1 byte  op]      0x01 = Encapsulate
-//	[1 byte  mode]    0x00 = HQC-128, 0x01 = HQC-192, 0x02 = HQC-256
+//	[1 byte  op]      OpEncapsulate
+//	[1 byte  mode]    ModeHQC128 / ModeHQC192 / ModeHQC256
 //	[32 bytes seed]   deterministic-rng seed
 //	[N bytes  pk]     HQC public key, N = params.PublicKeySize for mode
 //
@@ -117,11 +130,10 @@ func (p *hqcPrecompile) Run(
 	suppliedGas uint64,
 	_ bool,
 ) ([]byte, uint64, error) {
-	gas := p.RequiredGas(input)
-	if suppliedGas < gas {
-		return nil, 0, contract.ErrOutOfGas
+	remaining, err := contract.DeductGas(suppliedGas, p.RequiredGas(input))
+	if err != nil {
+		return nil, 0, err
 	}
-	remaining := suppliedGas - gas
 
 	const minLen = 1 + 1 + SeedSize
 	if len(input) < minLen {
@@ -133,17 +145,17 @@ func (p *hqcPrecompile) Run(
 	seed := input[2 : 2+SeedSize]
 	pkBytes := input[2+SeedSize:]
 
-	if op != 0x01 {
+	if op != OpEncapsulate {
 		return nil, remaining, ErrInvalidOperation
 	}
 
 	var mode hqc.Mode
 	switch modeByte {
-	case 0x00:
+	case ModeHQC128:
 		mode = hqc.HQC128
-	case 0x01:
+	case ModeHQC192:
 		mode = hqc.HQC192
-	case 0x02:
+	case ModeHQC256:
 		mode = hqc.HQC256
 	default:
 		return nil, remaining, ErrInvalidMode
