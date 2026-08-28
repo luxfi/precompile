@@ -4,6 +4,9 @@
 package dead
 
 import (
+	"fmt"
+
+	"github.com/luxfi/geth/common"
 	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
 	"github.com/luxfi/precompile/precompileconfig"
@@ -60,12 +63,31 @@ func (c *configurator) MakeConfig() precompileconfig.Config {
 	return &Config{key: c.key}
 }
 
+// Configure provisions the administrator from the chain's genesis config.
+//
+// This is the only way an administrator is installed. isAdmin refuses every
+// caller while the slot is empty, so a chain that names no admin here has a
+// dead precompile whose ratio and treasury are frozen at their defaults —
+// which is the safe reading of "nobody was put in charge".
 func (*configurator) Configure(
 	chainConfig precompileconfig.ChainConfig,
 	cfg precompileconfig.Config,
 	state contract.StateDB,
 	blockContext contract.ConfigurationBlockContext,
 ) error {
+	config, ok := cfg.(*Config)
+	if !ok {
+		return fmt.Errorf("dead: expected *Config, got %T", cfg)
+	}
+	if config.AdminAddress == nil {
+		return nil
+	}
+	if *config.AdminAddress == ZeroAddress {
+		// The zero address is how "unprovisioned" is spelled in the slot, so
+		// accepting it here would write a value indistinguishable from absence.
+		return ErrInvalidAddress
+	}
+	DeadPrecompile.setStateAddress(state, AdminSlot, *config.AdminAddress)
 	return nil
 }
 
@@ -73,6 +95,10 @@ func (*configurator) Configure(
 type Config struct {
 	key     string
 	Upgrade precompileconfig.Upgrade `json:"upgrade"`
+
+	// AdminAddress names the account permitted to change the treasury address,
+	// the burn ratio and the enabled flag. Omitted means no administrator.
+	AdminAddress *common.Address `json:"adminAddress,omitempty"`
 }
 
 func (c *Config) Key() string {
