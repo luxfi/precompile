@@ -196,9 +196,20 @@ func recoverPublicKey(messageHash, signature []byte) (*ecdsa.PublicKey, error) {
 		return nil, ErrInvalidSignature
 	}
 
+	// The recovery id is [0,3]; anything else is not a second spelling of one,
+	// it is a different byte that the two builds disagree about. libsecp256k1
+	// refuses an id above 3, while the pure-Go fallback routes through btcec,
+	// whose header is 27+id uncompressed and 31+id COMPRESSED — so v=4 survived
+	// the 27 subtraction, became header 31, and read back as a valid id 0. The
+	// same 170 bytes then returned 0 on a cgo node and 1 without cgo, which is
+	// a chain split rather than a leniency. Refuse here, where the byte becomes
+	// a value, so both builds admit exactly {id, id+27}.
 	v := signature[64]
 	if v >= 27 {
 		v -= 27
+	}
+	if v > 3 {
+		return nil, ErrInvalidSignature
 	}
 
 	// Normalize signature for ecrecover
