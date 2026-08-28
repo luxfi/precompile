@@ -30,10 +30,10 @@ import (
 // the decrypt/seal paths.
 type aclTestState struct{ db contract.StateDB }
 
-func (s *aclTestState) GetStateDB() contract.StateDB                  { return s.db }
-func (s *aclTestState) GetBlockContext() contract.BlockContext        { return nil }
-func (s *aclTestState) GetConsensusContext() context.Context          { return nil }
-func (s *aclTestState) GetChainConfig() precompileconfig.ChainConfig  { return nil }
+func (s *aclTestState) GetStateDB() contract.StateDB                     { return s.db }
+func (s *aclTestState) GetBlockContext() contract.BlockContext           { return nil }
+func (s *aclTestState) GetConsensusContext() context.Context             { return nil }
+func (s *aclTestState) GetChainConfig() precompileconfig.ChainConfig     { return nil }
 func (s *aclTestState) GetPrecompileEnv() contract.PrecompileEnvironment { return nil }
 
 var _ contract.AccessibleState = (*aclTestState)(nil)

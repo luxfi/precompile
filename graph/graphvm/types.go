@@ -7,6 +7,9 @@ package graphvm
 
 import (
 	"context"
+	"maps"
+	"slices"
+	"strings"
 
 	"github.com/luxfi/database"
 )
@@ -75,10 +78,13 @@ func (e *QueryExecutor) Execute(ctx context.Context, req *GraphQLRequest) *Graph
 	query := req.Query
 	data := make(map[string]any)
 
-	// Check for custom resolvers first
-	for name, resolver := range e.resolvers {
+	// Check for custom resolvers first, in name order. The first match wins and returns,
+	// so ranging the map directly made the winner depend on Go's randomised map iteration:
+	// two registered resolvers both matching one query would resolve differently on
+	// different validators, and this result is consensus output.
+	for _, name := range slices.Sorted(maps.Keys(e.resolvers)) {
 		if containsField(query, name) {
-			result, err := resolver(ctx, e.db, req.Variables)
+			result, err := e.resolvers[name](ctx, e.db, req.Variables)
 			if err != nil {
 				return &GraphQLResponse{
 					Errors: []GraphQLError{{Message: err.Error()}},
@@ -124,26 +130,28 @@ func (e *QueryExecutor) Execute(ctx context.Context, req *GraphQLRequest) *Graph
 	}
 }
 
-// containsField checks if a GraphQL query contains a specific field
+// fieldDelimiters are the characters that may follow a field name in a query. Requiring one
+// is what stops "chain" matching the field "chainInfo".
+const fieldDelimiters = " {}()\n\t"
+
+// containsField reports whether a GraphQL query names a field. It is a substring match, not
+// a parse: the field must appear followed by a delimiter.
 func containsField(query, field string) bool {
-	// Simple string match - real implementation would parse AST
-	return len(query) > 0 && len(field) > 0 &&
-		(contains(query, field+" ") || contains(query, field+"{") ||
-			contains(query, field+"(") || contains(query, field+"}") ||
-			contains(query, field+"\n") || contains(query, field+"\t"))
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && findSubstring(s, substr) >= 0
-}
-
-func findSubstring(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
+	if query == "" || field == "" {
+		return false
 	}
-	return -1
+	for i := strings.Index(query, field); i >= 0; {
+		rest := query[i+len(field):]
+		if rest != "" && strings.ContainsAny(rest[:1], fieldDelimiters) {
+			return true
+		}
+		next := strings.Index(query[i+1:], field)
+		if next < 0 {
+			return false
+		}
+		i += 1 + next
+	}
+	return false
 }
 
 // GetDB returns the underlying database

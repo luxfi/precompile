@@ -341,3 +341,31 @@ func TestStorageKeyDeterminism(t *testing.T) {
 		t.Fatal("rootKey and latestKey collide")
 	}
 }
+
+// TestRun_ShortInputRefused covers calldata too short to carry a selector at every length
+// below four bytes, and the boundary above it. A four-byte input carries a selector and no
+// body, so it is refused as an unknown selector rather than as a short input — the two are
+// different failures and must not be conflated.
+func TestRun_ShortInputRefused(t *testing.T) {
+	state := &mockAccessibleState{db: newMockStateDB()}
+
+	for n := 0; n < 4; n++ {
+		ret, remaining, err := AnchorPrecompile.Run(state, common.Address{}, ContractAddress,
+			make([]byte, n), 1_000_000, false)
+		if err != ErrInvalidInput {
+			t.Fatalf("input of %d bytes: got %v, want ErrInvalidInput", n, err)
+		}
+		if ret != nil {
+			t.Fatalf("input of %d bytes returned %x, want no output", n, ret)
+		}
+		if remaining != 1_000_000 {
+			t.Fatalf("input of %d bytes charged %d gas; a call refused before any work must be free",
+				n, 1_000_000-remaining)
+		}
+	}
+
+	if _, _, err := AnchorPrecompile.Run(state, common.Address{}, ContractAddress,
+		make([]byte, 4), 1_000_000, false); err != ErrInvalidSelector {
+		t.Fatalf("four bytes is a selector, not a short input: got %v", err)
+	}
+}
