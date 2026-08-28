@@ -8,29 +8,34 @@ import (
 	"testing"
 
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
-// exact returns a copy of b whose capacity equals its length.
+// exact returns b with caller-chosen bytes behind its declared end.
 //
-// This matters more than it looks. A Go slice expression s[a:b] panics
-// only when b exceeds cap(s), not len(s) — so an input assembled with
-// append, which leaves spare capacity, lets a MISSING bounds check
-// read uninitialised bytes and carry on. The test then passes while
-// the guard it was meant to exercise is absent. Calldata handed to a
-// precompile by the EVM has no spare capacity, so the same input
-// panics in production, and a panic in geth's precompile dispatch has
-// no recover: it halts every validator processing the transaction.
+// This matters more than it looks, and it is not what the name once
+// promised. A precompile's input is the two-index slice
+// Memory.GetPtr returns (instructions.go opCall), and nothing on the
+// path to Run copies it: len is the size the caller declared and paid
+// gas for, cap is the rest of EVM memory, and the caller filled that
+// memory with MSTORE before making the call.
 //
-// Every refusal test below therefore submits an exact-capacity slice.
-func exact(b []byte) []byte {
-	out := make([]byte, len(b))
-	copy(out, b)
-	return out
-}
+// So a Go slice expression s[a:b] reaching past len does NOT panic and
+// does NOT halt a validator — it succeeds, returning bytes the attacker
+// chose, and the verifier answers over material nobody declared. The
+// failure is silent forgery, not a crash.
+//
+// A fixture built with append also has spare capacity, but zeroed or
+// stale, so an over-read looks like a harmless run of zeros. Filling
+// the spare region with a recognisable pattern is what makes an
+// over-read visible as one. Every refusal test below submits such an
+// input; contract.Poisoned holds the one definition.
+func exact(b []byte) []byte { return contract.Poisoned(b, 256) }
 
-// verdictExact is verdict() over an exact-capacity input, and it
-// requires that no input can panic the precompile.
+// verdictExact is verdict() over an input whose spare capacity holds
+// attacker bytes, and it requires that no input can panic the
+// precompile.
 func verdictExact(t *testing.T, input []byte) bool {
 	t.Helper()
 	in := exact(input)
@@ -39,6 +44,14 @@ func verdictExact(t *testing.T, input []byte) bool {
 		"a %d-byte input must be refused, never panic", len(in))
 	return out
 }
+
+// abiTrue and abiFalse are the only two words Run can return: the
+// EVM-ABI encoding of bool. Production builds them through
+// contract.Verdict.Word, which is why they are spelled out here rather
+// than imported — a test that expected the same helper the code under
+// test uses would agree with it by construction and check nothing.
+func abiTrue() []byte  { w := make([]byte, 32); w[31] = 1; return w }
+func abiFalse() []byte { return make([]byte, 32) }
 
 func be32(v uint32) []byte {
 	var b [4]byte

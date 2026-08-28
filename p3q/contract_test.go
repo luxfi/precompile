@@ -45,14 +45,14 @@ func TestP3Q_OutOfGas(t *testing.T) {
 }
 
 // TestP3Q_ABIBoolEncoding pins the 32-byte EVM-ABI bool output
-// convention. abiTrueClone() must be 31 zero bytes + 0x01;
+// convention. abiTrue() must be 31 zero bytes + 0x01;
 // abiFalse() must be 32 zero bytes.
 func TestP3Q_ABIBoolEncoding(t *testing.T) {
-	tr := abiTrueClone()
+	tr := abiTrue()
 	require.Len(t, tr, 32)
 	require.Equal(t, byte(0x01), tr[31])
 	for i := 0; i < 31; i++ {
-		require.Equal(t, byte(0x00), tr[i], "abiTrueClone byte %d", i)
+		require.Equal(t, byte(0x00), tr[i], "abiTrue byte %d", i)
 	}
 	fl := abiFalse()
 	require.Len(t, fl, 32)
@@ -222,7 +222,7 @@ func TestP3Q_RoundTrip_RealMLDSA(t *testing.T) {
 			supplied := gas * 2
 			out, gasLeft, err := P3QVerifyPrecompile.Run(nil, common.Address{}, ContractP3QVerifyAddress, input, supplied, true)
 			require.NoError(t, err)
-			require.Equal(t, abiTrueClone(), out, "precompile must return abiTrue for a real verifying signature")
+			require.Equal(t, abiTrue(), out, "precompile must return abiTrue for a real verifying signature")
 			require.Equal(t, supplied-gas, gasLeft, "gas accounting must be base + N*per-byte")
 		})
 	}
@@ -349,7 +349,7 @@ func TestP3Q_Verify_StandaloneAPI(t *testing.T) {
 	gas := P3QVerifyPrecompile.RequiredGas(input) * 2
 	out, _, runErr := P3QVerifyPrecompile.Run(nil, common.Address{}, ContractP3QVerifyAddress, input, gas, true)
 	require.NoError(t, runErr)
-	require.Equal(t, abiTrueClone(), out)
+	require.Equal(t, abiTrue(), out)
 }
 
 // TestP3Q_Verify_SizeMismatchTyped confirms the standalone Verify
@@ -411,5 +411,5 @@ func TestP3Q_AcceptsTrailingPadding(t *testing.T) {
 	gas := P3QVerifyPrecompile.RequiredGas(padded) * 2
 	out, _, err := P3QVerifyPrecompile.Run(nil, common.Address{}, ContractP3QVerifyAddress, padded, gas, true)
 	require.NoError(t, err)
-	require.Equal(t, abiTrueClone(), out, "trailing padding must be ignored, signature must verify")
+	require.Equal(t, abiTrue(), out, "trailing padding must be ignored, signature must verify")
 }
