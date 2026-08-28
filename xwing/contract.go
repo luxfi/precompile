@@ -53,19 +53,27 @@ const (
 	OpEncapsulate = 0x02
 
 	GasEncapsulate = 40000
+
+	// GasRefuse is charged for input this precompile refuses: empty calldata
+	// and every op byte other than OpEncapsulate. Refusing still costs the
+	// node a dispatch, a bounds check and an error allocation, so it cannot
+	// be free -- a zero-gas branch is an unmetered path an attacker can
+	// hammer. Every sibling in the PQCrypto block charges its base gas for
+	// unparseable input; this is that same floor.
+	GasRefuse = 1000
 )
 
 type xwingPrecompile struct{}
 
 func (p *xwingPrecompile) RequiredGas(input []byte) uint64 {
 	if len(input) < 1 {
-		return 0
+		return GasRefuse
 	}
 	switch input[0] {
 	case OpEncapsulate:
 		return GasEncapsulate
 	default:
-		return 0
+		return GasRefuse
 	}
 }
 
@@ -91,8 +99,9 @@ func (p *xwingPrecompile) Run(
 	switch input[0] {
 	case OpEncapsulate:
 		pkSize := scheme.PublicKeySize()
-		// Input: [op(1)][seed(32)][pk(pkSize)]
-		if len(input) < 1+SeedSize+pkSize {
+		// Input: [op(1)][seed(32)][pk(pkSize)] -- exactly, so one
+		// encapsulation has exactly one calldata spelling.
+		if len(input) != 1+SeedSize+pkSize {
 			return nil, gas, ErrInvalidInput
 		}
 		rawSeed := input[1 : 1+SeedSize]

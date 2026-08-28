@@ -1,35 +1,22 @@
 // Copyright (C) 2025-2026, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 //
-// FIPS 205 (SLH-DSA) precompile Known-Answer-Test (KAT) coverage.
+// Drift pins for the SLH-DSA precompile.
 //
-// Addresses TESTING_GAPS.md §1.5 in two coupled ways:
+// These vectors are SELF-GENERATED, not published by NIST: the FIPS 205
+// key seeds (skSeed || skPrf || pkSeed) are chosen here, the keypair and a
+// deterministic signature are reconstructed through cloudflare/circl, and
+// the leading bytes of each are recorded in testdata/drift_vectors.json.
 //
-//   - "FIPS 205 KAT vectors" -- we wire deterministic seed-driven KATs
-//     (skSeed || skPrf || pkSeed per FIPS 205 Algorithm 18) for the 8
-//     SLH-DSA parameter sets that had zero end-to-end coverage at the
-//     precompile layer.
-//   - "All 12 modes tested (... missing SHA2_192s/f, SHAKE_192s/f, SHA2_256s/f,
-//     SHAKE_256s/f)" -- modes_test.go now exercises round-trip verify for all
-//     12 modes from fresh keys, but it does NOT pin determinism. This file
-//     adds the determinism pin for the 8 previously-uncovered modes.
+// Their value is breadth. The published ACVP vectors in kat_test.go cover
+// three parameter sets; these cover the eight that file does not, each with
+// a full precompile round trip -- accept the honest frame, refuse the
+// tampered one. pk[:n] is pkSeed by FIPS 205 section 10.2, so the pin is
+// also a positional anchor against a layout change.
 //
-// Pinning strategy:
-//
-//   pk[:n] is, by FIPS 205 §10.2, equal to pkSeed for every mode (n = security
-//   parameter in bytes: 24 for 192-bit, 32 for 256-bit). We assert this both
-//   as a sanity guard on the wrapper and as a positional anchor against any
-//   future "I'll just shuffle the layout" refactor.
-//
-//   sig[:16] is the first 16 bytes of circl's SignDeterministic output (the
-//   pseudorandom R bytes from FIPS 205 §10.2 line 5). Pinning this is enough
-//   to detect changes to the keygen->sign deterministic chain. Pinning the
-//   full signature (16-50 KB per mode) would balloon the test binary.
-//
-// The signature objects themselves are NOT embedded; they are reconstructed
-// at test time from the seed. Each mode signs once (~0.5-1s for "f" variants,
-// ~5-10s for "s" variants in CPU mode) so we mark all the slow ones to skip
-// under -short.
+// They do NOT answer "is this library correct". A pinned prefix agrees with
+// whatever produced it; kat_test.go is the file to read for FIPS 205
+// conformance.
 
 package slhdsa
 
@@ -47,9 +34,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var nistKATMessage = []byte("lux-precompile-nist-kat-v1")
+var pinnedMessage = []byte("lux-precompile-nist-kat-v1")
 
-type slhdsaNISTVector struct {
+type slhdsaDriftVector struct {
 	Mode                       string `json:"mode"`
 	ModeByte                   string `json:"mode_byte"`
 	NBytes                     int    `json:"n_bytes"`
@@ -62,16 +49,16 @@ type slhdsaNISTVector struct {
 	SignatureSize              int    `json:"signature_size"`
 }
 
-type slhdsaNISTVectorFile struct {
-	Vectors []slhdsaNISTVector `json:"vectors"`
+type slhdsaDriftVectorFile struct {
+	Vectors []slhdsaDriftVector `json:"vectors"`
 }
 
-func loadSLHDSANISTVectors(t *testing.T) []slhdsaNISTVector {
+func loadSLHDSADriftVectors(t *testing.T) []slhdsaDriftVector {
 	t.Helper()
-	path := filepath.Join("testdata", "nist_vectors.json")
+	path := filepath.Join("testdata", "drift_vectors.json")
 	b, err := os.ReadFile(path)
 	require.NoError(t, err, "read testdata")
-	var f slhdsaNISTVectorFile
+	var f slhdsaDriftVectorFile
 	require.NoError(t, json.Unmarshal(b, &f), "parse testdata")
 	require.NotEmpty(t, f.Vectors, "no vectors")
 	return f.Vectors
@@ -131,7 +118,7 @@ func buildSLHDSAInput(t *testing.T, mode byte, pk, msg, sig []byte) []byte {
 	return out
 }
 
-// runNISTKAT executes the deterministic KAT for one parameter set:
+// runDriftPin executes the deterministic KAT for one parameter set:
 //
 //  1. Generate keypair from (skSeed || skPrf || pkSeed) via luxfi/crypto
 //     wrapper (which streams (skSeed || skPrf || pkSeed) into circl's
@@ -144,7 +131,7 @@ func buildSLHDSAInput(t *testing.T, mode byte, pk, msg, sig []byte) []byte {
 //     chain.
 //  5. Drive the precompile and require byte[31] == 1.
 //  6. Tamper with the signature's last byte and require byte[31] == 0.
-func runNISTKAT(t *testing.T, v slhdsaNISTVector) {
+func runDriftPin(t *testing.T, v slhdsaDriftVector) {
 	t.Helper()
 	mode, libMode := modeByteAndLib(t, v.Mode)
 
@@ -174,7 +161,7 @@ func runNISTKAT(t *testing.T, v slhdsaNISTVector) {
 		"%s: public-key prefix drift -- pinned vector and library no longer agree",
 		v.Mode)
 
-	sig, err := priv.SignCtx(nil, nistKATMessage, precompileCtx)
+	sig, err := priv.SignCtx(nil, pinnedMessage, precompileCtx)
 	require.NoError(t, err, "%s SignCtx", v.Mode)
 	require.Equal(t, v.SignatureSize, len(sig), "%s signature size", v.Mode)
 
@@ -183,7 +170,7 @@ func runNISTKAT(t *testing.T, v slhdsaNISTVector) {
 		"%s: deterministic signature prefix drift -- sign path no longer reproduces FIPS 205 vector",
 		v.Mode)
 
-	input := buildSLHDSAInput(t, mode, pk, nistKATMessage, sig)
+	input := buildSLHDSAInput(t, mode, pk, pinnedMessage, sig)
 	gas := SLHDSAVerifyPrecompile.RequiredGas(input)
 	ret, _, err := SLHDSAVerifyPrecompile.Run(
 		nil, common.Address{}, ContractSLHDSAVerifyAddress,
@@ -199,7 +186,7 @@ func runNISTKAT(t *testing.T, v slhdsaNISTVector) {
 	tampered := make([]byte, len(sig))
 	copy(tampered, sig)
 	tampered[len(tampered)-1] ^= 0x01
-	input = buildSLHDSAInput(t, mode, pk, nistKATMessage, tampered)
+	input = buildSLHDSAInput(t, mode, pk, pinnedMessage, tampered)
 	gas = SLHDSAVerifyPrecompile.RequiredGas(input)
 	ret, _, err = SLHDSAVerifyPrecompile.Run(
 		nil, common.Address{}, ContractSLHDSAVerifyAddress,
@@ -210,58 +197,52 @@ func runNISTKAT(t *testing.T, v slhdsaNISTVector) {
 		"%s: precompile MUST reject single-bit-tampered signature", v.Mode)
 }
 
-// TestNISTKAT_SLHDSA_192_FastModes covers the two 192-bit "f" (fast signing)
+// TestDrift_SLHDSA_192Fast covers the two 192-bit "f" (fast signing)
 // parameter sets. These sign in ~0.1-0.5s in CPU mode and so are always run.
-func TestNISTKAT_SLHDSA_192_FastModes(t *testing.T) {
-	vectors := loadSLHDSANISTVectors(t)
+func TestDrift_SLHDSA_192Fast(t *testing.T) {
+	vectors := loadSLHDSADriftVectors(t)
 	for _, v := range vectors {
 		if !strings.HasSuffix(v.Mode, "192f") {
 			continue
 		}
 		v := v
-		t.Run(v.Mode, func(t *testing.T) { runNISTKAT(t, v) })
+		t.Run(v.Mode, func(t *testing.T) { runDriftPin(t, v) })
 	}
 }
 
-// TestNISTKAT_SLHDSA_256_FastModes covers the two 256-bit "f" parameter sets.
-// Slower than 192f but still tractable; run under -short skips.
-func TestNISTKAT_SLHDSA_256_FastModes(t *testing.T) {
-	if testing.Short() {
-		t.Skip("slow under -short")
-	}
-	vectors := loadSLHDSANISTVectors(t)
+// TestDrift_SLHDSA_256Fast covers the two 256-bit "f" parameter sets.
+// Slower than 192f but still tractable.
+func TestDrift_SLHDSA_256Fast(t *testing.T) {
+	vectors := loadSLHDSADriftVectors(t)
 	for _, v := range vectors {
 		if !strings.HasSuffix(v.Mode, "256f") {
 			continue
 		}
 		v := v
-		t.Run(v.Mode, func(t *testing.T) { runNISTKAT(t, v) })
+		t.Run(v.Mode, func(t *testing.T) { runDriftPin(t, v) })
 	}
 }
 
-// TestNISTKAT_SLHDSA_SmallSignatureModes covers the four "s" (small
+// TestDrift_SLHDSA_SmallSignature covers the four "s" (small
 // signature) parameter sets across both 192- and 256-bit levels. These are
-// the slow signers; skipped under -short.
-func TestNISTKAT_SLHDSA_SmallSignatureModes(t *testing.T) {
-	if testing.Short() {
-		t.Skip("slow under -short")
-	}
-	vectors := loadSLHDSANISTVectors(t)
+// the slow signers.
+func TestDrift_SLHDSA_SmallSignature(t *testing.T) {
+	vectors := loadSLHDSADriftVectors(t)
 	for _, v := range vectors {
 		if !strings.HasSuffix(v.Mode, "s") {
 			continue
 		}
 		v := v
-		t.Run(v.Mode, func(t *testing.T) { runNISTKAT(t, v) })
+		t.Run(v.Mode, func(t *testing.T) { runDriftPin(t, v) })
 	}
 }
 
-// TestNISTKAT_SLHDSA_AllEightModesCovered guards against silent shrinkage of
+// TestDrift_SLHDSA_AllEightModesPinned guards against silent shrinkage of
 // the KAT vector set. The 4 "smaller" modes (SHA2_128*, SHAKE_128*) are
 // intentionally excluded because they are already round-trip-tested in
 // slhdsa/modes_test.go.
-func TestNISTKAT_SLHDSA_AllEightModesCovered(t *testing.T) {
-	vectors := loadSLHDSANISTVectors(t)
+func TestDrift_SLHDSA_AllEightModesPinned(t *testing.T) {
+	vectors := loadSLHDSADriftVectors(t)
 	required := map[string]bool{
 		"SHA2_192s":  false,
 		"SHA2_192f":  false,

@@ -4,6 +4,7 @@
 package kzg4844
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"testing"
@@ -145,73 +146,70 @@ func TestKZG4844_VerifyProof(t *testing.T) {
 	require.Equal(t, []byte{0x01}, result) // Valid
 }
 
+// A well-formed proof that does not open the commitment is answered with a
+// zero; a proof that is not a point encoding at all is a different answer.
 func TestKZG4844_VerifyProof_Invalid(t *testing.T) {
 	blob := createValidBlob(t)
 
-	// Compute commitment
-	commitmentInput := make([]byte, 1+BlobSize)
-	commitmentInput[0] = OpBlobToCommitment
-	copy(commitmentInput[1:], blob[:])
+	commit := func() []byte {
+		in := append([]byte{OpBlobToCommitment}, blob...)
+		out, _, err := KZG4844Precompile.Run(nil, common.Address{}, ContractAddress, in, GasBlobToCommitment, false)
+		require.NoError(t, err)
+		return out
+	}
+	open := func(z []byte) (proof, y []byte) {
+		in := append(append([]byte{OpComputeProof}, blob...), z...)
+		out, _, err := KZG4844Precompile.Run(nil, common.Address{}, ContractAddress, in, GasComputeProof, false)
+		require.NoError(t, err)
+		return out[:ProofSize], out[ProofSize:]
+	}
+	verify := func(commitment, z, y, proof []byte) ([]byte, error) {
+		in := []byte{OpVerifyProof}
+		in = append(append(append(append(in, commitment...), z...), y...), proof...)
+		out, _, err := KZG4844Precompile.Run(nil, common.Address{}, ContractAddress, in, GasVerifyProof, false)
+		return out, err
+	}
 
-	commitment, _, err := KZG4844Precompile.Run(
-		nil,
-		common.Address{},
-		ContractAddress,
-		commitmentInput,
-		GasBlobToCommitment,
-		false,
-	)
+	commitment := commit()
+	zA := make([]byte, FieldElementSize)
+	zA[31] = 0x42
+	zB := make([]byte, FieldElementSize)
+	zB[31] = 0x43
+
+	proofA, yA := open(zA)
+	proofB, _ := open(zB)
+
+	out, err := verify(commitment, zA, yA, proofA)
 	require.NoError(t, err)
+	require.Equal(t, []byte{0x01}, out, "the honest opening must verify")
 
-	// Compute proof
-	z := make([]byte, FieldElementSize)
-	z[31] = 0x42
-
-	proofInput := make([]byte, 1+BlobSize+FieldElementSize)
-	proofInput[0] = OpComputeProof
-	copy(proofInput[1:], blob[:])
-	copy(proofInput[1+BlobSize:], z)
-
-	proofResult, _, err := KZG4844Precompile.Run(
-		nil,
-		common.Address{},
-		ContractAddress,
-		proofInput,
-		GasComputeProof,
-		false,
-	)
+	// The opening for a different point: a real proof, a real point, the
+	// wrong answer.
+	out, err = verify(commitment, zA, yA, proofB)
 	require.NoError(t, err)
+	require.Equal(t, []byte{0x00}, out)
 
-	proof := proofResult[:ProofSize]
-	y := proofResult[ProofSize:]
-
-	// Corrupt the proof
-	proof[0] ^= 0xFF
-
-	verifyInput := make([]byte, 1+CommitmentSize+FieldElementSize+FieldElementSize+ProofSize)
-	verifyInput[0] = OpVerifyProof
-	offset := 1
-	copy(verifyInput[offset:], commitment)
-	offset += CommitmentSize
-	copy(verifyInput[offset:], z)
-	offset += FieldElementSize
-	copy(verifyInput[offset:], y)
-	offset += FieldElementSize
-	copy(verifyInput[offset:], proof)
-
-	gas := KZG4844Precompile.RequiredGas(verifyInput)
-
-	result, _, err := KZG4844Precompile.Run(
-		nil,
-		common.Address{},
-		ContractAddress,
-		verifyInput,
-		gas,
-		false,
-	)
-
+	// A claimed value that is not the one the polynomial takes at z.
+	wrongY := bytes.Clone(yA)
+	wrongY[31] ^= 0x01
+	out, err = verify(commitment, zA, wrongY, proofA)
 	require.NoError(t, err)
-	require.Equal(t, []byte{0x00}, result) // Invalid
+	require.Equal(t, []byte{0x00}, out)
+
+	// A proof whose leading byte is not a valid compressed-point header is
+	// refused outright rather than reported as a failed opening.
+	broken := bytes.Clone(proofA)
+	broken[0] ^= 0xFF
+	out, err = verify(commitment, zA, yA, broken)
+	require.ErrorIs(t, err, ErrInvalidProof)
+	require.Nil(t, out)
+
+	// And so is a commitment that is not a point.
+	brokenCommitment := bytes.Clone(commitment)
+	brokenCommitment[0] ^= 0xFF
+	out, err = verify(brokenCommitment, zA, yA, proofA)
+	require.ErrorIs(t, err, ErrInvalidCommitment)
+	require.Nil(t, out)
 }
 
 func TestKZG4844_VerifyBlobProof(t *testing.T) {
@@ -362,30 +360,6 @@ func TestKZG4844_BatchVerifyProofs_Empty(t *testing.T) {
 	require.Equal(t, []byte{0x01}, result) // Empty batch is valid
 }
 
-func TestKZG4844_ComputeChallenge(t *testing.T) {
-	commitment := make([]byte, CommitmentSize)
-	rand.Read(commitment)
-
-	input := make([]byte, 1+CommitmentSize)
-	input[0] = OpComputeChallenge
-	copy(input[1:], commitment)
-
-	gas := KZG4844Precompile.RequiredGas(input)
-
-	result, _, err := KZG4844Precompile.Run(
-		nil,
-		common.Address{},
-		ContractAddress,
-		input,
-		gas,
-		false,
-	)
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, FieldElementSize, len(result))
-}
-
 func TestKZG4844_InvalidOperation(t *testing.T) {
 	input := []byte{0xFF} // Invalid op
 
@@ -458,7 +432,6 @@ func TestKZG4844_RequiredGas(t *testing.T) {
 		{"ComputeProof", OpComputeProof, GasComputeProof},
 		{"VerifyProof", OpVerifyProof, GasVerifyProof},
 		{"VerifyBlobProof", OpVerifyBlobProof, GasVerifyBlobProof},
-		{"ComputeChallenge", OpComputeChallenge, GasComputeChallenge},
 	}
 
 	for _, tt := range tests {

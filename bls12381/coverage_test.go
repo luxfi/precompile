@@ -226,40 +226,6 @@ func TestConfig_JSONRoundTrip_PerSubConfig(t *testing.T) {
 
 // --- msmGas discount table ---
 
-func TestMsmGas_SinglePair(t *testing.T) {
-	require.Equal(t, uint64(GasG1MSM), msmGas(1, GasG1MSM))
-}
-
-func TestMsmGas_ZeroPairs(t *testing.T) {
-	require.Equal(t, uint64(GasG1MSM), msmGas(0, GasG1MSM))
-}
-
-func TestMsmGas_DiscountBrackets(t *testing.T) {
-	tests := []struct {
-		pairs    uint64
-		discount uint64
-	}{
-		{2, 949},
-		{4, 949},
-		{5, 854},
-		{8, 854},
-		{9, 723},
-		{16, 723},
-		{17, 577},
-		{32, 577},
-		{33, 461},
-		{64, 461},
-		{65, 368},
-		{128, 368},
-		{129, 294},
-		{256, 294},
-	}
-	for _, tt := range tests {
-		expected := (GasG1MSM * tt.pairs * tt.discount) / 1000
-		require.Equal(t, expected, msmGas(tt.pairs, GasG1MSM), "pairs=%d", tt.pairs)
-	}
-}
-
 // --- Infinity point handling ---
 
 func TestDecodeG1_InfinityPoint(t *testing.T) {
@@ -453,9 +419,20 @@ func TestPairing_InfinityPair(t *testing.T) {
 
 // --- PairingGas ---
 
+// A length that is not a whole number of pairs is still priced: EIP-2537
+// takes the pair count from a floor division and never rejects, leaving the
+// refusal to the pairing routine. Charging nothing here would make a
+// malformed call free.
 func TestPairingGas_InvalidLen(t *testing.T) {
-	require.Equal(t, uint64(0), PairingGas(0))
-	require.Equal(t, uint64(0), PairingGas(1))
+	require.Equal(t, uint64(GasPairingBase), PairingGas(0))
+	require.Equal(t, uint64(GasPairingBase), PairingGas(1))
+	require.Equal(t, uint64(GasPairingBase), PairingGas(PairingPair-1))
+	require.Equal(t, uint64(GasPairingBase+GasPairingPerPair), PairingGas(PairingPair+1))
+
+	// And the routine takes it before refusing.
+	_, remaining, err := blsOps.pairing(make([]byte, PairingPair+1), 1_000_000)
+	require.ErrorIs(t, err, ErrInvalidPairingLen)
+	require.Equal(t, uint64(1_000_000)-PairingGas(PairingPair+1), remaining)
 }
 
 func TestPairingGas_OnePair(t *testing.T) {
