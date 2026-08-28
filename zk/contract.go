@@ -27,6 +27,18 @@ var (
 	ErrVerifierRequired     = errors.New("verifier context required")
 	ErrInvalidCommitmentLen = errors.New("invalid commitment length")
 	ErrFflonkDisabled       = errors.New("fflonk verification disabled: unsound verifier (reserved opcode 0x03)")
+
+	// ErrRangeProofUnavailable is returned by op 0x23 when no bulletproof
+	// verifier is wired. It fails closed — an unverifiable range proof is
+	// never reported as valid — and is a named sentinel so callers can
+	// distinguish "no verifier here" from "this proof is bad", and so a
+	// test can pin the refusal.
+	ErrRangeProofUnavailable = errors.New("range proof: no bulletproof verifier registered")
+
+	// ErrHalo2KeyIncomplete is returned when a Halo2 proof reaches the
+	// keyed path but the verifying key carries no IPA commitment key, so
+	// the closing equation cannot be evaluated. Fails closed.
+	ErrHalo2KeyIncomplete = errors.New("halo2: verifying key carries no IPA commitment key")
 )
 
 // Operation selectors (first byte of input)
@@ -67,14 +79,25 @@ func (p *zkVerifyPrecompile) Address() common.Address {
 	return ZKVerifyContractAddress
 }
 
-// MinCallGas is charged for any precompile call, including unknown opcodes,
-// to prevent zero-cost abuse.
+// MinCallGas is the floor charged for any precompile call, including
+// unknown opcodes, to prevent zero-cost abuse.
 const MinCallGas uint64 = 21_000
 
-// RequiredGas calculates gas for ZK operations
+// RequiredGas calculates gas for ZK operations.
+//
+// The floor is applied here, once, so no branch of the schedule can
+// undercut it: price(op) is the per-op question, MinCallGas is the
+// policy, and the two are decided in separate places.
 func (p *zkVerifyPrecompile) RequiredGas(input []byte) uint64 {
+	return max(price(input), MinCallGas)
+}
+
+// price returns the schedule cost of an op, with no knowledge of the
+// floor. Zero means "this op carries no cost of its own" — an unknown
+// selector, or an input too short to name one.
+func price(input []byte) uint64 {
 	if len(input) < 1 {
-		return MinCallGas
+		return 0
 	}
 
 	op := input[0]
@@ -112,24 +135,78 @@ func (p *zkVerifyPrecompile) RequiredGas(input []byte) uint64 {
 		return GasCommitmentBase
 
 	case OpVerifyBatch:
-		if len(input) < 5 {
-			return MinCallGas
-		}
-		numProofs := binary.BigEndian.Uint32(input[1:5])
-		return uint64(numProofs) * GasPerBatchProof
+		// A zero count yields zero here; the floor in RequiredGas turns that
+		// into MinCallGas, so an empty batch cannot buy a free dispatch into
+		// verifyBatch. No overflow is reachable: the count is a uint32 capped
+		// by the input length, so the product stays below
+		// 2^32 * GasPerBatchProof, itself far below 2^64.
+		return uint64(countBatchProofs(input)) * GasPerBatchProof
 
 	default:
-		return MinCallGas
+		return 0
 	}
 }
 
-// countPublicInputs extracts number of public inputs from encoded data
+// Wire offsets, within the FULL precompile input, of the header shared by
+// ops 0x01-0x04 (Groth16, PLONK, fflonk, Halo2). Stated once so the gas
+// schedule and the verifiers cannot drift apart:
+//
+//	[0:1]                    op selector
+//	[1:33]                   vkID
+//	[33:37]                  numInputs (big-endian uint32)
+//	[37:37+numInputs*32]     public inputs, 32 bytes each
+//
+// Each verifier is handed input[1:], so it reads numInputs at [32:36] of
+// its own slice — verifyGroth16, verifyPLONK, verifyFflonk and
+// parseHalo2Proof all agree on that. RequiredGas sees the whole input and
+// must therefore read at [33:37].
+const (
+	numInputsOff = 1 + 32           // 33
+	inputsOff    = numInputsOff + 4 // 37
+	fieldLen     = 32
+)
+
+// countPublicInputs returns how many public inputs the verifier will parse.
+//
+// It reads the SAME wire field the verifiers read. Reading any other field
+// decouples price from work in both directions: execution that is not paid
+// for, and a valid proof priced out of the block.
+//
+// The claimed count is capped by what the calldata can actually hold. A
+// count above that is refused by the verifier in constant time (its
+// expectedLen check), so charging for it would price work that can never
+// happen. With the cap, gas is bounded by the length of the input.
 func countPublicInputs(input []byte) int {
-	if len(input) < 5 {
+	if len(input) < inputsOff {
 		return 0
 	}
-	// Format: [1 byte op][4 bytes num_public_inputs][...]
-	return int(binary.BigEndian.Uint32(input[1:5]))
+	claimed := binary.BigEndian.Uint32(input[numInputsOff:inputsOff])
+	capacity := (len(input) - inputsOff) / fieldLen
+	if uint64(claimed) > uint64(capacity) {
+		return capacity
+	}
+	return int(claimed)
+}
+
+// countBatchProofs returns how many proofs op 0x30 will attempt. It reads
+// the same field verifyBatch reads ([0:4] of input[1:]) and, as with
+// countPublicInputs, caps the claim by what the calldata can hold: every
+// batch entry carries at least a 1-byte type and a 4-byte length, and
+// verifyBatch stops at the first entry that runs past the end.
+func countBatchProofs(input []byte) int {
+	const (
+		countEnd = 5 // op selector(1) + numProofs(4)
+		entryHdr = 5 // proofType(1) + proofDataLen(4)
+	)
+	if len(input) < countEnd {
+		return 0
+	}
+	claimed := binary.BigEndian.Uint32(input[1:countEnd])
+	capacity := (len(input) - countEnd) / entryHdr
+	if uint64(claimed) > uint64(capacity) {
+		return capacity
+	}
+	return int(claimed)
 }
 
 // Run executes the ZK verify precompile
@@ -1143,19 +1220,17 @@ func verifyHalo2IPA(proof *Halo2Proof, vk *VerifyingKey, commitment []byte, chal
 		)
 	}
 
-	// Compute folding scalars for generator and b vector
-	// In full implementation, we'd verify:
-	//   g0 * a + (a * b0) * Q == foldedCommitment
+	// The closing equation is g0*a + (a*b0)*Q == foldedCommitment, where g0
+	// is the folded SRS generator and Q the commitment key's auxiliary
+	// point. Neither is available: VerifyingKey is Groth16-shaped
+	// (Alpha/Beta/Gamma/Delta/IC) and carries no IPA commitment key. The
+	// fold above is therefore evidence, not a verdict.
 	//
-	// For structural validation, we verify the math is consistent
-	_ = foldedCommitment // Used in full verification
-
-	// With a proper SRS (from vk), we would:
-	// 1. Compute g0 by folding SRS generators with challenge inverses
-	// 2. Compute b0 from evaluation point and challenge inverses
-	// 3. Verify the final equation
-
-	return true, nil
+	// Refuse. Returning true here — as this function did — accepted every
+	// proof for every statement whenever any Halo2 key was registered,
+	// because nothing downstream re-checked the result.
+	_ = foldedCommitment
+	return false, ErrHalo2KeyIncomplete
 }
 
 // halo2Transcript implements Fiat-Shamir transcript for Halo2
@@ -1195,6 +1270,14 @@ func sha256Hash(data []byte) []byte {
 // coordinates) are reduced mod p. p = 2^254 + 0x224698fc094cf91b992d30ed00000001.
 var pallasFieldModulus, _ = new(big.Int).SetString(
 	"28948022309329048855892746252171976963363056481941560715954676764349967630337", 10)
+
+// pallasScalarOrder is the order q of the Pallas group — the modulus for
+// scalars (challenges, evaluations, the folding scalar), as distinct from
+// the base field p above in which point COORDINATES live. Pallas has
+// cofactor 1, so q is both the group order and the scalar field modulus.
+// q = 2^254 + 0x224698fc0994a8dd8c46eb2100000001.
+var pallasScalarOrder, _ = new(big.Int).SetString(
+	"28948022309329048855892746252171976963363056481941647379679742748393362948097", 10)
 
 // isValidCompressedPoint validates a 32-byte compressed Halo2 (Pallas) point.
 //
@@ -1249,9 +1332,14 @@ func isValidScalar(s []byte) bool {
 	if len(s) != 32 {
 		return false
 	}
-	// Scalar can be zero (it's valid in field arithmetic)
-	// In full implementation, check s < field_modulus
-	return true
+	// The encoding must be CANONICAL: s < q. Accepting s >= q makes the
+	// encoding non-injective — s and s+q denote the same field element but
+	// are different bytes — so a proof could be re-encoded into a distinct
+	// byte string that still verifies, and any transcript hashing those
+	// bytes would bind to the encoding rather than to the value. This
+	// function previously checked only the length, which is no check at
+	// all: every 32-byte string passed. Zero is a legitimate scalar.
+	return new(big.Int).SetBytes(s).Cmp(pallasScalarOrder) < 0
 }
 
 // isZeroBytes checks if all bytes are zero
@@ -1443,8 +1531,8 @@ func (p *zkVerifyPrecompile) verifyRangeProof(data []byte) (bool, error) {
 		return p.verifier.VerifyRangeProof(commitment, rangeProof, bitLength)
 	}
 
-	// Bulletproof range proof verification not yet implemented
-	return false, errors.New("range proof: bulletproof verifier not yet implemented - use dalek-cryptography/bulletproofs")
+	// No verifier wired: refuse. Never report an unverified proof as valid.
+	return false, ErrRangeProofUnavailable
 }
 
 // verifyNullifier checks if a nullifier has been used (spent).
