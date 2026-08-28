@@ -26,7 +26,7 @@ import (
 
 var (
 	// IntentSubmitted(bytes32 intentID, bytes32 dChainID, address account, bytes32 assetIn, uint256 amountIn, bytes32 marketID, uint256 minAmountOut, address recipient, uint64 deadline, uint8 kind, uint64 priceLimit, uint8 limitIsUpper)
-	// priceLimit (CLOB quote-per-base float64 bits) + limitIsUpper let the keeper carry
+	// priceLimit (CLOB quote-per-base on the PriceInt grid) + limitIsUpper let the keeper carry
 	// the taker's slippage floor onto the settling relay (the bounded-MEV guard) without
 	// re-deriving it from the V4 sqrt limit.
 	nativeIntentEventSig = common.BytesToHash(crypto.Keccak256([]byte(
@@ -90,7 +90,8 @@ func emitNativeRoutingEvent(stateDB StateDB, objectID, dChainID ids.ID, req Inte
 	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(req.Deadline))...)
 	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(uint64(kind)))...)
 	// Slippage floor for the keeper to carry onto the settling relay (bounded-MEV guard):
-	// priceLimit is the CLOB quote-per-base limit as float64 bits, limitIsUpper its side.
+	// priceLimit is the CLOB quote-per-base limit as an exact uint64 on the PriceInt grid,
+	// limitIsUpper its side.
 	data = append(data, abiEncodeBigInt(new(big.Int).SetUint64(req.PriceLimit))...)
 	var limitFlag uint64
 	if req.LimitIsUpper {
