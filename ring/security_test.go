@@ -86,7 +86,7 @@ func TestC04_RingVerifyStillWorks(t *testing.T) {
 	signerSk := padTo32(privKeys[0].D.Bytes())
 
 	// Create signature off-chain (this is the correct flow)
-	sig, err := signOffChain(ring, signerSk, 0, message)
+	sig, err := signOffChain(ring, signerSk, 0, message, rand.Reader)
 	require.NoError(t, err)
 
 	// Build verify input

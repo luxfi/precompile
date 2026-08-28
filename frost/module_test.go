@@ -6,6 +6,8 @@ package frost
 import (
 	"testing"
 
+	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/modules"
 	"github.com/luxfi/precompile/precompileconfig"
 	"github.com/stretchr/testify/require"
 )
@@ -47,4 +49,38 @@ func TestConfigurator(t *testing.T) {
 	require.NoError(t, c.Configure(&testChainCfg{}, cfg, nil, nil))
 }
 
-// Module registration verified at runtime via init() panic on duplicate.
+// TestModuleRegistration: init() registers the precompile, and the only way to
+// see that it did is to look it up. The address and the config key are both
+// consensus-visible -- the address is where the EVM dispatches and the key is
+// how a chain config turns the precompile on -- so both are asserted, by
+// address and by key, and the two lookups must agree.
+//
+// The duplicate registration asserts the guard init() relies on: a second
+// module claiming this address or key is refused rather than silently
+// shadowing. init()'s own panic(err) statement cannot be reached from a test
+// (it runs once, before any test, and only fires on a collision that cannot
+// exist by then), so this is the closest reachable statement of the same
+// property.
+func TestModuleRegistration(t *testing.T) {
+	byAddr, ok := modules.GetPrecompileModuleByAddress(ContractFROSTVerifyAddress)
+	require.True(t, ok, "the FROST module must be registered at its address")
+	byKey, ok := modules.GetPrecompileModule("frostVerify")
+	require.True(t, ok, "the FROST module must be registered under its config key")
+	require.Equal(t, byAddr, byKey, "address and key must name the same module")
+	require.Equal(t, FROSTVerifyPrecompile, byAddr.Contract)
+	require.Equal(t, "frostVerify", byAddr.ConfigKey)
+
+	require.Error(t, modules.RegisterModule(modules.Module{
+		ConfigKey:    "frostVerify",
+		Address:      common.HexToAddress("0x0800000000000000000000000000000000000042"),
+		Contract:     FROSTVerifyPrecompile,
+		Configurator: &configurator{},
+	}), "a second module must not be able to claim this config key")
+
+	require.Error(t, modules.RegisterModule(modules.Module{
+		ConfigKey:    "frostVerifyImpostor",
+		Address:      ContractFROSTVerifyAddress,
+		Contract:     FROSTVerifyPrecompile,
+		Configurator: &configurator{},
+	}), "a second module must not be able to claim this address")
+}

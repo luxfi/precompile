@@ -164,9 +164,9 @@ const (
 //
 // Today this precompile fully implements KindPulsar (FIPS 204 ML-DSA
 // byte-equal output via Pulsar threshold ceremony). KindCorona and
-// KindMagnetar reserve their slot in the dispatch table but return
-// abiFalse via the NotImplemented path until their lattice-threshold
-// libraries land (see LP-220 §"Per-kind specs").
+// KindMagnetar hold their place in the dispatch table and answer
+// false, so the surface is stable while their lattice/hash threshold
+// verifiers land (see LP-220 §"Per-kind specs").
 const (
 	KindPulsar   uint8 = 0x01 // FIPS 204 ML-DSA (Module-LWE threshold, byte-equal)
 	KindCorona   uint8 = 0x02 // Module-LWE threshold (Corona eprint 2024/1113)
@@ -225,18 +225,18 @@ const (
 // signature under the P3Q context for any on-chain replay attempt.
 var PrecompileCtx = []byte("lux-evm-precompile-p3q-v1")
 
-// Error sentinels. Returned only on out-of-gas: any verification
-// failure (malformed input, wrong kind, wrong mode, length mismatch,
-// FIPS 204 reject) is surfaced as `(out=[0x00…00], nil error)` — the
-// Solidity caller observes `false` and decides whether that is fatal.
-// This matches LP-218 §"Failure modes": "No revert on cryptographic
-// failure — caller decides whether false is fatal."
-var (
-	ErrInvalidInputLength = errors.New("p3q: invalid input length")
-	ErrUnsupportedKind    = errors.New("p3q: unsupported family kind (must be 0x01 Pulsar / 0x02 Corona / 0x03 Magnetar)")
-	ErrUnsupportedMode    = errors.New("p3q: unsupported ML-DSA mode (must be 0x44, 0x65, or 0x87)")
-	ErrKindNotImplemented = errors.New("p3q: kind reserved but verifier not yet wired (LP-220 follow-up)")
-)
+// ErrUnsupportedMode is returned by Verify, the in-process entry
+// point, for a mode byte outside {0x44, 0x65, 0x87}.
+//
+// Run returns no sentinel of its own except contract.ErrOutOfGas.
+// Every verification failure — malformed input, unknown kind, unknown
+// mode, length mismatch, FIPS 204 reject — is surfaced as
+// `(out=[0x00…00], nil error)`, per LP-218 §"Failure modes": no revert
+// on cryptographic failure, the Solidity caller observes `false` and
+// decides whether that is fatal. Sentinels for those cases would be
+// unreachable, and an unreachable sentinel is worse than none: a
+// caller's errors.Is against it silently answers false forever.
+var ErrUnsupportedMode = errors.New("p3q: unsupported ML-DSA mode (must be 0x44, 0x65, or 0x87)")
 
 type p3qVerifyPrecompile struct{}
 
@@ -331,11 +331,11 @@ func (p *p3qVerifyPrecompile) Run(
 	case KindPulsar:
 		// fall through to the existing FIPS 204 ML-DSA verify path
 	case KindCorona, KindMagnetar:
-		// Reserved kinds — verifier not yet wired. Return abiFalse
-		// (the LP-218 "no revert on cryptographic failure" contract)
-		// so callers still see a consistent surface; once the lattice/
-		// hash threshold libraries land, this branch routes to its
-		// own verifier.
+		// Reserved kinds answer false under the LP-218 "no revert on
+		// cryptographic failure" contract, so the surface stays
+		// consistent while their verifiers land. The arm is named
+		// rather than folded into default so that adding a verifier
+		// is a one-line change here and nowhere else.
 		return abiFalse(), remaining, nil
 	default:
 		// Unknown kind — abiFalse, same as any malformed input.

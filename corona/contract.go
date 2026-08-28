@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 
 	"github.com/luxfi/corona/sign"
@@ -50,17 +51,46 @@ const (
 	// Minimum input size: threshold + total parties + message hash + minimal signature
 	MinInputSize = ThresholdSize + TotalPartiesSize + MessageHashSize
 
-	// Corona signature component sizes (based on sign.go constants)
-	// These are serialized sizes for the signature components
-	PolySize        = 256 // Approximate size per polynomial coefficient
-	VectorM         = 8   // M parameter from config
-	VectorN         = 7   // N parameter from config
-	DeltaVectorSize = VectorM * PolySize
-	ZVectorSize     = VectorN * PolySize
-	CPolySize       = PolySize
+	// RingDegree is the number of coefficients in a polynomial of the
+	// Corona ring, i.e. threshold.NewParams().R.N(). Pinned against
+	// the library in TestExpectedSizeMatchesTheWire.
+	RingDegree = 256
 
-	// Expected signature size: c + z + Delta
-	ExpectedSignatureSize = CPolySize + ZVectorSize + DeltaVectorSize
+	// CoefficientSize is the wire width of one coefficient.
+	// deserializePoly reads coefficients as fixed 64-bit big-endian
+	// words, so this is 8 and not a function of the modulus.
+	CoefficientSize = 8
+
+	// PolyWireSize is one serialized polynomial.
+	PolyWireSize = RingDegree * CoefficientSize
+
+	// SignaturePolyCount is the number of polynomials deserializeSignature
+	// reads, in wire order: the challenge c, the response vector z
+	// (sign.N), the rounding vector Delta (sign.M), the public matrix A
+	// (sign.M x sign.N) and the commitment vector bTilde (sign.M).
+	//
+	// The last two belong to the group key rather than the signature.
+	// They travel in the same blob because the precompile is handed no
+	// key by any other route -- there is no on-chain registry of Corona
+	// group keys, so the caller supplies the key it wants checked
+	// against. Soundness therefore rests on the caller's own binding of
+	// that key to a validator set, not on this precompile.
+	SignaturePolyCount = 1 + sign.N + sign.M + sign.M*sign.N + sign.M
+
+	// ExpectedSignatureSize is the exact byte length of the blob that
+	// follows the header. It is exact, not a lower bound: every
+	// component is fixed-size, so the signature body has one length and
+	// no other.
+	ExpectedSignatureSize = SignaturePolyCount * PolyWireSize
+
+	// MaxBilledParties clamps the party count read from calldata before
+	// it is multiplied into the fee. `n` is attacker-chosen and the
+	// verifier does not consult it (see verifyThresholdSignature: the
+	// signature body is a fixed ExpectedSignatureSize and the work is
+	// the same for every declared n), so an unclamped multiplier lets a
+	// caller quote an arbitrary fee for constant work. Matches the
+	// clamp the sibling threshold precompiles apply.
+	MaxBilledParties uint32 = 1000
 )
 
 type coronaThresholdPrecompile struct{}
@@ -80,12 +110,7 @@ func CoronaThresholdGasCost(input []byte) uint64 {
 	if len(input) < MinInputSize {
 		return CoronaThresholdBaseGas
 	}
-
-	// Extract number of parties from input
-	totalParties := binary.BigEndian.Uint32(input[ThresholdSize : ThresholdSize+TotalPartiesSize])
-
-	// Base cost + per-party cost
-	return CoronaThresholdBaseGas + (uint64(totalParties) * CoronaThresholdPerPartyGas)
+	return EstimateGas(binary.BigEndian.Uint32(input[ThresholdSize : ThresholdSize+TotalPartiesSize]))
 }
 
 // Run implements the Corona threshold signature verification precompile
@@ -134,7 +159,7 @@ func (p *coronaThresholdPrecompile) Run(
 	}
 
 	// Verify the threshold signature
-	valid, err := verifyThresholdSignature(thresholdVal, totalParties, messageHash, signatureBytes)
+	valid, err := verifyThresholdSignature(messageHash, signatureBytes)
 	if err != nil {
 		return nil, remainingGas, fmt.Errorf("verification error: %w", err)
 	}
@@ -148,8 +173,16 @@ func (p *coronaThresholdPrecompile) Run(
 	return result, remainingGas, nil
 }
 
-// verifyThresholdSignature verifies a Corona threshold signature
-func verifyThresholdSignature(thresholdVal, totalParties uint32, messageHash, signatureBytes []byte) (bool, error) {
+// verifyThresholdSignature verifies a Corona threshold signature.
+//
+// It takes no (t, n): the declared threshold and party count do not
+// enter the verification equation. Soundness comes from the aggregated
+// signature verifying against the group key that travels with it,
+// which a forger cannot produce without t real shares. The header's
+// (t, n) are caller metadata, checked only for internal consistency in
+// Run, and passing them here would suggest an influence they do not
+// have.
+func verifyThresholdSignature(messageHash, signatureBytes []byte) (bool, error) {
 	// Initialize ring parameters using threshold package
 	params, err := threshold.NewParams()
 	if err != nil {
@@ -270,11 +303,19 @@ func deserializeSignature(params *threshold.Params, data []byte) (
 // in once accel publishes a kernel that produces ring.Poly-compatible
 // coefficient bytes (or once ring.Poly exposes a SetCoefficientsUint64
 // fast-path).
+// Coefficients are read with io.ReadFull, not Read. Read reports a
+// PARTIAL read as (n < len, nil) and only signals io.EOF once nothing
+// at all remains, so a truncated blob would leave the tail of
+// coeffBytes at its allocated zero and yield a coefficient the caller
+// never sent -- fabricated data accepted as signed material instead of
+// a refusal. ReadFull turns a short read into io.ErrUnexpectedEOF,
+// which makes the parser total: every input either yields the exact
+// coefficients supplied or an error.
 func deserializePoly(buf *bytes.Reader, r *ring.Ring, poly ring.Poly) error {
 	coeffs := make([]*big.Int, r.N())
 	for i := 0; i < r.N(); i++ {
-		coeffBytes := make([]byte, 8) // 64-bit coefficients
-		if _, err := buf.Read(coeffBytes); err != nil {
+		coeffBytes := make([]byte, CoefficientSize)
+		if _, err := io.ReadFull(buf, coeffBytes); err != nil {
 			return fmt.Errorf("failed to read coefficient %d: %w", i, err)
 		}
 		coeffs[i] = new(big.Int).SetBytes(coeffBytes)
@@ -304,7 +345,11 @@ func initializeMatrix(r *ring.Ring, rows, cols int) structs.Matrix[ring.Poly] {
 	return mat
 }
 
-// EstimateGas estimates gas for a given number of parties
+// EstimateGas is the cost function for a declared party count, and the
+// only one: CoronaThresholdGasCost reads `n` off the wire and calls
+// through to here, so the quote an off-chain caller gets is by
+// construction the fee the EVM deducts. Declared counts above
+// MaxBilledParties bill as MaxBilledParties.
 func EstimateGas(parties uint32) uint64 {
-	return CoronaThresholdBaseGas + (uint64(parties) * CoronaThresholdPerPartyGas)
+	return CoronaThresholdBaseGas + uint64(min(parties, MaxBilledParties))*CoronaThresholdPerPartyGas
 }

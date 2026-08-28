@@ -245,12 +245,21 @@ func lsagVerify(ring [][]byte, sig *LSAGSignature, message []byte) bool {
 		// L = s[i] * G + c[i] * P[i]
 		sGx, sGy := curve.ScalarBaseMult(sig.S[i].Bytes())
 		cPx, cPy := curve.ScalarMult(pkX, pkY, cPrev.Bytes())
-		Lx, Ly := curve.Add(sGx, sGy, cPx, cPy)
 
 		// R = s[i] * H(P[i]) + c[i] * I
 		hp := hps[i]
 		sHx, sHy := curve.ScalarMult(hp.X, hp.Y, sig.S[i].Bytes())
 		cIx, cIy := curve.ScalarMult(imgX, imgY, cPrev.Bytes())
+
+		// A scalar of zero, or one at or above the group order, has no
+		// multiple: libsecp256k1 refuses it and hands back a nil point.
+		// s[i] and c[0] are read straight from calldata, so refuse here --
+		// passing nil to Add dereferences it.
+		if sGx == nil || cPx == nil || sHx == nil || cIx == nil {
+			return false
+		}
+
+		Lx, Ly := curve.Add(sGx, sGy, cPx, cPy)
 		Rx, Ry := curve.Add(sHx, sHy, cIx, cIy)
 
 		// c[i+1] = H(m, L, R)
@@ -296,8 +305,8 @@ func hashToPoint(pk []byte) *Point {
 	dst := []byte("LUX-LSAG-H2C-SECP256K1")
 	pt, err := gnarksecp.HashToG1(pk, dst)
 	if err != nil {
-		// HashToG1 only errors on empty DST (ours is constant and non-empty).
-		// Defensive: fall back to EncodeToG1.
+		// Unreachable: HashToG1 fails only for a DST over 255 bytes or an
+		// expansion over 8160 bytes; ours is a 22-byte constant.
 		pt, _ = gnarksecp.EncodeToG1(pk, dst)
 	}
 	x := new(big.Int)
@@ -344,6 +353,21 @@ func (sig *LSAGSignature) Serialize() []byte {
 	return result
 }
 
+// order is the secp256k1 group order.
+var order = secp256k1.S256().N
+
+// scalar reads one 32-byte field as a group scalar in [1, N-1].
+//
+// Zero has no curve multiple, and a value at or above N is a second encoding
+// of one already below it. Refusing both is what keeps the answer the same
+// everywhere: libsecp256k1 rejects those scalars, while the pure-Go fallback
+// reduces them silently, so the same bytes verify on one build and not the
+// other. This is the low-S rule of ECDSA applied to LSAG.
+func scalar(b []byte) (*big.Int, bool) {
+	x := new(big.Int).SetBytes(b)
+	return x, x.Sign() > 0 && x.Cmp(order) < 0
+}
+
 func parseLSAGSignature(data []byte, ringSize int) (*LSAGSignature, error) {
 	expectedLen := CompressedPubKeySize + ringSize*ScalarSize*2
 	if len(data) < expectedLen {
@@ -358,13 +382,18 @@ func parseLSAGSignature(data []byte, ringSize int) (*LSAGSignature, error) {
 
 	copy(sig.KeyImage, data[:CompressedPubKeySize])
 
+	var ok bool
 	offset := CompressedPubKeySize
 	for i := range ringSize {
-		sig.C[i] = new(big.Int).SetBytes(data[offset : offset+ScalarSize])
+		if sig.C[i], ok = scalar(data[offset : offset+ScalarSize]); !ok {
+			return nil, ErrInvalidSignature
+		}
 		offset += ScalarSize
 	}
 	for i := range ringSize {
-		sig.S[i] = new(big.Int).SetBytes(data[offset : offset+ScalarSize])
+		if sig.S[i], ok = scalar(data[offset : offset+ScalarSize]); !ok {
+			return nil, ErrInvalidSignature
+		}
 		offset += ScalarSize
 	}
 
