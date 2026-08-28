@@ -135,6 +135,30 @@ func moveNativeOutOfVault(stateDB StateDB, recipient common.Address, amount uint
 	return nil
 }
 
+// deliveredNative answers how much native value THIS call carried into the 0x9999 vault.
+// A precompile has no CallValue surface, so the answer is a difference: the host frame has
+// already moved msg.value into 0x9999 before Run, and every native the vault holds is
+// accounted for in exactly one pot, so whatever the balance exceeds the pots by is what
+// this call brought.
+//
+//	delivered = balance(0x9999) − (settleVault + seamReserve + committedPositions)
+//
+// All three pots are subtracted because one native balance backs all three (the
+// conservation invariant in native_state.go). Value sitting in the seam or LP pot belongs
+// to the intents and positions that locked it, so it is not available to any caller as
+// delivery. This is the one place that decision is made, and every native funding path
+// asks it here.
+//
+// The result is signed. A negative means the pots account for more than the vault holds,
+// which is a regression; callers refuse on the sign rather than clamping, so it surfaces
+// as a refusal instead of a credit.
+func deliveredNative(stateDB StateDB, assetID [32]byte) *big.Int {
+	tracked := new(big.Int).Set(loadSettleVault(stateDB, assetID))
+	tracked.Add(tracked, loadSeamReserve(stateDB, assetID))
+	tracked.Add(tracked, loadCommittedPositions(stateDB, assetID))
+	return new(big.Int).Sub(stateDB.GetBalance(poolManagerAddr9999).ToBig(), tracked)
+}
+
 // ─────────────────────────── PHASE A: reserve accounting ────────────────────────────
 // Pure 0x9999 storage writes (never nested calls). The matching value movement is a
 // separate Phase-A (native) or Phase-B (ERC-20) settle.
