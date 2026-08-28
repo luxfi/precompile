@@ -255,11 +255,32 @@ func TestGasCost(t *testing.T) {
 			return b
 		}(), GasHashBase + 4*GasPerElement},
 		{"hashpair", []byte{OpHashPair}, GasHashPair},
-		{"sponge_1elem", func() []byte {
+		// One absorbed element, one squeezed word: one permutation each.
+		{"sponge_1elem_1word", func() []byte {
+			b := make([]byte, 1+4+32)
+			b[0] = OpSponge
+			binary.BigEndian.PutUint32(b[1:5], 32)
+			return b
+		}(), GasSpongeBase + 2*GasSpongePerIn},
+		// Squeezing 1024 bytes is 32 words whether or not anything was absorbed.
+		{"sponge_0elem_32words", func() []byte {
+			b := make([]byte, 1+4)
+			b[0] = OpSponge
+			binary.BigEndian.PutUint32(b[1:5], MaxSpongeOutput)
+			return b
+		}(), GasSpongeBase + 32*GasSpongePerIn},
+		// Lengths Run refuses cost nothing.
+		{"sponge_outlen_zero", func() []byte {
 			b := make([]byte, 1+4+32)
 			b[0] = OpSponge
 			return b
-		}(), GasSpongeBase + 1*GasSpongePerIn},
+		}(), 0},
+		{"sponge_outlen_over_max", func() []byte {
+			b := make([]byte, 1+4+32)
+			b[0] = OpSponge
+			binary.BigEndian.PutUint32(b[1:5], MaxSpongeOutput+1)
+			return b
+		}(), 0},
 		{"invalid_op", []byte{0xFF}, 0},
 		{"empty", []byte{}, 0},
 	}

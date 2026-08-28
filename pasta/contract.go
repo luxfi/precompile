@@ -146,13 +146,22 @@ func decodePoint(curveID byte, data []byte) (point, error) {
 	if len(data) < PointLen {
 		return point{}, ErrInvalidInput
 	}
+	p := modulus(curveID)
 	x := new(big.Int).SetBytes(data[:32])
 	y := new(big.Int).SetBytes(data[32:64])
+	// A field element has exactly one 32-byte encoding. Admitting x >= p lets
+	// one point arrive under several encodings; addPoints compares raw integers,
+	// so it then misses the doubling case and takes the chord branch, where
+	// ModInverse of a multiple of p returns nil and leaves the divisor
+	// untouched -- the discarded nil turns into a bogus slope and an off-curve
+	// result. Refuse the extra encodings instead of reducing them.
+	if x.Cmp(p) >= 0 || y.Cmp(p) >= 0 {
+		return point{}, ErrInvalidInput
+	}
 	if x.Sign() == 0 && y.Sign() == 0 {
 		return point{inf: true}, nil
 	}
 	// Verify on curve: y^2 = x^3 + 5 mod p
-	p := modulus(curveID)
 	lhs := new(big.Int).Mul(y, y)
 	lhs.Mod(lhs, p)
 	x3 := new(big.Int).Mul(x, x)
