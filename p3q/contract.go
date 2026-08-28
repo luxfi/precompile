@@ -228,15 +228,26 @@ var PrecompileCtx = []byte("lux-evm-precompile-p3q-v1")
 // ErrUnsupportedMode is returned by Verify, the in-process entry
 // point, for a mode byte outside {0x44, 0x65, 0x87}.
 //
-// Run returns no sentinel of its own except contract.ErrOutOfGas.
+// Run's own error return carries nothing but contract.ErrOutOfGas.
 // Every verification failure — malformed input, unknown kind, unknown
 // mode, length mismatch, FIPS 204 reject — is surfaced as
 // `(out=[0x00…00], nil error)`, per LP-218 §"Failure modes": no revert
 // on cryptographic failure, the Solidity caller observes `false` and
-// decides whether that is fatal. Sentinels for those cases would be
-// unreachable, and an unreachable sentinel is worse than none: a
-// caller's errors.Is against it silently answers false forever.
-var ErrUnsupportedMode = errors.New("p3q: unsupported ML-DSA mode (must be 0x44, 0x65, or 0x87)")
+// decides whether that is fatal.
+//
+// The sentinels below never reach a Solidity caller either. They are
+// what verify hands contract.Refused, and they exist because the ABI
+// word cannot tell a check that failed from a check that never ran,
+// while the code must: a reserved kind and a bad signature are the same
+// byte on the wire and different facts in the verifier. Reading them
+// back is what the refusal tests do.
+var (
+	ErrUnsupportedMode = errors.New("p3q: unsupported ML-DSA mode (must be 0x44, 0x65, or 0x87)")
+	ErrKindReserved    = errors.New("p3q: kind reserved, no verifier wired")
+	ErrUnknownKind     = errors.New("p3q: kind names no primitive")
+	ErrSigSize         = errors.New("p3q: declared signature length is not the mode's size")
+	ErrPubKeySize      = errors.New("p3q: declared public key length is not the mode's size")
+)
 
 type p3qVerifyPrecompile struct{}
 
@@ -267,19 +278,9 @@ func modeParams(mode uint8) (m mldsa.Mode, pkSize, sigSize int, err error) {
 	}
 }
 
-// abiFalse returns a fresh 32-byte zero slice — the EVM-ABI encoding
-// of `bool false`. Callers may mutate the return value.
-func abiFalse() []byte { return make([]byte, 32) }
-
-// abiTrueClone returns a fresh 32-byte slice with the last byte set
-// to 0x01 — the EVM-ABI encoding of `bool true`. Callers may mutate
-// the return value.
-func abiTrueClone() []byte { b := make([]byte, 32); b[31] = 1; return b }
-
 // Run verifies a P3Q-family signature per LP-218 / LP-220. Today only
 // KindPulsar (FIPS 204 ML-DSA byte-equal output) is wired; KindCorona
-// and KindMagnetar are reserved and return abiFalse until their
-// verifiers land.
+// and KindMagnetar are reserved and refuse until their verifiers land.
 //
 // Wire format (single-call interface, no function selector):
 //
@@ -297,9 +298,12 @@ func abiTrueClone() []byte { b := make([]byte, 32); b[31] = 1; return b }
 // Error returns:
 //   - contract.ErrOutOfGas when suppliedGas < RequiredGas(input).
 //
-// Verification failures (malformed input, mode mismatch, length
-// mismatch, FIPS 204 reject) return `(abiFalse, gasLeft, nil)` — the
-// LP-218 contract: no revert on cryptographic failure.
+// Every other outcome — malformed input, unknown kind, unknown mode,
+// length mismatch, FIPS 204 reject — is `(word, gasLeft, nil)` with the
+// word false, per the LP-218 contract: no revert on cryptographic
+// failure. The word is the verdict's own encoding, so the two cases
+// the ABI collapses (a check that failed, a check that never ran) stay
+// distinct inside this function even though the caller sees one byte.
 func (p *p3qVerifyPrecompile) Run(
 	_ contract.AccessibleState,
 	_ common.Address,
@@ -313,103 +317,99 @@ func (p *p3qVerifyPrecompile) Run(
 	if err != nil {
 		return nil, 0, err
 	}
+	return verify(input).Word(), remaining, nil
+}
 
-	// Structural validation — all on PUBLIC fields (kind byte + mode
-	// byte + length fields + total length). No data-dependent branches
-	// on signature or public-key contents.
-	if len(input) < MinInputLength {
-		return abiFalse(), remaining, nil
-	}
+// verify parses the wire format and runs the FIPS 204 verifier.
+//
+// It reads through a contract.Cursor, so no bound in this function is
+// written by hand and none can be deleted: an over-read is refused by
+// the cursor rather than by a slice expression, which under a real
+// precompile input would not refuse at all. See contract/cursor.go for
+// why — the short version is that calldata's spare capacity belongs to
+// the caller, so reaching past the declared end reads chosen bytes and
+// returns a verdict over them.
+//
+// Every branch on kind, mode and the two length fields is on PUBLIC
+// data. No branch here depends on signature or public-key contents,
+// which is what keeps the FIPS 204 verifier's constant-time contract
+// intact at the precompile layer.
+func verify(input []byte) contract.Verdict {
+	in := contract.Read(input)
 
 	// Family-kind dispatch per LP-218 / LP-220 §"Single slot, kind-byte
 	// dispatch". Today only KindPulsar is wired; KindCorona / KindMagnetar
-	// reserve their slot and fall through to abiFalse. Adding their
-	// verifier paths is a follow-up that does not change the precompile
-	// surface — only the dispatch table grows.
-	kind := input[0]
+	// reserve their slot and refuse. Adding their verifier paths is a
+	// one-line change here and nowhere else.
+	kind, err := in.Byte()
+	if err != nil {
+		return contract.Refused(err)
+	}
 	switch kind {
 	case KindPulsar:
-		// fall through to the existing FIPS 204 ML-DSA verify path
+		// fall through to the FIPS 204 ML-DSA verify path
 	case KindCorona, KindMagnetar:
-		// Reserved kinds answer false under the LP-218 "no revert on
-		// cryptographic failure" contract, so the surface stays
-		// consistent while their verifiers land. The arm is named
-		// rather than folded into default so that adding a verifier
-		// is a one-line change here and nowhere else.
-		return abiFalse(), remaining, nil
+		return contract.Refused(ErrKindReserved)
 	default:
-		// Unknown kind — abiFalse, same as any malformed input.
-		return abiFalse(), remaining, nil
+		return contract.Refused(ErrUnknownKind)
 	}
 
-	mode := input[KindByte]
-	m, pkSize, sigSize, mErr := modeParams(mode)
-	if mErr != nil {
-		return abiFalse(), remaining, nil
+	mode, err := in.Byte()
+	if err != nil {
+		return contract.Refused(err)
+	}
+	m, pkSize, sigSize, err := modeParams(mode)
+	if err != nil {
+		return contract.Refused(err)
 	}
 
-	// Parse pulsarSig: [4 bytes len][N bytes sig].
-	off := KindByte + ModeByte
-	if len(input)-off < LengthFieldSize {
-		return abiFalse(), remaining, nil
+	// pulsarSig: [4 bytes len][N bytes sig]. The declared length must
+	// EQUAL the parameter set's size, not merely fit — a length that
+	// only fits would let a caller pad the field and shift every later
+	// offset, so the bytes the verifier sees are chosen by the length
+	// field rather than by the layout.
+	sigLen, err := in.Uint32()
+	if err != nil {
+		return contract.Refused(err)
 	}
-	sigLen := binary.BigEndian.Uint32(input[off : off+LengthFieldSize])
-	off += LengthFieldSize
-	if uint64(len(input)-off) < uint64(sigLen) {
-		return abiFalse(), remaining, nil
+	if uint64(sigLen) != uint64(sigSize) {
+		return contract.Refused(ErrSigSize)
 	}
-	if int(sigLen) != sigSize {
-		// Length mismatch against the mode's expected FIPS 204
-		// signature size. The FIPS 204 verifier would reject anyway;
-		// short-circuit here so we don't risk feeding a wrong-length
-		// slice to the underlying primitive.
-		return abiFalse(), remaining, nil
-	}
-	pulsarSig := input[off : off+int(sigLen)]
-	off += int(sigLen)
-
-	// Parse groupPubKey: [4 bytes len][M bytes pk].
-	if len(input)-off < LengthFieldSize {
-		return abiFalse(), remaining, nil
-	}
-	pkLen := binary.BigEndian.Uint32(input[off : off+LengthFieldSize])
-	off += LengthFieldSize
-	if uint64(len(input)-off) < uint64(pkLen) {
-		return abiFalse(), remaining, nil
-	}
-	if int(pkLen) != pkSize {
-		return abiFalse(), remaining, nil
-	}
-	groupPubKey := input[off : off+int(pkLen)]
-	off += int(pkLen)
-
-	// Parse messageHash: exactly 32 bytes at the tail. The wire layout
-	// places the hash AFTER the variable-length blobs so the offset is
-	// content-independent (parseable by reading only the length fields,
-	// no scanning).
-	if len(input)-off < MessageHashSize {
-		return abiFalse(), remaining, nil
-	}
-	messageHash := input[off : off+MessageHashSize]
-
-	// Trailing bytes (off + MessageHashSize < len(input)) are accepted
-	// to match the convention used by the sibling STARK-FRI precompile
-	// (precompile/starkfri/contract.go::TestStarkFRI_Fuzz_PaddedInput).
-	// Padding does not affect verification.
-
-	// Construct typed ML-DSA PublicKey. The mldsa package parses the
-	// FIPS 204 packed-pk byte layout into the runtime struct used by
-	// the verifier.
-	pk, perr := mldsa.PublicKeyFromBytes(groupPubKey, m)
-	if perr != nil {
-		return abiFalse(), remaining, nil
+	pulsarSig, err := in.Bytes(uint64(sigLen))
+	if err != nil {
+		return contract.Refused(err)
 	}
 
-	// FIPS 204 ML-DSA.Verify under the P3Q domain-separation context.
-	if !pk.VerifySignatureCtx(messageHash, pulsarSig, PrecompileCtx) {
-		return abiFalse(), remaining, nil
+	// groupPubKey: [4 bytes len][M bytes pk], same rule.
+	pkLen, err := in.Uint32()
+	if err != nil {
+		return contract.Refused(err)
 	}
-	return abiTrueClone(), remaining, nil
+	if uint64(pkLen) != uint64(pkSize) {
+		return contract.Refused(ErrPubKeySize)
+	}
+	groupPubKey, err := in.Bytes(uint64(pkLen))
+	if err != nil {
+		return contract.Refused(err)
+	}
+
+	// messageHash: exactly 32 bytes. The wire layout places it AFTER the
+	// variable-length blobs so its offset is content-independent —
+	// parseable by reading only the length fields, with no scanning.
+	messageHash, err := in.Bytes(MessageHashSize)
+	if err != nil {
+		return contract.Refused(err)
+	}
+
+	// Trailing bytes are accepted, matching the sibling STARK-FRI
+	// precompile. That is why in.End() is not called here: admitting
+	// padding is this format's documented behaviour, not an oversight.
+
+	pk, err := mldsa.PublicKeyFromBytes(groupPubKey, m)
+	if err != nil {
+		return contract.Refused(err)
+	}
+	return contract.Checked(pk.VerifySignatureCtx(messageHash, pulsarSig, PrecompileCtx))
 }
 
 // Verify is the in-process Pulsar verification entry-point for callers

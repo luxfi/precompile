@@ -60,7 +60,7 @@ func TestP3Q_KAT_Accept(t *testing.T) {
 	gas := P3QVerifyPrecompile.RequiredGas(input) * 2
 	out, _, err := P3QVerifyPrecompile.Run(nil, common.Address{}, ContractP3QVerifyAddress, input, gas, true)
 	require.NoError(t, err)
-	require.Equal(t, abiTrueClone(), out, "frozen KAT vector must verify true on-chain")
+	require.Equal(t, abiTrue(), out, "frozen KAT vector must verify true on-chain")
 }
 
 // TestP3Q_KAT_TamperSig is the negative KAT: flipping a single bit

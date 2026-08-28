@@ -58,7 +58,7 @@ func TestP3Q_WireFormat_KindByteMandatory(t *testing.T) {
 	gas := P3QVerifyPrecompile.RequiredGas(good) * 2
 	out, _, err := P3QVerifyPrecompile.Run(nil, common.Address{}, ContractP3QVerifyAddress, good, gas, true)
 	require.NoError(t, err)
-	require.Equal(t, abiTrueClone(), out, "canonical kind-first encoding must verify")
+	require.Equal(t, abiTrue(), out, "canonical kind-first encoding must verify")
 
 	// Kind-less (legacy / buggy Solidity) encoding of the SAME valid
 	// signature — must be rejected on the kind-dispatch default branch.
