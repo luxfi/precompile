@@ -85,7 +85,7 @@ func TestStarkFRI_RoundTrip_WithRegisteredVerifier(t *testing.T) {
 	})
 	defer RegisterVerifier(nil)
 
-	proof := append([]byte(MagicHeader), []byte("STARK-FRI-cSHAKE256-Goldilocks-payload")...)
+	proof := sfProof([]byte("STARK-FRI-cSHAKE256-Goldilocks-payload"))
 	pub := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
 	input := buildInput(VersionV1, proof, pub)
 
@@ -105,7 +105,7 @@ func TestStarkFRI_RoundTrip_WithRegisteredVerifier(t *testing.T) {
 func TestStarkFRI_NoVerifierRegistered(t *testing.T) {
 	RegisterVerifier(nil)
 
-	proof := append([]byte(MagicHeader), []byte("payload")...)
+	proof := sfProof([]byte("payload"))
 	pub := []byte{0xaa}
 	input := buildInput(VersionV1, proof, pub)
 
@@ -120,7 +120,7 @@ func TestStarkFRI_RejectsBadVersion(t *testing.T) {
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) { return true, nil })
 	defer RegisterVerifier(nil)
 
-	proof := append([]byte(MagicHeader), []byte("payload")...)
+	proof := sfProof([]byte("payload"))
 	pub := []byte{0xaa}
 	input := buildInput(0x00, proof, pub)
 
@@ -135,7 +135,7 @@ func TestStarkFRI_VerifierReturnsFalse(t *testing.T) {
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) { return false, nil })
 	defer RegisterVerifier(nil)
 
-	proof := append([]byte(MagicHeader), []byte("payload")...)
+	proof := sfProof([]byte("payload"))
 	pub := []byte{0xaa}
 	input := buildInput(VersionV1, proof, pub)
 
