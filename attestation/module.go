@@ -88,7 +88,7 @@ func (p *attestationPrecompile) Run(
 		return nil, suppliedGas, ErrInvalidInput
 	}
 
-	gasNeeded := RequiredGas([4]byte(input[:4]))
+	gasNeeded := RequiredGas(input)
 	gas, err := contract.DeductGas(suppliedGas, gasNeeded)
 	if err != nil {
 		return nil, 0, err
