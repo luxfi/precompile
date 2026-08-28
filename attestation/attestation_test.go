@@ -281,7 +281,7 @@ func TestStatefulRun_BlockTimestampThreaded(t *testing.T) {
 	payload := mustJSON(t, QuoteInput{Receipt: make([]byte, 64), Signature: make([]byte, 64)})
 	input := append([]byte{0x04, 0x00, 0x00, 0x00}, payload...)
 
-	out, _, err := Precompile.Run(attAS{ts: 4242}, common.Address{}, ContractAddress, input, GasCreateAttest, false)
+	out, _, err := Precompile.Run(attAS{ts: 4242}, common.Address{}, ContractAddress, input, RequiredGas(input), false)
 	if err != nil {
 		t.Fatalf("stateful run: %v", err)
 	}
@@ -325,9 +325,10 @@ func TestSupportedGPUModels(t *testing.T) {
 }
 
 func TestRequiredGas(t *testing.T) {
+	// A bare selector costs its base fee plus the four selector bytes.
 	for _, tt := range []struct {
 		selector [4]byte
-		expected uint64
+		base     uint64
 	}{
 		{[4]byte{0x01, 0x00, 0x00, 0x00}, GasVerifyNVTrust},
 		{[4]byte{0x02, 0x00, 0x00, 0x00}, GasVerifyTPM},
@@ -335,8 +336,9 @@ func TestRequiredGas(t *testing.T) {
 		{[4]byte{0x04, 0x00, 0x00, 0x00}, GasCreateAttest},
 		{[4]byte{0x05, 0x00, 0x00, 0x00}, GasGetDeviceStatus},
 	} {
-		if gas := RequiredGas(tt.selector); gas != tt.expected {
-			t.Errorf("RequiredGas(%v) = %d, want %d", tt.selector, gas, tt.expected)
+		want := tt.base + 4*GasPerByte
+		if gas := RequiredGas(tt.selector[:]); gas != want {
+			t.Errorf("RequiredGas(%v) = %d, want %d", tt.selector, gas, want)
 		}
 	}
 }
