@@ -1,4 +1,4 @@
-// Copyright (C) 2026, Lux Partners Limited. All rights reserved.
+// Copyright (C) 2026, Lux Industries Inc. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //
 // gas_test.go — gas accounting. Asserts the flat submit gas, the depth-scaled verify

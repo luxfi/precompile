@@ -1,6 +1,6 @@
 //go:build crossmodule
 
-// Copyright (C) 2026, Lux Partners Limited. All rights reserved.
+// Copyright (C) 2026, Lux Industries Inc. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //
 // crossmodule_test.go — RED-A cross-module byte-equality proof.
