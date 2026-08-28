@@ -41,6 +41,28 @@ func sfWire(version byte, proof, pub []byte) []byte {
 	return append(out, pub...)
 }
 
+// sfRun submits input to the precompile with gas guaranteed sufficient,
+// so the only thing under test is the parse/verify outcome.
+//
+// The input goes in through contract.Poisoned, which puts 256 bytes of
+// 0xA5 behind its end. That is the shape real calldata has: opCall takes
+// the input with Memory.GetPtr, a two-index slice of the EVM memory
+// store, and nothing on the way to Run copies it — so len is what the
+// caller declared and paid for, and cap is the rest of memory, which the
+// same caller filled with MSTORE. A slice expression only refuses past
+// cap, so a missing bounds check does not panic in production: it reads
+// attacker-chosen bytes and the verifier answers over them.
+//
+// A fixture built with plain append also carries spare capacity, but
+// zeroed, so an over-read looks like harmless zeros and the test passes
+// whether or not the bound exists. Poisoning makes it visible.
+func sfRun(input []byte) error {
+	in := contract.Poisoned(input, 256)
+	_, _, err := StarkFRIVerifyPrecompile.Run(nil, common.Address{},
+		ContractStarkFRIVerifyAddress, in, StarkFRIVerifyPrecompile.RequiredGas(in), true)
+	return err
+}
+
 // TestSF_SafeRefuseIsTheDefault: with nothing registered, no input of any
 // shape may be accepted. This is the property verify_nocgo.go exists to
 // provide, asserted rather than assumed.
@@ -65,10 +87,7 @@ func TestSF_SafeRefuseIsTheDefault(t *testing.T) {
 
 			// Precompile entry. nil error is the ONLY success signal, so
 			// the refusal must be a non-nil error.
-			gas := StarkFRIVerifyPrecompile.RequiredGas(in)
-			_, _, err = StarkFRIVerifyPrecompile.Run(
-				nil, common.Address{}, ContractStarkFRIVerifyAddress, in, gas, true)
-			require.ErrorIs(t, err, ErrVerifierNotRegistered,
+			require.ErrorIs(t, sfRun(in), ErrVerifierNotRegistered,
 				"Run reported success with no verifier registered")
 		}
 	}
@@ -239,18 +258,65 @@ func TestSF_WireBoundsAreRefusedNotPanicked(t *testing.T) {
 					t.Fatalf("case %d panicked on %d bytes: %v", i, len(in), r)
 				}
 			}()
-			gas := StarkFRIVerifyPrecompile.RequiredGas(in)
-			_, _, err := StarkFRIVerifyPrecompile.Run(nil, common.Address{},
-				ContractStarkFRIVerifyAddress, in, gas, true)
-			require.Errorf(t, err, "case %d (%d bytes) was ACCEPTED", i, len(in))
+			require.Errorf(t, sfRun(in), "case %d (%d bytes) was ACCEPTED", i, len(in))
 		}()
 	}
 
 	// Control: the untampered input still verifies, so the sweep above was
 	// rejecting the corruption and not something incidental.
-	_, _, err := StarkFRIVerifyPrecompile.Run(nil, common.Address{},
-		ContractStarkFRIVerifyAddress, good, StarkFRIVerifyPrecompile.RequiredGas(good), true)
-	require.NoError(t, err)
+	require.NoError(t, sfRun(good))
+}
+
+// TestSF_RefusesLengthDeclaredPastTheCalldata over-declares each of the
+// two length prefixes by margins that fit inside the poisoned spare
+// capacity behind the input.
+//
+// That margin is the point. An over-declaration of a megabyte is refused
+// by any parser, because the read runs past cap and Go stops it. An
+// over-declaration of eight bytes is the dangerous one: past len, inside
+// cap, where the slice expression succeeds and returns memory the same
+// caller wrote with MSTORE. Here those bytes are 0xA5, so the assertion
+// is not merely that the call was refused but that the verifier was
+// never handed anything — a verdict computed over 0xA5 is a verdict on a
+// statement nobody made and nobody paid gas for.
+func TestSF_RefusesLengthDeclaredPastTheCalldata(t *testing.T) {
+	sfClear(t)
+	var saw [][]byte
+	RegisterVerifier(func(_ byte, p, u []byte) (bool, error) {
+		saw = append(saw, bytes.Clone(p), bytes.Clone(u))
+		return true, nil
+	})
+
+	proof := append([]byte(MagicHeader), []byte("body")...)
+	pub := []byte{0xaa}
+	good := sfWire(VersionV1, proof, pub)
+
+	// After the version byte and the proof-length field, this many bytes
+	// of calldata remain; declaring one more is already past the end.
+	tail := uint32(len(good) - 5)
+	for _, over := range []uint32{1, 2, 8, 64, 255, 256} {
+		c := bytes.Clone(good)
+		binary.BigEndian.PutUint32(c[1:5], tail+over)
+		require.ErrorIsf(t, sfRun(c), ErrInvalidInputLength,
+			"proof_len declared %d bytes over the %d that remain", over, tail)
+	}
+
+	// Same for the public-input length, which is the last field and so
+	// backs straight onto the poison.
+	for _, over := range []uint32{1, 2, 8, 64, 255, 256} {
+		c := bytes.Clone(good)
+		binary.BigEndian.PutUint32(c[5+len(proof):9+len(proof)], uint32(len(pub))+over)
+		require.ErrorIsf(t, sfRun(c), ErrInvalidInputLength,
+			"pub_len declared %d bytes over the %d that remain", over, len(pub))
+	}
+
+	require.Empty(t, saw, "the verifier was handed bytes from past the calldata")
+
+	// Control: untampered, the same wire reaches the verifier with exactly
+	// the bytes that were sent — so the sweep above refused the
+	// over-declaration and not the shape.
+	require.NoError(t, sfRun(good))
+	require.Equal(t, [][]byte{proof, pub}, saw)
 }
 
 // TestSF_GasIsChargedAndProportional: no call is free, price rises with

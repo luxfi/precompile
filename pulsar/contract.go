@@ -111,10 +111,10 @@ type pulsarVerifyPrecompile struct{}
 // Layout matches the ML-DSA precompile: first byte is the mode, then
 // pubkey, then message, then signature.
 func (p *pulsarVerifyPrecompile) RequiredGas(input []byte) uint64 {
-	if len(input) < ModeByte {
+	mode, err := contract.Read(input).Byte()
+	if err != nil {
 		return Pulsar65VerifyBaseGas // default to mid mode for malformed input
 	}
-	mode := input[0]
 	switch mode {
 	case ModePulsar44:
 		return Pulsar44VerifyBaseGas + uint64(len(input))*PulsarVerifyPerByteGas
@@ -157,11 +157,21 @@ func (p *pulsarVerifyPrecompile) Run(
 	if err != nil {
 		return nil, 0, err
 	}
-	if len(input) < ModeByte {
+	// input is a window into EVM memory, not a buffer of its own: len is
+	// what the caller declared and paid for, cap is the rest of that
+	// memory, which the same caller filled with MSTORE. A slice expression
+	// reaching past len therefore does not panic, it returns bytes the
+	// caller chose, and the verifier answers over material nobody
+	// declared. Every field below is taken through the cursor, which
+	// bounds each read against the declared length, and every refusal is
+	// mapped back to this package's own sentinel so errors.Is answers
+	// exactly what it answered before.
+	in := contract.Read(input)
+
+	mode, err := in.Byte()
+	if err != nil {
 		return nil, remainingGas, ErrInvalidInputLength
 	}
-	mode := input[0]
-	body := input[1:]
 
 	var pubSize, sigSize int
 	var mldsaMode mldsa.Mode
@@ -182,32 +192,37 @@ func (p *pulsarVerifyPrecompile) Run(
 		return nil, remainingGas, ErrInvalidMode
 	}
 
-	// The +32 covers the message-length word that follows the public
-	// key, so the read loop below needs no second guard of its own.
-	if len(body) < pubSize+32 {
+	pubkey, err := in.Bytes(uint64(pubSize))
+	if err != nil {
 		return nil, remainingGas, ErrInvalidInputLength
 	}
-	pubkey := body[:pubSize]
-	body = body[pubSize:]
 
-	// Message length is encoded as a big-endian uint256; we accept
-	// the low 8 bytes as the actual length.
-	mlen := uint64(0)
-	for i := 24; i < 32; i++ {
-		mlen = (mlen << 8) | uint64(body[i])
-	}
-	body = body[32:]
-	// Bounds check WITHOUT overflow: mlen is attacker-controlled (low 8 bytes
-	// of a uint256), so mlen+sigSize can wrap uint64 and slip past a naive
-	// guard, making body[:mlen] panic — and a panic in the geth precompile
-	// dispatch (no recover) halts every validator on the tx. Compare with
-	// subtraction on the trusted len(body) instead.
-	if mlen > uint64(len(body)) || uint64(len(body))-mlen < uint64(sigSize) {
+	// Message length is a big-endian uint256 of which the low 8 bytes are
+	// the length; the high 24 are read and discarded, exactly as before.
+	if _, err := in.Bytes(24); err != nil {
 		return nil, remainingGas, ErrInvalidInputLength
 	}
-	msg := body[:mlen]
-	body = body[mlen:]
-	sig := body[:sigSize]
+	mlen, err := in.Uint64()
+	if err != nil {
+		return nil, remainingGas, ErrInvalidInputLength
+	}
+
+	// mlen is attacker-chosen, so msg and sig must both be proved to fit
+	// without ever computing mlen+sigSize, which wraps uint64. Taking them
+	// as two consecutive reads does that structurally: each is bounded by
+	// subtraction on what the cursor still holds, so there is no sum to
+	// wrap and nothing left to hand-check.
+	msg, err := in.Bytes(mlen)
+	if err != nil {
+		return nil, remainingGas, ErrInvalidInputLength
+	}
+	sig, err := in.Bytes(uint64(sigSize))
+	if err != nil {
+		return nil, remainingGas, ErrInvalidInputLength
+	}
+
+	// Bytes past the signature are accepted; that is this format's
+	// documented behaviour, which is why in.End() is not called here.
 
 	pk, err := mldsa.PublicKeyFromBytes(pubkey, mldsaMode)
 	if err != nil {

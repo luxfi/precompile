@@ -44,8 +44,8 @@
 //     followed by the 10-byte header (see p3q-verifier/src/wire.rs).
 //
 // The bridge: "P3Q1" is the on-chain ENVELOPE tag; the bytes AFTER it
-// are the p3q-native proof. So this adapter strips the 4-byte magic and
-// forwards proof[4:] to p3q_verify. This is exactly the
+// are the p3q-native proof. So this adapter cuts the magic off the front
+// and forwards the remainder to p3q_verify. This is exactly the
 // `backend_verifier_axiom` hand-off point in
 // proofs/easycrypt/P3Q_Verifier.ec (the precompile checks the magic and
 // structural envelope; the backend does the cryptographic work). This
@@ -73,6 +73,7 @@ package starkfri
 import "C"
 
 import (
+	"bytes"
 	"errors"
 	"unsafe"
 )
@@ -179,14 +180,15 @@ func p3qVerify(p3qProof, publicInput []byte) (bool, error) {
 // 10-byte header), so it is intentionally unused beyond the
 // envelope-level check the precompile already performed.
 func p3qVerifierFn(_ byte, proof, pubInputs []byte) (bool, error) {
-	// Defensive: the precompile guarantees proof[:4] == "P3Q1" and
-	// len(proof) >= 4 before dispatching, but re-check rather than index
-	// blindly — a caller of the in-process Verify() path must not be able
-	// to slice past the bounds.
-	if len(proof) < len(MagicHeader) || string(proof[:len(MagicHeader)]) != MagicHeader {
+	// The precompile has already checked the envelope tag, but this is also
+	// reachable from the in-process Verify() path, so strip the tag rather
+	// than assume it: CutPrefix tests and removes in one step, and cannot
+	// index past the end whatever it is handed.
+	body, ok := bytes.CutPrefix(proof, magic)
+	if !ok {
 		return false, ErrInvalidProof
 	}
-	return p3qVerify(proof[len(MagicHeader):], pubInputs)
+	return p3qVerify(body, pubInputs)
 }
 
 // init wires the real verifier as the authoritative RegisterVerifier

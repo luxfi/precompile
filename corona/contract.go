@@ -4,11 +4,8 @@
 package coronathreshold
 
 import (
-	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 
 	"github.com/luxfi/corona/sign"
@@ -105,12 +102,30 @@ func (p *coronaThresholdPrecompile) RequiredGas(input []byte) uint64 {
 	return CoronaThresholdGasCost(input)
 }
 
-// CoronaThresholdGasCost calculates the gas cost for threshold verification
+// CoronaThresholdGasCost calculates the gas cost for threshold verification.
+//
+// It reads the declared party count through a cursor, like every other read of
+// this calldata. RequiredGas cannot return an error, so a short input bills the
+// base — which is what it billed before, and the number is unchanged.
 func CoronaThresholdGasCost(input []byte) uint64 {
-	if len(input) < MinInputSize {
+	in := contract.Read(input)
+	if _, err := in.Bytes(ThresholdSize); err != nil {
 		return CoronaThresholdBaseGas
 	}
-	return EstimateGas(binary.BigEndian.Uint32(input[ThresholdSize : ThresholdSize+TotalPartiesSize]))
+	parties, err := in.Uint32()
+	if err != nil {
+		return CoronaThresholdBaseGas
+	}
+	// Anything shorter than a full header billed the base before and bills
+	// it now; the count is only consulted once the header is whole. Written
+	// as a remaining-length test rather than an up-front one so that each
+	// refusal above is reachable — a guard that dominates the reads under it
+	// makes their branches dead, and a dead branch is a branch no test can
+	// hold to anything.
+	if in.Len() < MessageHashSize {
+		return CoronaThresholdBaseGas
+	}
+	return EstimateGas(parties)
 }
 
 // Run implements the Corona threshold signature verification precompile
@@ -134,16 +149,23 @@ func (p *coronaThresholdPrecompile) Run(
 	// [4:8]       = total parties n (uint32)
 	// [8:40]      = message hash (32 bytes)
 	// [40:...]    = threshold signature (variable, ~4KB for default params)
-
-	if len(input) < MinInputSize {
-		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes, got %d",
-			ErrInvalidInputLength, MinInputSize, len(input))
+	//
+	// Read through a cursor: every bound is the cursor's, none is written
+	// here, and an over-read is refused rather than served out of the
+	// calldata's spare capacity. See contract/cursor.go.
+	in := contract.Read(input)
+	thresholdVal, err := in.Uint32()
+	if err != nil {
+		return nil, remainingGas, fmt.Errorf("%w: threshold: %v", ErrInvalidInputLength, err)
 	}
-
-	// Parse threshold parameters
-	thresholdVal := binary.BigEndian.Uint32(input[0:ThresholdSize])
-	totalParties := binary.BigEndian.Uint32(input[ThresholdSize : ThresholdSize+TotalPartiesSize])
-	messageHash := input[ThresholdSize+TotalPartiesSize : ThresholdSize+TotalPartiesSize+MessageHashSize]
+	totalParties, err := in.Uint32()
+	if err != nil {
+		return nil, remainingGas, fmt.Errorf("%w: party count: %v", ErrInvalidInputLength, err)
+	}
+	messageHash, err := in.Bytes(MessageHashSize)
+	if err != nil {
+		return nil, remainingGas, fmt.Errorf("%w: message hash: %v", ErrInvalidInputLength, err)
+	}
 
 	// Validate threshold
 	if thresholdVal == 0 || thresholdVal > totalParties {
@@ -151,11 +173,14 @@ func (p *coronaThresholdPrecompile) Run(
 			ErrInvalidThreshold, thresholdVal, totalParties)
 	}
 
-	// Extract signature bytes
-	signatureBytes := input[MinInputSize:]
-	if len(signatureBytes) < ExpectedSignatureSize {
-		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes, got %d",
-			ErrInvalidInputLength, ExpectedSignatureSize, len(signatureBytes))
+	// The body is a fixed ExpectedSignatureSize. Anything after it is
+	// padding this format has always accepted (TestAcceptsTrailingPadding),
+	// so take exactly the body and leave the rest — widening or narrowing
+	// that is a consensus-visible decision, not a parser's.
+	signatureBytes, err := in.Bytes(ExpectedSignatureSize)
+	if err != nil {
+		return nil, remainingGas, fmt.Errorf("%w: expected at least %d signature bytes, got %d",
+			ErrInvalidInputLength, ExpectedSignatureSize, in.Len())
 	}
 
 	// Verify the threshold signature
@@ -164,13 +189,7 @@ func (p *coronaThresholdPrecompile) Run(
 		return nil, remainingGas, fmt.Errorf("verification error: %w", err)
 	}
 
-	// Return result as 32-byte word (1 = valid, 0 = invalid)
-	result := make([]byte, 32)
-	if valid {
-		result[31] = 1
-	}
-
-	return result, remainingGas, nil
+	return contract.Checked(valid).Word(), remainingGas, nil
 }
 
 // verifyThresholdSignature verifies a Corona threshold signature.
@@ -219,7 +238,7 @@ func deserializeSignature(params *threshold.Params, data []byte) (
 	r_xi := params.RXi
 	r_nu := params.RNu
 
-	buf := bytes.NewReader(data)
+	buf := contract.Read(data)
 
 	// Deserialize c (challenge polynomial)
 	c := r.NewPoly()
@@ -303,19 +322,24 @@ func deserializeSignature(params *threshold.Params, data []byte) (
 // in once accel publishes a kernel that produces ring.Poly-compatible
 // coefficient bytes (or once ring.Poly exposes a SetCoefficientsUint64
 // fast-path).
-// Coefficients are read with io.ReadFull, not Read. Read reports a
-// PARTIAL read as (n < len, nil) and only signals io.EOF once nothing
-// at all remains, so a truncated blob would leave the tail of
-// coeffBytes at its allocated zero and yield a coefficient the caller
-// never sent -- fabricated data accepted as signed material instead of
-// a refusal. ReadFull turns a short read into io.ErrUnexpectedEOF,
-// which makes the parser total: every input either yields the exact
-// coefficients supplied or an error.
-func deserializePoly(buf *bytes.Reader, r *ring.Ring, poly ring.Poly) error {
+// Coefficients are read through a contract.Cursor, whose Bytes is
+// all-or-error by construction.
+//
+// This function used to read a *bytes.Reader with Read, which reports a
+// PARTIAL read as (n < len, nil) and only signals io.EOF once nothing at all
+// remains. A truncated blob therefore left the tail of coeffBytes at its
+// allocated zero and yielded a coefficient the caller never sent: fabricated
+// data accepted as signed material instead of a refusal. io.ReadFull fixed
+// that by turning a short read into io.ErrUnexpectedEOF, but it fixed it by
+// discipline — the bug was reachable again the moment somebody wrote Read.
+// A Cursor cannot short-read: there is no call that returns fewer bytes than
+// it was asked for, so the parser is total for the same reason the bounds are
+// total, and it is one type rather than two conventions.
+func deserializePoly(buf *contract.Cursor, r *ring.Ring, poly ring.Poly) error {
 	coeffs := make([]*big.Int, r.N())
 	for i := 0; i < r.N(); i++ {
-		coeffBytes := make([]byte, CoefficientSize)
-		if _, err := io.ReadFull(buf, coeffBytes); err != nil {
+		coeffBytes, err := buf.Bytes(CoefficientSize)
+		if err != nil {
 			return fmt.Errorf("failed to read coefficient %d: %w", i, err)
 		}
 		coeffs[i] = new(big.Int).SetBytes(coeffBytes)

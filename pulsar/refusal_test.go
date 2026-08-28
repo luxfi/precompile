@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,26 +26,27 @@ var modes = []struct {
 	{"Pulsar-87", ModePulsar87, Pulsar87PublicKeySize, Pulsar87SignatureSize},
 }
 
-// exact returns a copy of b whose capacity equals its length.
-//
-// A Go slice expression s[a:b] panics only when b exceeds cap(s), not
-// len(s). An input assembled with append carries spare capacity, so a
-// MISSING bounds check reads uninitialised bytes and carries on, and
-// the test passes while the guard it was meant to exercise is gone.
-// Calldata handed to a precompile by the EVM has no spare capacity, so
-// the same input panics in production -- and a panic in geth's
-// precompile dispatch has no recover, halting every validator on the
-// transaction. Refusal tests therefore submit exact-capacity slices.
-func exact(b []byte) []byte {
-	out := make([]byte, len(b))
-	copy(out, b)
-	return out
-}
-
 // call runs the precompile with gas guaranteed sufficient, so the only
 // thing under test is the parse/verify outcome.
+//
+// The input is submitted through contract.Poisoned, which hands the
+// precompile a slice carrying 256 bytes of 0xA5 behind its end. That is
+// the shape real calldata has: opCall takes the input with
+// Memory.GetPtr, a two-index slice of the EVM memory store, and nothing
+// on the way to Run copies it, so len is what the caller declared and
+// paid for while cap is the rest of memory the same caller filled with
+// MSTORE. A Go slice expression only refuses past cap, so a missing
+// bounds check does not panic in production -- it reads bytes the
+// attacker chose and the verifier answers over them.
+//
+// A fixture built with plain append also carries spare capacity, but
+// zeroed, so an over-read looks like harmless zeros and the test passes
+// whether or not the bound exists. A fixture trimmed to cap == len
+// turns the over-read into a panic, which is loud but is not what
+// production does. Poisoning reproduces production and makes the
+// over-read visible in the verdict.
 func call(input []byte) error {
-	in := exact(input)
+	in := contract.Poisoned(input, 256)
 	_, _, err := PulsarVerifyPrecompile.Run(nil, common.Address{}, ContractPulsarVerifyAddress,
 		in, PulsarVerifyPrecompile.RequiredGas(in)+1, true)
 	return err
@@ -53,15 +55,14 @@ func call(input []byte) error {
 // TestRefusesBodyBetweenKeyAndLengthWord is the boundary the parser
 // most easily gets wrong, and the one with the worst failure mode.
 //
-// After the public key is carved off, the code reads the eight
-// low-order bytes of a 32-byte message-length word straight out of the
-// remainder. The single length check before it must therefore reserve
-// room for BOTH the key and that word. If it reserved room only for
-// the key, an input whose body is at least pubSize but short of
-// pubSize+32 slips through and the read runs off the end of the slice
-// — a panic, and geth's precompile dispatch has no recover, so it
-// halts every validator processing the transaction rather than
-// reverting one call.
+// After the public key is taken, the parser reads a 32-byte
+// message-length word, of which the low 8 bytes are the length. Both
+// reads must be bounded against what the caller actually sent. If only
+// the key were bounded, an input whose body is at least pubSize but
+// short of pubSize+32 would slip through and the length word would be
+// read from past the end — 0xA5 here, attacker-chosen MSTORE bytes in
+// production — and every later offset would be decided by a number
+// nobody sent.
 //
 // Sweep the whole window, both edges included.
 func TestRefusesBodyBetweenKeyAndLengthWord(t *testing.T) {
@@ -145,6 +146,50 @@ func TestRefusesDeclaredMessageOverrun(t *testing.T) {
 	// The complement: a zero-length message with exactly a signature's
 	// worth of tail is structurally valid and reaches the verifier.
 	require.ErrorIs(t, call(build(0, m.sigSize)), ErrInvalidSignature)
+}
+
+// TestRefusesLengthDeclaredPastTheCalldata submits a message length
+// larger than the bytes supplied, by margins that fit inside the
+// poisoned spare capacity behind the input.
+//
+// That margin is the point. An over-declaration of a megabyte is
+// refused by any parser, because the read runs past cap and Go stops
+// it. An over-declaration of eight bytes is the dangerous one: past
+// len, inside cap, where the slice expression succeeds and hands back
+// memory the same caller wrote with MSTORE. Here those bytes are 0xA5,
+// so if the bound were missing the signature would be assembled partly
+// out of them and the call would reach the verifier.
+//
+// The discriminating assertion is therefore WHICH refusal comes back.
+// ErrInvalidInputLength means the parser refused on the declared
+// length. ErrInvalidSignature would mean the over-read happened and
+// only the cryptography stood between us and a verdict over bytes
+// nobody sent or paid for.
+func TestRefusesLengthDeclaredPastTheCalldata(t *testing.T) {
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			// Supply exactly a signature's worth of tail, then declare a
+			// message of `over` bytes on top of it: the message and the
+			// signature together need `over` bytes more than were sent.
+			for _, over := range []uint64{1, 2, 8, 64, 255, 256} {
+				input := append([]byte{m.mode}, make([]byte, m.pubSize)...)
+				var w [32]byte
+				binary.BigEndian.PutUint64(w[24:], over)
+				input = append(input, w[:]...)
+				input = append(input, make([]byte, m.sigSize)...)
+
+				require.ErrorIs(t, call(input), ErrInvalidInputLength,
+					"%d declared message bytes over a %d-byte tail: refused by the parser, "+
+						"never read from past the calldata", over, m.sigSize)
+			}
+
+			// The same shape one byte the other way is structurally whole
+			// and does reach the verifier, so the sweep above is refusing
+			// the overrun and not the shape.
+			whole := append([]byte{m.mode}, make([]byte, m.pubSize+32+m.sigSize)...)
+			require.ErrorIs(t, call(whole), ErrInvalidSignature)
+		})
+	}
 }
 
 // TestRefusesUnknownModeByte sweeps the mode byte across every value

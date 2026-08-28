@@ -61,7 +61,7 @@
 package starkfri
 
 import (
-	"encoding/binary"
+	"bytes"
 	"errors"
 	"sync/atomic"
 
@@ -85,6 +85,11 @@ var _ contract.StatefulPrecompiledContract = &starkFRIVerifyPrecompile{}
 // EasyCrypt / Lean / Jasmin / dudect proof artifacts continue to
 // reference the byte-identical wire tag.
 const MagicHeader = "P3Q1"
+
+// magic is MagicHeader as bytes, built once so the prefix test on the hot
+// path allocates nothing. Both entry points ask the same question of the
+// same value, so "begins with the header" has one definition.
+var magic = []byte(MagicHeader)
 
 // Wire layout constants.
 const (
@@ -187,7 +192,7 @@ func loadVerifier() VerifierFn {
 // callback is wired (binding pending, not "unimplemented"); (false, err)
 // on FFI / decode failures.
 func Verify(proof, pubInputs []byte) (bool, error) {
-	if len(proof) < len(MagicHeader) || string(proof[:len(MagicHeader)]) != MagicHeader {
+	if !bytes.HasPrefix(proof, magic) {
 		return false, ErrInvalidProof
 	}
 	fn := loadVerifier()
@@ -225,34 +230,58 @@ func (p *starkFRIVerifyPrecompile) Run(
 	}
 	remaining := suppliedGas - gas
 
-	if len(input) < MinInputLength {
+	// input is a window into EVM memory, not a buffer of its own: len is
+	// what the caller declared and paid for, cap is the rest of that
+	// memory, which the same caller filled with MSTORE. A slice expression
+	// reaching past len therefore does not panic, it returns bytes the
+	// caller chose — so every field below is taken through the cursor,
+	// which bounds each read against the declared length. Each refusal is
+	// mapped back to this package's own sentinel, so errors.Is answers
+	// exactly what it answered before.
+	in := contract.Read(input)
+
+	version, err := in.Byte()
+	if err != nil {
+		return nil, remaining, ErrInvalidInputLength
+	}
+	proofLen, err := in.Uint32()
+	if err != nil {
 		return nil, remaining, ErrInvalidInputLength
 	}
 
-	version := input[0]
+	// Length is settled before version, as it always has been: a frame too
+	// short to hold the smallest valid call is a length failure, never a
+	// version failure. The two reads above lie inside MinInputLength and
+	// refuse with the same sentinel, so an input shorter than the frame is
+	// refused identically whichever of the three fires.
+	if len(input) < MinInputLength {
+		return nil, remaining, ErrInvalidInputLength
+	}
 	if version != VersionV1 {
 		return nil, remaining, ErrInvalidVersion
 	}
 
-	off := versionByte
-	proofLen := binary.BigEndian.Uint32(input[off : off+proofLenByte])
-	off += proofLenByte
-	if uint64(len(input))-uint64(off) < uint64(proofLen)+uint64(pubLenByte) {
+	proof, err := in.Bytes(uint64(proofLen))
+	if err != nil {
 		return nil, remaining, ErrInvalidInputLength
 	}
-	proof := input[off : off+int(proofLen)]
-	off += int(proofLen)
 
-	pubLen := binary.BigEndian.Uint32(input[off : off+pubLenByte])
-	off += pubLenByte
-	if uint64(len(input))-uint64(off) < uint64(pubLen) {
+	pubLen, err := in.Uint32()
+	if err != nil {
 		return nil, remaining, ErrInvalidInputLength
 	}
-	pub := input[off : off+int(pubLen)]
+	pub, err := in.Bytes(uint64(pubLen))
+	if err != nil {
+		return nil, remaining, ErrInvalidInputLength
+	}
+
+	// Bytes past the public inputs are accepted. That is this format's
+	// documented behaviour, matching the sibling P3Q precompile, which is
+	// why in.End() is not called here.
 
 	// Structural check: proof must begin with the MagicHeader. STARK-FRI
 	// proofs are non-secret, so byte-equality is fine.
-	if len(proof) < len(MagicHeader) || string(proof[:len(MagicHeader)]) != MagicHeader {
+	if !bytes.HasPrefix(proof, magic) {
 		return nil, remaining, ErrInvalidProof
 	}
 

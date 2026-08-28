@@ -78,10 +78,20 @@ func (c *Cursor) Bytes(n uint64) ([]byte, error) {
 	if n > uint64(c.Len()) {
 		return nil, ErrShort
 	}
+	return c.take(n), nil
+}
+
+// take consumes n bytes and returns them capped, WITHOUT checking that n
+// bytes remain. It is the one slice expression in the package, and it is
+// correct only because both of its callers bound n first — Bytes against the
+// remaining length, Fields against the remaining length divided by the field
+// width. A third caller that forgets to bound reintroduces the whole class,
+// so there is not one.
+func (c *Cursor) take(n uint64) []byte {
 	lo := c.off
 	hi := lo + int(n)
 	c.off = hi
-	return c.buf[lo:hi:hi], nil
+	return c.buf[lo:hi:hi]
 }
 
 // Byte consumes one byte.
@@ -118,6 +128,37 @@ func (c *Cursor) Uint64() (uint64, error) {
 		return 0, err
 	}
 	return binary.BigEndian.Uint64(b), nil
+}
+
+// Fields consumes n consecutive fields of w bytes each and returns them, or
+// refuses. Each field is capped to its own length, like Bytes.
+//
+// This is the shape every length-prefixed vector on the wire actually has: a
+// declared count, then that many fixed-width elements. Writing it out by hand
+// puts the allocation before the bound —
+//
+//	inputs := make([]*big.Int, n)   // n is attacker-chosen
+//	for i := range n { ... data[off:off+32] ... }
+//
+// — so a declared count of 2^32-1 asks for 137 GB before anything checks
+// whether the calldata could hold 2^32-1 fields. Here the bound comes first,
+// and it divides rather than multiplying: n*w wraps for large n, and a wrapped
+// product compares as small against any length, which is how a count comes to
+// size an allocation the calldata never justified.
+//
+// A width of zero is the empty read: n fields of nothing are nothing.
+func (c *Cursor) Fields(n, w uint64) ([][]byte, error) {
+	if w == 0 {
+		return nil, nil
+	}
+	if n > uint64(c.Len())/w {
+		return nil, ErrShort
+	}
+	out := make([][]byte, n)
+	for i := range out {
+		out[i] = c.take(w)
+	}
+	return out, nil
 }
 
 // Rest consumes and returns everything left, capped to its own length.
