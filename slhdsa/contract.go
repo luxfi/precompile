@@ -236,9 +236,11 @@ func (p *slhdsaVerifyPrecompile) Run(
 	sigStart := msgEnd
 	sigEnd := sigStart + sigSize
 
-	// Validate total input size
-	if len(input) < sigEnd {
-		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes, got %d",
+	// Validate total input size. Exact, not "at least": trailing bytes would
+	// let one signature be presented under many distinct calldatas, and the
+	// ML-DSA precompile next door already pins its frame exactly.
+	if len(input) != sigEnd {
+		return nil, remainingGas, fmt.Errorf("%w: expected exactly %d bytes, got %d",
 			ErrInvalidInputLength, sigEnd, len(input))
 	}
 

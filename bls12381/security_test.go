@@ -7,52 +7,39 @@ import (
 	"testing"
 
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
 	"github.com/stretchr/testify/require"
 )
 
-// H-03: BLS12-381 pairing gas must follow EIP-2537: 65000 + 43000*n.
-//
-// Vulnerability: Pairing gas was flat per pair (115000*n), missing the base
-// cost. A single pair cost 115000 instead of 108000. More critically, the
-// old code undercharged multi-pair calls relative to EIP-2537 (no base cost).
-//
-// Fix: GasPairingBase=65000, GasPairingPerPair=43000. Total = base + n*perPair.
+// H-03: BLS12-381 pairing must be priced with a base cost as well as a
+// per-pair cost, so that a single pair is not sold at the marginal price of a
+// batched one. The values live in the EIP-2537 schedule and are pinned against
+// the reference vectors by TestEIP2537_GasSchedule; what is asserted here is
+// the shape the audit finding was about.
 func TestH03_BLS12381PairingGasSufficient(t *testing.T) {
-	// Verify constants match EIP-2537
-	require.Equal(t, uint64(65000), uint64(GasPairingBase))
-	require.Equal(t, uint64(43000), uint64(GasPairingPerPair))
+	require.Positive(t, uint64(GasPairingBase), "pairing has no base cost")
 
-	// Verify the formula: 65000 + 43000*n
+	prev := PairingGas(0)
 	for _, n := range []int{1, 2, 5, 10} {
-		expected := uint64(GasPairingBase) + uint64(n)*uint64(GasPairingPerPair)
-		actual := PairingGas(n * PairingPair)
-		require.Equal(t, expected, actual, "pairing gas for %d pairs", n)
-		// Per EIP-2537: base cost ensures even a single pair costs 108K.
-		// The minimum per-pair amortized cost decreases with more pairs
-		// (65000/n + 43000), but total always exceeds 43K*n.
-		require.GreaterOrEqual(t, actual, uint64(n)*uint64(GasPairingPerPair),
-			"%d pairs must cost at least %d gas", n, uint64(n)*uint64(GasPairingPerPair))
-	}
+		got := PairingGas(n * PairingPair)
+		require.Equal(t, uint64(GasPairingBase)+uint64(n)*uint64(GasPairingPerPair), got)
+		require.Greater(t, got, prev, "gas must grow with the pair count")
+		require.Greater(t, got, uint64(n)*uint64(GasPairingPerPair), "base cost is missing")
+		prev = got
 
-	// Verify multiple pairs via the actual precompile
-	for _, n := range []int{1, 2, 5, 10} {
-		multiInput := make([]byte, n*PairingPair)
-		_, _, err := blsOps.pairing(multiInput, 100_000_000)
-		if err == nil {
-			gasNeeded := uint64(GasPairingBase) + uint64(n)*uint64(GasPairingPerPair)
-			require.GreaterOrEqual(t, gasNeeded, uint64(n)*uint64(GasPairingPerPair),
-				"%d pairs must cost at least %d gas", n, uint64(n)*uint64(GasPairingPerPair))
-		}
+		// The operation charges exactly that.
+		_, remaining, _ := blsOps.pairing(make([]byte, n*PairingPair), 100_000_000)
+		require.Equal(t, uint64(100_000_000)-got, remaining)
 	}
 }
 
 // H-03: Pairing with insufficient gas must fail.
 func TestH03_BLS12381PairingOOG(t *testing.T) {
 	input := make([]byte, PairingPair)
-	gasNeeded := uint64(GasPairingBase) + uint64(GasPairingPerPair)
-	_, _, err := blsOps.pairing(input, gasNeeded-1)
-	require.Error(t, err, "Pairing with insufficient gas must fail")
+	need := PairingGas(len(input))
+	_, _, err := blsOps.pairing(input, need-1)
+	require.ErrorIs(t, err, contract.ErrOutOfGas)
 }
 
 // H-04: All 7 BLS12-381 addresses must be registered.

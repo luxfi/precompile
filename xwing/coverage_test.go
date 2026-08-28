@@ -8,6 +8,7 @@ import (
 
 	"github.com/cloudflare/circl/kem/xwing"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/precompileconfig"
 	"github.com/stretchr/testify/require"
 )
@@ -68,8 +69,8 @@ func TestConfigurator_Configure(t *testing.T) {
 // --- RequiredGas edge cases ---
 
 func TestRequiredGas_EmptyInput(t *testing.T) {
-	require.Equal(t, uint64(0), XWingPrecompile.RequiredGas(nil))
-	require.Equal(t, uint64(0), XWingPrecompile.RequiredGas([]byte{}))
+	require.Equal(t, uint64(GasRefuse), XWingPrecompile.RequiredGas(nil))
+	require.Equal(t, uint64(GasRefuse), XWingPrecompile.RequiredGas([]byte{}))
 }
 
 func TestRequiredGas_Encapsulate(t *testing.T) {
@@ -77,7 +78,7 @@ func TestRequiredGas_Encapsulate(t *testing.T) {
 }
 
 func TestRequiredGas_UnknownOp(t *testing.T) {
-	require.Equal(t, uint64(0), XWingPrecompile.RequiredGas([]byte{0xFF}))
+	require.Equal(t, uint64(GasRefuse), XWingPrecompile.RequiredGas([]byte{0xFF}))
 }
 
 // --- Run edge cases ---
@@ -115,15 +116,19 @@ func TestRun_EncapsulateTooShort(t *testing.T) {
 func TestRun_EncapsulateInvalidPK(t *testing.T) {
 	scheme := xwing.Scheme()
 	pkSize := scheme.PublicKeySize()
-	// Op byte + garbage public key of correct size
-	input := make([]byte, 1+pkSize)
+	// Full frame -- op + seed + a pk-sized run of garbage. X-Wing's ML-KEM-768
+	// half runs the FIPS 203 encapsulation-key check (ByteEncode(ByteDecode(ek))
+	// == ek), which random bytes fail with overwhelming probability, so this
+	// reaches UnmarshalBinaryPublicKey's error return rather than the length
+	// guard in front of it.
+	input := make([]byte, 1+SeedSize+pkSize)
 	input[0] = OpEncapsulate
-	// X-Wing UnmarshalBinaryPublicKey may or may not error on garbage
-	result, _, err := XWingPrecompile.Run(nil, common.Address{}, ContractAddress, input, 100_000, true)
-	if err == nil {
-		// If it doesn't error, it should still return a result (encapsulation can succeed on any point)
-		require.NotNil(t, result)
+	for i := 1; i < len(input); i++ {
+		input[i] = 0xFF
 	}
+	result, _, err := XWingPrecompile.Run(nil, common.Address{}, ContractAddress, input, 100_000, true)
+	require.Error(t, err, "a pk failing the FIPS 203 modulus check must be refused")
+	require.Nil(t, result)
 }
 
 func TestRun_EncapsulateValid(t *testing.T) {
@@ -148,14 +153,18 @@ func TestRun_EncapsulateValid(t *testing.T) {
 	require.Equal(t, 2+ctLen+scheme.SharedKeySize(), len(result))
 }
 
-// Test gas zero for unknown op gives 0 gas, then run returns out of gas
-func TestRun_ZeroGasUnknownOp(t *testing.T) {
-	// RequiredGas returns 0 for unknown op
+// An unknown op is metered, so a caller who supplies nothing is stopped at
+// the meter and never reaches the dispatch. Supplying the refusal fee gets
+// the refusal itself.
+func TestRun_UnknownOpIsMetered(t *testing.T) {
 	gas := XWingPrecompile.RequiredGas([]byte{0xFF})
-	require.Equal(t, uint64(0), gas)
+	require.Equal(t, uint64(GasRefuse), gas)
 
-	// Run with 0 gas should still work (deduct 0)
-	_, _, err := XWingPrecompile.Run(nil, common.Address{}, ContractAddress, []byte{0xFF}, 0, true)
-	require.Error(t, err)
+	_, remaining, err := XWingPrecompile.Run(nil, common.Address{}, ContractAddress, []byte{0xFF}, 0, true)
+	require.ErrorIs(t, err, contract.ErrOutOfGas, "free refusal is an unmetered path")
+	require.Zero(t, remaining)
+
+	_, remaining, err = XWingPrecompile.Run(nil, common.Address{}, ContractAddress, []byte{0xFF}, gas, true)
 	require.ErrorIs(t, err, ErrInvalidOp)
+	require.Zero(t, remaining, "the whole refusal fee is consumed")
 }
