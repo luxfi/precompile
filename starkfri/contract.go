@@ -55,13 +55,13 @@
 // calls `starkfri.RegisterVerifier` to wire the Go-side callback that
 // actually invokes the FFI verifier. Without a registered verifier
 // the precompile returns ErrVerifierNotRegistered. Structural
-// validation (length checks + MagicHeader) runs in the precompile
-// itself and is constant-time-friendly: no secret-dependent branches,
-// public inputs and the proof are non-secret by construction.
+// validation (length checks, MagicHeader, and the soundness floor in
+// soundness.go) runs in the precompile itself and is
+// constant-time-friendly: no secret-dependent branches, public inputs
+// and the proof are non-secret by construction.
 package starkfri
 
 import (
-	"bytes"
 	"errors"
 	"sync/atomic"
 
@@ -120,6 +120,7 @@ var (
 	ErrInvalidVersion        = errors.New("starkfri: invalid version byte")
 	ErrVerifierNotRegistered = errors.New("starkfri: verifier not registered")
 	ErrInvalidProof          = errors.New("starkfri: proof verification failed")
+	ErrInsufficientSoundness = errors.New("starkfri: proof parameters below the soundness floor")
 )
 
 // VerifierFn is the Go-side callback that bridges to the out-of-band
@@ -192,8 +193,8 @@ func loadVerifier() VerifierFn {
 // callback is wired (binding pending, not "unimplemented"); (false, err)
 // on FFI / decode failures.
 func Verify(proof, pubInputs []byte) (bool, error) {
-	if !bytes.HasPrefix(proof, magic) {
-		return false, ErrInvalidProof
+	if err := admit(proof); err != nil {
+		return false, err
 	}
 	fn := loadVerifier()
 	if fn == nil {
@@ -279,10 +280,12 @@ func (p *starkFRIVerifyPrecompile) Run(
 	// documented behaviour, matching the sibling P3Q precompile, which is
 	// why in.End() is not called here.
 
-	// Structural check: proof must begin with the MagicHeader. STARK-FRI
-	// proofs are non-secret, so byte-equality is fine.
-	if !bytes.HasPrefix(proof, magic) {
-		return nil, remaining, ErrInvalidProof
+	// Envelope tag, then the soundness floor — both decided on the
+	// proof's own bytes, before a verifier is consulted and before any
+	// cryptographic work. STARK-FRI proofs are non-secret, so
+	// byte-equality is fine.
+	if err := admit(proof); err != nil {
+		return nil, remaining, err
 	}
 
 	fn := loadVerifier()

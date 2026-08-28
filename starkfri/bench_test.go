@@ -35,11 +35,11 @@ func BenchmarkStarkFRI_Verify_AcceptAll(b *testing.B) {
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) { return true, nil })
 	defer RegisterVerifier(nil)
 
-	body := make([]byte, 2048-len(MagicHeader))
+	body := make([]byte, 2048-MinProofLength)
 	for i := range body {
 		body[i] = byte(i)
 	}
-	proof := append([]byte(MagicHeader), body...)
+	proof := sfProof(body)
 	pub := make([]byte, 128)
 	input := buildBenchInput(VersionV1, proof, pub)
 	gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
@@ -84,11 +84,11 @@ func BenchmarkStarkFRI_Verify_Standalone(b *testing.B) {
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) { return true, nil })
 	defer RegisterVerifier(nil)
 
-	body := make([]byte, 2048-len(MagicHeader))
+	body := make([]byte, 2048-MinProofLength)
 	for i := range body {
 		body[i] = byte(i)
 	}
-	proof := append([]byte(MagicHeader), body...)
+	proof := sfProof(body)
 	pub := make([]byte, 128)
 	b.ReportAllocs()
 	b.ResetTimer()
