@@ -31,7 +31,10 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"math"
 	"math/big"
+
+	evmmath "github.com/luxfi/geth/common/math"
 
 	"github.com/zeebo/blake3"
 
@@ -55,6 +58,11 @@ const (
 	GasVerifyCompute   uint64 = 35000 // Compute attestation verification
 	GasCreateAttest    uint64 = 75000 // Create new attestation
 	GasGetDeviceStatus uint64 = 5000  // Query device status
+
+	// GasPerByte prices the caller-supplied payload every selector decodes and,
+	// for the verifying selectors, parses as a certificate chain. Matches the
+	// rate the other size-dependent precompiles here charge.
+	GasPerByte uint64 = 10
 )
 
 // Deterministic trust scores returned for a verified quote, by TEE flavor. A
@@ -255,22 +263,40 @@ func SupportedGPUModels() []string {
 	}
 }
 
-// RequiredGas returns gas cost for an attestation operation.
-func RequiredGas(selector [4]byte) uint64 {
-	switch {
-	case selector == [4]byte{0x01, 0x00, 0x00, 0x00}: // verifyNVTrust
-		return GasVerifyNVTrust
-	case selector == [4]byte{0x02, 0x00, 0x00, 0x00}: // verifyTPM
-		return GasVerifyTPM
-	case selector == [4]byte{0x03, 0x00, 0x00, 0x00}: // verifyCompute
-		return GasVerifyCompute
-	case selector == [4]byte{0x04, 0x00, 0x00, 0x00}: // createAttestation
-		return GasCreateAttest
-	case selector == [4]byte{0x05, 0x00, 0x00, 0x00}: // getDeviceStatus
-		return GasGetDeviceStatus
-	default:
-		return GasVerifyNVTrust // Default to GPU verification gas
+// RequiredGas returns the gas cost for an attestation call over [input], where
+// input carries the 4-byte selector followed by the operation's payload.
+//
+// The cost has a per-byte term because the work does. Every verifying selector
+// JSON-decodes the whole payload and then hands the receipt to ai.VerifyTEE,
+// which parses the X.509 chain embedded in it and verifies that chain to a
+// vendor root — work that grows with the payload and, for a chain of many
+// certificates, faster than linearly. A flat fee over a caller-chosen blob
+// prices a megabyte the same as a hundred bytes.
+//
+// The base fees and the per-byte rate follow the same shape the other
+// size-dependent precompiles in this repo use (see mldsa, slhdsa, starkfri).
+func RequiredGas(input []byte) uint64 {
+	base := GasVerifyNVTrust
+	if len(input) >= 4 {
+		switch [4]byte(input[:4]) {
+		case [4]byte{0x01, 0x00, 0x00, 0x00}: // verifyNVTrust
+			base = GasVerifyNVTrust
+		case [4]byte{0x02, 0x00, 0x00, 0x00}: // verifyTPM
+			base = GasVerifyTPM
+		case [4]byte{0x03, 0x00, 0x00, 0x00}: // verifyCompute
+			base = GasVerifyCompute
+		case [4]byte{0x04, 0x00, 0x00, 0x00}: // createAttestation
+			base = GasCreateAttest
+		case [4]byte{0x05, 0x00, 0x00, 0x00}: // getDeviceStatus
+			base = GasGetDeviceStatus
+		}
 	}
+
+	n := uint64(len(input))
+	if n > (math.MaxUint64-base)/GasPerByte {
+		return math.MaxUint64
+	}
+	return base + n*GasPerByte
 }
 
 // Run executes the attestation precompile. blockTS is the deterministic block
@@ -333,10 +359,11 @@ func ABIEncode(values ...any) []byte {
 			if val == nil {
 				result = append(result, make([]byte, 32)...)
 			} else {
-				b := val.Bytes()
-				padding := make([]byte, 32-len(b))
-				result = append(result, padding...)
-				result = append(result, b...)
+				// One EVM word, two's complement, for the whole int256/uint256
+				// range. Bytes() alone drops the sign — encoding -1 as 1 — and
+				// panics on a value wider than 32 bytes, because the padding
+				// length goes negative.
+				result = append(result, evmmath.U256Bytes(new(big.Int).Set(val))...)
 			}
 		}
 	}
