@@ -16,7 +16,17 @@ import (
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/geth/core/tracing"
 	"github.com/luxfi/precompile/contract"
+	"golang.org/x/crypto/sha3"
 )
+
+// keccak returns the Keccak-256 digest of s as a storage slot.
+func keccak(s string) common.Hash {
+	h := sha3.NewLegacyKeccak256()
+	h.Write([]byte(s))
+	var out common.Hash
+	copy(out[:], h.Sum(nil))
+	return out
+}
 
 // Standard dead addresses that trigger this precompile
 var (
@@ -34,16 +44,28 @@ var (
 	DefaultTreasuryBPS = uint64(5000) // 50% treasury
 )
 
-// Storage slot keys (keccak256 of descriptive strings)
+// Storage slots.
+//
+// The four configuration slots below are fixed constants chosen to be far from
+// the low words a Solidity layout occupies. They are NOT digests of anything,
+// despite once being commented as keccak256 of "dead.admin" and friends — none
+// of them is. That comment was a hazard rather than a description: regenerating
+// a slot from the string it claimed would silently move it, orphaning the value
+// stored at the old address and leaving the reader an empty word. Their values
+// are part of the storage layout, so they are pinned by TestStorageSlotsAre-
+// PinnedAndDistinct and must not be recomputed.
 var (
-	// Admin slot: keccak256("dead.admin")
-	AdminSlot = common.HexToHash("0x8f4e7e7c9a5b3d1e2f6a4c8b0e9d7f3a2c5b8e1d4f7a0c3b6e9d2f5a8c1b4e7d")
-	// Treasury address slot: keccak256("dead.treasury")
+	AdminSlot    = common.HexToHash("0x8f4e7e7c9a5b3d1e2f6a4c8b0e9d7f3a2c5b8e1d4f7a0c3b6e9d2f5a8c1b4e7d")
 	TreasurySlot = common.HexToHash("0x3a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b")
-	// Burn ratio slot: keccak256("dead.burnBPS")
-	BurnBPSSlot = common.HexToHash("0x7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e")
-	// Enabled slot: keccak256("dead.enabled")
-	EnabledSlot = common.HexToHash("0x2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b")
+	BurnBPSSlot  = common.HexToHash("0x7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e")
+	EnabledSlot  = common.HexToHash("0x2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b")
+
+	// BurnedSlot records how much of a dead address's balance has already been
+	// through the split. Unlike the four above it holds no legacy state, so it
+	// is derived the way a slot should be. It is read and written under the dead
+	// address being credited, not under ZeroAddress: each address carries its
+	// own balance and so its own progress.
+	BurnedSlot = keccak("dead.burned")
 )
 
 // Function selectors (first 4 bytes of keccak256 of function signature)
@@ -103,9 +125,14 @@ func (d *deadPrecompile) Run(
 		return d.handleReceive(stateDB, caller, addr, suppliedGas, readOnly)
 	}
 
-	// Otherwise, parse function selector
+	// Otherwise, parse function selector. A call too short to carry one is
+	// still a call, so it is charged; returning the supplied gas untouched
+	// would make refused input free to repeat.
 	if len(input) < 4 {
-		return nil, suppliedGas, ErrInvalidInput
+		if suppliedGas < GasBase {
+			return nil, 0, ErrInsufficientGas
+		}
+		return nil, suppliedGas - GasBase, ErrInvalidInput
 	}
 
 	var selector [4]byte
@@ -159,15 +186,22 @@ func (d *deadPrecompile) handleReceive(
 		return nil, remainingGas, ErrDisabled
 	}
 
-	// Get the value being transferred
-	value := stateDB.GetBalance(addr)
-	if value.IsZero() {
-		// No value to split
+	// Only funds that have not already been through the split are eligible. The
+	// burned share stays at the dead address forever, so the balance never
+	// returns to zero and cannot itself mark progress; splitting the whole
+	// balance on every call would re-split what was already burned and walk it
+	// into the treasury a fraction at a time, one cheap call after another,
+	// until the burn was undone. `burned` is that high-water mark.
+	balance := stateDB.GetBalance(addr)
+	burned := d.getBurnedInternal(stateDB, addr)
+	if balance.Cmp(burned) <= 0 {
 		return nil, remainingGas, nil
 	}
+	fresh := new(uint256.Int).Sub(balance, burned)
 
 	if readOnly {
-		// In read-only mode, just return success without modifying state
+		// Decline without recording progress, so the split stays pending for a
+		// writable call rather than being lost.
 		return nil, remainingGas, nil
 	}
 
@@ -175,17 +209,28 @@ func (d *deadPrecompile) handleReceive(
 	treasury := d.getTreasuryInternal(stateDB)
 	burnBPS := d.getBurnRatioInternal(stateDB)
 
-	// Calculate split
-	_, treasuryAmount := CalculateSplitUint256(value, burnBPS)
+	burnAmount, treasuryAmount := CalculateSplitUint256(fresh, burnBPS)
 
-	// The burn amount stays at the dead address (effectively burned)
-	// Transfer treasury amount to the DAO treasury
+	// The burn amount stays at the dead address (effectively burned).
+	// Transfer treasury amount to the DAO treasury.
 	if !treasuryAmount.IsZero() {
 		stateDB.SubBalance(addr, treasuryAmount, tracing.BalanceChangeTransfer)
 		stateDB.AddBalance(treasury, treasuryAmount, tracing.BalanceChangeTransfer)
 	}
+	d.setBurned(stateDB, addr, new(uint256.Int).Add(burned, burnAmount))
 
 	return nil, remainingGas, nil
+}
+
+// getBurnedInternal reads the amount already burned at addr.
+func (d *deadPrecompile) getBurnedInternal(stateDB contract.StateDB, addr common.Address) *uint256.Int {
+	val := stateDB.GetState(addr, BurnedSlot)
+	return new(uint256.Int).SetBytes(val[:])
+}
+
+// setBurned records the amount burned at addr.
+func (d *deadPrecompile) setBurned(stateDB contract.StateDB, addr common.Address, v *uint256.Int) {
+	stateDB.SetState(addr, BurnedSlot, common.BytesToHash(v.Bytes()))
 }
 
 // Admin functions
@@ -409,9 +454,14 @@ func (d *deadPrecompile) isEnabled(stateDB contract.StateDB, suppliedGas uint64)
 
 func (d *deadPrecompile) isAdmin(stateDB contract.StateDB, caller common.Address) bool {
 	admin := d.getAdminInternal(stateDB)
-	// If no admin set, allow deployer/genesis to set initial admin
+	// An empty slot means no administrator has been provisioned, which is the
+	// state of every chain at genesis. Admitting the caller here would hand the
+	// first account to send a transaction control of the treasury address and
+	// the burn ratio for all three dead addresses, so it refuses instead. An
+	// administrator arrives through Configure, from the chain's genesis config;
+	// it is provisioned, never claimed.
 	if admin == ZeroAddress {
-		return true
+		return false
 	}
 	return caller == admin
 }
