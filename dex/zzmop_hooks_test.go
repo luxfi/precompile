@@ -392,6 +392,89 @@ func TestZzmpCalculateFeeFallsBackToBaseAndCapsAtMax(t *testing.T) {
 	}
 }
 
+// TestZzmpCalculateFeeIsMonotoneAndNeverWrapsOnAViolentMove is the arithmetic-domain
+// test the moderate-move cases above do NOT reach. The volatility term is an unbounded
+// big.Int while the fee is a uint24 (a uint32 alias), so a clamp performed AFTER the
+// narrowing wraps twice — Uint64() drops everything above bit 63 and the uint24 add drops
+// everything above bit 31 — and the ceiling then picks the WRAPPED value because it is
+// small. The economic consequence is inverted: the most violently moving pool becomes the
+// CHEAPEST to trade, exactly when the dynamic fee is supposed to bite hardest.
+//
+// The invariant asserted here is the one that survives any implementation: the fee is
+// always inside [BaseFee, MaxFee], and it is MONOTONE — a larger move is never cheaper
+// than a smaller one.
+func TestZzmpCalculateFeeIsMonotoneAndNeverWrapsOnAViolentMove(t *testing.T) {
+	vfc := &VolatilityFeeCalculator{BaseFee: 3_000, MaxFee: 10_000, VolatilityScale: 100, WindowSize: 60}
+
+	obs := func(tickDelta *big.Int) []TWAPObservation {
+		return []TWAPObservation{
+			{Timestamp: 100, TickCumulative: big.NewInt(0)},
+			{Timestamp: 101, TickCumulative: tickDelta},
+		}
+	}
+
+	// Tick deltas that step across every narrowing boundary the computation passes
+	// through: the uint24 ceiling, the uint32 wrap, the uint64 wrap, and far past it.
+	deltas := []*big.Int{
+		big.NewInt(0),
+		big.NewInt(1_000),
+		big.NewInt(1 << 24),
+		big.NewInt(1 << 31),
+		big.NewInt(1 << 32),
+		new(big.Int).Lsh(big.NewInt(1), 63),
+		new(big.Int).Lsh(big.NewInt(1), 64),
+		new(big.Int).Lsh(big.NewInt(1), 96),
+		new(big.Int).Lsh(big.NewInt(1), 200),
+	}
+
+	prev := uint24(0)
+	for i, d := range deltas {
+		var fee uint24
+		zzmpNoPanic(t, "CalculateFee on an extreme tick move", func() { fee = vfc.CalculateFee(obs(d)) })
+		if fee < vfc.BaseFee {
+			t.Fatalf("tick delta %s produced fee %d, BELOW the base fee %d — the volatility term wrapped", d, fee, vfc.BaseFee)
+		}
+		if fee > vfc.MaxFee {
+			t.Fatalf("tick delta %s produced fee %d, ABOVE MaxFee %d", d, fee, vfc.MaxFee)
+		}
+		if i > 0 && fee < prev {
+			t.Fatalf("tick delta %s produced fee %d, CHEAPER than the smaller move's %d — a violently moving pool must never be the cheapest to trade", d, fee, prev)
+		}
+		prev = fee
+	}
+	// Past the ceiling the fee saturates at MaxFee rather than falling back down.
+	if got := vfc.CalculateFee(obs(new(big.Int).Lsh(big.NewInt(1), 200))); got != vfc.MaxFee {
+		t.Fatalf("an unbounded move must saturate at MaxFee %d, got %d", vfc.MaxFee, got)
+	}
+
+	// THE CRAFTED CASE. Random huge deltas mostly survive a narrow-then-clamp because the
+	// wrapped remainder still lands above MaxFee and the ceiling hides it. The inversion is
+	// only visible when the low bits are chosen to vanish: pick the tick delta so the
+	// volatility term is an exact multiple of 2^32, and a narrow-then-clamp reads it as
+	// ZERO — returning the BASE fee for an astronomically volatile pool, i.e. the cheapest
+	// possible trade at the worst possible moment.
+	//
+	// CalculateFee computes volatilityBps = |tickDelta| * VolatilityScale / 10000 over a
+	// 1-second window, so tickDelta = target * 10000 / VolatilityScale inverts it exactly.
+	for _, shift := range []uint{32, 64, 96, 128} {
+		target := new(big.Int).Lsh(big.NewInt(1), shift) // volatilityBps, an exact multiple of 2^32
+		tickDelta := new(big.Int).Div(new(big.Int).Mul(target, big.NewInt(10_000)), big.NewInt(int64(vfc.VolatilityScale)))
+
+		var fee uint24
+		zzmpNoPanic(t, "CalculateFee on a crafted low-bits-zero move", func() { fee = vfc.CalculateFee(obs(tickDelta)) })
+		if fee != vfc.MaxFee {
+			t.Fatalf("a volatility term of 2^%d produced fee %d, want MaxFee %d — the clamp ran AFTER the narrowing, "+
+				"so the low bits vanished and the most violently moving pool became the cheapest to trade",
+				shift, fee, vfc.MaxFee)
+		}
+	}
+	// The negative extreme is symmetric and equally clamped (magnitude, not direction).
+	neg := new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 200))
+	if got := vfc.CalculateFee(obs(neg)); got != vfc.MaxFee {
+		t.Fatalf("an unbounded NEGATIVE move must also saturate at MaxFee %d, got %d", vfc.MaxFee, got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // commit-reveal — EVERY digest field
 // ---------------------------------------------------------------------------

@@ -415,6 +415,23 @@ func TestZzmpImportPositionCollectBindsTheRecordedObjectAndThePosition(t *testin
 		}
 	}
 
+	// A TERMINAL (fully-collected, Closed) position cannot be collected against again,
+	// even though the recorded owner matches and the stale record still carries backing.
+	// This is what stops a position's object lane from being reused after it closed.
+	closed := [32]byte{0x11}
+	storeRestingOrder(db, closed, RestingOrder{
+		Owner: h.caller, LockedAsset: aid, LockedAmt: big.NewInt(10_000), Status: OrderStatusCancelled,
+	})
+	if _, err := c.ImportPositionCollect(h.state, h.state, claim(func(cl *SettlementClaim) { cl.PositionID = closed })); !errors.Is(err, ErrLPCollectNoPosition) {
+		t.Fatalf("collect against a CLOSED position: want ErrLPCollectNoPosition, got %v", err)
+	}
+	if got := h.state.stateDB.GetBalance(h.caller).Uint64(); got != 0 {
+		t.Fatalf("a collect against a closed position paid out %d", got)
+	}
+	if got := loadRestingOrder(db, closed).LockedAmt.Int64(); got != 10_000 {
+		t.Fatalf("a refused collect drew down the closed record: %d", got)
+	}
+
 	// A position owned by SOMEONE ELSE cannot back this owner's collect — this is what
 	// stops an over-export for one owner drawing on another's committed principal.
 	foreign := [32]byte{0x0F}
