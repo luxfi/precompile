@@ -40,6 +40,7 @@ var (
 	ErrConvergence   = errors.New("newton method did not converge")
 	ErrUnknownOp     = errors.New("unknown stableswap operation")
 	ErrTooManyTokens = errors.New("token count exceeds maxTokens")
+	ErrInvalidAmp    = errors.New("amplification coefficient must be positive")
 )
 
 const (
@@ -105,6 +106,28 @@ func (p *stableSwapPrecompile) Run(
 	}
 }
 
+// readAmp parses the amplification coefficient A and refuses a non-positive one.
+//
+// A is the ONE caller-supplied scalar the Newton solvers divide by, and at A == 0 all
+// three of these divisions are by zero — reachable from calldata, so a panic here is a
+// chain halt, not a failed call:
+//
+//	computeY: c.Div(c, ann*n)      // ann == A*n == 0
+//	computeY: b = s + D/ann        // ann == 0
+//	computeD: d.Div(num, denom)    // denom == (A*n - 1)*D + (n+1)*dP == (n+1)*dP - D,
+//	                               // which crosses zero exactly for reachable balances
+//
+// Refusing is also the mathematically honest answer: the StableSwap invariant
+// A*n^n*S + D = A*D*n^n + D^(n+1)/(n^n*prod(x)) is not defined at A = 0 — the pool
+// degenerates to constant product, a different curve with a different solver.
+func readAmp(b []byte) (*big.Int, error) {
+	amp := new(big.Int).SetBytes(b)
+	if amp.Sign() <= 0 {
+		return nil, ErrInvalidAmp
+	}
+	return amp, nil
+}
+
 // chargeNewtonGas deducts gas for `solves` Newton solves over n tokens at the bounded
 // worst case (maxIterations passes each). It MUST be called AFTER n is capped at
 // maxTokens (so the product cannot overflow or be unbounded) and BEFORE any solve runs,
@@ -130,7 +153,10 @@ func getDy(data []byte, gas uint64) ([]byte, uint64, error) {
 	j := binary.BigEndian.Uint32(data[4:8])
 	dx := new(big.Int).SetBytes(data[8:40])
 	n := int(binary.BigEndian.Uint32(data[40:44]))
-	amp := new(big.Int).SetBytes(data[44:76])
+	amp, err := readAmp(data[44:76])
+	if err != nil {
+		return nil, gas, err
+	}
 
 	if n < 2 || len(data) < 76+n*32 {
 		return nil, gas, ErrInvalidInput
@@ -142,7 +168,7 @@ func getDy(data []byte, gas uint64) ([]byte, uint64, error) {
 		return nil, gas, ErrInvalidIndex
 	}
 	// getDy runs TWO Newton solves: computeD then computeY. Charge both up front.
-	gas, err := chargeNewtonGas(gas, n, 2)
+	gas, err = chargeNewtonGas(gas, n, 2)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -190,7 +216,10 @@ func addLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 		return nil, gas, ErrInvalidInput
 	}
 	n := int(binary.BigEndian.Uint32(data[0:4]))
-	amp := new(big.Int).SetBytes(data[4:36])
+	amp, err := readAmp(data[4:36])
+	if err != nil {
+		return nil, gas, err
+	}
 	totalSupply := new(big.Int).SetBytes(data[36:68])
 
 	if n < 2 || len(data) < 68+2*n*32 {
@@ -200,7 +229,7 @@ func addLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 		return nil, gas, ErrTooManyTokens
 	}
 	// addLiquidity runs TWO Newton solves: computeD(balances) then computeD(newBalances).
-	gas, err := chargeNewtonGas(gas, n, 2)
+	gas, err = chargeNewtonGas(gas, n, 2)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -235,7 +264,17 @@ func addLiquidity(data []byte, gas uint64) ([]byte, uint64, error) {
 		return padTo32(d1.Bytes()), gas, nil
 	}
 
-	// mint = totalSupply * (D1 - D0) / D0
+	// D0 is the divisor below, and computeD returns 0 for an all-zero pool. A caller
+	// supplies balances and totalSupply independently, so "every balance zero yet LP
+	// tokens outstanding" is reachable from calldata — and dividing by it is a panic,
+	// i.e. a chain halt. It is also a contradictory pool: shares backed by nothing, with
+	// no ratio to price the deposit against. Refuse rather than invent one.
+	if d0.Sign() == 0 {
+		return nil, gas, ErrZeroLiquidity
+	}
+
+	// mint = totalSupply * (D1 - D0) / D0, rounded DOWN so the depositor is never
+	// credited a share the pool did not receive (rounding favours the pool).
 	diff := new(big.Int).Sub(d1, d0)
 	mint := new(big.Int).Mul(totalSupply, diff)
 	mint.Div(mint, d0)
@@ -295,7 +334,10 @@ func getD(data []byte, gas uint64) ([]byte, uint64, error) {
 		return nil, gas, ErrInvalidInput
 	}
 	n := int(binary.BigEndian.Uint32(data[0:4]))
-	amp := new(big.Int).SetBytes(data[4:36])
+	amp, err := readAmp(data[4:36])
+	if err != nil {
+		return nil, gas, err
+	}
 	if n < 2 || len(data) < 36+n*32 {
 		return nil, gas, ErrInvalidInput
 	}
@@ -303,7 +345,7 @@ func getD(data []byte, gas uint64) ([]byte, uint64, error) {
 		return nil, gas, ErrTooManyTokens
 	}
 	// getD runs ONE Newton solve: computeD.
-	gas, err := chargeNewtonGas(gas, n, 1)
+	gas, err = chargeNewtonGas(gas, n, 1)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -409,17 +451,21 @@ func computeY(balances []*big.Int, amp *big.Int, n int, j int, d *big.Int) (*big
 	for range maxIterations {
 		prevY := new(big.Int).Set(y)
 
-		// y_next = (y^2 + c) / (2*y + b - D)
+		// y_next = ceil((y^2 + c) / (2*y + b - D))
 		yy := new(big.Int).Mul(y, y)
 		yy.Add(yy, c)
 
 		denom := new(big.Int).Add(new(big.Int).Mul(big.NewInt(2), y), b)
 		denom.Sub(denom, d)
-		if denom.Sign() == 0 {
+		// A non-positive denominator cannot yield a meaningful balance: zero divides,
+		// and negative flips the sign of y — whose magnitude then flows into
+		// dy = balance - y - 1 as if it were positive, quoting MORE than the pool holds
+		// (big.Int.Bytes() drops the sign, so the wrong answer looks plausible).
+		if denom.Sign() <= 0 {
 			return nil, ErrConvergence
 		}
 
-		y.Div(yy, denom)
+		divCeil(y, yy, denom)
 
 		diff := new(big.Int).Sub(y, prevY)
 		diff.Abs(diff)
@@ -428,6 +474,28 @@ func computeY(balances []*big.Int, amp *big.Int, n int, j int, d *big.Int) (*big
 		}
 	}
 	return nil, ErrConvergence
+}
+
+// divCeil sets z = ceil(num/denom) for denom > 0.
+//
+// The rounding DIRECTION here is a solvency property, not a style choice. y is the
+// balance token j must retain for the invariant to hold, and the caller is paid
+// balance[j] - y - 1: rounding y DOWN pays the caller MORE.
+//
+// Newton on f(y) = y^2 + (b-D)y - c converges monotonically downward to the root
+// from y0 = D, because f is convex — so every exact iterate stays ABOVE the root.
+// Floor division broke that: it dragged each integer iterate below its exact
+// counterpart until the sequence crossed under the root, measured at up to 2 wei
+// low in 55% of solves, which made the single `-1` margin in getDy insufficient and
+// let a swap DECREASE the pool invariant D. Ceiling division restores the
+// one-sidedness the proof depends on: each integer iterate is >= the exact iterate
+// >= the root, so the quote is always conservative.
+func divCeil(z, num, denom *big.Int) {
+	var rem big.Int
+	z.QuoRem(num, denom, &rem)
+	if rem.Sign() > 0 {
+		z.Add(z, one)
+	}
 }
 
 func padTo32(b []byte) []byte {

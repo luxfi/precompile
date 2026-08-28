@@ -194,10 +194,16 @@ func (h *settleHarness) installDefaultMarketResolver(t testing.TB) {
 		r.admitERC20(t, h.key.Currency0.Address, 18) // seeds live on-chain code
 	}
 	prev := installedAssetResolver.Load()
+	t.Cleanup(func() { installedAssetResolver.Store(prev) })
+	// Clear first. InstallAssetResolver REFUSES a re-install bound to a different
+	// identity, so installing on top of whatever is already there makes this harness —
+	// and therefore most of the suite — depend on what ran before it. Restoring `prev`
+	// on cleanup is not enough on its own: it fixes the exit, not the entry. Clearing
+	// on entry is what makes the harness hermetic in both directions.
+	installedAssetResolver.Store(nil)
 	if err := InstallAssetResolver(r, h.networkID, h.cChainID); err != nil {
 		t.Fatalf("installDefaultMarketResolver: %v", err)
 	}
-	t.Cleanup(func() { installedAssetResolver.Store(prev) })
 }
 
 // outToken is the harness pool's currency1 (the swap output for ZeroForOne).

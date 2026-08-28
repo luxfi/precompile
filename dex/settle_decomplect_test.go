@@ -9,8 +9,8 @@ import (
 	"math/big"
 	"testing"
 
-	dexcore "github.com/luxfi/dex/pkg/dex"
 	"github.com/holiman/uint256"
+	dexcore "github.com/luxfi/dex/pkg/dex"
 	"github.com/luxfi/geth/common"
 	"github.com/luxfi/ids"
 )
