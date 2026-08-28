@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -54,9 +55,14 @@ func TestStarkFRI_RejectsBadMagic(t *testing.T) {
 
 // TestStarkFRI_RejectsShortInput ensures inputs below MinInputLength
 // fail with ErrInvalidInputLength.
+// Length is settled before version: every fixture here carries version
+// byte 0x00, so a parser that read the version first would answer
+// ErrInvalidVersion. Poisoned, so a parser that read the length fields
+// out of the memory behind the input would find 0xA5 rather than the
+// zeros a plain make() leaves.
 func TestStarkFRI_RejectsShortInput(t *testing.T) {
 	for _, sz := range []int{0, 1, 5, MinInputLength - 1} {
-		input := make([]byte, sz)
+		input := contract.Poisoned(make([]byte, sz), 256)
 		gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
 		_, _, err := StarkFRIVerifyPrecompile.Run(nil, common.Address{}, ContractStarkFRIVerifyAddress, input, gas, true)
 		require.ErrorIs(t, err, ErrInvalidInputLength, "len=%d", sz)

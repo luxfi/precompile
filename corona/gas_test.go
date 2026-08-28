@@ -107,6 +107,25 @@ func TestGasShortInputBillsBase(t *testing.T) {
 	}
 	require.Equal(t, CoronaThresholdBaseGas, CoronaThresholdPrecompile.RequiredGas(nil),
 		"nil input bills base")
+
+	// The loop above cannot see the header gate on its own: its inputs are
+	// all zero, so the party count reads as 0 and EstimateGas(0) IS the
+	// base. Removing the gate entirely left every assertion above passing.
+	// A truncated header must declare a count the cost function would
+	// otherwise charge for, or nothing is being held to anything.
+	for _, size := range []int{ThresholdSize + TotalPartiesSize, MinInputSize - 1} {
+		loud := contract.Poisoned(gasInputForParties(MaxBilledParties)[:size], 256)
+		require.Equal(t, CoronaThresholdBaseGas, CoronaThresholdGasCost(loud),
+			"a %d-byte header declaring %d parties still bills base: the count is "+
+				"only consulted once the header is whole", size, MaxBilledParties)
+	}
+
+	// And the first whole header does charge for it, so the gate is a
+	// boundary rather than a floor.
+	whole := contract.Poisoned(gasInputForParties(MaxBilledParties), 256)
+	require.Equal(t, EstimateGas(MaxBilledParties), CoronaThresholdGasCost(whole),
+		"a whole %d-byte header bills the declared count", MinInputSize)
+	require.Greater(t, CoronaThresholdGasCost(whole), CoronaThresholdBaseGas)
 }
 
 // TestRunChargesTheQuotedCost closes the loop through Run: the gas the

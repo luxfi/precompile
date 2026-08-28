@@ -5,7 +5,6 @@ package cggmp21
 
 import (
 	"crypto/ecdsa"
-	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -58,6 +57,71 @@ const (
 
 type cggmp21VerifyPrecompile struct{}
 
+// claim is one call's submission: the committee it names, and the ECDSA
+// signature it asks to have checked against a key and a message hash.
+type claim struct {
+	threshold uint32
+	signers   uint32
+	key       []byte
+	hash      []byte
+	sig       []byte
+}
+
+// parse reads the wire format off calldata:
+//
+//	[0:4]     threshold t           (uint32, big-endian)
+//	[4:8]     total signers n       (uint32, big-endian)
+//	[8:73]    aggregated public key (65 bytes: 0x04 || x || y)
+//	[73:105]  message hash          (32 bytes)
+//	[105:170] ECDSA signature       (65 bytes: r || s || v)
+//
+// Every field is bounded by a contract.Cursor rather than by a slice
+// expression, and the difference is not stylistic. A precompile's input is a
+// window into EVM memory: opCall takes it with Memory.GetPtr, which returns
+// the two-index slice m.store[off : off+size], and nothing on the path to Run
+// copies it. So len is the size the caller declared and paid gas for, while
+// cap is the rest of memory that same caller filled with MSTORE beforehand. A
+// slice expression past len but within cap does not refuse -- it returns bytes
+// the caller chose, and the verifier answers over material nobody declared.
+// The cursor bounds every read against Len and caps what it hands back, so a
+// field cannot be completed out of the next one or out of spare capacity.
+// See contract/cursor.go.
+//
+// The format is fixed-size, so parse refuses exactly when the calldata holds
+// fewer than MinInputSize bytes -- the same condition the hand-written length
+// check tested, now enforced per field and not by a line that can be deleted.
+//
+// Trailing bytes are accepted. This format has always admitted them (it took
+// len(input) >= MinInputSize, never ==), so parse reads its fields and stops
+// rather than calling End. Whether to keep admitting them is a question about
+// the wire format, not about the parser: padding lets one signature ride many
+// distinct calldatas.
+func parse(input []byte) (claim, error) {
+	in := contract.Read(input)
+
+	threshold, err := in.Uint32()
+	if err != nil {
+		return claim{}, err
+	}
+	signers, err := in.Uint32()
+	if err != nil {
+		return claim{}, err
+	}
+	key, err := in.Bytes(CGGMP21PublicKeySize)
+	if err != nil {
+		return claim{}, err
+	}
+	hash, err := in.Bytes(CGGMP21MessageHashSize)
+	if err != nil {
+		return claim{}, err
+	}
+	sig, err := in.Bytes(CGGMP21SignatureSize)
+	if err != nil {
+		return claim{}, err
+	}
+	return claim{threshold: threshold, signers: signers, key: key, hash: hash, sig: sig}, nil
+}
+
 // Address returns the address of the CGGMP21 verify precompile
 func (p *cggmp21VerifyPrecompile) Address() common.Address {
 	return ContractCGGMP21VerifyAddress
@@ -68,15 +132,19 @@ func (p *cggmp21VerifyPrecompile) RequiredGas(input []byte) uint64 {
 	return CGGMP21VerifyGasCost(input)
 }
 
-// CGGMP21VerifyGasCost calculates the gas cost for CGGMP21 verification
+// CGGMP21VerifyGasCost calculates the gas cost for CGGMP21 verification.
+//
+// Calldata too short to carry a signer count is billed at base: parse refuses
+// exactly below MinInputSize, which is the boundary this function has always
+// priced at.
 func CGGMP21VerifyGasCost(input []byte) uint64 {
-	if len(input) < MinInputSize {
+	c, err := parse(input)
+	if err != nil {
 		return CGGMP21VerifyBaseGas
 	}
 
 	// Base cost + per-signer cost, on the clamped signer count.
-	totalSigners := min(binary.BigEndian.Uint32(input[ThresholdSize:ThresholdSize+TotalSignersSize]), MaxBilledSigners)
-	return CGGMP21VerifyBaseGas + (uint64(totalSigners) * CGGMP21VerifyPerSignerGas)
+	return CGGMP21VerifyBaseGas + (uint64(min(c.signers, MaxBilledSigners)) * CGGMP21VerifyPerSignerGas)
 }
 
 // Run implements the CGGMP21 threshold signature verification precompile
@@ -95,31 +163,21 @@ func (p *cggmp21VerifyPrecompile) Run(
 		return nil, 0, err
 	}
 
-	// Input format:
-	// [0:4]       = threshold t (uint32)
-	// [4:8]       = total signers n (uint32)
-	// [8:73]      = aggregated public key (65 bytes: 0x04 || x || y)
-	// [73:105]    = message hash (32 bytes)
-	// [105:170]   = ECDSA signature (65 bytes: r || s || v)
-
-	if len(input) < MinInputSize {
+	// parse reads the fields through a contract.Cursor; see its doc comment
+	// for why a slice expression is the wrong tool on calldata.
+	c, err := parse(input)
+	if err != nil {
+		// parse refuses only by running out of calldata, and the deployed
+		// error names both sizes, so keep that wording rather than the
+		// cursor's.
 		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes, got %d",
 			ErrInvalidInputLength, MinInputSize, len(input))
 	}
 
-	// Parse threshold and total signers
-	threshold := binary.BigEndian.Uint32(input[0:4])
-	totalSigners := binary.BigEndian.Uint32(input[4:8])
-
 	// Validate threshold
-	if threshold == 0 || threshold > totalSigners {
+	if c.threshold == 0 || c.threshold > c.signers {
 		return nil, remainingGas, ErrInvalidThreshold
 	}
-
-	// Parse public key, message hash, and signature
-	publicKeyBytes := input[8:73]
-	messageHash := input[73:105]
-	signatureBytes := input[105:170]
 
 	// CPU is the single source of truth. The luxfi/accel SigECDSA kernel
 	// cannot reproduce this verdict: (1) it framed the 65-byte uncompressed
@@ -128,7 +186,7 @@ func (p *cggmp21VerifyPrecompile) Run(
 	// performs below. A GPU "valid" therefore did not imply a CPU "valid"
 	// (consensus split / forgery surface). Re-introducing accel requires a
 	// secp256k1 ECDSA kernel proven byte-identical to verifyECDSASignature.
-	valid, err := verifyECDSASignature(publicKeyBytes, messageHash, signatureBytes)
+	valid, err := verifyECDSASignature(c.key, c.hash, c.sig)
 	if err != nil {
 		return nil, remainingGas, err
 	}

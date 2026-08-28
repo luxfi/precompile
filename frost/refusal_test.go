@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/threshold/pkg/math/curve"
 	"github.com/stretchr/testify/require"
 )
@@ -37,7 +38,7 @@ func runRaw(t *testing.T, input []byte) ([]byte, error) {
 // whole point -- one byte either side must land on opposite sides.
 func TestFROST_RefuseShortInput(t *testing.T) {
 	for _, size := range []int{0, 1, 8, 135} {
-		_, err := runRaw(t, make([]byte, size))
+		_, err := runRaw(t, contract.Poisoned(make([]byte, size), 256))
 		require.ErrorIs(t, err, ErrInvalidInputLength, "len=%d must be refused as short", size)
 	}
 	require.Equal(t, MinInputSize-1, 135, "the short boundary must track MinInputSize")
@@ -46,7 +47,7 @@ func TestFROST_RefuseShortInput(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidInputLength, "nil calldata must be refused as short")
 
 	// Exactly MinInputSize is long enough: it fails on the threshold, not the length.
-	_, err = runRaw(t, make([]byte, MinInputSize))
+	_, err = runRaw(t, contract.Poisoned(make([]byte, MinInputSize), 256))
 	require.ErrorIs(t, err, ErrInvalidThreshold, "at MinInputSize the length check must pass")
 	require.NotErrorIs(t, err, ErrInvalidInputLength)
 
@@ -56,6 +57,72 @@ func TestFROST_RefuseShortInput(t *testing.T) {
 	res, err := runRaw(t, long)
 	require.NoError(t, err)
 	require.Equal(t, byte(1), res[31])
+}
+
+// TestFROST_ParseRefusesEveryTruncation: the parser must refuse at every
+// field boundary, and each fixture carries chosen bytes behind its declared
+// end because that is what a precompile input is.
+//
+// The fixtures are what make this test mean anything. Built with plain
+// make/append the spare capacity is zeroed, so an over-read looks like a run
+// of harmless zeros and the test passes whether or not the bound exists.
+// Poisoned fills it with 0xA5, so a field completed out of memory the caller
+// never declared is visible as exactly that.
+func TestFROST_ParseRefusesEveryTruncation(t *testing.T) {
+	pk, mh, sig := katVector(t)
+	full := buildFrostInput(3, 5, pk, mh, sig)
+	require.Len(t, full, MinInputSize)
+
+	// Two truncations per field -- empty and one byte short -- so every
+	// bound in parse is the one that fires for some case.
+	for _, n := range []int{0, 3, 4, 7, 8, 39, 40, 71, 72, 135} {
+		_, err := parse(contract.Poisoned(full[:n], 256))
+		require.ErrorIs(t, err, contract.ErrShort, "len=%d must refuse as short", n)
+		require.ErrorIs(t, err, ErrInvalidInputLength,
+			"len=%d: the cursor's refusal must keep answering to the deployed sentinel", n)
+	}
+
+	// At exactly MinInputSize every field is the one the layout names.
+	c, err := parse(contract.Poisoned(full, 256))
+	require.NoError(t, err)
+	require.Equal(t, uint32(3), c.threshold)
+	require.Equal(t, uint32(5), c.signers)
+	require.Equal(t, pk, c.key)
+	require.Equal(t, mh, c.hash)
+	require.Equal(t, sig, c.sig)
+
+	// Each field is capped to its own length, so a downstream re-slice cannot
+	// walk forward into the next field or into the poisoned spare capacity.
+	for _, f := range []struct {
+		name string
+		b    []byte
+	}{{"key", c.key}, {"hash", c.hash}, {"sig", c.sig}} {
+		require.Equal(t, len(f.b), cap(f.b), "%s must not be re-sliceable past its end", f.name)
+	}
+}
+
+// TestFROST_RefuseTruncatedCall: a well-formed call one byte short, with
+// chosen bytes sitting in the spare capacity immediately behind it. The
+// precompile must refuse rather than complete the signature out of memory the
+// caller never declared and never paid gas for.
+//
+// This is the case a fixed-offset parser gets wrong silently. input[72:136]
+// over a 135-byte slice whose cap is 391 does not panic and does not halt a
+// validator: it returns 64 bytes of which the last is the attacker's, and the
+// verifier answers over them.
+func TestFROST_RefuseTruncatedCall(t *testing.T) {
+	pk, mh, sig := katVector(t)
+	full := buildFrostInput(3, 5, pk, mh, sig)
+
+	// Control: the whole call verifies, poisoned spare capacity and all. The
+	// truncation below is then the only thing that differs.
+	res, err := runRaw(t, contract.Poisoned(full, 256))
+	require.NoError(t, err)
+	require.Equal(t, byte(1), res[31], "the control must verify")
+
+	_, err = runRaw(t, contract.Poisoned(full[:MinInputSize-1], 256))
+	require.ErrorIs(t, err, ErrInvalidInputLength,
+		"one byte short must be refused, not completed from spare capacity")
 }
 
 // TestFROST_RefuseThreshold: the structural (t, n) claim. t == 0 is
@@ -99,13 +166,13 @@ func TestFROST_RefuseThreshold(t *testing.T) {
 // is refused on the threshold, and a zero key/signature under a *valid*
 // threshold is refused by the curve. Neither may be mistaken for a signature.
 func TestFROST_RefuseAllZeroInput(t *testing.T) {
-	_, err := runRaw(t, make([]byte, MinInputSize))
+	_, err := runRaw(t, contract.Poisoned(make([]byte, MinInputSize), 256))
 	require.ErrorIs(t, err, ErrInvalidThreshold)
 
 	zeroed := make([]byte, MinInputSize)
 	binary.BigEndian.PutUint32(zeroed[0:4], 1)
 	binary.BigEndian.PutUint32(zeroed[4:8], 1)
-	res, err := runRaw(t, zeroed)
+	res, err := runRaw(t, contract.Poisoned(zeroed, 256))
 	require.NoError(t, err)
 	require.Equal(t, byte(0), res[31], "an all-zero key and signature must not verify")
 }

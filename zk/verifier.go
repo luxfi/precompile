@@ -15,6 +15,7 @@ import (
 	"github.com/luxfi/crypto/bn256"
 	"github.com/luxfi/crypto/kzg4844"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 )
 
 // ZKVerifier provides zero-knowledge proof verification
@@ -247,8 +248,14 @@ func (zv *ZKVerifier) VerifyFflonk(
 		return nil, ErrProofSystemMismatch
 	}
 
-	// fflonk verification using the registered verification key
-	valid := zv.fflonkVerify(vk, proof, publicInputs)
+	// fflonk verification using the registered verification key.
+	//
+	// VerificationResult.Valid stays a bool: by the time it is filled in, the
+	// verdict has been earned, and the struct is a record of a completed
+	// verification rather than the answer itself. The line is producers
+	// return a Verdict; a report of one carries a bool.
+	v := zv.fflonkVerify(vk, proof, publicInputs)
+	valid := v.OK()
 
 	zv.TotalVerifications++
 	if valid {
@@ -307,36 +314,38 @@ func (zv *ZKVerifier) fflonkVerify(
 	vk *VerifyingKey,
 	proof []byte,
 	publicInputs []*big.Int,
-) bool {
-	// Minimum proof size: 4 G1 points (48 bytes each) + 8 evaluations (32 bytes each)
-	const minProofSize = 4*48 + 8*32
-	if len(proof) < minProofSize {
-		return false
+) contract.Verdict {
+	in := contract.Read(proof)
+	pts, err := in.Fields(fflonkNumCommitments, fflonkG1Size)
+	if err != nil {
+		return contract.Refused(ErrInvalidProofLength)
 	}
-
-	c1 := proof[0:48]
-	c2 := proof[48:96]
-	w1 := proof[96:144]
-	w2 := proof[144:192]
+	c1, c2, w1, w2 := pts[0], pts[1], pts[2], pts[3]
 
 	// Reject any off-curve or wrong-subgroup commitment / opening proof.
-	for _, pt := range [][]byte{c1, c2, w1, w2} {
+	for _, pt := range pts {
 		if !validG1Point(pt) {
-			return false
+			return contract.Refused(ErrInvalidPointFormat)
 		}
 	}
 
-	evalOffset := 192
-	numEvals := (len(proof) - evalOffset) / 32
-	if numEvals < 8 {
-		return false
+	// Evaluations are however many whole field elements remain, derived from
+	// the length rather than declared, so the count is bounded by
+	// construction.
+	numEvals := uint64(in.Len()) / fieldLen
+	if numEvals < fflonkNumEvaluations {
+		return contract.Refused(ErrInvalidProofLength)
+	}
+	raw, err := in.Fields(numEvals, fieldLen)
+	if err != nil {
+		return contract.Refused(ErrInvalidProofLength)
 	}
 	r := blsScalarField()
-	evaluations := make([]*big.Int, numEvals)
-	for i := range numEvals {
-		e := new(big.Int).SetBytes(proof[evalOffset+i*32 : evalOffset+(i+1)*32])
+	evaluations := make([]*big.Int, len(raw))
+	for i, b := range raw {
+		e := new(big.Int).SetBytes(b)
 		if e.Cmp(r) >= 0 { // non-canonical scalar
-			return false
+			return contract.Refused(ErrInvalidPublicInputs)
 		}
 		evaluations[i] = e
 	}
@@ -345,14 +354,14 @@ func (zv *ZKVerifier) fflonkVerify(
 	// values (which are determined BY z, so they must not feed it).
 	z := computeFflonkOpeningPoint(vk, c1, c2, publicInputs, evaluations[2:])
 
-	// Real BLS12-381 pairing checks via the KZG trusted setup.
-	if !verifyKZGOpening(c1, z, evaluations[0], w1) {
-		return false
-	}
-	if !verifyKZGOpening(c2, z, evaluations[1], w2) {
-		return false
-	}
-	return true
+	// Real BLS12-381 pairing checks via the KZG trusted setup. Both openings
+	// must hold; the verdict is that conjunction and nothing else. There is
+	// no `return true` here to be reached by a path that skipped the
+	// pairings — the only positive this function can produce is the value of
+	// the predicate below.
+	return contract.Checked(
+		verifyKZGOpening(c1, z, evaluations[0], w1) &&
+			verifyKZGOpening(c2, z, evaluations[1], w2))
 }
 
 // degenerate reports whether any given curve element is absent or is the
@@ -468,22 +477,28 @@ func (zv *ZKVerifier) VerifyKZG(
 	return valid, nil
 }
 
-// VerifyRangeProof verifies that a committed value is within a range
+// VerifyRangeProof verifies that a committed value is within a range.
+//
+// No bulletproof verifier is wired, so it refuses.
+//
+// This used to answer `len(commitment) > 0 && len(rangeProof) > 0 &&
+// bitLength > 0` — a length check reported as a verification verdict, so
+// every well-formed byte string was a valid range proof. A range proof is
+// what stops a confidential transfer minting value out of nothing, so
+// accepting all of them defeats the whole scheme.
+//
+// The signature is what keeps that from coming back. Under (bool, error) the
+// length check WAS a bool, and returning it read as a verdict; a
+// contract.Verdict cannot be built from a length at all, only from
+// contract.Checked over a predicate that a repo-wide gate forbids being a
+// constant. And the refusal is its own state rather than a `false` that a
+// caller would read as "this proof is bad".
 func (zv *ZKVerifier) VerifyRangeProof(
 	commitment []byte,
 	rangeProof []byte,
 	bitLength uint32,
-) (bool, error) {
-	// No bulletproof verifier is wired. Refuse.
-	//
-	// This used to answer `len(commitment) > 0 && len(rangeProof) > 0 &&
-	// bitLength > 0` — a length check reported as a verification verdict,
-	// so every well-formed byte string was a valid range proof. A range
-	// proof is what stops a confidential transfer minting value out of
-	// nothing, so accepting all of them defeats the whole scheme. The
-	// helper is gone rather than fixed: a function that cannot verify must
-	// not be shaped like a verifier.
-	return false, ErrRangeProofUnavailable
+) contract.Verdict {
+	return contract.Refused(ErrRangeProofUnavailable)
 }
 
 // CheckNullifier checks if a nullifier has been spent

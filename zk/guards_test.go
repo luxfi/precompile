@@ -296,7 +296,7 @@ func TestGrd_InfinityIsNotAValidCommitment(t *testing.T) {
 	zv := NewZKVerifier()
 	vk := fflonkTestVK()
 	for _, pub := range sndStatements {
-		require.Falsef(t, zv.fflonkVerify(vk, proof, pub),
+		require.Falsef(t, zv.fflonkVerify(vk, proof, pub).OK(),
 			"the constant-polynomial forge verified for statement %v", pub)
 	}
 }

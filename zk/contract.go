@@ -5,7 +5,6 @@ package zk
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"math/big"
 
@@ -166,6 +165,31 @@ const (
 	fieldLen     = 32
 )
 
+// PLONK proof frame, as verifyPLONKStructure walks it: nine G1 commitments
+// and opening proofs, then six field-element evaluations. Named so the floor
+// and the field count cannot drift apart — reading only the points would
+// admit a 576-byte proof where the frame is 768.
+const (
+	plonkPoints    = 9
+	plonkPointSize = 64
+	plonkEvals     = 6
+	plonkProofSize = plonkPoints*plonkPointSize + plonkEvals*fieldLen // 768
+)
+
+// halo2MaxRounds caps the declared IPA round count, in both the Halo2 parser
+// and op 0x12. Eight to sixteen rounds covers any reasonable polynomial
+// degree; past that the count is a claim about work nobody will do.
+//
+// ipaPointSize is the width of an op-0x12 fold point: uncompressed (x, y),
+// where Halo2's own L/R points are 32-byte compressed.
+// rangeProofMinSize is the smallest bulletproof body op 0x23 will look at.
+const (
+	halo2MaxRounds    = 32
+	ipaPointSize      = 64
+	rangeProofMinSize = 64
+	g1Size            = 48 // BLS12-381 G1, compressed
+)
+
 // countPublicInputs returns how many public inputs the verifier will parse.
 //
 // It reads the SAME wire field the verifiers read. Reading any other field
@@ -177,15 +201,51 @@ const (
 // expectedLen check), so charging for it would price work that can never
 // happen. With the cap, gas is bounded by the length of the input.
 func countPublicInputs(input []byte) int {
-	if len(input) < inputsOff {
+	in := contract.Read(input)
+	if _, err := in.Bytes(numInputsOff); err != nil {
 		return 0
 	}
-	claimed := binary.BigEndian.Uint32(input[numInputsOff:inputsOff])
-	capacity := (len(input) - inputsOff) / fieldLen
+	claimed, err := in.Uint32()
+	if err != nil {
+		return 0
+	}
+	capacity := in.Len() / fieldLen
 	if uint64(claimed) > uint64(capacity) {
 		return capacity
 	}
 	return int(claimed)
+}
+
+// statement reads the frame ops 0x01-0x04 share: a 32-byte verifying-key id, a
+// big-endian count, and that many 32-byte public inputs.
+//
+// Groth16, PLONK and fflonk each carried their own copy of this, which is
+// three chances for the count to be bounded differently from how it is used.
+// One reading, one bound. The count sizes nothing until its bytes are in
+// hand: Bytes refuses a count the calldata cannot back BEFORE the slice of
+// big.Ints is allocated, so a declared 2^32-1 inputs costs a refusal rather
+// than a 137 GB allocation.
+func statement(in *contract.Cursor) (vkID [32]byte, publicInputs []*big.Int, err error) {
+	id, err := in.Bytes(32)
+	if err != nil {
+		return vkID, nil, ErrInvalidInput
+	}
+	copy(vkID[:], id)
+
+	n, err := in.Uint32()
+	if err != nil {
+		return vkID, nil, ErrInvalidInput
+	}
+	raw, err := in.Fields(uint64(n), fieldLen)
+	if err != nil {
+		return vkID, nil, ErrInvalidProofLength
+	}
+
+	publicInputs = make([]*big.Int, len(raw))
+	for i, f := range raw {
+		publicInputs[i] = new(big.Int).SetBytes(f)
+	}
+	return vkID, publicInputs, nil
 }
 
 // countBatchProofs returns how many proofs op 0x30 will attempt. It reads
@@ -198,11 +258,15 @@ func countBatchProofs(input []byte) int {
 		countEnd = 5 // op selector(1) + numProofs(4)
 		entryHdr = 5 // proofType(1) + proofDataLen(4)
 	)
-	if len(input) < countEnd {
+	in := contract.Read(input)
+	if _, err := in.Byte(); err != nil {
 		return 0
 	}
-	claimed := binary.BigEndian.Uint32(input[1:countEnd])
-	capacity := (len(input) - countEnd) / entryHdr
+	claimed, err := in.Uint32()
+	if err != nil {
+		return 0
+	}
+	capacity := in.Len() / entryHdr
 	if uint64(claimed) > uint64(capacity) {
 		return capacity
 	}
@@ -332,37 +396,24 @@ func encodeBool(b bool) []byte {
 // The Groth16 verification equation:
 // e(A, B) = e(α, β) · e(∑ᵢ wᵢ · ICᵢ, γ) · e(C, δ)
 func (p *zkVerifyPrecompile) verifyGroth16(data []byte) (bool, error) {
-	if len(data) < 36 {
-		return false, ErrInvalidInput
+	in := contract.Read(data)
+	vkID, publicInputs, err := statement(in)
+	if err != nil {
+		return false, err
 	}
 
-	// Parse verification key ID
-	var vkID [32]byte
-	copy(vkID[:], data[:32])
-
-	// Parse public inputs count
-	numInputs := binary.BigEndian.Uint32(data[32:36])
-
-	// Calculate expected length: vkID(32) + numInputs(4) + inputs(n*32) + proofA(64) + proofB(128) + proofC(64)
-	expectedLen := 32 + 4 + int(numInputs)*32 + 256
-	if len(data) < expectedLen {
+	proofA, err := in.Bytes(64)
+	if err != nil {
 		return false, ErrInvalidProofLength
 	}
-
-	// Parse public inputs
-	offset := 36
-	publicInputs := make([]*big.Int, numInputs)
-	for i := range numInputs {
-		publicInputs[i] = new(big.Int).SetBytes(data[offset : offset+32])
-		offset += 32
+	proofB, err := in.Bytes(128)
+	if err != nil {
+		return false, ErrInvalidProofLength
 	}
-
-	// Parse proof elements
-	proofA := data[offset : offset+64]
-	offset += 64
-	proofB := data[offset : offset+128]
-	offset += 128
-	proofC := data[offset : offset+64]
+	proofC, err := in.Bytes(64)
+	if err != nil {
+		return false, ErrInvalidProofLength
+	}
 
 	// If we have a verifier with registered keys, use it
 	if p.verifier != nil {
@@ -416,33 +467,19 @@ func verifyGroth16PointsValid(proofA, proofB, proofC []byte) (bool, error) {
 // 2. Compute public input polynomial evaluation at challenge point
 // 3. Verify batched KZG opening proofs using pairing
 func (p *zkVerifyPrecompile) verifyPLONK(data []byte) (bool, error) {
-	if len(data) < 36 {
-		return false, ErrInvalidInput
+	in := contract.Read(data)
+	vkID, publicInputs, err := statement(in)
+	if err != nil {
+		return false, err
 	}
 
-	// Parse verification key ID
-	var vkID [32]byte
-	copy(vkID[:], data[:32])
-
-	// Parse public inputs count
-	numInputs := binary.BigEndian.Uint32(data[32:36])
-
-	// Minimum length: vkID(32) + numInputs(4) + inputs(n*32) + minProof(768)
-	minLen := 32 + 4 + int(numInputs)*32 + 768
-	if len(data) < minLen {
+	// The proof is the rest, and it must be at least the fixed frame that
+	// verifyPLONKStructure walks. Checking the floor here keeps the refusal
+	// where the length is known rather than one call deeper.
+	if in.Len() < plonkProofSize {
 		return false, ErrInvalidProofLength
 	}
-
-	// Parse public inputs
-	offset := 36
-	publicInputs := make([]*big.Int, numInputs)
-	for i := range numInputs {
-		publicInputs[i] = new(big.Int).SetBytes(data[offset : offset+32])
-		offset += 32
-	}
-
-	// Remaining bytes are the proof
-	proof := data[offset:]
+	proof := in.Rest()
 
 	// If we have a verifier with registered keys, use it
 	if p.verifier != nil {
@@ -470,14 +507,26 @@ func (p *zkVerifyPrecompile) verifyPLONK(data []byte) (bool, error) {
 // - [512:576] - W_zeta_omega proof (opening at zeta*omega, G1)
 // - [576:768] - evaluations (6 x 32 bytes)
 func verifyPLONKStructure(proof []byte) (bool, error) {
-	if len(proof) < 768 {
+	// The frame is the points AND the evaluations after them: 9 G1 points at
+	// 64 bytes is 576, six evaluations make 768. Reading only the points
+	// would admit a 576-byte proof this has always refused, so the tail is
+	// required too — checked after the points rather than as a floor before
+	// them, so that both refusals are reachable. A guard that dominates the
+	// read under it makes that read's refusal dead, and a dead refusal is
+	// one no test can hold to anything.
+	in := contract.Read(proof)
+	points, err := in.Fields(plonkPoints, plonkPointSize)
+	if err != nil {
+		return false, ErrInvalidProofLength
+	}
+	if in.Len() < plonkEvals*fieldLen {
 		return false, ErrInvalidProofLength
 	}
 
 	// Validate that all 9 G1 points are well-formed
-	for i := range 9 {
+	for _, b := range points {
 		var point bn256.G1
-		if _, err := point.Unmarshal(proof[i*64 : (i+1)*64]); err != nil {
+		if _, err := point.Unmarshal(b); err != nil {
 			return false, ErrInvalidPointFormat
 		}
 	}
@@ -508,34 +557,16 @@ func verifyPLONKStructure(proof []byte) (bool, error) {
 // The fflonk verification uses batched KZG openings with the equation:
 // e(F - [r]G1, G2) = e(W, [τ - ξ]G2)
 func (p *zkVerifyPrecompile) verifyFflonk(data []byte) (bool, error) {
-	if len(data) < 36 {
-		return false, ErrInvalidInput
+	in := contract.Read(data)
+	vkID, publicInputs, err := statement(in)
+	if err != nil {
+		return false, err
 	}
 
-	// Parse verification key ID
-	var vkID [32]byte
-	copy(vkID[:], data[:32])
-
-	// Parse public inputs count
-	numInputs := binary.BigEndian.Uint32(data[32:36])
-
-	// Calculate minimum expected length
-	// vkID(32) + numInputs(4) + inputs(n*32) + minProof(448)
-	minLen := 32 + 4 + int(numInputs)*32 + fflonkMinProofSize
-	if len(data) < minLen {
+	if in.Len() < fflonkMinProofSize {
 		return false, ErrInvalidProofLength
 	}
-
-	// Parse public inputs
-	offset := 36
-	publicInputs := make([]*big.Int, numInputs)
-	for i := range numInputs {
-		publicInputs[i] = new(big.Int).SetBytes(data[offset : offset+32])
-		offset += 32
-	}
-
-	// Remaining bytes are the proof
-	proof := data[offset:]
+	proof := in.Rest()
 
 	// If we have a verifier with registered keys, use it
 	if p.verifier != nil {
@@ -553,7 +584,7 @@ func (p *zkVerifyPrecompile) verifyFflonk(data []byte) (bool, error) {
 // fflonk proof format constants
 const (
 	// BLS12-381 G1 point size (compressed)
-	fflonkG1Size = 48
+	fflonkG1Size = g1Size
 
 	// Number of G1 commitments in fflonk proof: C1, C2, W1, W2
 	fflonkNumCommitments = 4
@@ -583,38 +614,34 @@ func parseFflonkProof(proof []byte) (*FflonkProof, error) {
 		return nil, ErrInvalidProofLength
 	}
 
-	fp := &FflonkProof{}
-	offset := 0
-
-	// Parse G1 commitments (48 bytes each for BLS12-381 compressed)
-	fp.C1 = make([]byte, fflonkG1Size)
-	copy(fp.C1, proof[offset:offset+fflonkG1Size])
-	offset += fflonkG1Size
-
-	fp.C2 = make([]byte, fflonkG1Size)
-	copy(fp.C2, proof[offset:offset+fflonkG1Size])
-	offset += fflonkG1Size
-
-	fp.W1 = make([]byte, fflonkG1Size)
-	copy(fp.W1, proof[offset:offset+fflonkG1Size])
-	offset += fflonkG1Size
-
-	fp.W2 = make([]byte, fflonkG1Size)
-	copy(fp.W2, proof[offset:offset+fflonkG1Size])
-	offset += fflonkG1Size
-
-	// Parse evaluations (remaining bytes as 32-byte field elements)
-	numEvals := (len(proof) - offset) / 32
-	if numEvals < fflonkNumEvaluations {
+	in := contract.Read(proof)
+	pts, err := in.Fields(fflonkNumCommitments, fflonkG1Size)
+	if err != nil {
 		return nil, ErrInvalidProofLength
 	}
 
-	fp.Evaluations = make([]*big.Int, numEvals)
-	for i := range numEvals {
-		fp.Evaluations[i] = new(big.Int).SetBytes(proof[offset : offset+32])
-		offset += 32
+	// Evaluations are however many whole field elements the rest holds. The
+	// count is derived from the remaining length rather than declared, so it
+	// is bounded by construction.
+	numEvals := uint64(in.Len()) / fieldLen
+	if numEvals < fflonkNumEvaluations {
+		return nil, ErrInvalidProofLength
+	}
+	evals, err := in.Fields(numEvals, fieldLen)
+	if err != nil {
+		return nil, ErrInvalidProofLength
 	}
 
+	fp := &FflonkProof{
+		C1:          append([]byte(nil), pts[0]...),
+		C2:          append([]byte(nil), pts[1]...),
+		W1:          append([]byte(nil), pts[2]...),
+		W2:          append([]byte(nil), pts[3]...),
+		Evaluations: make([]*big.Int, len(evals)),
+	}
+	for i, e := range evals {
+		fp.Evaluations[i] = new(big.Int).SetBytes(e)
+	}
 	return fp, nil
 }
 
@@ -830,8 +857,7 @@ func verifyFflonkKZGOpening(
 	copy(proof[:], fp.W1)
 
 	// Verify using kzg4844 package
-	err := kzg4844.VerifyProof(commitment, point, claim, proof)
-	if err != nil {
+	if err := kzg4844.VerifyProof(commitment, point, claim, proof); err != nil {
 		// Verification failed - this is expected for invalid proofs
 		// Return false without error (invalid proof is not an error condition)
 		return false, nil
@@ -901,125 +927,78 @@ type Halo2Proof struct {
 
 // parseHalo2Proof parses raw bytes into a Halo2Proof structure
 func parseHalo2Proof(data []byte) (*Halo2Proof, error) {
-	if len(data) < 36 {
+	in := contract.Read(data)
+	proof := &Halo2Proof{}
+
+	// vec reads a declared count followed by that many 32-byte elements. The
+	// three vectors below had a copy of this each, with the count bounded in
+	// one place and used to size an allocation in another; the count now
+	// cannot outlive the bytes that back it, because Fields refuses before
+	// it allocates.
+	vec := func(missing, short string) ([][]byte, error) {
+		n, err := in.Uint32()
+		if err != nil {
+			return nil, errors.New(missing)
+		}
+		f, err := in.Fields(uint64(n), fieldLen)
+		if err != nil {
+			return nil, errors.New(short)
+		}
+		return f, nil
+	}
+
+	id, err := in.Bytes(32)
+	if err != nil {
 		return nil, ErrInvalidInput
 	}
+	copy(proof.vkID[:], id)
 
-	proof := &Halo2Proof{}
-	offset := 0
-
-	// Parse verification key ID
-	copy(proof.vkID[:], data[offset:offset+32])
-	offset += 32
-
-	// Parse public inputs count
-	numInputs := binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
-
-	// Validate minimum length for public inputs
-	if len(data) < offset+int(numInputs)*32 {
-		return nil, errors.New("halo2: insufficient data for public inputs")
+	inputs, err := vec("halo2: missing public inputs count", "halo2: insufficient data for public inputs")
+	if err != nil {
+		return nil, err
+	}
+	proof.publicInputs = make([]*big.Int, len(inputs))
+	for i, f := range inputs {
+		proof.publicInputs[i] = new(big.Int).SetBytes(f)
 	}
 
-	// Parse public inputs
-	proof.publicInputs = make([]*big.Int, numInputs)
-	for i := range numInputs {
-		proof.publicInputs[i] = new(big.Int).SetBytes(data[offset : offset+32])
-		offset += 32
+	if proof.adviceCommitments, err = vec(
+		"halo2: missing advice commitments count",
+		"halo2: insufficient data for advice commitments"); err != nil {
+		return nil, err
+	}
+	if proof.instanceCommitments, err = vec(
+		"halo2: missing instance commitments count",
+		"halo2: insufficient data for instance commitments"); err != nil {
+		return nil, err
 	}
 
-	// Parse advice commitments count
-	if len(data) < offset+4 {
-		return nil, errors.New("halo2: missing advice commitments count")
-	}
-	numAdvice := binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
-
-	// Validate and parse advice commitments
-	if len(data) < offset+int(numAdvice)*32 {
-		return nil, errors.New("halo2: insufficient data for advice commitments")
-	}
-	proof.adviceCommitments = make([][]byte, numAdvice)
-	for i := range numAdvice {
-		proof.adviceCommitments[i] = make([]byte, 32)
-		copy(proof.adviceCommitments[i], data[offset:offset+32])
-		offset += 32
-	}
-
-	// Parse instance commitments count
-	if len(data) < offset+4 {
-		return nil, errors.New("halo2: missing instance commitments count")
-	}
-	numInstance := binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
-
-	// Validate and parse instance commitments
-	if len(data) < offset+int(numInstance)*32 {
-		return nil, errors.New("halo2: insufficient data for instance commitments")
-	}
-	proof.instanceCommitments = make([][]byte, numInstance)
-	for i := range numInstance {
-		proof.instanceCommitments[i] = make([]byte, 32)
-		copy(proof.instanceCommitments[i], data[offset:offset+32])
-		offset += 32
-	}
-
-	// Parse IPA rounds count
-	if len(data) < offset+4 {
+	// IPA rounds carry their own bound on top of the length: a proof with
+	// more than 32 rounds is refused even when the calldata could hold it.
+	proof.numRounds, err = in.Uint32()
+	if err != nil {
 		return nil, errors.New("halo2: missing IPA rounds count")
 	}
-	proof.numRounds = binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
-
-	// Validate rounds (typical: 8-16 for reasonable polynomial degrees)
-	if proof.numRounds == 0 || proof.numRounds > 32 {
+	if proof.numRounds == 0 || proof.numRounds > halo2MaxRounds {
 		return nil, errors.New("halo2: invalid number of IPA rounds (must be 1-32)")
 	}
 
-	// Parse L points
-	if len(data) < offset+int(proof.numRounds)*32 {
+	if proof.lPoints, err = in.Fields(uint64(proof.numRounds), fieldLen); err != nil {
 		return nil, errors.New("halo2: insufficient data for L points")
 	}
-	proof.lPoints = make([][]byte, proof.numRounds)
-	for i := uint32(0); i < proof.numRounds; i++ {
-		proof.lPoints[i] = make([]byte, 32)
-		copy(proof.lPoints[i], data[offset:offset+32])
-		offset += 32
-	}
-
-	// Parse R points
-	if len(data) < offset+int(proof.numRounds)*32 {
+	if proof.rPoints, err = in.Fields(uint64(proof.numRounds), fieldLen); err != nil {
 		return nil, errors.New("halo2: insufficient data for R points")
 	}
-	proof.rPoints = make([][]byte, proof.numRounds)
-	for i := uint32(0); i < proof.numRounds; i++ {
-		proof.rPoints[i] = make([]byte, 32)
-		copy(proof.rPoints[i], data[offset:offset+32])
-		offset += 32
-	}
 
-	// Parse final scalar (a)
-	if len(data) < offset+32 {
+	if proof.aScalar, err = in.Bytes(fieldLen); err != nil {
 		return nil, errors.New("halo2: missing final scalar")
 	}
-	proof.aScalar = make([]byte, 32)
-	copy(proof.aScalar, data[offset:offset+32])
-	offset += 32
-
-	// Parse evaluation point
-	if len(data) < offset+32 {
+	if proof.evalPoint, err = in.Bytes(fieldLen); err != nil {
 		return nil, errors.New("halo2: missing evaluation point")
 	}
-	proof.evalPoint = make([]byte, 32)
-	copy(proof.evalPoint, data[offset:offset+32])
-	offset += 32
-
-	// Parse claimed evaluation
-	if len(data) < offset+32 {
+	if proof.claimedEval, err = in.Bytes(fieldLen); err != nil {
 		return nil, errors.New("halo2: missing claimed evaluation")
 	}
-	proof.claimedEval = make([]byte, 32)
-	copy(proof.claimedEval, data[offset:offset+32])
 
 	return proof, nil
 }
@@ -1111,15 +1090,14 @@ func verifyHalo2Full(proof *Halo2Proof, vk *VerifyingKey) (bool, error) {
 		return false, err
 	}
 
-	// Verify the IPA opening proof
-	// The IPA proves that the committed polynomial evaluates to the claimed
-	// value at the evaluation point
-	valid, err := verifyHalo2IPA(proof, vk, expectedCommitment, challenges)
-	if err != nil {
-		return false, err
-	}
-
-	return valid, nil
+	// Verify the IPA opening proof. The IPA proves that the committed
+	// polynomial evaluates to the claimed value at the evaluation point.
+	//
+	// The verdict and the reason are one value, so there is no way to take
+	// the error while dropping the answer — which is how three tests came to
+	// miss three verifiers that answered valid without verifying.
+	v := verifyHalo2IPA(proof, vk, expectedCommitment, challenges)
+	return v.OK(), v.Err()
 }
 
 // computeHalo2Challenges reconstructs the Fiat-Shamir transcript challenges
@@ -1172,10 +1150,22 @@ func computeHalo2InstanceCommitment(proof *Halo2Proof, vk *VerifyingKey) ([]byte
 	return vk.IC[0], nil
 }
 
-// verifyHalo2IPA verifies the IPA opening proof
-func verifyHalo2IPA(proof *Halo2Proof, vk *VerifyingKey, commitment []byte, challenges [][]byte) (bool, error) {
+// verifyHalo2IPA verifies the IPA opening proof.
+//
+// It answers a contract.Verdict rather than (bool, error) because this is the
+// function that once answered `true` for every proof of every statement: it
+// folded the rounds, assigned the result to _ under a comment saying it was
+// used in full verification, and returned true. Nothing downstream re-checked
+// it, so op 0x04 accepted anything whenever any Halo2 key was registered.
+//
+// Under (bool, error) that lie is one keyword. Under Verdict a positive can
+// only come from contract.Checked, and TestCheckedIsNeverALiteral fails the
+// build if Checked is ever handed a constant — so a claim of validity has to
+// come from an expression that computed something. The zero Verdict, which is
+// what a fall-through yields, denies.
+func verifyHalo2IPA(proof *Halo2Proof, vk *VerifyingKey, commitment []byte, challenges [][]byte) contract.Verdict {
 	if len(challenges) != int(proof.numRounds) {
-		return false, errors.New("halo2: challenge count mismatch")
+		return contract.Refused(errors.New("halo2: challenge count mismatch"))
 	}
 
 	// The IPA verification equation:
@@ -1199,7 +1189,7 @@ func verifyHalo2IPA(proof *Halo2Proof, vk *VerifyingKey, commitment []byte, chal
 	for i, ch := range challenges {
 		inv, err := modInverse(ch)
 		if err != nil {
-			return false, errors.New("halo2: failed to compute challenge inverse")
+			return contract.Refused(errors.New("halo2: failed to compute challenge inverse"))
 		}
 		challengeInvs[i] = inv
 	}
@@ -1223,14 +1213,15 @@ func verifyHalo2IPA(proof *Halo2Proof, vk *VerifyingKey, commitment []byte, chal
 	// The closing equation is g0*a + (a*b0)*Q == foldedCommitment, where g0
 	// is the folded SRS generator and Q the commitment key's auxiliary
 	// point. Neither is available: VerifyingKey is Groth16-shaped
-	// (Alpha/Beta/Gamma/Delta/IC) and carries no IPA commitment key. The
-	// fold above is therefore evidence, not a verdict.
+	// (Alpha/Beta/Gamma/Delta/IC) and carries no IPA commitment key.
 	//
-	// Refuse. Returning true here — as this function did — accepted every
-	// proof for every statement whenever any Halo2 key was registered,
-	// because nothing downstream re-checked the result.
+	// So the fold above is evidence, not a verdict, and there is no
+	// contract.Checked to write here — the predicate that would go inside it
+	// does not exist. That is the distinction the type carries: a refusal is
+	// not a negative verdict, and errors.Is(v.Err(), contract.ErrNoVerifier)
+	// tells a caller which one it got.
 	_ = foldedCommitment
-	return false, ErrHalo2KeyIncomplete
+	return contract.Refused(ErrHalo2KeyIncomplete)
 }
 
 // halo2Transcript implements Fiat-Shamir transcript for Halo2
@@ -1407,34 +1398,35 @@ func foldCommitment(c, l, r, x, xInv []byte) []byte {
 // Uses the pairing equation: e(C - [y]G1, G2) = e(proof, [τ - z]G2)
 func (p *zkVerifyPrecompile) verifyKZG(data []byte) (bool, error) {
 	// commitment(48) + point(32) + claim(32) + proof(48) = 160 bytes
-	if len(data) < 160 {
+	in := contract.Read(data)
+	c, err := in.Bytes(g1Size)
+	if err != nil {
+		return false, ErrInvalidInput
+	}
+	z, err := in.Bytes(fieldLen)
+	if err != nil {
+		return false, ErrInvalidInput
+	}
+	y, err := in.Bytes(fieldLen)
+	if err != nil {
+		return false, ErrInvalidInput
+	}
+	pi, err := in.Bytes(g1Size)
+	if err != nil {
 		return false, ErrInvalidInput
 	}
 
-	// Parse commitment
 	var commitment kzg4844.Commitment
-	copy(commitment[:], data[0:48])
-
-	// Parse point
 	var point kzg4844.Point
-	copy(point[:], data[48:80])
-
-	// Parse claim
 	var claim kzg4844.Claim
-	copy(claim[:], data[80:112])
-
-	// Parse proof
 	var proof kzg4844.Proof
-	copy(proof[:], data[112:160])
+	copy(commitment[:], c)
+	copy(point[:], z)
+	copy(claim[:], y)
+	copy(proof[:], pi)
 
-	// Verify using kzg4844 package directly
-	err := kzg4844.VerifyProof(commitment, point, claim, proof)
-	if err != nil {
-		// Invalid proof is not an error, just return false
-		return false, nil
-	}
-
-	return true, nil
+	// A pairing that does not hold is an invalid proof, not an error.
+	return kzg4844.VerifyProof(commitment, point, claim, proof) == nil, nil
 }
 
 // verifyIPA verifies an Inner Product Argument.
@@ -1458,22 +1450,30 @@ func (p *zkVerifyPrecompile) verifyKZG(data []byte) (bool, error) {
 // Note: Full IPA verification requires the IPAConfig from crypto/ipa package.
 // This function validates the proof structure.
 func (p *zkVerifyPrecompile) verifyIPA(data []byte) (bool, error) {
-	// Minimum: commitment(32) + evalPoint(32) + result(32) + numRounds(4) = 100
-	if len(data) < 100 {
+	// commitment(32) + evalPoint(32) + result(32) + numRounds(4), then
+	// numRounds L points and numRounds R points at 64 bytes each, then a
+	// 32-byte final scalar.
+	in := contract.Read(data)
+	if _, err := in.Bytes(3 * fieldLen); err != nil {
+		return false, ErrInvalidInput
+	}
+	numRounds, err := in.Uint32()
+	if err != nil {
 		return false, ErrInvalidInput
 	}
 
-	// Parse number of rounds
-	numRounds := binary.BigEndian.Uint32(data[96:100])
-
 	// Validate reasonable number of rounds (1-32 for 2^1 to 2^32 vector sizes)
-	if numRounds == 0 || numRounds > 32 {
+	if numRounds == 0 || numRounds > halo2MaxRounds {
 		return false, errors.New("ipa: invalid number of rounds")
 	}
 
-	// Expected length: 100 + numRounds*64 (L points) + numRounds*64 (R points) + 32 (a_scalar)
-	expectedLen := 100 + int(numRounds)*64 + int(numRounds)*64 + 32
-	if len(data) < expectedLen {
+	if _, err := in.Fields(uint64(numRounds), ipaPointSize); err != nil {
+		return false, ErrInvalidProofLength
+	}
+	if _, err := in.Fields(uint64(numRounds), ipaPointSize); err != nil {
+		return false, ErrInvalidProofLength
+	}
+	if _, err := in.Bytes(fieldLen); err != nil {
 		return false, ErrInvalidProofLength
 	}
 
@@ -1503,32 +1503,35 @@ func (p *zkVerifyPrecompile) verifyIPA(data []byte) (bool, error) {
 //
 // Note: Bulletproof verification is not yet implemented.
 func (p *zkVerifyPrecompile) verifyRangeProof(data []byte) (bool, error) {
-	// commitment(32) + bitLength(4) = 36 bytes minimum + proof
-	if len(data) < 100 {
+	// commitment(32) + bitLength(4) + at least 64 bytes of proof = 100.
+	//
+	// Every short case answers ErrInvalidInput, which is what the single
+	// `len(data) < 100` guard answered before. Two arms that stood here —
+	// ErrInvalidCommitmentLen on a commitment that was never not 32 bytes,
+	// and ErrInvalidProofLength on a remainder that could not be under 64
+	// once the input cleared 100 — were unreachable under that guard, and an
+	// unreachable arm is a refusal no caller can ever observe.
+	in := contract.Read(data)
+	commitment, err := in.Bytes(fieldLen)
+	if err != nil {
 		return false, ErrInvalidInput
 	}
-
-	// Parse commitment
-	commitment := data[0:32]
-	if len(commitment) != 32 {
-		return false, ErrInvalidCommitmentLen
+	bitLength, err := in.Uint32()
+	if err != nil {
+		return false, ErrInvalidInput
 	}
-
-	// Parse bit length
-	bitLength := binary.BigEndian.Uint32(data[32:36])
+	if in.Len() < rangeProofMinSize {
+		return false, ErrInvalidInput
+	}
 	if bitLength == 0 || bitLength > 256 {
 		return false, errors.New("range proof: invalid bit length (must be 1-256)")
 	}
-
-	// Proof data follows
-	rangeProof := data[36:]
-	if len(rangeProof) < 64 {
-		return false, ErrInvalidProofLength
-	}
+	rangeProof := in.Rest()
 
 	// If we have a verifier, use it
 	if p.verifier != nil {
-		return p.verifier.VerifyRangeProof(commitment, rangeProof, bitLength)
+		v := p.verifier.VerifyRangeProof(commitment, rangeProof, bitLength)
+		return v.OK(), v.Err()
 	}
 
 	// No verifier wired: refuse. Never report an unverified proof as valid.
@@ -1548,12 +1551,12 @@ func (p *zkVerifyPrecompile) verifyRangeProof(data []byte) (bool, error) {
 // - true if the nullifier has NOT been spent (is valid for use)
 // - false if the nullifier has already been spent (double-spend attempt)
 func (p *zkVerifyPrecompile) verifyNullifier(data []byte) (bool, error) {
-	if len(data) < 32 {
+	h, err := contract.Read(data).Bytes(fieldLen)
+	if err != nil {
 		return false, ErrInvalidInput
 	}
-
 	var nullifierHash [32]byte
-	copy(nullifierHash[:], data[:32])
+	copy(nullifierHash[:], h)
 
 	// Check against the verifier's nullifier set
 	if p.verifier != nil {
@@ -1617,14 +1620,14 @@ func isMerkleCommitment(data []byte) bool {
 // verifyCommitmentPedersen verifies a Pedersen commitment opening.
 // C = v*G + r*H
 func (p *zkVerifyPrecompile) verifyCommitmentPedersen(data []byte) (bool, error) {
-	if len(data) < 96 {
+	f, err := contract.Read(data).Fields(3, fieldLen)
+	if err != nil {
 		return false, ErrInvalidInput
 	}
-
 	var commitment, value, blinding [32]byte
-	copy(commitment[:], data[0:32])
-	copy(value[:], data[32:64])
-	copy(blinding[:], data[64:96])
+	copy(commitment[:], f[0])
+	copy(value[:], f[1])
+	copy(blinding[:], f[2])
 
 	// Use the global Pedersen committer for verification
 	return globalPedersen.Verify(commitment, value, blinding)
@@ -1633,32 +1636,26 @@ func (p *zkVerifyPrecompile) verifyCommitmentPedersen(data []byte) (bool, error)
 // verifyCommitmentMerkle verifies commitment inclusion in a Merkle tree.
 func (p *zkVerifyPrecompile) verifyCommitmentMerkle(data []byte) (bool, error) {
 	// poolID(32) + commitmentID(32) + leafIndex(8) + proofLen(4) = 76 bytes minimum
-	if len(data) < 76 {
+	in := contract.Read(data)
+	ids, err := in.Fields(2, fieldLen)
+	if err != nil {
 		return false, ErrInvalidInput
 	}
+	var poolID, commitmentID [32]byte
+	copy(poolID[:], ids[0])
+	copy(commitmentID[:], ids[1])
 
-	var poolID [32]byte
-	copy(poolID[:], data[:32])
-
-	var commitmentID [32]byte
-	copy(commitmentID[:], data[32:64])
-
-	leafIndex := binary.BigEndian.Uint64(data[64:72])
-	proofLen := binary.BigEndian.Uint32(data[72:76])
-
-	// Validate proof length
-	expectedLen := 76 + int(proofLen)*32
-	if len(data) < expectedLen {
+	leafIndex, err := in.Uint64()
+	if err != nil {
 		return false, ErrInvalidInput
 	}
-
-	// Parse merkle proof
-	merkleProof := make([][]byte, proofLen)
-	offset := 76
-	for i := range proofLen {
-		merkleProof[i] = make([]byte, 32)
-		copy(merkleProof[i], data[offset:offset+32])
-		offset += 32
+	proofLen, err := in.Uint32()
+	if err != nil {
+		return false, ErrInvalidInput
+	}
+	merkleProof, err := in.Fields(uint64(proofLen), fieldLen)
+	if err != nil {
+		return false, ErrInvalidInput
 	}
 
 	// Verify using ZKVerifier if available
@@ -1672,37 +1669,31 @@ func (p *zkVerifyPrecompile) verifyCommitmentMerkle(data []byte) (bool, error) {
 // verifyBatch verifies a batch of proofs
 // Input format: [4 bytes numProofs][for each: 1 byte proofType, 4 bytes proofDataLen, proofDataLen bytes proofData]
 func (p *zkVerifyPrecompile) verifyBatch(data []byte) (bool, error) {
-	if len(data) < 4 {
+	in := contract.Read(data)
+	numProofs, err := in.Uint32()
+	if err != nil {
 		return false, ErrInvalidInput
 	}
-
-	numProofs := binary.BigEndian.Uint32(data[:4])
 	if numProofs == 0 {
 		return false, ErrInvalidInput
 	}
 
-	offset := 4
 	for range numProofs {
-		// Need at least proofType(1) + dataLen(4)
-		if len(data) < offset+5 {
+		proofType, err := in.Byte()
+		if err != nil {
 			return false, ErrInvalidInput
 		}
-
-		proofType := data[offset]
-		proofDataLen := binary.BigEndian.Uint32(data[offset+1 : offset+5])
-		offset += 5
-
-		if len(data) < offset+int(proofDataLen) {
+		proofDataLen, err := in.Uint32()
+		if err != nil {
 			return false, ErrInvalidInput
 		}
-
-		proofData := data[offset : offset+int(proofDataLen)]
-		offset += int(proofDataLen)
+		proofData, err := in.Bytes(uint64(proofDataLen))
+		if err != nil {
+			return false, ErrInvalidInput
+		}
 
 		// Verify based on proof type
 		var valid bool
-		var err error
-
 		switch proofType {
 		case OpVerifyGroth16:
 			valid, err = p.verifyGroth16(proofData)

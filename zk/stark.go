@@ -26,6 +26,7 @@ import (
 	"sync"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	"github.com/luxfi/precompile/contract"
 )
 
 // STARK Precompile Addresses (0x0510-0x051F)
@@ -460,13 +461,21 @@ func GetSTARKVerifier(programHash [32]byte) (*STARKVerifier, bool) {
 // - publicInputs[8 * publicInputsLen]
 // - proofData[...]
 func STARKVerifyPrecompile(input []byte) ([]byte, error) {
-	if len(input) < 36 {
-		return nil, errors.New("input too short")
-	}
+	in := contract.Read(input)
 
 	// Parse program hash
+	h, err := in.Bytes(32)
+	if err != nil {
+		return nil, errors.New("input too short")
+	}
 	var programHash [32]byte
-	copy(programHash[:], input[:32])
+	copy(programHash[:], h)
+
+	// Parse public inputs length
+	publicInputsLen, err := in.Uint32()
+	if err != nil {
+		return nil, errors.New("input too short")
+	}
 
 	// Get verifier
 	verifier, ok := GetSTARKVerifier(programHash)
@@ -474,18 +483,18 @@ func STARKVerifyPrecompile(input []byte) ([]byte, error) {
 		return nil, errors.New("unknown program")
 	}
 
-	// Parse public inputs length
-	publicInputsLen := binary.BigEndian.Uint32(input[32:36])
-
-	// Parse public inputs
-	offset := 36
-	publicInputs := make([]uint64, publicInputsLen)
-	for i := range publicInputsLen {
-		if offset+8 > len(input) {
-			return nil, errors.New("input too short for public inputs")
-		}
-		publicInputs[i] = binary.BigEndian.Uint64(input[offset : offset+8])
-		offset += 8
+	// The declared count is bounded against the remaining bytes BEFORE it
+	// sizes the slice. It used to size it first: make([]uint64, n) for an
+	// attacker-chosen uint32 asks for up to 34 GB, and the loop's per-element
+	// check only refused afterwards — on the first iteration, long after the
+	// allocation it was meant to prevent.
+	words, err := in.Fields(uint64(publicInputsLen), 8)
+	if err != nil {
+		return nil, errors.New("input too short for public inputs")
+	}
+	publicInputs := make([]uint64, len(words))
+	for i, w := range words {
+		publicInputs[i] = binary.BigEndian.Uint64(w)
 	}
 
 	// Parse proof (simplified - real implementation would decode properly)
