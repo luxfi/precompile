@@ -44,15 +44,14 @@ type FeeConfigReporter interface {
 // Permissive when the ChainConfig does not implement
 // FeeConfigReporter (the default for non-Lux chains that integrate
 // Lux precompiles for cross-chain verification — they're expected
-// to know what they're doing).
+// to know what they're doing). A nil chainConfig is one such case:
+// a nil interface satisfies no interface, so the assertion below
+// answers it.
 //
 // blockContext provides the activation timestamp. nil blockContext
 // is treated as time=0 (chain genesis) and the chain's
 // genesis-time gasLimit governs.
 func RequireGasLimit(chainConfig any, blockContext ConfigurationBlockContext, minGasLimit uint64) error {
-	if chainConfig == nil {
-		return nil
-	}
 	r, ok := chainConfig.(FeeConfigReporter)
 	if !ok {
 		return nil
