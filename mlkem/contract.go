@@ -254,4 +254,3 @@ func (p *mlkemPrecompile) encapsulate(caller common.Address, mode uint8, input [
 
 	return result, nil
 }
-

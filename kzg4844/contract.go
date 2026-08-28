@@ -39,7 +39,6 @@ var (
 	ErrInvalidCommitment  = errors.New("invalid commitment")
 	ErrInvalidProof       = errors.New("invalid proof")
 	ErrVerificationFailed = errors.New("verification failed")
-	ErrContextNotInit     = errors.New("KZG context not initialized")
 )
 
 // Sizes per EIP-4844 spec
@@ -53,13 +52,11 @@ const (
 
 // Operation selectors
 const (
-	OpBlobToCommitment   = 0x01
-	OpComputeProof       = 0x02
-	OpVerifyProof        = 0x03
-	OpVerifyBlobProof    = 0x04
-	OpBatchVerifyProofs  = 0x10
-	OpComputeChallenge   = 0x20
-	OpEvaluatePolynomial = 0x21
+	OpBlobToCommitment  = 0x01
+	OpComputeProof      = 0x02
+	OpVerifyProof       = 0x03
+	OpVerifyBlobProof   = 0x04
+	OpBatchVerifyProofs = 0x10
 )
 
 // Gas costs aligned with EIP-4844
@@ -70,19 +67,19 @@ const (
 	GasVerifyBlobProof   = 50000
 	GasBatchVerifyBase   = 50000
 	GasBatchVerifyPerAdd = 10000
-	GasComputeChallenge  = 1000
-	GasEvaluateBase      = 5000
-	GasEvaluatePerElem   = 10
 )
 
+// The trusted setup is the Ethereum KZG ceremony output embedded in
+// go-kzg-4844. It either parses or it does not, identically on every node, so
+// a failure here is a broken build rather than a runtime condition: a node
+// that cannot build the setup cannot answer a single KZG call, and starting it
+// only to fail every request hides that.
 func init() {
-	// Initialize trusted setup from embedded parameters
-	var err error
-	kzgContext, err = gokzg4844.NewContext4096Secure()
+	ctx, err := gokzg4844.NewContext4096Secure()
 	if err != nil {
-		// Will fail on operations if not initialized
-		kzgContext = nil
+		panic("kzg4844: trusted setup failed to load: " + err.Error())
 	}
+	kzgContext = ctx
 }
 
 type kzg4844Precompile struct{}
@@ -120,16 +117,6 @@ func (p *kzg4844Precompile) RequiredGas(input []byte) uint64 {
 		numProofs := int(binary.BigEndian.Uint16(input[1:3]))
 		return GasBatchVerifyBase + uint64(numProofs)*GasBatchVerifyPerAdd
 
-	case OpComputeChallenge:
-		return GasComputeChallenge
-
-	case OpEvaluatePolynomial:
-		if len(input) < 5 {
-			return GasEvaluateBase
-		}
-		numCoeffs := int(binary.BigEndian.Uint32(input[1:5]))
-		return GasEvaluateBase + uint64(numCoeffs)*GasEvaluatePerElem
-
 	default:
 		return 0
 	}
@@ -154,10 +141,6 @@ func (p *kzg4844Precompile) Run(
 		return nil, remainingGas, ErrInvalidInput
 	}
 
-	if kzgContext == nil {
-		return nil, remainingGas, ErrContextNotInit
-	}
-
 	op := input[0]
 
 	var result []byte
@@ -173,8 +156,6 @@ func (p *kzg4844Precompile) Run(
 		result, err = p.verifyBlobProof(input[1:])
 	case OpBatchVerifyProofs:
 		result, err = p.batchVerifyProofs(input[1:])
-	case OpComputeChallenge:
-		result, err = p.computeChallenge(input[1:])
 	default:
 		err = fmt.Errorf("unsupported operation: 0x%02x", op)
 	}
@@ -188,7 +169,7 @@ func (p *kzg4844Precompile) Run(
 
 // blobToCommitment computes the KZG commitment for a blob
 func (p *kzg4844Precompile) blobToCommitment(input []byte) ([]byte, error) {
-	if len(input) < BlobSize {
+	if len(input) != BlobSize {
 		return nil, ErrInvalidBlob
 	}
 
@@ -212,7 +193,7 @@ func (p *kzg4844Precompile) blobToCommitment(input []byte) ([]byte, error) {
 
 // computeProof computes a KZG proof for a blob at a given point
 func (p *kzg4844Precompile) computeProof(input []byte) ([]byte, error) {
-	if len(input) < BlobSize+FieldElementSize {
+	if len(input) != BlobSize+FieldElementSize {
 		return nil, ErrInvalidInput
 	}
 
@@ -241,7 +222,7 @@ func (p *kzg4844Precompile) computeProof(input []byte) ([]byte, error) {
 func (p *kzg4844Precompile) verifyProof(input []byte) ([]byte, error) {
 	// commitment (48) + z (32) + y (32) + proof (48)
 	expectedLen := CommitmentSize + FieldElementSize + FieldElementSize + ProofSize
-	if len(input) < expectedLen {
+	if len(input) != expectedLen {
 		return nil, ErrInvalidInput
 	}
 
@@ -253,21 +234,44 @@ func (p *kzg4844Precompile) verifyProof(input []byte) ([]byte, error) {
 	copy(y[:], input[CommitmentSize+FieldElementSize:CommitmentSize+2*FieldElementSize])
 
 	var proof gokzg4844.KZGProof
-	copy(proof[:], input[CommitmentSize+2*FieldElementSize:])
+	copy(proof[:], input[CommitmentSize+2*FieldElementSize:expectedLen])
 
-	err := kzgContext.VerifyKZGProof(commitment, z, y, proof)
-	if err != nil {
+	if err := checkOpening(commitment, z, y, proof); err != nil {
+		return nil, err
+	}
+	if err := kzgContext.VerifyKZGProof(commitment, z, y, proof); err != nil {
 		return []byte{0x00}, nil
 	}
-
 	return []byte{0x01}, nil
+}
+
+// checkOpening reports whether each field of an opening is a canonical
+// encoding: a point in the r-order subgroup, a scalar below the modulus.
+//
+// A malformed encoding and a proof that does not verify are different answers.
+// Reporting both as a zero tells a caller their prover cheated when in fact
+// their calldata was mangled, and hides the mistake behind the one value a
+// verifier is expected to return.
+func checkOpening(commitment gokzg4844.KZGCommitment, z, y gokzg4844.Scalar, proof gokzg4844.KZGProof) error {
+	if _, err := gokzg4844.DeserializeKZGCommitment(commitment); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidCommitment, err)
+	}
+	if _, err := gokzg4844.DeserializeKZGProof(proof); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidProof, err)
+	}
+	for _, scalar := range []gokzg4844.Scalar{z, y} {
+		if _, err := gokzg4844.DeserializeScalar(scalar); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidInput, err)
+		}
+	}
+	return nil
 }
 
 // verifyBlobProof verifies a blob KZG proof (EIP-4844 point_evaluation_precompile)
 func (p *kzg4844Precompile) verifyBlobProof(input []byte) ([]byte, error) {
 	// blob (131072) + commitment (48) + proof (48)
 	expectedLen := BlobSize + CommitmentSize + ProofSize
-	if len(input) < expectedLen {
+	if len(input) != expectedLen {
 		return nil, ErrInvalidInput
 	}
 
@@ -278,13 +282,20 @@ func (p *kzg4844Precompile) verifyBlobProof(input []byte) ([]byte, error) {
 	copy(commitment[:], input[BlobSize:BlobSize+CommitmentSize])
 
 	var proof gokzg4844.KZGProof
-	copy(proof[:], input[BlobSize+CommitmentSize:])
+	copy(proof[:], input[BlobSize+CommitmentSize:expectedLen])
 
-	err := kzgContext.VerifyBlobKZGProof(&blob, commitment, proof)
-	if err != nil {
+	if _, err := gokzg4844.DeserializeBlob(&blob); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidBlob, err)
+	}
+	if _, err := gokzg4844.DeserializeKZGCommitment(commitment); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidCommitment, err)
+	}
+	if _, err := gokzg4844.DeserializeKZGProof(proof); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidProof, err)
+	}
+	if err := kzgContext.VerifyBlobKZGProof(&blob, commitment, proof); err != nil {
 		return []byte{0x00}, nil
 	}
-
 	return []byte{0x01}, nil
 }
 
@@ -295,18 +306,17 @@ func (p *kzg4844Precompile) batchVerifyProofs(input []byte) ([]byte, error) {
 	}
 
 	numProofs := int(binary.BigEndian.Uint16(input[:2]))
+
+	// Each proof set: commitment (48) + z (32) + y (32) + proof (48) = 160 bytes
+	proofSetSize := CommitmentSize + FieldElementSize + FieldElementSize + ProofSize
+	if len(input) != 2+numProofs*proofSetSize {
+		return nil, ErrInvalidInput
+	}
 	if numProofs == 0 {
 		return []byte{0x01}, nil
 	}
 
 	offset := 2
-	// Each proof set: commitment (48) + z (32) + y (32) + proof (48) = 160 bytes
-	proofSetSize := CommitmentSize + FieldElementSize + FieldElementSize + ProofSize
-	expectedLen := 2 + numProofs*proofSetSize
-
-	if len(input) < expectedLen {
-		return nil, ErrInvalidInput
-	}
 
 	commitments := make([]gokzg4844.KZGCommitment, numProofs)
 	zs := make([]gokzg4844.Scalar, numProofs)
@@ -327,32 +337,18 @@ func (p *kzg4844Precompile) batchVerifyProofs(input []byte) ([]byte, error) {
 		offset += ProofSize
 	}
 
-	// Verify all proofs individually (batch verification could be optimized)
+	// Every opening is checked for a canonical encoding before any of them is
+	// verified, so one malformed member cannot be read as a failed proof.
 	for i := range numProofs {
-		err := kzgContext.VerifyKZGProof(commitments[i], zs[i], ys[i], proofs[i])
-		if err != nil {
+		if err := checkOpening(commitments[i], zs[i], ys[i], proofs[i]); err != nil {
+			return nil, err
+		}
+	}
+	for i := range numProofs {
+		if err := kzgContext.VerifyKZGProof(commitments[i], zs[i], ys[i], proofs[i]); err != nil {
 			return []byte{0x00}, nil
 		}
 	}
 
 	return []byte{0x01}, nil
 }
-
-// computeChallenge computes the Fiat-Shamir challenge for a blob commitment
-func (p *kzg4844Precompile) computeChallenge(input []byte) ([]byte, error) {
-	if len(input) < CommitmentSize {
-		return nil, ErrInvalidInput
-	}
-
-	// Simple challenge: hash the commitment
-	// In practice, would include more context
-	var commitment gokzg4844.KZGCommitment
-	copy(commitment[:], input[:CommitmentSize])
-
-	// Use commitment hash as challenge (simplified)
-	var challenge gokzg4844.Scalar
-	copy(challenge[:], commitment[:32])
-
-	return challenge[:], nil
-}
-

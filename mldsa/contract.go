@@ -4,6 +4,7 @@
 package mldsa
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -183,7 +184,7 @@ func (p *mldsaVerifyPrecompile) Run(
 
 	// Dispatch batch verify
 	if input[0] == OpBatchVerify {
-		return p.runBatchVerify(input, suppliedGas, gasCost)
+		return p.runBatchVerify(input, remainingGas)
 	}
 
 	// Parse mode
@@ -262,12 +263,9 @@ func (p *mldsaVerifyPrecompile) Run(
 //	              [message]  (msgLen bytes)
 //
 // Output: count bytes, each 0x00 (invalid) or 0x01 (valid), left-padded to 32-byte alignment
-func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCost uint64) ([]byte, uint64, error) {
-	remainingGas, err := contract.DeductGas(suppliedGas, gasCost)
-	if err != nil {
-		return nil, 0, err
-	}
-
+//
+// Gas is already deducted by Run; remainingGas is what survived that.
+func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, remainingGas uint64) ([]byte, uint64, error) {
 	// Minimum header: op(1) + mode(1) + count(2) = 4
 	if len(input) < 4 {
 		return nil, remainingGas, fmt.Errorf("%w: batch header too short", ErrInvalidInputLength)
@@ -276,11 +274,11 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 	mode := input[1]
 	count := int(input[2])<<8 | int(input[3])
 
-	// Empty batch is valid -- return empty padded result
-	if count == 0 {
-		return make([]byte, 32), remainingGas, nil
-	}
-
+	// An empty batch takes the same path as any other: its mode is still
+	// checked and its frame must still end where it says it does. The
+	// short-circuit that used to sit here returned success for a count of
+	// zero without either check, so a batch naming an unknown parameter set,
+	// or trailing an arbitrary payload, was accepted.
 	pubKeySize, sigSize, _, mldsaMode, err := getModeParams(mode)
 	if err != nil {
 		return nil, remainingGas, fmt.Errorf("%w: 0x%02x", ErrUnsupportedMode, mode)
@@ -304,7 +302,12 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 		if offset+MessageLenSize > len(input) {
 			return nil, remainingGas, fmt.Errorf("%w: entry %d truncated at msglen", ErrInvalidInputLength, i)
 		}
-		msgLen := int(readUint256(input[offset : offset+MessageLenSize]))
+		// Message length stays a uint64 all the way to the bounds check.
+		// Narrowing it to int first makes any declared length at or above
+		// 2^63 negative, and a negative length passes "offset+msgLen >
+		// len(input)" and then slices with high < low -- a panic, from
+		// calldata, inside consensus.
+		msgLen := readUint256(input[offset : offset+MessageLenSize])
 		offset += MessageLenSize
 
 		// signature
@@ -315,11 +318,11 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 		offset += sigSize
 
 		// message
-		if offset+msgLen > len(input) {
+		if msgLen > uint64(len(input)-offset) {
 			return nil, remainingGas, fmt.Errorf("%w: entry %d truncated at message", ErrInvalidInputLength, i)
 		}
-		messages[i] = input[offset : offset+msgLen]
-		offset += msgLen
+		messages[i] = input[offset : offset+int(msgLen)]
+		offset += int(msgLen)
 	}
 
 	if offset != len(input) {
@@ -356,14 +359,25 @@ func (p *mldsaVerifyPrecompile) runBatchVerify(input []byte, suppliedGas, gasCos
 	return out, remainingGas, nil
 }
 
-// readUint256 reads a big-endian uint256 as uint64
+// readUint256 reads a big-endian uint256 as a uint64, saturating at
+// MaxUint64 when the encoded value does not fit in 64 bits.
+//
+// Saturation, not truncation. Truncating the high 192 bits would let one
+// message length be spelled many ways -- 0x00..0005 and 0xFF..FF05 would
+// both mean "5" -- so two distinct calldatas would verify the same
+// signature. Saturating keeps the field canonical: an oversized length
+// exceeds the gas cap in RequiredGas and fails the exact-size check in
+// Run, so it is refused rather than silently reinterpreted.
 func readUint256(b []byte) uint64 {
 	if len(b) != 32 {
 		return 0
 	}
-	// Only read last 8 bytes (assume high bytes are 0 for reasonable message lengths)
-	return uint64(b[24])<<56 | uint64(b[25])<<48 | uint64(b[26])<<40 | uint64(b[27])<<32 |
-		uint64(b[28])<<24 | uint64(b[29])<<16 | uint64(b[30])<<8 | uint64(b[31])
+	for _, hi := range b[:24] {
+		if hi != 0 {
+			return math.MaxUint64
+		}
+	}
+	return binary.BigEndian.Uint64(b[24:])
 }
 
 // Legacy format (isLegacyFormat + RunLegacy) removed: the heuristic

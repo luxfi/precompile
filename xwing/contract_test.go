@@ -161,18 +161,19 @@ func TestEncapsulate_MalformedKey(t *testing.T) {
 	p := &xwingPrecompile{}
 	scheme := xwing.Scheme()
 
-	// Create garbage public key of correct length
+	// Garbage public key of correct length, in a correctly sized frame.
 	garbage := make([]byte, scheme.PublicKeySize())
-	rand.Read(garbage)
+	_, err := rand.Read(garbage)
+	require.NoError(t, err)
 
-	input := make([]byte, 1+len(garbage))
+	input := make([]byte, 1+SeedSize+len(garbage))
 	input[0] = OpEncapsulate
-	copy(input[1:], garbage)
+	copy(input[1+SeedSize:], garbage)
 
 	gas := p.RequiredGas(input)
-	// This may or may not error depending on the KEM impl's validation
-	// but it should not panic
-	_, _, _ = p.Run(nil, common.Address{}, ContractAddress, input, gas, false)
+	ret, _, err := p.Run(nil, common.Address{}, ContractAddress, input, gas, false)
+	require.Error(t, err, "random bytes fail the FIPS 203 encapsulation-key check")
+	require.Nil(t, ret)
 }
 
 func TestInvalidOperation(t *testing.T) {
@@ -201,8 +202,8 @@ func TestGasCost(t *testing.T) {
 		expected uint64
 	}{
 		{"encapsulate", []byte{OpEncapsulate}, GasEncapsulate},
-		{"invalid_op", []byte{0xFF}, 0},
-		{"empty", []byte{}, 0},
+		{"invalid_op", []byte{0xFF}, GasRefuse},
+		{"empty", []byte{}, GasRefuse},
 	}
 
 	for _, tc := range tests {

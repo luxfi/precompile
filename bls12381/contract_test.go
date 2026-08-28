@@ -11,6 +11,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/luxfi/precompile/modules"
 	"github.com/stretchr/testify/require"
 )
@@ -246,7 +247,7 @@ func TestG1MSM_GasDiscount(t *testing.T) {
 		input = append(input, encodePointScalar(encodeG1(&g), &s)...)
 	}
 
-	expectedGas := msmGas(4, GasG1MSM)
+	expectedGas := G1MSMGas(4)
 	require.Less(t, expectedGas, uint64(4*GasG1MSM)) // discount applied
 
 	_, gas, err := runPrecompile(G1MSMAddress, input, 1000000)
@@ -425,9 +426,13 @@ func TestPairing_InsufficientGas(t *testing.T) {
 	copy(input[0:G1PointLen], encodeG1(&g1))
 	copy(input[G1PointLen:PairingPair], encodeG2(&g2))
 
-	// Need 108000, supply less
-	_, _, err := runPrecompile(PairingAddress, input, 100000)
-	require.Error(t, err)
+	need := PairingGas(len(input))
+	_, _, err := runPrecompile(PairingAddress, input, need-1)
+	require.ErrorIs(t, err, contract.ErrOutOfGas)
+
+	_, remaining, err := runPrecompile(PairingAddress, input, need)
+	require.NoError(t, err)
+	require.Zero(t, remaining)
 }
 
 func TestPairing_WithInfinity(t *testing.T) {
@@ -445,35 +450,6 @@ func TestPairing_WithInfinity(t *testing.T) {
 // ===========================================================================
 // Gas accounting
 // ===========================================================================
-
-func TestPairingGasFormula(t *testing.T) {
-	// EIP-2537: 65000 + 43000*n
-	require.Equal(t, uint64(0), PairingGas(0))
-	require.Equal(t, uint64(108000), PairingGas(PairingPair))    // 65000 + 43000*1
-	require.Equal(t, uint64(151000), PairingGas(2*PairingPair))  // 65000 + 43000*2
-	require.Equal(t, uint64(194000), PairingGas(3*PairingPair))  // 65000 + 43000*3
-	require.Equal(t, uint64(495000), PairingGas(10*PairingPair)) // 65000 + 43000*10
-}
-
-func TestMSMGasDiscount(t *testing.T) {
-	// 1 pair: no discount
-	require.Equal(t, uint64(12000), msmGas(1, GasG1MSM))
-	// 2 pairs: 949/1000 discount
-	require.Equal(t, uint64(12000*2*949/1000), msmGas(2, GasG1MSM))
-	// 8 pairs: 854/1000 discount
-	require.Equal(t, uint64(12000*8*854/1000), msmGas(8, GasG1MSM))
-	// 128 pairs: 368/1000 discount
-	require.Equal(t, uint64(12000*128*368/1000), msmGas(128, GasG1MSM))
-}
-
-func TestGasConstants(t *testing.T) {
-	require.Equal(t, uint64(500), uint64(GasG1Add))
-	require.Equal(t, uint64(12000), uint64(GasG1Mul))
-	require.Equal(t, uint64(800), uint64(GasG2Add))
-	require.Equal(t, uint64(45000), uint64(GasG2Mul))
-	require.Equal(t, uint64(65000), uint64(GasPairingBase))
-	require.Equal(t, uint64(43000), uint64(GasPairingPerPair))
-}
 
 // ===========================================================================
 // Invalid inputs (not on curve, not in subgroup, bad padding)

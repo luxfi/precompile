@@ -23,8 +23,8 @@ func TestC02_XWingKeyGenRejected(t *testing.T) {
 	input := []byte{opKeyGen}
 
 	gas := XWingPrecompile.RequiredGas(input)
-	// RequiredGas should return 0 for unknown ops
-	require.Equal(t, uint64(0), gas, "KeyGen op must not have a gas cost")
+	// Refused ops still cost the node a dispatch, so they are metered.
+	require.Equal(t, uint64(GasRefuse), gas, "KeyGen op must be metered, not free")
 
 	ret, _, err := XWingPrecompile.Run(
 		nil,
@@ -50,7 +50,7 @@ func TestC02_XWingDecapsulateRejected(t *testing.T) {
 	input := []byte{opDecapsulate}
 
 	gas := XWingPrecompile.RequiredGas(input)
-	require.Equal(t, uint64(0), gas, "Decapsulate op must not have a gas cost")
+	require.Equal(t, uint64(GasRefuse), gas, "Decapsulate op must be metered, not free")
 
 	ret, _, err := XWingPrecompile.Run(
 		nil,
@@ -74,7 +74,7 @@ func TestC02_XWingOnlyEncapsulateAllowed(t *testing.T) {
 		}
 		input := []byte{op}
 		gas := XWingPrecompile.RequiredGas(input)
-		require.Equal(t, uint64(0), gas, "Op 0x%02x must not have gas cost", op)
+		require.Equal(t, uint64(GasRefuse), gas, "Op 0x%02x must be metered, not free", op)
 
 		ret, _, err := XWingPrecompile.Run(
 			nil,

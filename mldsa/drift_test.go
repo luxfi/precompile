@@ -1,30 +1,19 @@
 // Copyright (C) 2025-2026, Lux Industries, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 //
-// FIPS 204 (ML-DSA) precompile Known-Answer-Test (KAT) coverage.
+// Drift pins for the ML-DSA precompile.
 //
-// Addresses TESTING_GAPS.md §1.4: "FIPS 204 KAT vectors (NIST ACVP test
-// vectors for ML-DSA-44/65/87) -- Tests generate fresh keys; a library
-// bug producing wrong output would pass all tests."
+// These vectors are SELF-GENERATED, not published by NIST: a seed is chosen
+// here, the keypair and a deterministic signature are reconstructed from it
+// through cloudflare/circl, and the leading bytes of each are recorded in
+// testdata/drift_vectors.json. They answer one question -- "does this
+// library still produce the same bytes it produced yesterday" -- and they
+// answer it cheaply, for all three parameter sets, including the
+// precompile's own framing and its rejection of a tampered signature.
 //
-// Strategy
-//
-//   1. Load the deterministic seed + expected public-key prefix + expected
-//      deterministic-signature prefix per mode from testdata/nist_vectors.json.
-//   2. Reconstruct the keypair via cloudflare/circl NewKeyFromSeed (FIPS 204
-//      keygen is fully determined by the 32-byte seed).
-//   3. Pin the public-key prefix and the deterministic-signature prefix.
-//      A drift in either prefix indicates the underlying lattice arithmetic
-//      or encoding silently changed -- exactly the gap §1.4 describes.
-//   4. Dispatch the precompile's EVM calldata frame (mode || pk || msgLen ||
-//      sig || msg) through MLDSAVerifyPrecompile.Run and require byte[31] == 1.
-//      This locks the precompile's binding to the wrapped library + ctx.
-//   5. Also verify the precompile rejects a single-bit tampered signature
-//      for each mode (FIPS 204 unforgeability sanity).
-//
-// The test does NOT duplicate end-to-end round-trip coverage that already
-// exists in deep_test.go; it adds the deterministic-vector layer that
-// catches "library is internally consistent but not correct".
+// They do NOT answer "is this library correct". A pinned prefix agrees with
+// whatever produced it. The published NIST ACVP vectors live in
+// kat_test.go, and that is the file to read for FIPS 204 conformance.
 
 package mldsa
 
@@ -42,13 +31,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// nistKATMessage is the canonical message signed for every KAT vector in
+// pinnedMessage is the canonical message signed for every KAT vector in
 // this file. It is short, ASCII, and identifies the source so an unrelated
 // signature with the same prefix cannot coincidentally hit a pinned value.
-var nistKATMessage = []byte("lux-precompile-nist-kat-v1")
+var pinnedMessage = []byte("lux-precompile-nist-kat-v1")
 
-// mldsaNISTVector mirrors the JSON schema in testdata/nist_vectors.json.
-type mldsaNISTVector struct {
+// mldsaDriftVector mirrors the JSON schema in testdata/nist_vectors.json.
+type mldsaDriftVector struct {
 	Mode                       string `json:"mode"`
 	ModeByte                   string `json:"mode_byte"`
 	SeedHex                    string `json:"seed_hex"`
@@ -58,16 +47,16 @@ type mldsaNISTVector struct {
 	SignatureSize              int    `json:"signature_size"`
 }
 
-type mldsaNISTVectorFile struct {
-	Vectors []mldsaNISTVector `json:"vectors"`
+type mldsaDriftVectorFile struct {
+	Vectors []mldsaDriftVector `json:"vectors"`
 }
 
-func loadMLDSANISTVectors(t *testing.T) []mldsaNISTVector {
+func loadMLDSADriftVectors(t *testing.T) []mldsaDriftVector {
 	t.Helper()
-	path := filepath.Join("testdata", "nist_vectors.json")
+	path := filepath.Join("testdata", "drift_vectors.json")
 	b, err := os.ReadFile(path)
 	require.NoError(t, err, "read testdata")
-	var f mldsaNISTVectorFile
+	var f mldsaDriftVectorFile
 	require.NoError(t, json.Unmarshal(b, &f), "parse testdata")
 	require.NotEmpty(t, f.Vectors, "no vectors")
 	return f.Vectors
@@ -122,8 +111,8 @@ func signFromSeed(t *testing.T, mode byte, seed []byte, msg, ctx []byte) (pk []b
 	}
 }
 
-// buildNISTKATInput frames a precompile call: mode || pubKey || msgLen(32) || sig || msg
-func buildNISTKATInput(mode byte, pk, msg, sig []byte) []byte {
+// buildPinnedInput frames a precompile call: mode || pubKey || msgLen(32) || sig || msg
+func buildPinnedInput(mode byte, pk, msg, sig []byte) []byte {
 	msgLen := make([]byte, MessageLenSize)
 	// big-endian uint256, low 4 bytes are enough for our short messages.
 	msgLen[MessageLenSize-1] = byte(len(msg))
@@ -157,14 +146,14 @@ func modeByteFromString(t *testing.T, s string) byte {
 	}
 }
 
-// TestNISTKAT_MLDSA_PrefixAndPrecompileVerify is the single combined KAT
+// TestDrift_MLDSA_PinnedPrefixes is the single combined KAT
 // driver. For each mode it (a) reconstructs the keypair from the pinned
 // seed, (b) asserts the public-key prefix matches the JSON record,
 // (c) asserts the deterministic signature prefix matches the JSON record,
 // (d) drives the precompile and expects byte[31] == 1, (e) drives the
 // precompile with a single-bit-flipped signature and expects byte[31] == 0.
-func TestNISTKAT_MLDSA_PrefixAndPrecompileVerify(t *testing.T) {
-	vectors := loadMLDSANISTVectors(t)
+func TestDrift_MLDSA_PinnedPrefixes(t *testing.T) {
+	vectors := loadMLDSADriftVectors(t)
 	ctx := precompileCtx
 
 	for _, v := range vectors {
@@ -173,7 +162,7 @@ func TestNISTKAT_MLDSA_PrefixAndPrecompileVerify(t *testing.T) {
 			mode := modeByteFromString(t, v.ModeByte)
 			seed := mustHex(t, v.SeedHex)
 
-			pk, sig := signFromSeed(t, mode, seed, nistKATMessage, ctx)
+			pk, sig := signFromSeed(t, mode, seed, pinnedMessage, ctx)
 
 			require.Equal(t, v.PublicKeySize, len(pk), "%s pubkey size", v.Mode)
 			require.Equal(t, v.SignatureSize, len(sig), "%s signature size", v.Mode)
@@ -188,7 +177,7 @@ func TestNISTKAT_MLDSA_PrefixAndPrecompileVerify(t *testing.T) {
 				"%s: deterministic signature prefix drift -- signing path no longer reproduces FIPS 204 vector",
 				v.Mode)
 
-			input := buildNISTKATInput(mode, pk, nistKATMessage, sig)
+			input := buildPinnedInput(mode, pk, pinnedMessage, sig)
 			gas := MLDSAVerifyPrecompile.RequiredGas(input)
 			ret, _, err := MLDSAVerifyPrecompile.Run(
 				nil, common.Address{}, ContractMLDSAVerifyAddress,
@@ -205,7 +194,7 @@ func TestNISTKAT_MLDSA_PrefixAndPrecompileVerify(t *testing.T) {
 			tampered := make([]byte, len(sig))
 			copy(tampered, sig)
 			tampered[len(tampered)-1] ^= 0x01
-			input = buildNISTKATInput(mode, pk, nistKATMessage, tampered)
+			input = buildPinnedInput(mode, pk, pinnedMessage, tampered)
 			gas = MLDSAVerifyPrecompile.RequiredGas(input)
 			ret, _, err = MLDSAVerifyPrecompile.Run(
 				nil, common.Address{}, ContractMLDSAVerifyAddress,
@@ -218,11 +207,11 @@ func TestNISTKAT_MLDSA_PrefixAndPrecompileVerify(t *testing.T) {
 	}
 }
 
-// TestNISTKAT_MLDSA_AllThreeModesCovered guards against silent shrinkage of
+// TestDrift_MLDSA_AllThreeModesPinned guards against silent shrinkage of
 // the KAT vector set. If a future edit deletes a mode from the JSON file,
 // this test fails loudly.
-func TestNISTKAT_MLDSA_AllThreeModesCovered(t *testing.T) {
-	vectors := loadMLDSANISTVectors(t)
+func TestDrift_MLDSA_AllThreeModesPinned(t *testing.T) {
+	vectors := loadMLDSADriftVectors(t)
 	required := map[byte]bool{
 		ModeMLDSA44: false,
 		ModeMLDSA65: false,
