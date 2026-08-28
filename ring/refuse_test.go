@@ -11,6 +11,7 @@ import (
 
 	"github.com/luxfi/crypto/secp256k1"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,6 +25,17 @@ const headerLen = 2
 
 func ringLen(n int) int { return 1 + n*CompressedPubKeySize }
 func sigLen(n int) int  { return CompressedPubKeySize + 2*n*ScalarSize }
+
+// submit runs input the way the EVM does: a window into memory whose spare
+// capacity belongs to the caller, who filled it before making the call. Every
+// refusal in this file goes through it. Over a fixture built by append the
+// spare region is zeroed, so a read past the declared end looks like a run of
+// harmless zeros and the test passes whether or not the bound it means to
+// exercise is there; 0xA5 makes an over-read visible as an over-read.
+func submit(input []byte, gas uint64) ([]byte, uint64, error) {
+	return RingSignaturePrecompile.Run(
+		nil, common.Address{}, ContractAddress, contract.Poisoned(input, 256), gas, false)
+}
 
 // fixture returns a ring, the signer's signature over msg, and the calldata
 // that verifies.
@@ -62,10 +74,31 @@ func TestRefuseShortCalldata(t *testing.T) {
 		if n > 1 {
 			in[1] = SchemeLSAGSecp256k1
 		}
-		require.Zero(t, RingSignaturePrecompile.RequiredGas(in), "%d bytes must cost nothing", n)
+		// The price is billed off the size byte, so two bytes of calldata must
+		// cost nothing even when a third byte lies just past the declared end:
+		// reading it would bill 165 members the caller never supplied.
+		require.Zero(t, RingSignaturePrecompile.RequiredGas(contract.Poisoned(in, 256)),
+			"%d bytes must cost nothing", n)
 
-		_, _, err := RingSignaturePrecompile.Run(nil, common.Address{}, ContractAddress, in, 1_000_000, false)
+		_, _, err := submit(in, 1_000_000)
 		require.ErrorIs(t, err, ErrInvalidInput, "%d bytes", n)
+	}
+}
+
+// Short calldata is refused as short calldata whatever it names. The whole
+// three-byte header is read before the operation is dispatched, so a two-byte
+// call naming an unknown op or scheme still answers ErrInvalidInput rather than
+// reporting on the op or the scheme -- both of which are decided by a byte the
+// caller did supply, over a size byte they did not.
+func TestShortCalldataOutranksWhatItNames(t *testing.T) {
+	for _, op := range []byte{0x00, OpVerify, 0xFF} {
+		for _, scheme := range []byte{0x00, SchemeLSAGSecp256k1, SchemeLatticeLSAG, 0xFF} {
+			for n := range headerLen + 1 {
+				_, _, err := submit([]byte{op, scheme}[:n], 1_000_000)
+				require.ErrorIs(t, err, ErrInvalidInput,
+					"op 0x%02x scheme 0x%02x over %d bytes", op, scheme, n)
+			}
+		}
 	}
 }
 
@@ -74,9 +107,10 @@ func TestRefuseShortCalldata(t *testing.T) {
 func TestRefuseUnsupportedOp(t *testing.T) {
 	for _, op := range []byte{0x00, 0x01, 0x03, 0x04, 0x05, 0x7F, 0xFF} {
 		in := append([]byte{op, SchemeLSAGSecp256k1, 2}, make([]byte, 300)...)
-		require.Zero(t, RingSignaturePrecompile.RequiredGas(in), "op 0x%02x must cost nothing", op)
+		require.Zero(t, RingSignaturePrecompile.RequiredGas(contract.Poisoned(in, 256)),
+			"op 0x%02x must cost nothing", op)
 
-		out, _, err := RingSignaturePrecompile.Run(nil, common.Address{}, ContractAddress, in, 1_000_000, false)
+		out, _, err := submit(in, 1_000_000)
 		require.Error(t, err, "op 0x%02x", op)
 		require.Contains(t, err.Error(), "unsupported operation")
 		require.Nil(t, out, "a refused op returns no data")
@@ -90,7 +124,7 @@ func TestRefuseUnsupportedScheme(t *testing.T) {
 
 	for _, scheme := range []byte{0x00, SchemeLSAGEd25519, SchemeDualRing, SchemeLatticeLSAG, 0x11, 0xFF} {
 		in := buildVerifyInput(scheme, ring, sig.Serialize(), []byte("m"))
-		out, _, err := RingSignaturePrecompile.Run(nil, common.Address{}, ContractAddress, in, 10_000_000, false)
+		out, _, err := submit(in, 10_000_000)
 		require.ErrorIs(t, err, ErrInvalidScheme, "scheme 0x%02x", scheme)
 		require.Nil(t, out)
 	}
@@ -106,7 +140,7 @@ func TestRefuseRingSmallerThanTwo(t *testing.T) {
 
 	for _, n := range []byte{0, 1} {
 		in := append([]byte{OpVerify, SchemeLSAGSecp256k1, n}, body...)
-		_, _, err := RingSignaturePrecompile.Run(nil, common.Address{}, ContractAddress, in, 10_000_000, false)
+		_, _, err := submit(in, 10_000_000)
 		require.ErrorIs(t, err, ErrInvalidRingSize, "ring size %d", n)
 	}
 
@@ -123,9 +157,37 @@ func TestRefuseRingLargerThanCalldata(t *testing.T) {
 
 	for _, n := range []byte{3, 4, 16, 255} {
 		in := append([]byte{OpVerify, SchemeLSAGSecp256k1, n}, body...)
-		_, _, err := RingSignaturePrecompile.Run(nil, common.Address{}, ContractAddress, in, 10_000_000, false)
+		_, _, err := submit(in, 10_000_000)
 		require.ErrorIs(t, err, ErrInvalidInput, "declared ring size %d over %d bytes", n, len(body))
 	}
+}
+
+// The size byte governs two lengths -- the ring and, through it, the signature
+// -- and each is measured against the calldata rather than against whatever
+// lies behind it. Both fields are walked to exactly one byte past what the call
+// carries, so an unbounded read would find 0xA5 and answer over it: not a
+// panic, not a halt, just a verdict about bytes nobody declared or paid for.
+func TestDeclaredLengthCannotReachPastCalldata(t *testing.T) {
+	_, _, in := fixture(t, "reach", 2, 0, nil) // empty message: calldata ends at the signature
+	ringEnd := headerLen + ringLen(2)
+
+	// One member short of the two claimed: the missing 33 bytes are in the
+	// poisoned tail, and the second member must not be read from there.
+	_, _, err := submit(in[:ringEnd-1], 10_000_000)
+	require.ErrorIs(t, err, ErrInvalidInput, "a ring of two over one member and a byte")
+
+	// The ring is whole; the signature the size byte implies is one byte short.
+	_, _, err = submit(in[:len(in)-1], 10_000_000)
+	require.ErrorIs(t, err, ErrInvalidInput, "a signature one byte past the calldata")
+
+	// A size byte far past the calldata: 255 members over a ring of two.
+	over := append([]byte{OpVerify, SchemeLSAGSecp256k1, 255}, in[headerLen+1:]...)
+	_, _, err = submit(over, 10_000_000)
+	require.ErrorIs(t, err, ErrInvalidInput, "255 members over two members' bytes")
+
+	// The exact call still verifies, so the three refusals above are about the
+	// declared lengths and nothing else.
+	require.True(t, verifies(t, in))
 }
 
 // --- length boundaries -----------------------------------------------------
@@ -142,8 +204,7 @@ func TestFieldLengthBoundaries(t *testing.T) {
 
 		// One byte short of the size byte, of the ring, and of the signature.
 		for _, short := range []int{headerLen, ringEnd - 1, sigEnd - 1} {
-			_, _, err := RingSignaturePrecompile.Run(
-				nil, common.Address{}, ContractAddress, in[:short], 10_000_000, false)
+			_, _, err := submit(in[:short], 10_000_000)
 			require.Error(t, err, "n=%d truncated to %d bytes", n, short)
 			require.ErrorIs(t, err, ErrInvalidInput)
 		}
@@ -164,8 +225,7 @@ func TestTruncationNeverVerifies(t *testing.T) {
 	full := headerLen + ringLen(2) + sigLen(2)
 
 	for cut := range len(in) {
-		out, _, err := RingSignaturePrecompile.Run(
-			nil, common.Address{}, ContractAddress, in[:cut], 10_000_000, false)
+		out, _, err := submit(in[:cut], 10_000_000)
 		if cut < full {
 			require.Error(t, err, "cut=%d must not parse", cut)
 			require.Nil(t, out)
@@ -191,7 +251,7 @@ func TestRefuseAllZeroBody(t *testing.T) {
 		in[0] = OpVerify
 		in[1] = SchemeLSAGSecp256k1
 		in[2] = byte(n)
-		out, _, err := RingSignaturePrecompile.Run(nil, common.Address{}, ContractAddress, in, 10_000_000, false)
+		out, _, err := submit(in, 10_000_000)
 		require.NoError(t, err, "n=%d", n)
 		require.Equal(t, []byte{0x00}, out, "an all-zero ring and signature must not verify")
 	}
@@ -200,8 +260,7 @@ func TestRefuseAllZeroBody(t *testing.T) {
 // All-zero calldata never even reaches the verifier: op 0x00 is not an op.
 func TestRefuseAllZeroCalldata(t *testing.T) {
 	for _, n := range []int{1, 3, 64, 512} {
-		out, _, err := RingSignaturePrecompile.Run(
-			nil, common.Address{}, ContractAddress, make([]byte, n), 10_000_000, false)
+		out, _, err := submit(make([]byte, n), 10_000_000)
 		require.Error(t, err, "%d zero bytes", n)
 		require.Nil(t, out)
 	}
@@ -289,8 +348,7 @@ func TestRefusePoisonScalarWithoutPanic(t *testing.T) {
 	for _, tc := range poison {
 		t.Run(tc.name, func(t *testing.T) {
 			in := buildVerifyInput(SchemeLSAGSecp256k1, ring, tc.sig.Serialize(), []byte("poison"))
-			out, _, err := RingSignaturePrecompile.Run(
-				nil, common.Address{}, ContractAddress, in, 10_000_000, false)
+			out, _, err := submit(in, 10_000_000)
 			require.NoError(t, err)
 			require.Equal(t, []byte{0x00}, out)
 		})
@@ -411,8 +469,7 @@ func TestRingResizeIsRefused(t *testing.T) {
 	_, extra := detKey("resize-extra")
 
 	grown := append(append([][]byte{}, ring...), extra)
-	_, _, err := RingSignaturePrecompile.Run(nil, common.Address{}, ContractAddress,
-		buildVerifyInput(SchemeLSAGSecp256k1, grown, sig.Serialize(), []byte("m")), 10_000_000, false)
+	_, _, err := submit(buildVerifyInput(SchemeLSAGSecp256k1, grown, sig.Serialize(), []byte("m")), 10_000_000)
 	require.ErrorIs(t, err, ErrInvalidInput, "a 4-member claim over a 3-member signature is short")
 
 	shrunk := ring[:2]
@@ -485,15 +542,18 @@ func TestDuplicateRingMembersAreAccepted(t *testing.T) {
 
 // --- direct calls to guards the precompile cannot reach --------------------
 
-// Run refuses calldata shorter than three bytes, so verify never sees an empty
-// body through the precompile. The guard still holds for a direct caller.
-func TestVerifyRefusesEmptyBody(t *testing.T) {
-	out, err := RingSignaturePrecompile.verify(SchemeLSAGSecp256k1, nil)
-	require.ErrorIs(t, err, ErrInvalidInput)
+// The size byte is a claim, and verify takes each member from the cursor, so a
+// ring larger than what is left runs out instead of reading past it.
+// TestRefuseRingLargerThanCalldata reaches this through the precompile; here it
+// is pinned on the function, at the two boundaries a ring of two can miss by.
+func TestVerifyRefusesRingItCannotFill(t *testing.T) {
+	out, err := RingSignaturePrecompile.verify(SchemeLSAGSecp256k1, 2, contract.Read(nil))
+	require.ErrorIs(t, err, ErrInvalidInput, "no members at all")
 	require.Nil(t, out)
 
-	out, err = RingSignaturePrecompile.verify(SchemeLSAGSecp256k1, []byte{})
-	require.ErrorIs(t, err, ErrInvalidInput)
+	oneMember := contract.Poisoned(make([]byte, CompressedPubKeySize), 256)
+	out, err = RingSignaturePrecompile.verify(SchemeLSAGSecp256k1, 2, contract.Read(oneMember))
+	require.ErrorIs(t, err, ErrInvalidInput, "the second member exists only past the declared end")
 	require.Nil(t, out)
 }
 

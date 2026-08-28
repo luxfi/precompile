@@ -12,6 +12,7 @@ import (
 
 	"github.com/luxfi/crypto/secp256k1"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,10 +77,14 @@ func mustSign(t *testing.T, ring [][]byte, sk []byte, idx int, msg []byte, seed 
 	return sig
 }
 
-// run calls the precompile with exactly the gas it asks for.
+// run calls the precompile with exactly the gas it asks for, over the input
+// shape the EVM actually hands one: len is what the caller declared and paid
+// for, and behind it lies memory the same caller filled. Without the poison an
+// over-read lands on zeros and a missing bound looks like a passing test.
 func run(input []byte) ([]byte, uint64, error) {
-	gas := RingSignaturePrecompile.RequiredGas(input)
-	return RingSignaturePrecompile.Run(nil, common.Address{}, ContractAddress, input, gas, false)
+	in := contract.Poisoned(input, 256)
+	gas := RingSignaturePrecompile.RequiredGas(in)
+	return RingSignaturePrecompile.Run(nil, common.Address{}, ContractAddress, in, gas, false)
 }
 
 // verifies reports the precompile's answer as a bool, failing on any error.

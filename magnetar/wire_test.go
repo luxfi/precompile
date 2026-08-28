@@ -69,6 +69,18 @@ func TestRun_RejectsShortHeader(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidInputLength)
 	require.ErrorContains(t, err, "expected pubkey size 32")
 	require.Nil(t, out)
+
+	// Both header fields are read before the mode is resolved, so short
+	// calldata is refused as short calldata whatever byte sits at offset 0.
+	// Resolving the mode first would answer ErrUnsupportedMode for a call that
+	// is missing its header -- reporting on a field the caller never supplied.
+	for _, mode := range []uint8{ModeSHA2_128s, ModeSHAKE_256f, 0x06, 0x7F, 0xFF} {
+		for _, in := range [][]byte{{mode}, {mode, 0x00}} {
+			_, err := call(t, in)
+			require.ErrorIs(t, err, ErrInvalidInputLength, "mode=0x%02x len=%d", mode, len(in))
+			require.ErrorContains(t, err, "need at least 3 bytes", "mode=0x%02x", mode)
+		}
+	}
 }
 
 // TestRun_RejectsUnknownMode sweeps all 256 mode bytes. Exactly the twelve
@@ -157,6 +169,50 @@ func TestRun_FrameIsExact(t *testing.T) {
 		require.ErrorContains(t, err, "expected exactly 7925 bytes", "extra=%d", extra)
 		require.Nil(t, out, "a padded frame must not verify", extra)
 	}
+}
+
+// TestRun_DeclaredLengthCannotReachPastCalldata walks each declared length one
+// byte past what the call actually carries, over spare capacity the caller
+// filled. A parser that slices instead of bounding does not panic here and does
+// not halt a validator: it finds 0xA5 past the end and returns a verdict over
+// material nobody declared and nobody paid gas for. Every field the wire format
+// declares a length for is exercised -- the public key, the message, and the
+// signature the mode fixes.
+func TestRun_DeclaredLengthCannotReachPastCalldata(t *testing.T) {
+	frame := katFrame(t)
+
+	// A declared 32-byte public key over 31 bytes of calldata.
+	shortKey := frame[:ModeByte+PubKeyLenSize+SLH128PublicKeySize-1]
+	out, err := call(t, shortKey)
+	require.ErrorIs(t, err, ErrInvalidInputLength, "a public key one byte past the calldata")
+	require.ErrorContains(t, err, "input too short for message length")
+	require.Nil(t, out)
+
+	// The quote reads the message-length header from behind that key, so it has
+	// to come up short in the same place. Reading on would price 0xA5A5 bytes
+	// of message the caller never supplied.
+	_, _, baseGas, _, err := getModeParams(katMode)
+	require.NoError(t, err)
+	require.Equal(t, baseGas,
+		MagnetarVerifyPrecompile.RequiredGas(contract.Poisoned(shortKey, 256)),
+		"a short frame is priced at the mode's base, not off bytes past its end")
+
+	// A declared 32-byte message over 31 bytes of calldata.
+	out, err = call(t, frame[:msgLenOffset+MessageLenSize+32-1])
+	require.ErrorIs(t, err, ErrInvalidInputLength, "a message one byte past the calldata")
+	require.Nil(t, out)
+
+	// The signature, whose last byte is the only thing missing.
+	out, err = call(t, frame[:len(frame)-1])
+	require.ErrorIs(t, err, ErrInvalidInputLength, "a signature one byte past the calldata")
+	require.ErrorContains(t, err, "expected exactly 7925 bytes, got 7924")
+	require.Nil(t, out)
+
+	// The exact frame still verifies, so the refusals above are about the
+	// declared lengths and nothing else.
+	out, err = call(t, frame)
+	require.NoError(t, err)
+	require.Equal(t, word(1), out)
 }
 
 // TestRun_TruncatedSignature removes bytes from the signature tail. Each is
@@ -272,6 +328,7 @@ func TestRun_NeverPanics(t *testing.T) {
 				if n > 0 {
 					in[0] = mode
 				}
+				in = contract.Poisoned(in, 256)
 				require.NotPanics(t, func() {
 					MagnetarVerifyPrecompile.RequiredGas(in)
 					_, _, _ = MagnetarVerifyPrecompile.Run(
@@ -288,7 +345,7 @@ func TestRun_NeverPanics(t *testing.T) {
 // RequiredGas asks for, and what Run hands back -- on the accepting path, on a
 // refusing path, and at the boundary where one wei of gas is missing.
 func TestRun_GasAccounting(t *testing.T) {
-	frame := katFrame(t)
+	frame := contract.Poisoned(katFrame(t), 256)
 	need := MagnetarVerifyPrecompile.RequiredGas(frame)
 	require.Positive(t, need)
 
@@ -344,12 +401,13 @@ func TestRun_RefusalStillCharges(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const surplus = 11
-			need := MagnetarVerifyPrecompile.RequiredGas(tc.input)
+			in := contract.Poisoned(tc.input, 256)
+			need := MagnetarVerifyPrecompile.RequiredGas(in)
 			require.Positive(t, need)
 
 			out, remaining, err := MagnetarVerifyPrecompile.Run(
 				nil, common.Address{}, ContractMagnetarVerifyAddress,
-				tc.input, need+surplus, true)
+				in, need+surplus, true)
 			require.ErrorIs(t, err, tc.want)
 			require.Nil(t, out)
 			require.Equal(t, uint64(surplus), remaining,

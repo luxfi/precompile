@@ -46,7 +46,6 @@
 package magnetar
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -187,34 +186,37 @@ func getModeParams(mode uint8) (pubKeySize, sigSize int, baseGas uint64, slhdsaM
 // RequiredGas calculates the gas required for Magnetar verification.
 // Identical schedule to the SLH-DSA precompile: per-mode base plus a
 // per-byte cost over the message body.
+//
+// A price cannot report a parse failure, so every read that comes up short
+// falls back to the price already settled: the flat default before the mode is
+// known, that mode's base once it is. It reads through a cursor for the same
+// reason Run does — pricing a message length taken from past the end of the
+// calldata bills the caller for bytes they never supplied.
 func (p *magnetarVerifyPrecompile) RequiredGas(input []byte) uint64 {
-	if len(input) < ModeByte {
+	in := contract.Read(input)
+
+	mode, err := in.Byte()
+	if err != nil {
 		return MagnetarDefaultGas
 	}
-
-	mode := input[0]
 	pubKeySize, _, baseGas, _, err := getModeParams(mode)
 	if err != nil {
 		return MagnetarDefaultGas
 	}
 
-	// Need enough bytes to read the pubkey-length header.
-	headerSize := ModeByte + PubKeyLenSize
-	if len(input) < headerSize {
+	// The message length sits behind the public key, so the key has to be
+	// stepped over before the header that prices the body can be read.
+	pubKeyLen, err := in.Uint16()
+	if err != nil || int(pubKeyLen) != pubKeySize {
 		return baseGas
 	}
-
-	pubKeyLen := int(binary.BigEndian.Uint16(input[ModeByte : ModeByte+PubKeyLenSize]))
-	if pubKeyLen != pubKeySize {
-		return baseGas // invalid pubkey size for mode
-	}
-
-	msgLenOffset := headerSize + pubKeyLen
-	if len(input) < msgLenOffset+MessageLenSize {
+	if _, err := in.Bytes(uint64(pubKeyLen)); err != nil {
 		return baseGas
 	}
-
-	msgLen := binary.BigEndian.Uint16(input[msgLenOffset : msgLenOffset+MessageLenSize])
+	msgLen, err := in.Uint16()
+	if err != nil {
+		return baseGas
+	}
 
 	return baseGas + (uint64(msgLen) * MagnetarVerifyPerByteGas)
 }
@@ -237,6 +239,13 @@ func (p *magnetarVerifyPrecompile) RequiredGas(input []byte) uint64 {
 // party FIPS 205, so the verifier is interchangeable. The dedicated
 // slot is what binds the verification to "this signature came from a
 // threshold ceremony" for on-chain code that cares about the binding.
+//
+// Every field is taken from a contract.Cursor, so no bound here is written by
+// hand and none can be deleted. The frame was previously safe by an argument —
+// one exact total length checked at the end happened to dominate every earlier
+// slice — and an argument is not a bound: it holds until someone adds a field.
+// See contract/cursor.go for why a slice expression is not a refusal on this
+// input.
 func (p *magnetarVerifyPrecompile) Run(
 	_ contract.AccessibleState,
 	_ common.Address,
@@ -251,50 +260,52 @@ func (p *magnetarVerifyPrecompile) Run(
 		return nil, 0, err
 	}
 
-	// Minimum: mode byte + pubkey length header.
+	in := contract.Read(input)
+
+	// The header is [mode][pubkey_len], both fixed-size, so both are read
+	// before the mode is resolved: a call too short to carry the header is
+	// refused for the header rather than for whichever byte happened to land
+	// at offset 0. Either read coming up short means the same thing.
 	minHeader := ModeByte + PubKeyLenSize
-	if len(input) < minHeader {
+	mode, modeErr := in.Byte()
+	pubKeyLen, pubKeyLenErr := in.Uint16()
+	if modeErr != nil || pubKeyLenErr != nil {
 		return nil, remainingGas, fmt.Errorf("%w: need at least %d bytes", ErrInvalidInputLength, minHeader)
 	}
 
-	mode := input[0]
 	pubKeySize, sigSize, _, slhdsaMode, err := getModeParams(mode)
 	if err != nil {
 		return nil, remainingGas, fmt.Errorf("%w: 0x%02x", ErrUnsupportedMode, mode)
 	}
 
-	pubKeyLen := int(binary.BigEndian.Uint16(input[ModeByte : ModeByte+PubKeyLenSize]))
-	if pubKeyLen != pubKeySize {
+	// Equality, not "fits": a length that only fits would let a caller pad the
+	// key and shift every later offset, choosing which bytes the verifier sees.
+	if int(pubKeyLen) != pubKeySize {
 		return nil, remainingGas, fmt.Errorf("%w: expected pubkey size %d for mode 0x%02x, got %d",
 			ErrInvalidInputLength, pubKeySize, mode, pubKeyLen)
 	}
 
-	pubKeyStart := ModeByte + PubKeyLenSize
-	pubKeyEnd := pubKeyStart + pubKeyLen
-	msgLenStart := pubKeyEnd
-	msgLenEnd := msgLenStart + MessageLenSize
-
-	if len(input) < msgLenEnd {
+	// The key and the message-length header behind it are one refusal: a key
+	// that does not fit and a header that does not fit are the same fact about
+	// the same offset, which is how the frame this replaces read it.
+	publicKey, pubKeyErr := in.Bytes(uint64(pubKeyLen))
+	msgLen, msgLenErr := in.Uint16()
+	if pubKeyErr != nil || msgLenErr != nil {
 		return nil, remainingGas, fmt.Errorf("%w: input too short for message length", ErrInvalidInputLength)
 	}
 
-	msgLen := int(binary.BigEndian.Uint16(input[msgLenStart:msgLenEnd]))
-	msgStart := msgLenEnd
-	msgEnd := msgStart + msgLen
-	sigStart := msgEnd
-	sigEnd := sigStart + sigSize
-
-	// Validate total input size. Exact, not "at least": trailing bytes would
-	// let one signature be presented under many distinct calldatas, and the
+	// The frame is pinned exactly, not as a minimum: trailing bytes would let
+	// one signature be presented under many distinct calldatas, and the
 	// single-party SLH-DSA precompile next door pins the same frame exactly.
-	if len(input) != sigEnd {
+	// Short and long are one refusal because they are one fact -- len(input) is
+	// not sigEnd -- so End() carries the same message a short read does.
+	sigEnd := ModeByte + PubKeyLenSize + int(pubKeyLen) + MessageLenSize + int(msgLen) + sigSize
+	message, msgErr := in.Bytes(uint64(msgLen))
+	signature, sigErr := in.Bytes(uint64(sigSize))
+	if msgErr != nil || sigErr != nil || in.End() != nil {
 		return nil, remainingGas, fmt.Errorf("%w: expected exactly %d bytes, got %d",
 			ErrInvalidInputLength, sigEnd, len(input))
 	}
-
-	publicKey := input[pubKeyStart:pubKeyEnd]
-	message := input[msgStart:msgEnd]
-	signature := input[sigStart:sigEnd]
 
 	// A FIPS 205 public key is seed || root, two unstructured n-byte hash
 	// outputs, so the only way this parses badly is a wrong length -- and the
