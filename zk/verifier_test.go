@@ -5,6 +5,7 @@ package zk
 
 import (
 	"encoding/hex"
+	"errors"
 	"math/big"
 	"testing"
 
@@ -653,12 +654,16 @@ func TestVerifyRangeProof(t *testing.T) {
 	commitment := make([]byte, 32)
 	rangeProof := make([]byte, 128)
 
+	// There is no bulletproof verifier, so this must refuse. It used to
+	// answer "true" to any non-empty byte strings, which made every range
+	// proof valid and every confidential amount unconstrained.
 	valid, err := zv.VerifyRangeProof(commitment, rangeProof, 64)
-	if err != nil {
-		t.Fatalf("VerifyRangeProof failed: %v", err)
+	if valid {
+		t.Fatal("VerifyRangeProof accepted a proof it cannot check")
 	}
-
-	_ = valid // Returns true for range proof structural validation
+	if !errors.Is(err, ErrRangeProofUnavailable) {
+		t.Fatalf("expected ErrRangeProofUnavailable, got %v", err)
+	}
 }
 
 // TestVerificationStatistics tests stats tracking
@@ -1078,14 +1083,18 @@ func TestVerifyHalo2Full(t *testing.T) {
 		vk.IC[i][0] = byte(i + 1) // Non-zero
 	}
 
-	// Full verification should complete
+	// The keyed path must REFUSE. It can fold the IPA rounds, but the
+	// closing equation needs the commitment key's SRS generators, which a
+	// Groth16-shaped VerifyingKey does not carry. Returning true here — as
+	// this function once did — made op 0x04 accept every proof for every
+	// statement as soon as any Halo2 key was registered.
 	valid, err := verifyHalo2Full(proof, vk)
-	if err != nil {
-		t.Fatalf("verifyHalo2Full failed: %v", err)
+	if valid {
+		t.Fatal("verifyHalo2Full accepted a proof it cannot check")
 	}
-	// Structural validation passes; actual curve point verification
-	// is performed by the on-chain BN254/Pallas precompile calls.
-	_ = valid
+	if !errors.Is(err, ErrHalo2KeyIncomplete) {
+		t.Fatalf("expected ErrHalo2KeyIncomplete, got %v", err)
+	}
 }
 
 // TestComputeHalo2Challenges tests Fiat-Shamir challenge generation
@@ -1358,16 +1367,17 @@ func buildTestHalo2Proof(numInputs, numAdvice, numInstance int, numRounds uint32
 		offset += 32
 	}
 
-	// a_scalar (32 bytes) - non-zero
-	data[offset] = 0x50
+	// a_scalar, evalPoint, claimedEval (32 bytes each): non-zero AND
+	// canonical. The marker byte goes in the LOW-order position: a
+	// leading 0x50 would make the value exceed the Pallas group order,
+	// which isValidScalar now rejects (it used to check only the length).
+	data[offset+31] = 0x50
 	offset += 32
 
-	// evalPoint (32 bytes) - non-zero
-	data[offset] = 0x60
+	data[offset+31] = 0x60
 	offset += 32
 
-	// claimedEval (32 bytes) - non-zero
-	data[offset] = 0x70
+	data[offset+31] = 0x70
 
 	return data
 }

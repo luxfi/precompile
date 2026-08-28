@@ -5,6 +5,7 @@ package zk
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"math/big"
 	"sync"
@@ -69,6 +70,51 @@ func NewZKVerifier() *ZKVerifier {
 	}
 }
 
+// verifyingKeyID derives the identifier a key is stored and referenced
+// under. It must commit to EVERY field that defines the key, with each
+// field length-prefixed.
+//
+// The previous derivation, sha256(alpha‖beta‖gamma‖delta), failed both
+// requirements. It omitted IC — the public-input constraints — so two keys
+// differing only in IC shared an ID and registering the second silently
+// replaced the first under an ID other code already referenced. And the
+// bare concatenation was ambiguous: (alpha="ab", beta="c") hashed
+// identically to (alpha="a", beta="bc").
+//
+// Length prefixes make the encoding injective, so distinct keys have
+// distinct IDs.
+func verifyingKeyID(
+	proofSystem ProofSystem,
+	circuitType CircuitType,
+	alpha, beta, gamma, delta []byte,
+	ic [][]byte,
+) [32]byte {
+	h := sha256.New()
+	h.Write([]byte("lux/zk/verifying-key/v1"))
+	h.Write([]byte{byte(proofSystem), byte(circuitType)})
+
+	var n [4]byte
+	field := func(b []byte) {
+		binary.BigEndian.PutUint32(n[:], uint32(len(b)))
+		h.Write(n[:])
+		h.Write(b)
+	}
+	field(alpha)
+	field(beta)
+	field(gamma)
+	field(delta)
+
+	binary.BigEndian.PutUint32(n[:], uint32(len(ic)))
+	h.Write(n[:])
+	for _, e := range ic {
+		field(e)
+	}
+
+	var id [32]byte
+	copy(id[:], h.Sum(nil))
+	return id
+}
+
 // RegisterVerifyingKey registers a new verification key
 func (zv *ZKVerifier) RegisterVerifyingKey(
 	owner common.Address,
@@ -80,11 +126,7 @@ func (zv *ZKVerifier) RegisterVerifyingKey(
 	zv.mu.Lock()
 	defer zv.mu.Unlock()
 
-	// Generate key ID
-	keyData := append(alpha, beta...)
-	keyData = append(keyData, gamma...)
-	keyData = append(keyData, delta...)
-	keyID := sha256.Sum256(keyData)
+	keyID := verifyingKeyID(proofSystem, circuitType, alpha, beta, gamma, delta, ic)
 
 	vk := &VerifyingKey{
 		KeyID:       keyID,
@@ -95,7 +137,7 @@ func (zv *ZKVerifier) RegisterVerifyingKey(
 		Gamma:       gamma,
 		Delta:       delta,
 		IC:          ic,
-		Hash:        sha256.Sum256(keyData),
+		Hash:        keyID,
 		Owner:       owner,
 		CreatedAt:   uint64(time.Now().Unix()),
 	}
@@ -313,6 +355,22 @@ func (zv *ZKVerifier) fflonkVerify(
 	return true
 }
 
+// degenerate reports whether any given curve element is absent or is the
+// point at infinity. bn256 marshals affine (x,y) uncompressed and encodes
+// the identity as all zeros, so an all-zero element IS the identity.
+//
+// The identity is the one curve point that makes a pairing factor
+// unconditionally 1, which is why a verifying key containing one accepts
+// every proof. Rejecting it is a soundness requirement, not hygiene.
+func degenerate(elems ...[]byte) bool {
+	for _, e := range elems {
+		if len(e) == 0 || isZeroBytes(e) {
+			return true
+		}
+	}
+	return false
+}
+
 // blsScalarField returns the BLS12-381 scalar field order r.
 func blsScalarField() *big.Int {
 	r := new(big.Int)
@@ -416,13 +474,16 @@ func (zv *ZKVerifier) VerifyRangeProof(
 	rangeProof []byte,
 	bitLength uint32,
 ) (bool, error) {
-	zv.mu.RLock()
-	defer zv.mu.RUnlock()
-
-	// Bulletproofs-style range proof verification
-	valid := zv.bulletproofRangeVerify(commitment, rangeProof, bitLength)
-
-	return valid, nil
+	// No bulletproof verifier is wired. Refuse.
+	//
+	// This used to answer `len(commitment) > 0 && len(rangeProof) > 0 &&
+	// bitLength > 0` — a length check reported as a verification verdict,
+	// so every well-formed byte string was a valid range proof. A range
+	// proof is what stops a confidential transfer minting value out of
+	// nothing, so accepting all of them defeats the whole scheme. The
+	// helper is gone rather than fixed: a function that cannot verify must
+	// not be shaped like a verifier.
+	return false, ErrRangeProofUnavailable
 }
 
 // CheckNullifier checks if a nullifier has been spent
@@ -671,6 +732,15 @@ func (zv *ZKVerifier) groth16PairingCheck(
 	proofA, proofB, proofC []byte,
 	publicInputs []*big.Int,
 ) bool {
+	// A key whose elements are the identity verifies EVERYTHING: e(O,Q)=1,
+	// so each factor of the product collapses and the check succeeds for
+	// every proof and every statement. No honest setup emits one — alpha,
+	// beta, gamma, delta are g^x for random nonzero x. Refuse before doing
+	// any arithmetic, so nobody who can register a key can forge with it.
+	if degenerate(vk.Alpha, vk.Beta, vk.Gamma, vk.Delta) || degenerate(vk.IC...) {
+		return false
+	}
+
 	// Parse proof elements
 	var a bn256.G1
 	if _, err := a.Unmarshal(proofA); err != nil {
@@ -790,6 +860,14 @@ func (zv *ZKVerifier) plonkVerify(
 	proof []byte,
 	publicInputs []*big.Int,
 ) bool {
+	// Same degeneracy refusal as Groth16: an identity selector or an
+	// identity X2 collapses the pairing and accepts every proof. vk.Beta is
+	// read below as the G2 generator, and vk.IC as the eight selectors plus
+	// X2, so all of them must be non-identity.
+	if degenerate(vk.Beta) || degenerate(vk.IC...) {
+		return false
+	}
+
 	// Minimum proof size: 9 G1 points (576 bytes) + 6 scalars (192 bytes) = 768 bytes
 	const minProofSize = 768
 	if len(proof) < minProofSize {
@@ -1015,17 +1093,6 @@ func (zv *ZKVerifier) kzgPointEvaluation(
 	// Verify the proof using the kzg4844 package
 	err := kzg4844.VerifyProof(kzgCommitment, kzgPoint, kzgClaim, kzgProof)
 	return err == nil
-}
-
-func (zv *ZKVerifier) bulletproofRangeVerify(
-	commitment []byte,
-	rangeProof []byte,
-	bitLength uint32,
-) bool {
-	// Bulletproofs range proof verification
-	// Proves that committed value v satisfies 0 ≤ v < 2^n
-
-	return len(commitment) > 0 && len(rangeProof) > 0 && bitLength > 0
 }
 
 func (zv *ZKVerifier) verifyMerkleProof(
