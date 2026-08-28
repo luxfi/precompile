@@ -27,7 +27,48 @@ import (
 	"testing"
 
 	"github.com/luxfi/geth/common"
+	"github.com/stretchr/testify/require"
 )
+
+// TestStarkFRI_FloorMatchesBackend: the precompile refuses below
+// MinSoundnessBits so the policy is legible in the chain's own code,
+// but the verifier is where the number comes from. A second copy is
+// only safe while it agrees, and only the tagged build can ask — so
+// this is where the two are held together.
+//
+// If this fails, the precompile and the library it links disagree
+// about which proofs are worth verifying, and the looser of the two
+// decides.
+func TestStarkFRI_FloorMatchesBackend(t *testing.T) {
+	require.Equal(t, uint32(MinSoundnessBits), backendSoundnessFloor(),
+		"the precompile's floor and the linked verifier's floor have drifted")
+}
+
+// TestStarkFRI_FloorRefusesBeforeFFI: with the real backend wired, a
+// proof below the floor is refused by the precompile, and the same
+// bytes handed straight to the backend are refused there too. Neither
+// side is load-bearing alone.
+func TestStarkFRI_FloorRefusesBeforeFFI(t *testing.T) {
+	useRealVerifier(t)
+	pub, proof := loadGolden(t, "p3q_v1_sha3_golden")
+	require.NoError(t, runPrecompile(t, pub, proof), "the golden proof must verify")
+
+	// The header sits at a fixed offset behind the envelope tag and the
+	// profile byte; drop num_queries by one and the proof states 126
+	// bits where the chain demands 128.
+	weak := append([]byte(nil), proof...)
+	require.Equal(t, byte(64), weak[offsetQueries])
+	weak[offsetQueries] = 63
+
+	require.ErrorIs(t, runPrecompile(t, pub, weak), ErrInsufficientSoundness)
+
+	// And through the backend directly, bypassing the Go floor: the
+	// verifier refuses it on its own.
+	ok, err := p3qVerify(weak[len(MagicHeader):], pub)
+	require.False(t, ok)
+	require.ErrorIs(t, err, errBackendParse,
+		"the verifier must refuse sub-floor parameters at header decode")
+}
 
 // goldenDir locates p3q/vectors relative to this package
 // (precompile/starkfri → ../../p3q/vectors).

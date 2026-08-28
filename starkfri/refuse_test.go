@@ -70,9 +70,9 @@ func TestSF_SafeRefuseIsTheDefault(t *testing.T) {
 	sfClear(t)
 
 	proofs := [][]byte{
-		[]byte(MagicHeader),
-		append([]byte(MagicHeader), bytes.Repeat([]byte{0x00}, 64)...),
-		append([]byte(MagicHeader), bytes.Repeat([]byte{0xff}, 4096)...),
+		sfProof(nil),
+		sfProof(bytes.Repeat([]byte{0x00}, 64)),
+		sfProof(bytes.Repeat([]byte{0xff}, 4096)),
 	}
 	pubs := [][]byte{{}, {0xaa}, bytes.Repeat([]byte{0x5a}, 256)}
 
@@ -124,7 +124,7 @@ func TestSF_VerifyChecksStructureBeforeConsultingTheVerifier(t *testing.T) {
 		"the verifier was consulted for a proof that failed structural validation")
 
 	// Control: a well-formed header does reach it.
-	ok, err := Verify([]byte(MagicHeader), []byte{0x01})
+	ok, err := Verify(sfProof(nil), []byte{0x01})
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.True(t, called)
@@ -134,7 +134,7 @@ func TestSF_VerifyChecksStructureBeforeConsultingTheVerifier(t *testing.T) {
 // distinctly, never collapsing a failure into a success.
 func TestSF_VerifySurfacesTheVerdict(t *testing.T) {
 	sfClear(t)
-	proof := append([]byte(MagicHeader), 0x01, 0x02)
+	proof := sfProof([]byte{0x01, 0x02})
 
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) { return true, nil })
 	ok, err := Verify(proof, nil)
@@ -165,7 +165,7 @@ func TestSF_VerifySurfacesTheVerdict(t *testing.T) {
 func TestSF_VerifyPassesTheWireThrough(t *testing.T) {
 	sfClear(t)
 
-	proof := append([]byte(MagicHeader), []byte("body-bytes")...)
+	proof := sfProof([]byte("body-bytes"))
 	pub := []byte("public-inputs")
 
 	var gotVer byte
@@ -209,7 +209,7 @@ func TestSF_RegistrationSeams(t *testing.T) {
 	// again — a verifier cannot be made permanent by accident.
 	RegisterVerifier(nil)
 	require.Nil(t, loadVerifier())
-	_, err := Verify([]byte(MagicHeader), nil)
+	_, err := Verify(sfProof(nil), nil)
 	require.ErrorIs(t, err, ErrVerifierNotRegistered)
 
 	// RegisterVerifier FORCES, overriding a default already in place.
@@ -217,7 +217,7 @@ func TestSF_RegistrationSeams(t *testing.T) {
 		return false, ErrVerifierNotRegistered
 	}))
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) { return true, nil })
-	ok, err := Verify([]byte(MagicHeader), nil)
+	ok, err := Verify(sfProof(nil), nil)
 	require.NoError(t, err)
 	require.True(t, ok, "RegisterVerifier must override an installed default")
 }
@@ -229,7 +229,7 @@ func TestSF_WireBoundsAreRefusedNotPanicked(t *testing.T) {
 	sfClear(t)
 	RegisterVerifier(func(byte, []byte, []byte) (bool, error) { return true, nil })
 
-	proof := append([]byte(MagicHeader), []byte("body")...)
+	proof := sfProof([]byte("body"))
 	pub := []byte{0xaa}
 	good := sfWire(VersionV1, proof, pub)
 
@@ -287,7 +287,7 @@ func TestSF_RefusesLengthDeclaredPastTheCalldata(t *testing.T) {
 		return true, nil
 	})
 
-	proof := append([]byte(MagicHeader), []byte("body")...)
+	proof := sfProof([]byte("body"))
 	pub := []byte{0xaa}
 	good := sfWire(VersionV1, proof, pub)
 
@@ -339,7 +339,7 @@ func TestSF_GasIsChargedAndProportional(t *testing.T) {
 		prev = got
 	}
 
-	proof := append([]byte(MagicHeader), bytes.Repeat([]byte{1}, 128)...)
+	proof := sfProof(bytes.Repeat([]byte{1}, 128))
 	in := sfWire(VersionV1, proof, []byte{0xaa})
 	need := StarkFRIVerifyPrecompile.RequiredGas(in)
 

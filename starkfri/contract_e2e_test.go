@@ -73,7 +73,7 @@ func TestStarkFRI_E2E_VerifiesNRealishProofs(t *testing.T) {
 		_, err = rand.Read(pub)
 		require.NoError(t, err)
 
-		proof := append([]byte(MagicHeader), body...)
+		proof := sfProof(body)
 		input := buildInput(VersionV1, proof, pub)
 
 		gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
@@ -142,7 +142,7 @@ func TestStarkFRI_E2E_VerifierFailureSurfacesAsInvalidProof(t *testing.T) {
 		},
 	}
 
-	proof := append([]byte(MagicHeader), make([]byte, 64)...)
+	proof := sfProof(make([]byte, 64))
 	pub := []byte{0x01, 0x02}
 	input := buildInput(VersionV1, proof, pub)
 
@@ -212,7 +212,7 @@ func TestStarkFRI_E2E_OOGShortCircuit(t *testing.T) {
 	})
 	defer RegisterVerifier(nil)
 
-	proof := append([]byte(MagicHeader), make([]byte, 64)...)
+	proof := sfProof(make([]byte, 64))
 	pub := []byte{0x01}
 	input := buildInput(VersionV1, proof, pub)
 	gas := StarkFRIVerifyPrecompile.RequiredGas(input) - 1 // one wei short
@@ -231,7 +231,7 @@ func TestStarkFRI_E2E_OOGShortCircuit(t *testing.T) {
 // the same (version, proof, pub) triple.
 func TestStarkFRI_E2E_RoundTripParser(t *testing.T) {
 	wantVersion := VersionV1
-	wantProof := append([]byte(MagicHeader), []byte("P3Q-STARK-payload-bytes-N-rounds")...)
+	wantProof := sfProof([]byte("P3Q-STARK-payload-bytes-N-rounds"))
 	wantPub := []byte{0xab, 0xcd, 0xef, 0x12, 0x34}
 
 	var saw struct {
@@ -291,7 +291,7 @@ func TestStarkFRI_Fuzz_TruncatedInput(t *testing.T) {
 	})
 	defer RegisterVerifier(nil)
 
-	full := buildInput(VersionV1, append([]byte(MagicHeader), make([]byte, 64)...), []byte{0xaa, 0xbb})
+	full := buildInput(VersionV1, sfProof(make([]byte, 64)), []byte{0xaa, 0xbb})
 	for k := 0; k < len(full); k++ {
 		input := full[:k]
 		gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2
@@ -320,7 +320,7 @@ func TestStarkFRI_Fuzz_PaddedInput(t *testing.T) {
 	})
 	defer RegisterVerifier(nil)
 
-	canonical := buildInput(VersionV1, append([]byte(MagicHeader), make([]byte, 16)...), []byte{0xaa})
+	canonical := buildInput(VersionV1, sfProof(make([]byte, 16)), []byte{0xaa})
 	padded := append(bytes.Clone(canonical), make([]byte, 64)...)
 	gas := StarkFRIVerifyPrecompile.RequiredGas(padded) * 2
 	_, _, err := StarkFRIVerifyPrecompile.Run(
@@ -349,7 +349,7 @@ func TestStarkFRI_Fuzz_BitFlipped(t *testing.T) {
 	defer RegisterVerifier(nil)
 
 	canonical := buildInput(VersionV1,
-		append([]byte(MagicHeader), make([]byte, 128)...),
+		sfProof(make([]byte, 128)),
 		make([]byte, 32))
 
 	for i := 0; i < iterations; i++ {
@@ -429,7 +429,7 @@ func TestStarkFRI_Fuzz_WrongVersion(t *testing.T) {
 		if byte(v) == VersionV1 {
 			continue
 		}
-		proof := append([]byte(MagicHeader), make([]byte, 64)...)
+		proof := sfProof(make([]byte, 64))
 		pub := []byte{0xaa}
 		input := buildInput(byte(v), proof, pub)
 		gas := StarkFRIVerifyPrecompile.RequiredGas(input) * 2

@@ -109,6 +109,18 @@ var (
 	errBackendPanic       = errors.New("starkfri/p3q: backend panicked (caught at FFI boundary)")
 )
 
+// backendSoundnessFloor reports the query-phase soundness, in bits,
+// that the LINKED verifier requires before it will do any work.
+//
+// MinSoundnessBits is the same number stated on this side of the FFI,
+// so the chain's policy is readable in the chain's own code. Two
+// copies of a consensus parameter are only safe while they agree, and
+// this is what lets a test ask. cgo cannot be called from a _test.go
+// file, so the accessor lives here.
+func backendSoundnessFloor() uint32 {
+	return uint32(C.p3q_min_soundness_bits())
+}
+
 // p3qVerify is the cgo bridge to `p3q_verify`. It performs the genuine
 // FRI low-degree test (Merkle-cap authentication + per-query
 // colinearity folds + final-polynomial check) under a Fiat-Shamir
