@@ -200,14 +200,9 @@ func receiveOperatorValue(stateDB StateDB, caller common.Address, asset Currency
 		if _, of := uint256.FromBig(amount); of {
 			return nil, ErrSeedBadAmount
 		}
-		// delivered = realBal − (settleVault + seamReserve + committedPositions): the native
-		// this call carried, since every native-moving path keeps the three pots in lock-step
-		// with the vault's real native balance.
-		realBal := stateDB.GetBalance(poolManagerAddr9999).ToBig()
-		tracked := new(big.Int).Set(loadSettleVault(stateDB, aid))
-		tracked.Add(tracked, loadSeamReserve(stateDB, aid))
-		tracked.Add(tracked, loadCommittedPositions(stateDB, aid))
-		delivered := new(big.Int).Sub(realBal, tracked)
+		// deliveredNative (native_zap.go) is the one answer to how much native this call
+		// carried: the vault's real balance less every pot already accounted for.
+		delivered := deliveredNative(stateDB, aid)
 		if delivered.Sign() < 0 || delivered.Cmp(amount) < 0 {
 			return nil, ErrSeedUndelivered
 		}
