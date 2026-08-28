@@ -1204,24 +1204,33 @@ func TestBlueCCustodyGuardIsOneSlotForTheWholeSurface(t *testing.T) {
 	}
 }
 
-// TestBlueCInitializeGuardsAreNotReachableTwice pins WHY two arms of the initialize
-// path can never execute, so a future change that makes them reachable shows up here
-// rather than as silently dead code.
+// TestBlueCInitializeGuardsAreNotReachableTwice pins what each arm of the initialize
+// path can and cannot do, so a future change that alters reachability shows up here
+// rather than as silently dead — or silently live — code.
 //
-//   - the PoolKey decode: the handler has already required 192 bytes, and DecodePoolKey
-//     only refuses under 160. It cannot fail on the slice it is handed.
+//   - the PoolKey decode: it used to refuse only on length, so at the 192 bytes the
+//     handler has already required, its error arm was dead. It now also refuses a fee
+//     or tick spacing wider than the 24 bits the wire format declares, so the arm is
+//     LIVE and every fill below except the zero one exercises it.
 //   - the tick derivation: the handler range-checks the price against [MinSqrtRatio,
 //     MaxSqrtRatio) and GetTickAtSqrtRatio refuses on exactly that same predicate over
 //     exactly that same value. Its error arm is dead unless the two bounds diverge.
 func TestBlueCInitializeGuardsAreNotReachableTwice(t *testing.T) {
-	// The decode cannot fail at or above 160 bytes, for any content.
+	// Length is no longer the only reason a 160-byte input is refused: the fee and
+	// tick-spacing slots must fit their declared widths. A slot of 0x01 repeated is
+	// a 249-bit fee, so only the zero fill survives.
 	for _, fill := range []byte{0x00, 0x01, 0x7F, 0x80, 0xFF} {
 		body := make([]byte, 160)
 		for i := range body {
 			body[i] = fill
 		}
 		_, err := DecodePoolKey(body)
-		require.NoErrorf(t, err, "DecodePoolKey must accept any 160-byte input (fill %#x)", fill)
+		if fill == 0x00 {
+			require.NoError(t, err, "an all-zero PoolKey is in range and must decode")
+		} else {
+			require.ErrorIsf(t, err, ErrInvalidFee,
+				"a 32-byte fee slot of %#x is far wider than uint24 and must be refused", fill)
+		}
 		_, err = DecodePoolKey(blueCPoisoned(body[:159], 64))
 		require.Errorf(t, err, "159 bytes is short, and spare capacity must not complete it (fill %#x)", fill)
 	}

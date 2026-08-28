@@ -6,6 +6,7 @@ package dex
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"math/big"
 	"math/rand"
 	"testing"
@@ -32,6 +33,15 @@ import (
 // zzstPoolKeys is the matrix a pool key has to survive: zero and maximal
 // addresses, the fee bounds, and BOTH signs of tick spacing including the int24
 // extremes where the sign extension lives.
+//
+// The tick spacings stop at ±2^23 because that is where int24 stops. The matrix
+// used to carry 2^24-1 and -2^24 as well, and they round-tripped only because
+// EncodePoolKeyABI writes the low three bytes of a 32-bit field and sign-extends
+// on the sign of the wider field: 16777215 went out as 0x00..00ffffff, which
+// Solidity's abi.encode(int24) cannot produce, since int24(16777215) is -1. The
+// encoder is exactly abi.encode(int24) on [-2^23, 2^23) and nowhere else, so
+// those two rows asserted a round trip through an encoding no counterparty
+// shares. DecodePoolKey now bounds the field and they are refused.
 func zzstPoolKeys() []PoolKey {
 	addr := func(b byte) common.Address {
 		var a common.Address
@@ -44,7 +54,7 @@ func zzstPoolKeys() []PoolKey {
 	for _, c0 := range []common.Address{{}, addr(0x01), addr(0xff)} {
 		for _, c1 := range []common.Address{{}, addr(0x02), addr(0xfe)} {
 			for _, fee := range []uint24{0, 1, 500, 3000, FeeMax, 1<<24 - 1} {
-				for _, ts := range []int24{0, 1, 60, -1, -60, 1<<23 - 1, -(1 << 23), 1<<24 - 1, -(1 << 24)} {
+				for _, ts := range []int24{0, 1, 60, -1, -60, 1<<23 - 1, -(1 << 23)} {
 					for _, hooks := range []common.Address{{}, addr(0x03)} {
 						keys = append(keys, PoolKey{
 							Currency0:   Currency{Address: c0},
@@ -264,17 +274,19 @@ var (
 	}
 )
 
-// DEFECT characterisation. EncodePoolKeyABI writes fee and tick spacing as THREE
-// bytes (module.go:621 and :630) but the fields are 32 bits wide and DecodePoolKey
-// (module.go:344 and :350) applies no bound, so anything above bit 23 is dropped
-// on the way into the hash. Two PoolKey values that differ only above bit 23 get
-// the SAME pool id.
+// EncodePoolKeyABI writes fee and tick spacing as THREE bytes while the struct
+// fields are 32-bit aliases, so PoolKey.ID is NOT injective over the Go type:
+// two keys differing only above bit 23 hash the same. That is still true, it is
+// asserted below, and it is deliberately not fixed — the encoding is the pool
+// identifier, and changing it renames every pool that exists.
 //
-// Initialize refuses fee > FeeMax and tick spacing outside [1, MaxTickSpacing], so
-// no such market can be created today — the exposure is that DecodePoolKey hands
-// callers a PoolKey whose Fee/TickSpacing are not the ones the id was derived from.
-// The bound belongs on the decoder. Until then, this pins the boundary exactly.
-func TestZzstPoolKeyIDIgnoresBitsAbove24DEFECT(t *testing.T) {
+// What changed is that no such key can be built from calldata any more.
+// DecodePoolKey bounds both fields to the width the wire format declares, so the
+// collision class is empty at the only boundary that produces PoolKeys from
+// untrusted bytes. The safety no longer lives in Initialize's FeeMax check while
+// Swap, ModifyLiquidity and Flash use the same unchecked key for a different
+// purpose.
+func TestZzstPoolKeyIDNotInjectiveButUnreachable(t *testing.T) {
 	base := PoolKey{
 		Currency0:   Currency{Address: common.HexToAddress("0x01")},
 		Currency1:   Currency{Address: common.HexToAddress("0x02")},
@@ -282,46 +294,46 @@ func TestZzstPoolKeyIDIgnoresBitsAbove24DEFECT(t *testing.T) {
 		TickSpacing: 60,
 	}
 
-	// Inside 24 bits, every value is faithful.
+	// Inside the declared widths, every value is faithful.
 	inRange := base
 	inRange.Fee = 1<<24 - 1
 	if got, err := DecodePoolKey(EncodePoolKeyABI(inRange)); err != nil || got.Fee != inRange.Fee {
 		t.Fatalf("fee %d did not round-trip: (%d, %v)", inRange.Fee, got.Fee, err)
 	}
-	inRange = base
-	inRange.TickSpacing = -(1 << 24)
-	if got, err := DecodePoolKey(EncodePoolKeyABI(inRange)); err != nil || got.TickSpacing != inRange.TickSpacing {
-		t.Fatalf("tick spacing %d did not round-trip: (%d, %v)", inRange.TickSpacing, got.TickSpacing, err)
+	for _, ts := range []int24{1<<23 - 1, -(1 << 23)} {
+		inRange = base
+		inRange.TickSpacing = ts
+		if got, err := DecodePoolKey(EncodePoolKeyABI(inRange)); err != nil || got.TickSpacing != ts {
+			t.Fatalf("tick spacing %d did not round-trip: (%d, %v)", ts, got.TickSpacing, err)
+		}
 	}
 
-	// Above it, the id collides.
+	// The encoder is still lossy above bit 23. Unchanged on purpose.
 	wideFee := base
 	wideFee.Fee = base.Fee + 1<<24
 	if wideFee.ID() != base.ID() {
-		t.Fatalf("module.go:621 now carries fee bits above 23 into the pool id — the bound was "+
-			"added; update this characterisation test (fee %d vs %d)", wideFee.Fee, base.Fee)
+		t.Fatalf("EncodePoolKeyABI now carries fee bits above 23 into the pool id — every "+
+			"existing pool just changed identity (fee %d vs %d)", wideFee.Fee, base.Fee)
 	}
 	wideTick := base
 	wideTick.TickSpacing = base.TickSpacing + 1<<24
 	if wideTick.ID() != base.ID() {
-		t.Fatalf("module.go:630 now carries tick-spacing bits above 23 into the pool id — the " +
-			"bound was added; update this characterisation test")
+		t.Fatalf("EncodePoolKeyABI now carries tick-spacing bits above 23 into the pool id — " +
+			"every existing pool just changed identity")
 	}
 
-	// And the decoder accepts calldata carrying those bits rather than refusing it.
+	// And the decoder refuses the calldata that would build one.
 	wide := make([]byte, 160)
 	copy(wide, EncodePoolKeyABI(base))
 	wide[92] = 0x01 // fee bit 24
-	got, err := DecodePoolKey(wide)
-	if err != nil {
-		t.Fatalf("module.go:344 now bounds the fee — update this characterisation test")
+	if got, err := DecodePoolKey(contract.Poisoned(wide, 512)); !errors.Is(err, ErrInvalidFee) {
+		t.Fatalf("fee bit 24 admitted: (%+v, %v)", got, err)
 	}
-	if got.Fee != base.Fee+1<<24 {
-		t.Fatalf("fee decoded as %d, want %d", got.Fee, base.Fee+1<<24)
-	}
-	if got.ID() != base.ID() {
-		t.Fatalf("the wide-fee key no longer shares the base pool id — the defect is fixed; " +
-			"update this characterisation test")
+	wide = make([]byte, 160)
+	copy(wide, EncodePoolKeyABI(base))
+	wide[124] = 0x01 // tick spacing bit 24
+	if got, err := DecodePoolKey(contract.Poisoned(wide, 512)); !errors.Is(err, ErrInvalidTickSpacing) {
+		t.Fatalf("tick spacing bit 24 admitted: (%+v, %v)", got, err)
 	}
 }
 

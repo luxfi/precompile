@@ -1354,19 +1354,28 @@ func performFHEScalarOperation(stateDB contract.StateDB, op string, handle commo
 	if !ok {
 		return common.Hash{}
 	}
+	// The scalar arrives as a full 256-bit calldata word and every evaluator below
+	// takes a uint64, so it is bounded ONCE here rather than five times in the
+	// switch. Same limit and same reason as tfheTrivialEncrypt: the evaluator's bit
+	// loop reads `scalar >> i` off a uint64, which is zero above bit 63, so a
+	// scalar of 2^64+7 used to add 7.
+	s, err := contract.Unsigned(scalar, 64)
+	if err != nil {
+		return common.Hash{}
+	}
 
 	var result []byte
 	switch op {
 	case "scalarAdd":
-		result = tfheScalarAdd(ct, scalar.Uint64(), ctType)
+		result = tfheScalarAdd(ct, s, ctType)
 	case "scalarSub":
-		result = tfheScalarSub(ct, scalar.Uint64(), ctType)
+		result = tfheScalarSub(ct, s, ctType)
 	case "scalarMul":
-		result = tfheScalarMul(ct, scalar.Uint64(), ctType)
+		result = tfheScalarMul(ct, s, ctType)
 	case "scalarDiv":
-		result = tfheScalarDiv(ct, scalar.Uint64(), ctType)
+		result = tfheScalarDiv(ct, s, ctType)
 	case "scalarRem":
-		result = tfheScalarRem(ct, scalar.Uint64(), ctType)
+		result = tfheScalarRem(ct, s, ctType)
 	default:
 		return common.Hash{}
 	}

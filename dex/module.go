@@ -333,24 +333,48 @@ func int24ToBytes(v int24) []byte {
 //	[64:96]   fee (uint24, left-padded)
 //	[96:128]  tickSpacing (int24, sign-extended to 32 bytes)
 //	[128:160] hooks (address, left-padded)
+//
+// Fee and tickSpacing are 24-bit fields, and this is where that stops being a
+// comment and becomes enforced. Both are read as full 256-bit words and refused
+// unless they fit, because two different things went wrong above 24 bits:
+//
+//   - Between 2^24 and 2^32 the field held the caller's value faithfully while
+//     EncodePoolKeyABI wrote only its low three bytes, so Fee 3000 and Fee
+//     2^24+3000 hash to the SAME PoolKey.ID. The decoder handed back a key whose
+//     fields are not the ones its id was derived from.
+//   - Above 2^32 the narrowing itself substituted: int32(x.Int64()) on 2^32+6
+//     yields 6, so an out-of-range tick arrived as an ordinary in-range one.
+//
+// On the dispatched surfaces (0x9996-0x9999 and the router) the only consumer of
+// these two fields is settle_market.initialize, which bounds both against FeeMax
+// and MaxTickSpacing before storing them, and every later price comes from the
+// stored market record — so the first case was a decoder returning an
+// inconsistent key rather than a demonstrated loss. It is the undispatched
+// PoolManager lineage that spends the calldata value directly:
+// calculateFlashFee charges amount*Fee/1e6, which at Fee 2^24+3000 is 16.78x the
+// notional, and getPoolState builds a pool's tick grid out of the caller's
+// tickSpacing. Bounding the decoder closes both without either surface having to
+// remember.
 func DecodePoolKey(input []byte) (PoolKey, error) {
-	if len(input) < 160 {
+	slot, err := contract.Read(input).Fields(5, 32)
+	if err != nil {
 		return PoolKey{}, fmt.Errorf("input too short for V4 PoolKey: need 160 bytes, got %d", len(input))
 	}
-
-	key := PoolKey{}
-	key.Currency0 = Currency{Address: common.BytesToAddress(input[12:32])}
-	key.Currency1 = Currency{Address: common.BytesToAddress(input[44:64])}
-	key.Fee = uint24(new(big.Int).SetBytes(input[64:96]).Uint64())
-	// int24 sign extension from 32-byte ABI slot
-	tickVal := new(big.Int).SetBytes(input[96:128])
-	if input[96]&0x80 != 0 {
-		tickVal.Sub(tickVal, new(big.Int).Lsh(big.NewInt(1), 256))
+	fee, err := contract.Unsigned(new(big.Int).SetBytes(slot[2]), 24)
+	if err != nil {
+		return PoolKey{}, ErrInvalidFee
 	}
-	key.TickSpacing = int32(tickVal.Int64())
-	key.Hooks = common.BytesToAddress(input[140:160])
-
-	return key, nil
+	spacing, err := contract.Signed(decodeSigned256(slot[3]), 24)
+	if err != nil {
+		return PoolKey{}, ErrInvalidTickSpacing
+	}
+	return PoolKey{
+		Currency0:   Currency{Address: common.BytesToAddress(slot[0])},
+		Currency1:   Currency{Address: common.BytesToAddress(slot[1])},
+		Fee:         uint24(fee),
+		TickSpacing: int24(spacing),
+		Hooks:       common.BytesToAddress(slot[4]),
+	}, nil
 }
 
 // DecodeSwapInput decodes V4 ABI-encoded swap input.
@@ -412,14 +436,21 @@ func DecodeModifyLiquidityInput(input []byte) (PoolKey, ModifyLiquidityParams, [
 		return PoolKey{}, ModifyLiquidityParams{}, nil, err
 	}
 
-	// tickLower: int24 sign-extended to 32 bytes
-	tickLowerVal := decodeSigned256(input[160:192])
-	// tickUpper: int24 sign-extended to 32 bytes
-	tickUpperVal := decodeSigned256(input[192:224])
+	// Both ticks are int24 on the wire, and are refused here rather than narrowed:
+	// int32(x.Int64()) turned a word of 2^32+6 into tick 6, so a range the caller
+	// never named got the liquidity.
+	tickLower, err := contract.Signed(decodeSigned256(input[160:192]), 24)
+	if err != nil {
+		return PoolKey{}, ModifyLiquidityParams{}, nil, ErrInvalidTick
+	}
+	tickUpper, err := contract.Signed(decodeSigned256(input[192:224]), 24)
+	if err != nil {
+		return PoolKey{}, ModifyLiquidityParams{}, nil, ErrInvalidTick
+	}
 
 	params := ModifyLiquidityParams{
-		TickLower:      int32(tickLowerVal.Int64()),
-		TickUpper:      int32(tickUpperVal.Int64()),
+		TickLower:      int24(tickLower),
+		TickUpper:      int24(tickUpper),
 		LiquidityDelta: decodeSigned256(input[224:256]),
 	}
 	copy(params.Salt[:], input[256:288])
