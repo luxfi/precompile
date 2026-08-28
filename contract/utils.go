@@ -33,11 +33,20 @@ const (
 	LogDataGas uint64 = 8 // from params/protocol_params.go
 )
 
-var functionSignatureRegex = regexp.MustCompile(`\w+\((\w*|(\w+,)+\w+)\)`)
+// functionSignatureRegex matches a whole canonical Solidity signature and
+// nothing else. The anchors are load-bearing: keccak hashes the entire string,
+// so a signature carrying stray whitespace or a copy-paste artefact would pass
+// an unanchored check and yield a selector no caller will ever send. The panic
+// below exists to catch exactly that at boot.
+var functionSignatureRegex = regexp.MustCompile(`^\w+\((\w*|(\w+,)+\w+)\)$`)
 
 // CalculateFunctionSelector returns the 4 byte function selector that results from [functionSignature]
 // Ex. the function setBalance(addr address, balance uint256) should be passed in as the string:
 // "setBalance(address,uint256)"
+//
+// Panics on a signature that is not exactly one canonical Solidity signature.
+// Every caller is a package-level initialiser over a string literal, so the
+// panic is a boot failure on a constant, never reachable from calldata.
 func CalculateFunctionSelector(functionSignature string) []byte {
 	if !functionSignatureRegex.MatchString(functionSignature) {
 		panic(fmt.Errorf("invalid function signature: %q", functionSignature))
