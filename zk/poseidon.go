@@ -40,8 +40,17 @@ var (
 // Poseidon2Hasher provides Poseidon2 hash operations for ZK circuits
 // Poseidon2 is optimized for ZK proofs and is PQ-resistant (hash-based security)
 type Poseidon2Hasher struct {
-	// Cache for frequently used hashes
-	cache    map[[32]byte][32]byte
+	// Cache for frequently used hashes, keyed by the WHOLE input.
+	//
+	// The key was previously a 32-byte digest-shaped value derived from
+	// only the first 32 bytes of the input plus its length. Any two inputs
+	// sharing a first field element then shared a cache entry, so the
+	// second one returned the first one's hash: HashPair(a,b1) and
+	// HashPair(a,b2) were equal, a Merkle node ignored its right child,
+	// and a commitment ignored its blinding factor. It also made the
+	// result depend on this process's cache history rather than on the
+	// input, so two nodes could disagree about the same hash.
+	cache    map[string][32]byte
 	cacheMu  sync.RWMutex
 	cacheMax int
 
@@ -54,7 +63,7 @@ type Poseidon2Hasher struct {
 // NewPoseidon2Hasher creates a new Poseidon2 hasher
 func NewPoseidon2Hasher() *Poseidon2Hasher {
 	return &Poseidon2Hasher{
-		cache:    make(map[[32]byte][32]byte),
+		cache:    make(map[string][32]byte),
 		cacheMax: 10000,
 	}
 }
@@ -73,16 +82,18 @@ func (p *Poseidon2Hasher) Hash(input []byte) ([32]byte, error) {
 		return [32]byte{}, ErrTooManyInputs
 	}
 
-	// Check cache
-	cacheKey := computeCacheKey(input)
+	// Check cache. The key is the input itself: a hash must be a function
+	// of everything it is given.
+	cacheKey := string(input)
 	p.cacheMu.RLock()
-	if cached, ok := p.cache[cacheKey]; ok {
-		p.cacheMu.RUnlock()
+	cached, hit := p.cache[cacheKey]
+	p.cacheMu.RUnlock()
+	if hit {
+		p.cacheMu.Lock()
 		p.CacheHits++
+		p.cacheMu.Unlock()
 		return cached, nil
 	}
-	p.cacheMu.RUnlock()
-	p.CacheMisses++
 
 	var result [32]byte
 
@@ -115,14 +126,16 @@ func (p *Poseidon2Hasher) Hash(input []byte) ([32]byte, error) {
 		copy(result[:], hashBytes)
 	}
 
-	// Cache result
+	// Cache result. The counters move under the same lock as the map they
+	// describe; incrementing them outside it was a data race.
 	p.cacheMu.Lock()
 	if len(p.cache) < p.cacheMax {
 		p.cache[cacheKey] = result
 	}
+	p.CacheMisses++
+	p.TotalHashes++
 	p.cacheMu.Unlock()
 
-	p.TotalHashes++
 	return result, nil
 }
 
@@ -324,21 +337,6 @@ func (p *Poseidon2Hasher) RequiredGas(inputLen int) uint64 {
 	// Base: 500 gas + 100 per element
 	// This is ~3-5x cheaper than keccak256 for small inputs in ZK context
 	return 500 + numElements*100
-}
-
-// computeCacheKey creates a cache key from input
-func computeCacheKey(input []byte) [32]byte {
-	if len(input) == 32 {
-		var key [32]byte
-		copy(key[:], input)
-		return key
-	}
-	// For longer inputs, use first 32 bytes XOR'd with length
-	var key [32]byte
-	copy(key[:], input[:32])
-	key[0] ^= byte(len(input) >> 8)
-	key[1] ^= byte(len(input))
-	return key
 }
 
 // Global instance
