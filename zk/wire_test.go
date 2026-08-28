@@ -292,3 +292,50 @@ func TestBatchCountReadsTheOpByte(t *testing.T) {
 	binary.BigEndian.PutUint32(in[1:5], ^uint32(0))
 	require.Equal(t, 8, countBatchProofs(hostile(in)), "40 bytes hold 8 five-byte entries")
 }
+
+// TestKeyedPathRefusesShortProofWithAnError pins a distinction two floors in
+// verifyPLONK and verifyFflonk carry, and which nothing exercised: with a
+// verifying key registered, a proof shorter than its frame must come back as
+// ErrInvalidProofLength, not as a false verdict with a nil error.
+//
+// The two are different claims. An error says "this is not a proof"; a false
+// verdict says "this is a proof and it does not hold". A caller that retries
+// on the wrong one retries forever. Without these tests both floors survived
+// deletion — the standalone path answered the same error either way, so the
+// keyed path was the only thing they protected and nothing went down it.
+func TestKeyedPathRefusesShortProofWithAnError(t *testing.T) {
+	zv := NewZKVerifier()
+	g1, g2 := make([]byte, 64), make([]byte, 128)
+	ic := make([][]byte, 9)
+	for i := range ic {
+		ic[i] = g1
+	}
+
+	plonkID, err := zv.RegisterVerifyingKey(common.Address{},
+		ProofSystemPlonk, CircuitTransfer, g1, g2, g2, g2, ic)
+	require.NoError(t, err)
+	fflonkID, err := zv.RegisterVerifyingKey(common.Address{},
+		ProofSystemFflonk, CircuitTransfer, g1, g2, g2, g2, ic)
+	require.NoError(t, err)
+
+	p := &zkVerifyPrecompile{verifier: zv}
+
+	frame := func(id [32]byte, bodyLen int) []byte {
+		b := make([]byte, fieldLen+4+bodyLen)
+		copy(b, id[:])
+		return hostile(b)
+	}
+
+	for _, n := range []int{0, 1, plonkProofSize - 1} {
+		ok, err := p.verifyPLONK(frame(plonkID, n))
+		require.False(t, ok, "a %d-byte plonk proof must not verify", n)
+		require.ErrorIs(t, err, ErrInvalidProofLength,
+			"a %d-byte plonk proof must be refused as malformed, not answered false", n)
+	}
+	for _, n := range []int{0, 1, fflonkMinProofSize - 1} {
+		ok, err := p.verifyFflonk(frame(fflonkID, n))
+		require.False(t, ok, "a %d-byte fflonk proof must not verify", n)
+		require.ErrorIs(t, err, ErrInvalidProofLength,
+			"a %d-byte fflonk proof must be refused as malformed, not answered false", n)
+	}
+}

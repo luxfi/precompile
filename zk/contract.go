@@ -289,12 +289,18 @@ func (p *zkVerifyPrecompile) Run(
 		return nil, 0, err
 	}
 
-	if len(input) < 1 {
+	// Reading the selector through the cursor does more than tidy the split.
+	// input[1:] keeps the calldata's spare capacity — the rest of EVM memory,
+	// which the caller MSTOREd — so every verifier downstream would inherit
+	// a slice that a stray s[a:b] could walk forward into. Rest caps what it
+	// hands over, so the payload carries exactly the bytes the caller
+	// declared and nothing behind them.
+	in := contract.Read(input)
+	op, err := in.Byte()
+	if err != nil {
 		return nil, remainingGas, ErrInvalidInput
 	}
-
-	op := input[0]
-	data := input[1:]
+	data := in.Rest()
 
 	switch op {
 	case OpVerifyGroth16:
@@ -610,10 +616,11 @@ type FflonkProof struct {
 
 // parseFflonkProof parses raw proof bytes into structured format
 func parseFflonkProof(proof []byte) (*FflonkProof, error) {
-	if len(proof) < fflonkMinProofSize {
-		return nil, ErrInvalidProofLength
-	}
-
+	// No up-front floor: the reads below enforce exactly the same minimum
+	// (4 commitments plus 8 evaluations IS fflonkMinProofSize) and answer the
+	// same error, so a floor here would only make their refusals dead. It
+	// survived deletion under mutation for that reason — nothing could tell
+	// the two apart, because there was nothing to tell apart.
 	in := contract.Read(proof)
 	pts, err := in.Fields(fflonkNumCommitments, fflonkG1Size)
 	if err != nil {
