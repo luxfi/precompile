@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
+	"io"
 	"math/big"
 	"testing"
 
@@ -23,7 +24,11 @@ func TestRingSignaturePrecompile_Address(t *testing.T) {
 
 // signOffChain creates an LSAG ring signature off-chain (not via precompile).
 // This is the only safe way to sign -- private keys never touch calldata.
-func signOffChain(ring [][]byte, signerSk []byte, signerIdx int, message []byte) (*LSAGSignature, error) {
+//
+// rnd supplies alpha and the decoy responses. Production callers pass
+// crypto/rand.Reader; tests that need a fixed corpus pass detBytes so the
+// branches they reach are identical on every run.
+func signOffChain(ring [][]byte, signerSk []byte, signerIdx int, message []byte, rnd io.Reader) (*LSAGSignature, error) {
 	n := len(ring)
 	curve := secp256k1.S256()
 
@@ -39,7 +44,7 @@ func signOffChain(ring [][]byte, signerSk []byte, signerIdx int, message []byte)
 	c := make([]*big.Int, n)
 	s := make([]*big.Int, n)
 
-	alpha, _ := rand.Int(rand.Reader, curve.Params().N)
+	alpha, _ := rand.Int(rnd, curve.Params().N)
 	Lx, Ly := curve.ScalarBaseMult(alpha.Bytes())
 	Rx, Ry := curve.ScalarMult(hp.X, hp.Y, alpha.Bytes())
 
@@ -48,7 +53,7 @@ func signOffChain(ring [][]byte, signerSk []byte, signerIdx int, message []byte)
 
 	for i := 1; i < n; i++ {
 		idx := (signerIdx + i) % n
-		s[idx], _ = rand.Int(rand.Reader, curve.Params().N)
+		s[idx], _ = rand.Int(rnd, curve.Params().N)
 
 		pkX, pkY := secp256k1.DecompressPubkey(ring[idx])
 		if pkX == nil {
@@ -109,7 +114,7 @@ func TestRing_Verify_Size2(t *testing.T) {
 		signerSk = padded
 	}
 
-	sig, err := signOffChain(ring, signerSk, signerIdx, message)
+	sig, err := signOffChain(ring, signerSk, signerIdx, message, rand.Reader)
 	require.NoError(t, err)
 
 	verifyInput := buildVerifyInput(SchemeLSAGSecp256k1, ring, sig.Serialize(), message)
@@ -154,7 +159,7 @@ func TestRing_Verify_Size5(t *testing.T) {
 		signerSk = padded
 	}
 
-	sig, err := signOffChain(ring, signerSk, signerIdx, message)
+	sig, err := signOffChain(ring, signerSk, signerIdx, message, rand.Reader)
 	require.NoError(t, err)
 
 	verifyInput := buildVerifyInput(SchemeLSAGSecp256k1, ring, sig.Serialize(), message)
@@ -192,7 +197,7 @@ func TestRing_Verify_InvalidSignature(t *testing.T) {
 		signerSk = padded
 	}
 
-	sig, err := signOffChain(ring, signerSk, 0, []byte("Test message"))
+	sig, err := signOffChain(ring, signerSk, 0, []byte("Test message"), rand.Reader)
 	require.NoError(t, err)
 
 	signature := sig.Serialize()
@@ -233,7 +238,7 @@ func TestRing_Verify_WrongMessage(t *testing.T) {
 		signerSk = padded
 	}
 
-	sig, err := signOffChain(ring, signerSk, 0, []byte("Original message"))
+	sig, err := signOffChain(ring, signerSk, 0, []byte("Original message"), rand.Reader)
 	require.NoError(t, err)
 
 	verifyInput := buildVerifyInput(SchemeLSAGSecp256k1, ring, sig.Serialize(), []byte("Different message"))
@@ -400,7 +405,7 @@ func BenchmarkRing_Verify_Size3(b *testing.B) {
 	}
 
 	message := []byte("benchmark")
-	sig, _ := signOffChain(ring, signerSk, 0, message)
+	sig, _ := signOffChain(ring, signerSk, 0, message, rand.Reader)
 
 	verifyInput := buildVerifyInput(SchemeLSAGSecp256k1, ring, sig.Serialize(), message)
 	gas := RingSignaturePrecompile.RequiredGas(verifyInput)

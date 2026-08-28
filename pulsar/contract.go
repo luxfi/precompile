@@ -149,11 +149,16 @@ func (p *pulsarVerifyPrecompile) Run(
 	suppliedGas uint64,
 	_ bool,
 ) ([]byte, uint64, error) {
-	if suppliedGas < p.RequiredGas(input) {
-		return nil, 0, contract.ErrOutOfGas
+	// Meter once, up front, and report what is left from every exit
+	// below. Charging only on the paths that reach the verifier would
+	// hand back the caller's full gas for a malformed input -- work
+	// done, nothing billed.
+	remainingGas, err := contract.DeductGas(suppliedGas, p.RequiredGas(input))
+	if err != nil {
+		return nil, 0, err
 	}
 	if len(input) < ModeByte {
-		return nil, suppliedGas, ErrInvalidInputLength
+		return nil, remainingGas, ErrInvalidInputLength
 	}
 	mode := input[0]
 	body := input[1:]
@@ -174,18 +179,17 @@ func (p *pulsarVerifyPrecompile) Run(
 		sigSize = Pulsar87SignatureSize
 		mldsaMode = mldsa.MLDSA87
 	default:
-		return nil, suppliedGas, ErrInvalidMode
+		return nil, remainingGas, ErrInvalidMode
 	}
 
+	// The +32 covers the message-length word that follows the public
+	// key, so the read loop below needs no second guard of its own.
 	if len(body) < pubSize+32 {
-		return nil, suppliedGas, ErrInvalidInputLength
+		return nil, remainingGas, ErrInvalidInputLength
 	}
 	pubkey := body[:pubSize]
 	body = body[pubSize:]
 
-	if len(body) < 32 {
-		return nil, suppliedGas, ErrInvalidInputLength
-	}
 	// Message length is encoded as a big-endian uint256; we accept
 	// the low 8 bytes as the actual length.
 	mlen := uint64(0)
@@ -199,7 +203,7 @@ func (p *pulsarVerifyPrecompile) Run(
 	// dispatch (no recover) halts every validator on the tx. Compare with
 	// subtraction on the trusted len(body) instead.
 	if mlen > uint64(len(body)) || uint64(len(body))-mlen < uint64(sigSize) {
-		return nil, suppliedGas, ErrInvalidInputLength
+		return nil, remainingGas, ErrInvalidInputLength
 	}
 	msg := body[:mlen]
 	body = body[mlen:]
@@ -207,10 +211,10 @@ func (p *pulsarVerifyPrecompile) Run(
 
 	pk, err := mldsa.PublicKeyFromBytes(pubkey, mldsaMode)
 	if err != nil {
-		return nil, suppliedGas - p.RequiredGas(input), ErrInvalidSignature
+		return nil, remainingGas, ErrInvalidSignature
 	}
 	if !pk.VerifySignatureCtx(msg, sig, precompileCtx) {
-		return nil, suppliedGas - p.RequiredGas(input), ErrInvalidSignature
+		return nil, remainingGas, ErrInvalidSignature
 	}
-	return nil, suppliedGas - p.RequiredGas(input), nil
+	return nil, remainingGas, nil
 }

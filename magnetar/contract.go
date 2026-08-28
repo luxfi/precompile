@@ -284,8 +284,11 @@ func (p *magnetarVerifyPrecompile) Run(
 	sigStart := msgEnd
 	sigEnd := sigStart + sigSize
 
-	if len(input) < sigEnd {
-		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes, got %d",
+	// Validate total input size. Exact, not "at least": trailing bytes would
+	// let one signature be presented under many distinct calldatas, and the
+	// single-party SLH-DSA precompile next door pins the same frame exactly.
+	if len(input) != sigEnd {
+		return nil, remainingGas, fmt.Errorf("%w: expected exactly %d bytes, got %d",
 			ErrInvalidInputLength, sigEnd, len(input))
 	}
 
@@ -293,6 +296,12 @@ func (p *magnetarVerifyPrecompile) Run(
 	message := input[msgStart:msgEnd]
 	signature := input[sigStart:sigEnd]
 
+	// A FIPS 205 public key is seed || root, two unstructured n-byte hash
+	// outputs, so the only way this parses badly is a wrong length -- and the
+	// equality check above already pinned len(publicKey) to the mode's size.
+	// The arm cannot fire while getModeParams and slhdsa agree on that size,
+	// which TestModeParams_AgreeWithLibrary holds them to. It stays because
+	// the alternative to an error return here is a nil dereference.
 	pub, err := slhdsa.PublicKeyFromBytes(publicKey, slhdsaMode)
 	if err != nil {
 		return nil, remainingGas, fmt.Errorf("invalid public key: %w", err)
