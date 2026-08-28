@@ -399,9 +399,15 @@ var (
 	ErrInvalidTickRange       = errors.New("invalid tick range")
 	ErrInsufficientLiquidity  = errors.New("insufficient liquidity")
 	ErrPriceLimitReached      = errors.New("price limit reached")
-	ErrInvalidFee             = errors.New("invalid fee")
-	ErrCurrencyNotSorted      = errors.New("currencies not sorted")
-	ErrUnauthorized           = errors.New("unauthorized")
+	// The three fields a PoolKey or a liquidity range declares narrower than the
+	// 256-bit word carrying it. Each is refused where the bytes become a value,
+	// so no caller downstream has to know which of its arguments were bounded.
+	ErrInvalidFee         = errors.New("invalid fee")
+	ErrInvalidTickSpacing = errors.New("invalid tick spacing")
+	ErrInvalidTick        = errors.New("invalid tick")
+
+	ErrCurrencyNotSorted = errors.New("currencies not sorted")
+	ErrUnauthorized      = errors.New("unauthorized")
 
 	// ErrDEXNoProtocolFeeController is returned when the DEX precompile is
 	// configured without an explicit protocolFeeController address (or with

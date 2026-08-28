@@ -471,9 +471,16 @@ func (vfc *VolatilityFeeCalculator) CalculateFee(observations []TWAPObservation)
 	volatilityBps.Mul(volatilityBps, big.NewInt(int64(vfc.VolatilityScale)))
 	volatilityBps.Div(volatilityBps, big.NewInt(10000))
 
-	fee := min(vfc.BaseFee+uint24(volatilityBps.Uint64()), vfc.MaxFee)
-
-	return fee
+	// Clamp in 256 bits, then narrow — the other order wraps twice and inverts the
+	// answer. volatilityBps.Uint64() drops everything above bit 63, the uint24 (a
+	// uint32 alias) add drops everything above bit 31, and min then picks the
+	// wrapped value because it is small. A pool moving violently enough came out
+	// the cheapest to trade.
+	fee := new(big.Int).Add(volatilityBps, new(big.Int).SetUint64(uint64(vfc.BaseFee)))
+	if maxFee := new(big.Int).SetUint64(uint64(vfc.MaxFee)); fee.Cmp(maxFee) > 0 {
+		fee = maxFee
+	}
+	return uint24(fee.Uint64())
 }
 
 // CommitRevealValidator validates commit-reveal MEV protection

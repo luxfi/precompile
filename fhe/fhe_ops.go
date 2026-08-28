@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/luxfi/fhe"
+	"github.com/luxfi/precompile/contract"
 )
 
 var (
@@ -713,14 +714,40 @@ func tfheVerify(ct []byte, fheType uint8) bool {
 // confidentiality is created or lost here — this only lifts a known value into
 // the ciphertext domain so it can be combined with confidential ciphertexts.
 // Fails closed (nil) when no public key is installed.
+//
+// A plaintext past 64 bits is refused rather than truncated, because the only
+// loader the encryptor exposes is EncryptUint64 and its bit loop reads
+// `value >> i` off a uint64 — for i above 63 that is zero, in Go, always. The
+// container is genuinely wider (a euint256 really is 256 bits, and tfheRandom
+// fills every one of them), so the missing bits are not rounded away, they are
+// encrypted AS ZERO and are indistinguishable afterwards from a value that was
+// zero to begin with. Measured before this refusal existed:
+//
+//	asEuint256(2^200) decrypted to 0, in a 256-bit container.
+//	asEaddress on two addresses sharing their last 8 bytes produced the SAME
+//	plaintext, so a homomorphic equality on encrypted addresses answered true
+//	for two different accounts.
+//
+// Casting to a NARROWER type still truncates, exactly as Solidity's uintN(x)
+// does and exactly as the asEuint4/8/16/32 handlers already do by masking; the
+// callers below 64 bits mask before they arrive here, so this refuses nothing
+// they send. What it refuses is the case where the declared width is WIDER than
+// the loader, which is not a cast at all — it is a value the encryptor cannot
+// carry. Widening it needs an EncryptBig on BitwisePublicEncryptor upstream;
+// BitCiphertext's fields are unexported and it has no constructor from bits, so
+// there is nothing to compose here in the meantime.
 func tfheTrivialEncrypt(plaintext *big.Int, toType uint8) []byte {
 	enc := getEncryptor()
 	if enc == nil {
 		return nil
 	}
+	value, err := contract.Unsigned(plaintext, 64)
+	if err != nil {
+		return nil
+	}
 
 	targetType := fheTypeToTFHEType(toType)
-	ct, err := enc.EncryptUint64(plaintext.Uint64(), targetType)
+	ct, err := enc.EncryptUint64(value, targetType)
 	if err != nil {
 		return nil
 	}

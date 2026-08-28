@@ -130,6 +130,13 @@ func (c *Cursor) Uint64() (uint64, error) {
 	return binary.BigEndian.Uint64(b), nil
 }
 
+// There is deliberately no Uint256/Int256 here. A 32-byte slot is Bytes(32) or
+// one row of Fields(n, 32), and turning those bytes into a big.Int is total —
+// it is the NARROWING afterwards that is not, and that belongs to Unsigned and
+// Signed in word.go. Two packages already spell the signed reading themselves
+// (dex.decodeSigned256, v3.wordToInt); a third here that nothing called would
+// have made that worse rather than better.
+
 // Fields consumes n consecutive fields of w bytes each and returns them, or
 // refuses. Each field is capped to its own length, like Bytes.
 //

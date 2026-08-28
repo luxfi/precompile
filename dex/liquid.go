@@ -567,6 +567,12 @@ func (a *Liquid) GetTimeToRepayment(
 	}
 
 	blocks := new(big.Int).Div(effectiveDebt, yieldPerBlock)
+	// Saturate rather than wrap. A horizon too far away to name is still far
+	// away; its low 64 bits are an arbitrary small number, and this value is
+	// read as "how long until this debt clears".
+	if !blocks.IsUint64() {
+		return ^uint64(0)
+	}
 	return blocks.Uint64()
 }
 
