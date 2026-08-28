@@ -15,7 +15,7 @@ require (
 	github.com/luxfi/corona v0.10.3
 	github.com/luxfi/crypto v1.19.26
 	github.com/luxfi/database v1.20.4
-	github.com/luxfi/dex v1.14.0
+	github.com/luxfi/dex v1.14.2
 	github.com/luxfi/fhe v1.8.2
 	github.com/luxfi/geth v1.17.12
 	github.com/luxfi/lattice/v7 v7.1.4
