@@ -13,8 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// allSelectors is every selector the precompile routes, paired with a body long enough to
-// reach the handler body rather than bouncing off its length check.
+// allSelectors is every selector the precompile routes, paired with a body of EXACTLY the
+// minimum length that handler accepts. Exactly the minimum, not merely enough: several
+// tests truncate by one byte to check the length guard, and a body longer than the minimum
+// would still be accepted and prove nothing.
 var allSelectors = []struct {
 	name string
 	sel  string
@@ -58,8 +60,8 @@ var allSelectors = []struct {
 	{"asEuint32", "\x6c\xa9\xea\xe9", make([]byte, 32)},
 	{"asEuint128", "\x7d\x6d\x81\x95", make([]byte, 32)},
 	{"asEuint256", "\x9e\x5b\x2e\xf3", make([]byte, 32)},
-	{"rand", "\x71\x5a\xd3\x11", make([]byte, 32)},
-	{"verify", "\x45\xa9\x32\x18", make([]byte, 64)},
+	{"rand", "\x71\x5a\xd3\x11", make([]byte, 1)},    // type byte only
+	{"verify", "\x45\xa9\x32\x18", make([]byte, 33)}, // type byte + one word
 }
 
 func call(sel string, body []byte) []byte {
@@ -433,4 +435,93 @@ func TestBoolBit_AcceptsOnlySingleBitValues(t *testing.T) {
 
 	// A zero-length bit is well-framed and yields an empty slice, not a panic.
 	require.NotPanics(t, func() { require.Empty(t, boolBit(frame(1, []uint32{0}, nil))) })
+}
+
+// TestRun_EveryHandlerRefusesAShortBody drives every selector with its body one byte short.
+// Each handler must refuse on length before it touches an operand — a handler that read
+// past its own bound would index into whatever the previous word left behind.
+func TestRun_EveryHandlerRefusesAShortBody(t *testing.T) {
+	c := &FHEContract{}
+	for _, op := range allSelectors {
+		t.Run(op.name, func(t *testing.T) {
+			db := newCountingDB()
+			short := op.body[:len(op.body)-1]
+			_, _, err := c.Run(&stateOf{db: db}, common.Address{1}, ContractAddress,
+				call(op.sel, short), 1<<62, false)
+			require.ErrorIsf(t, err, ErrInvalidInput,
+				"%s accepted a body of %d bytes", op.name, len(short))
+			require.Zerof(t, db.writes, "%s wrote state on a refused call", op.name)
+		})
+	}
+}
+
+// TestRun_EveryHandlerRefusesInsufficientGas drives every selector with one gas unit, which
+// is below the price of every operation in the schedule. Each must refuse on gas, and must
+// do so before performing work it could not be paid for.
+//
+// One gas rather than zero: Run has a separate zero-gas floor, and routing through that
+// would prove nothing about the per-handler check.
+func TestRun_EveryHandlerRefusesInsufficientGas(t *testing.T) {
+	c := &FHEContract{}
+	for _, op := range allSelectors {
+		t.Run(op.name, func(t *testing.T) {
+			db := newCountingDB()
+			_, remaining, err := c.Run(&stateOf{db: db}, common.Address{1}, ContractAddress,
+				call(op.sel, op.body), 1, false)
+			require.ErrorIsf(t, err, ErrInsufficientGas, "%s ran on one gas", op.name)
+			require.Zerof(t, db.writes, "%s wrote state without being paid", op.name)
+			require.LessOrEqual(t, remaining, uint64(1))
+		})
+	}
+}
+
+// TestRun_ZeroGasFloorPrecedesEverything proves the universal floor refuses before any
+// selector is looked at, so a caller supplying nothing cannot reach a handler at all.
+func TestRun_ZeroGasFloorPrecedesEverything(t *testing.T) {
+	c := &FHEContract{}
+	for _, op := range allSelectors {
+		db := newCountingDB()
+		_, remaining, err := c.Run(&stateOf{db: db}, common.Address{1}, ContractAddress,
+			call(op.sel, op.body), 0, false)
+		require.ErrorIsf(t, err, ErrInsufficientGas, "%s ran on zero gas", op.name)
+		require.Zero(t, remaining)
+		require.Zero(t, db.writes)
+	}
+
+	// The floor also applies to the two pure reads and to an unknown selector.
+	for _, sel := range []string{selectorDecrypt, selectorSealOutput, "\xde\xad\xbe\xef"} {
+		_, _, err := c.Run(&stateOf{db: newCountingDB()}, common.Address{1}, ContractAddress,
+			call(sel, make([]byte, 96)), 0, false)
+		require.ErrorIs(t, err, ErrInsufficientGas)
+	}
+}
+
+// TestRun_RefusesWithoutAStateDB proves the precompile bails out cleanly when invoked with
+// no state to read — a nil dereference inside a handler would panic the dispatch path, and
+// a panic there is not recovered.
+func TestRun_RefusesWithoutAStateDB(t *testing.T) {
+	c := &FHEContract{}
+	for _, op := range allSelectors {
+		require.NotPanicsf(t, func() {
+			_, _, err := c.Run(nil, common.Address{1}, ContractAddress,
+				call(op.sel, op.body), 1<<62, false)
+			require.ErrorIs(t, err, ErrInvalidInput)
+		}, "%s panicked with no accessible state", op.name)
+
+		require.NotPanicsf(t, func() {
+			_, _, err := c.Run(&stateOf{db: nil}, common.Address{1}, ContractAddress,
+				call(op.sel, op.body), 1<<62, false)
+			require.ErrorIs(t, err, ErrInvalidInput)
+		}, "%s panicked with a nil state db", op.name)
+	}
+}
+
+// TestRun_ShortInputRefusedFHE covers calldata too short to carry a selector at all.
+func TestRun_ShortInputRefusedFHE(t *testing.T) {
+	c := &FHEContract{}
+	for n := 0; n < 4; n++ {
+		_, _, err := c.Run(&stateOf{db: newCountingDB()}, common.Address{1}, ContractAddress,
+			make([]byte, n), 1<<62, false)
+		require.ErrorIsf(t, err, ErrInvalidInput, "input of %d bytes", n)
+	}
 }
