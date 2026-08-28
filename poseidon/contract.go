@@ -47,7 +47,24 @@ const (
 	GasHashPair    = 700
 	GasSpongeBase  = 600
 	GasSpongePerIn = 100
+
+	// MaxSpongeOutput caps the squeeze in bytes.
+	MaxSpongeOutput = 1024
 )
+
+// readElement decodes one field element.
+//
+// The input domain is F_r, so each element has exactly one 32-byte encoding.
+// A word >= r is refused rather than reduced: reduction made x and x+r hash
+// identically, i.e. a second preimage anyone could compute by addition, which
+// is fatal for the Merkle and nullifier uses this hash exists for.
+func readElement(b []byte) (fr.Element, error) {
+	var e fr.Element
+	if err := e.SetBytesCanonical(b); err != nil {
+		return e, ErrInvalidInput
+	}
+	return e, nil
+}
 
 type poseidonPrecompile struct{}
 
@@ -68,8 +85,16 @@ func (p *poseidonPrecompile) RequiredGas(input []byte) uint64 {
 		if len(input) < 5 {
 			return 0
 		}
-		n := (len(input) - 5) / 32
-		return GasSpongeBase + uint64(n)*GasSpongePerIn
+		outLen := binary.BigEndian.Uint32(input[1:5])
+		if outLen == 0 || outLen > MaxSpongeOutput {
+			return 0
+		}
+		// Squeezing permutes once per output word, exactly as absorbing does
+		// per input word. Pricing only the input left those permutations free:
+		// a 5-byte call bought 31 of them for the flat base fee.
+		words := uint64(outLen+31) / 32
+		n := uint64(len(input)-5) / 32
+		return GasSpongeBase + (n+words)*GasSpongePerIn
 	default:
 		return 0
 	}
@@ -115,8 +140,10 @@ func (p *poseidonPrecompile) hash(data []byte, gas uint64) ([]byte, uint64, erro
 
 	hasher := poseidon2.NewMerkleDamgardHasher()
 	for i := range n {
-		var elem fr.Element
-		elem.SetBytes(data[i*32 : (i+1)*32])
+		elem, err := readElement(data[i*32 : (i+1)*32])
+		if err != nil {
+			return nil, gas, err
+		}
 		b := elem.Bytes()
 		hasher.Write(b[:])
 	}
@@ -130,9 +157,14 @@ func (p *poseidonPrecompile) hashPair(data []byte, gas uint64) ([]byte, uint64, 
 	if len(data) < 64 {
 		return nil, gas, ErrInvalidInput
 	}
-	var left, right fr.Element
-	left.SetBytes(data[:32])
-	right.SetBytes(data[32:64])
+	left, err := readElement(data[:32])
+	if err != nil {
+		return nil, gas, err
+	}
+	right, err := readElement(data[32:64])
+	if err != nil {
+		return nil, gas, err
+	}
 
 	hasher := poseidon2.NewMerkleDamgardHasher()
 	lb := left.Bytes()
@@ -150,7 +182,7 @@ func (p *poseidonPrecompile) sponge(data []byte, gas uint64) ([]byte, uint64, er
 		return nil, gas, ErrInvalidInput
 	}
 	outLen := binary.BigEndian.Uint32(data[:4])
-	if outLen > 1024 || outLen == 0 {
+	if outLen > MaxSpongeOutput || outLen == 0 {
 		return nil, gas, ErrInvalidInput
 	}
 	payload := data[4:]
@@ -181,8 +213,10 @@ func (p *poseidonPrecompile) sponge(data []byte, gas uint64) ([]byte, uint64, er
 
 	// Absorb phase: XOR each input element into state[0], then permute.
 	for i := range n {
-		var elem fr.Element
-		elem.SetBytes(payload[i*32 : (i+1)*32])
+		elem, err := readElement(payload[i*32 : (i+1)*32])
+		if err != nil {
+			return nil, gas, err
+		}
 		state[0].Add(&state[0], &elem)
 		perm.Permutation(state)
 	}

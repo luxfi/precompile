@@ -51,7 +51,6 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/twistededwards"
 
 	"github.com/luxfi/geth/common"
@@ -131,14 +130,32 @@ func (p *babyJubJubPrecompile) Run(
 	}
 }
 
-func decodePoint(data []byte) (twistededwards.PointAffine, error) {
+// readPoint decodes (x, y) without asserting curve membership.
+//
+// Coordinates are elements of F_r, so each has exactly one 32-byte encoding.
+// A value >= r is refused rather than reduced: silent reduction admitted r
+// distinct encodings per point, so InCurve answered true for coordinates a
+// caller's own range check would reject, and two encodings of one point
+// produced one output -- a free collision for anything keying off calldata.
+func readPoint(data []byte) (twistededwards.PointAffine, error) {
 	if len(data) < PointLen {
 		return twistededwards.PointAffine{}, ErrInvalidInput
 	}
-	var x, y fr.Element
-	x.SetBytes(data[:32])
-	y.SetBytes(data[32:64])
-	pt := twistededwards.PointAffine{X: x, Y: y}
+	var pt twistededwards.PointAffine
+	if err := pt.X.SetBytesCanonical(data[:32]); err != nil {
+		return twistededwards.PointAffine{}, ErrInvalidInput
+	}
+	if err := pt.Y.SetBytesCanonical(data[32:64]); err != nil {
+		return twistededwards.PointAffine{}, ErrInvalidInput
+	}
+	return pt, nil
+}
+
+func decodePoint(data []byte) (twistededwards.PointAffine, error) {
+	pt, err := readPoint(data)
+	if err != nil {
+		return twistededwards.PointAffine{}, err
+	}
 	if !pt.IsOnCurve() {
 		return twistededwards.PointAffine{}, ErrNotOnCurve
 	}
@@ -178,21 +195,21 @@ func (p *babyJubJubPrecompile) scalarMul(data []byte, gas uint64) ([]byte, uint6
 	if err != nil {
 		return nil, gas, err
 	}
-	var s fr.Element
-	s.SetBytes(data[PointLen : PointLen+32])
-	sBig := s.BigInt(new(big.Int))
-	pt.ScalarMultiplication(&pt, sBig)
+	// The multiplier is an integer, not a field element. Routing it through
+	// fr.Element reduced it modulo r, the BN254 field -- which is NOT the Baby
+	// Jubjub group order (that is r/8's prime factor, 2736...041), so the answer
+	// was (s mod r)*P instead of s*P for every s >= r. gnark's windowed ladder
+	// takes any magnitude, so hand it the scalar untouched.
+	s := new(big.Int).SetBytes(data[PointLen : PointLen+32])
+	pt.ScalarMultiplication(&pt, s)
 	return encodePoint(&pt), gas, nil
 }
 
 func (p *babyJubJubPrecompile) inCurve(data []byte, gas uint64) ([]byte, uint64, error) {
-	if len(data) < PointLen {
-		return nil, gas, ErrInvalidInput
+	pt, err := readPoint(data)
+	if err != nil {
+		return nil, gas, err
 	}
-	var x, y fr.Element
-	x.SetBytes(data[:32])
-	y.SetBytes(data[32:64])
-	pt := twistededwards.PointAffine{X: x, Y: y}
 	result := make([]byte, 32)
 	if pt.IsOnCurve() {
 		result[31] = 1

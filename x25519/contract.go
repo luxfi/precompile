@@ -100,25 +100,27 @@ func (p *x25519Precompile) scalarMult(data []byte, gas uint64) ([]byte, uint64, 
 	if len(data) < 64 {
 		return nil, gas, ErrInvalidInput
 	}
-	scalar := data[:32]
-	point := data[32:64]
-
-	shared, err := curve25519.X25519(scalar, point)
-	if err != nil {
-		return nil, gas, ErrDHFailed
-	}
-	return shared, gas, nil
+	return mult(data[:32], data[32:64], gas)
 }
 
+// basepoint is scalarMult against u = 9, so it goes through the same code.
+// Splitting them gave the basepoint arm its own unreachable error branch:
+// X25519 fails only on an all-zero result, and the base point generates the
+// prime-order subgroup, so a clamped scalar can never land on the identity.
 func (p *x25519Precompile) basepoint(data []byte, gas uint64) ([]byte, uint64, error) {
 	if len(data) < 32 {
 		return nil, gas, ErrInvalidInput
 	}
-	scalar := data[:32]
+	return mult(data[:32], curve25519.Basepoint, gas)
+}
 
-	pub, err := curve25519.X25519(scalar, curve25519.Basepoint)
+// mult is the one place the ladder is called and the one place its refusal --
+// a low-order point, which drives the shared secret to zero for every scalar --
+// turns into an error.
+func mult(scalar, point []byte, gas uint64) ([]byte, uint64, error) {
+	out, err := curve25519.X25519(scalar, point)
 	if err != nil {
 		return nil, gas, ErrDHFailed
 	}
-	return pub, gas, nil
+	return out, gas, nil
 }

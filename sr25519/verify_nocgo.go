@@ -9,6 +9,10 @@ import (
 	schnorrkel "github.com/ChainSafe/go-schnorrkel"
 )
 
+// backend names the verifier this build linked. The two builds must return the
+// same verdict for every input; see the parity corpus in the tests.
+const backend = "go-schnorrkel (pure Go)"
+
 // verifySR25519 is the pure-Go fallback when CGO is disabled.
 // Uses ChainSafe/go-schnorrkel for Substrate-compatible sr25519 verification.
 func verifySR25519(publicKey, signature, message []byte) bool {

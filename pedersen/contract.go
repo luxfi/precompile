@@ -137,11 +137,12 @@ func (p *pedersenPrecompile) Run(
 	}
 }
 
-// commit: C = v*G + r*H
-func (p *pedersenPrecompile) commit(data []byte, gas uint64) ([]byte, uint64, error) {
-	if len(data) < 64 {
-		return nil, gas, ErrInvalidInput
-	}
+// commitTo computes sha256(v*G + r*H) from 64 bytes of value || blinding.
+// It is the one place the commitment is defined; commit and verify both go
+// through it, so an opening can never be checked against a different formula
+// than the one that produced it. The multipliers are reduced modulo r, which is
+// exactly the order of G and H, so every 32-byte word names one scalar.
+func commitTo(data []byte) []byte {
 	var v, r fr.Element
 	v.SetBytes(data[:32])
 	r.SetBytes(data[32:64])
@@ -153,9 +154,16 @@ func (p *pedersenPrecompile) commit(data []byte, gas uint64) ([]byte, uint64, er
 	var c bn254.G1Affine
 	c.Add(&vG, &rH)
 
-	cBytes := c.Marshal()
-	h := sha256.Sum256(cBytes)
-	return h[:], gas, nil
+	h := sha256.Sum256(c.Marshal())
+	return h[:]
+}
+
+// commit: C = v*G + r*H
+func (p *pedersenPrecompile) commit(data []byte, gas uint64) ([]byte, uint64, error) {
+	if len(data) < 64 {
+		return nil, gas, ErrInvalidInput
+	}
+	return commitTo(data[:64]), gas, nil
 }
 
 // verify: check C == v*G + r*H
@@ -163,13 +171,8 @@ func (p *pedersenPrecompile) verify(data []byte, gas uint64) ([]byte, uint64, er
 	if len(data) < 96 {
 		return nil, gas, ErrInvalidInput
 	}
-	commitHash := data[:32]
-	recomputed, _, err := p.commit(data[32:96], gas)
-	if err != nil {
-		return nil, gas, err
-	}
 	result := make([]byte, 32)
-	if equal(commitHash, recomputed) {
+	if equal(data[:32], commitTo(data[32:96])) {
 		result[31] = 1
 	}
 	return result, gas, nil

@@ -85,15 +85,12 @@ func (c *ed25519VerifyPrecompile) Run(
 		return nil, remainingGas, nil
 	}
 
-	// Extract components
+	// Extract components. The length check above fixes every slice, so no
+	// further size test is possible here: PublicKeySize == ed25519.PublicKeySize
+	// and the slice bounds are constants.
 	message := input[0:MessageHashSize]
 	signature := input[MessageHashSize : MessageHashSize+SignatureSize]
 	publicKey := input[MessageHashSize+SignatureSize : MessageHashSize+SignatureSize+PublicKeySize]
-
-	// Validate public key length
-	if len(publicKey) != ed25519.PublicKeySize {
-		return nil, remainingGas, nil
-	}
 
 	// CPU is the single source of truth, via the canonical luxfi/crypto/ed25519
 	// verifier. Ed25519 verification disagreement across implementations is a

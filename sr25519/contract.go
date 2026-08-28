@@ -50,10 +50,9 @@ const (
 	MinInputSize = PublicKeySize + SignatureSize + 1
 )
 
-var (
-	ErrInputTooShort = errors.New("sr25519: input too short")
-	ErrEmptyMessage  = errors.New("sr25519: empty message")
-)
+// ErrInputTooShort is the one refusal Run can report: anything shorter than
+// MinInputSize cannot carry a key, a signature and a message.
+var ErrInputTooShort = errors.New("sr25519: input too short")
 
 type sr25519VerifyPrecompile struct{}
 
@@ -101,13 +100,11 @@ func (p *sr25519VerifyPrecompile) Run(
 			"%w: expected >= %d bytes, got %d", ErrInputTooShort, MinInputSize, len(input))
 	}
 
+	// MinInputSize already reserves a byte for the message, so the slice below
+	// is never empty and no second emptiness test is possible here.
 	publicKey := input[0:PublicKeySize]
 	signature := input[PublicKeySize : PublicKeySize+SignatureSize]
 	message := input[PublicKeySize+SignatureSize:]
-
-	if len(message) == 0 {
-		return failResult, remainingGas, ErrEmptyMessage
-	}
 
 	// sr25519 is Schnorrkel over Ristretto255 with a Merlin ("substrate")
 	// transcript. There is NO GPU/accel kernel for it: luxfi/accel only

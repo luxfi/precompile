@@ -111,22 +111,21 @@ func (p *curve25519Precompile) Run(
 	}
 }
 
+// decodePoint rejects any encoding that is not a point on Edwards25519. Length
+// is settled twice over -- every caller slices exactly CompressedLen bytes, and
+// SetBytes refuses another width -- so there is no third check here.
 func decodePoint(data []byte) (*edwards25519.Point, error) {
-	if len(data) < CompressedLen {
-		return nil, ErrInvalidInput
-	}
-	pt, err := new(edwards25519.Point).SetBytes(data[:CompressedLen])
+	pt, err := new(edwards25519.Point).SetBytes(data)
 	if err != nil {
 		return nil, ErrInvalidPoint
 	}
 	return pt, nil
 }
 
+// decodeScalar takes canonical scalars only: s >= L is refused rather than
+// reduced, so each group element has exactly one multiplier that names it.
 func decodeScalar(data []byte) (*edwards25519.Scalar, error) {
-	if len(data) < ScalarLen {
-		return nil, ErrInvalidInput
-	}
-	s, err := new(edwards25519.Scalar).SetCanonicalBytes(data[:ScalarLen])
+	s, err := new(edwards25519.Scalar).SetCanonicalBytes(data)
 	if err != nil {
 		return nil, ErrInvalidInput
 	}
