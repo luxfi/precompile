@@ -37,7 +37,13 @@ var (
 	ErrOutOfGas  = contract.ErrOutOfGas
 	ErrDivByZero = errors.New("division by zero")
 	ErrUnknownOp = errors.New("unknown math operation")
+	ErrOverflow  = errors.New("result overflows uint256")
 )
+
+// maxU256 bounds every result this precompile returns as a number. padTo32 keeps
+// only the LOW 32 bytes, so without this bound an out-of-range result is not an
+// error — it is a different, wrong, entirely plausible number.
+var maxU256 = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 
 const (
 	OpMulDiv        = 0x01
@@ -112,6 +118,16 @@ func mulDiv(data []byte, gas uint64, roundUp bool) ([]byte, uint64, error) {
 		result.Add(result, new(big.Int).Sub(d, big.NewInt(1)))
 	}
 	result.Div(result, d)
+	// REFUSE an out-of-range result instead of returning its low 256 bits. The
+	// intermediate a*b is a full 512-bit product, so a quotient past uint256 is
+	// ordinary calldata, not an exotic case: MulDiv(2^255, 4, 1) is 2^257, whose low
+	// 256 bits are ZERO, and MulDiv(max, max, 1) truncates to ONE. Returning those is
+	// worse than failing — the caller cannot tell a wrapped answer from a real one,
+	// and this is the primitive fees and share ratios are computed with. Solidity's
+	// FullMath.sol requires the same bound; erroring here is what makes the EVM revert.
+	if result.Cmp(maxU256) > 0 {
+		return nil, gas, ErrOverflow
+	}
 	return padTo32(result.Bytes()), gas, nil
 }
 
@@ -162,6 +178,11 @@ func exp(data []byte, gas uint64) ([]byte, uint64, error) {
 			break
 		}
 		result.Add(result, term)
+	}
+	// Same rule as mulDiv: e^x leaves uint256 for any x above ~88 in Q128.128, and the
+	// truncated remainder is a plausible-looking number with no relation to e^x.
+	if result.Cmp(maxU256) > 0 {
+		return nil, gas, ErrOverflow
 	}
 	return padTo32(result.Bytes()), gas, nil
 }

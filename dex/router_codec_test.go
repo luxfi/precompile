@@ -272,3 +272,91 @@ func TestCheckDeadlineIsNotWiredToAnyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, p.Deadline, "the helper encodes a zero deadline")
 }
+
+// TestDecodeExactOutputV4AndOptionalTail covers the exact-output decoder's V4 branch
+// and the optional trailing fields both exact-output decoders share. The tail is
+// OPTIONAL, so a short body must yield zero values rather than reading past the end —
+// and a caller must be able to tell the difference between "unset" and "read garbage".
+func TestDecodeExactOutputV4AndOptionalTail(t *testing.T) {
+	// --- V4 binary path branch of DecodeExactOutputParams ---
+	var currencyOut common.Address
+	currencyOut[19] = 9
+	keys := []PathKey{
+		{IntermediateCurrency: common.HexToAddress("0x0a"), Fee: 3000, TickSpacing: 60},
+		{IntermediateCurrency: common.HexToAddress("0x0b"), Fee: 500, TickSpacing: 10},
+	}
+	path := EncodePath(currencyOut, keys)
+
+	body := []byte{0xFF}
+	hdr := make([]byte, 2)
+	binary.BigEndian.PutUint16(hdr, uint16(len(path)))
+	body = append(body, hdr...)
+	body = append(body, path...)
+	amountOut := make([]byte, 32)
+	big.NewInt(4_242).FillBytes(amountOut)
+	body = append(body, amountOut...)
+	amountInMax := make([]byte, 32)
+	big.NewInt(9_999).FillBytes(amountInMax)
+	body = append(body, amountInMax...)
+	dl := make([]byte, 8)
+	binary.BigEndian.PutUint64(dl, 777)
+	body = append(body, dl...)
+
+	p, err := DecodeExactOutputParams(body)
+	require.NoError(t, err)
+	require.Len(t, p.PathKeys, 2, "the V4 branch must decode both hops")
+	require.Equal(t, int64(4_242), p.AmountOut.Int64())
+	require.Equal(t, int64(9_999), p.AmountInMaximum.Int64())
+	require.Equal(t, uint64(777), p.Deadline, "the trailing deadline must be read when present")
+
+	// Without the trailing deadline the decode still succeeds, with Deadline zero.
+	noDeadline, err := DecodeExactOutputParams(body[:len(body)-8])
+	require.NoError(t, err)
+	require.Zero(t, noDeadline.Deadline, "an absent deadline must read as zero, not as garbage")
+	require.Len(t, noDeadline.PathKeys, 2)
+
+	// A corrupt inner path (not a whole number of PathKeys) must be refused rather
+	// than silently decoding the keys that happen to fit.
+	corrupt := append([]byte{}, body...)
+	binary.BigEndian.PutUint16(corrupt[1:3], uint16(len(path)-1))
+	require.NotPanics(t, func() {
+		_, err := DecodeExactOutputParams(corrupt)
+		require.Error(t, err, "a misaligned V4 path must be refused")
+	})
+
+	// Fewer than two tokens is not a path in the simple branch either.
+	for _, n := range []byte{0, 1} {
+		short := append([]byte{n}, make([]byte, 200)...)
+		_, err := DecodeExactOutputParams(short)
+		require.Errorf(t, err, "a %d-token exact-output path must be refused", n)
+	}
+
+	// --- optional tail of DecodeExactOutputSingleParams ---
+	// Minimum body (107 bytes) then each optional field added one at a time. Every
+	// prefix must decode without panicking, with the absent fields left zero.
+	single := make([]byte, 0, 170)
+	single = append(single, common.HexToAddress("0x11").Bytes()...)
+	single = append(single, common.HexToAddress("0x22").Bytes()...)
+	single = append(single, amountOut...)
+	single = append(single, amountInMax...)
+	single = append(single, 0x00, 0x0B, 0xB8) // fee
+	single = append(single, 0x00, 0x00, 0x3C) // tickSpacing
+	single = append(single, common.HexToAddress("0x33").Bytes()...)
+	limit := make([]byte, 32)
+	big.NewInt(555).FillBytes(limit)
+	single = append(single, limit...)
+	single = append(single, dl...)
+
+	full, err := DecodeExactOutputSingleParams(single)
+	require.NoError(t, err)
+	require.Equal(t, int32(60), full.TickSpacing, "the optional tickSpacing must be read when present")
+	require.Equal(t, common.HexToAddress("0x33"), full.Hooks)
+	require.Equal(t, uint64(777), full.Deadline)
+
+	for cut := 107; cut <= len(single); cut++ {
+		require.NotPanicsf(t, func() {
+			_, err := DecodeExactOutputSingleParams(single[:cut])
+			require.NoErrorf(t, err, "a %d-byte body is at or above the floor", cut)
+		}, "a %d-byte body must not panic", cut)
+	}
+}

@@ -115,5 +115,5 @@ func TestPriceFloor_EdgeCasesPreserved(t *testing.T) {
 	// is rejected, one at/above it passes — exact on the fixed-point grid.
 	big5 := uint64(5 * priceScale)
 	require.ErrorIs(t, enforceProceedsPriceFloor(big5, false, 100, 400), ErrSettlePriceLimit) // 4.0 < 5.0
-	require.NoError(t, enforceProceedsPriceFloor(big5, false, 100, 500))                       // 5.0 == 5.0
+	require.NoError(t, enforceProceedsPriceFloor(big5, false, 100, 500))                      // 5.0 == 5.0
 }
