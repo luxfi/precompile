@@ -125,9 +125,9 @@ func operatorAddrs(ops []*operator) []common.Address {
 	return out
 }
 
-func signByAll(t *testing.T, ops []*operator, sel byte, payload []byte) [][]byte {
+func signByAll(t *testing.T, st *regAS, ops []*operator, sel byte, payload []byte) [][]byte {
 	t.Helper()
-	digest := registrarDigest(sel, payload)
+	digest := registrarDigest(sel, governanceNonce(st.db), payload)
 	sigs := make([][]byte, len(ops))
 	for i, op := range ops {
 		sig, err := crypto.Sign(digest, op.key)
@@ -198,12 +198,14 @@ func TestRegistrar_RoundTrip_RegisterThenGet(t *testing.T) {
 	gw := common.HexToAddress("0x1111111111111111111111111111111111111111")
 
 	payload := buildRegisterPayload(id, name, true, gw)
-	sigs := signByAll(t, ops[:2], SelectorRegisterChain, payload)
+	sigs := signByAll(t, state, ops[:2], SelectorRegisterChain, payload)
 	body := appendSigs(payload, sigs)
 
 	ret, gasLeft, err := runRegistrar(t, state, SelectorRegisterChain, body, 1_000_000)
 	require.NoError(t, err)
-	require.Equal(t, uint64(1_000_000-GasRegisterChain), gasLeft)
+	require.Equal(t,
+		uint64(1_000_000-GasRegisterChain-uint64(len(sigs))*GasPerSignature),
+		gasLeft, "the write fee plus one ECRECOVER charge per submitted signature")
 	require.Equal(t, uint64(0), binary.BigEndian.Uint64(ret[24:32]))
 
 	// GetCount = 1
@@ -240,7 +242,7 @@ func TestRegistrar_ReRegisterFails(t *testing.T) {
 
 	register := func() error {
 		payload := buildRegisterPayload(id, name, true, gw)
-		sigs := signByAll(t, ops, SelectorRegisterChain, payload)
+		sigs := signByAll(t, state, ops, SelectorRegisterChain, payload)
 		_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 		return err
 	}
@@ -261,7 +263,7 @@ func TestRegistrar_UnregisterDecrementsCount(t *testing.T) {
 	}
 	for _, c := range chains {
 		payload := buildRegisterPayload(c.ID, c.Name, c.EVM, c.GatewayAt)
-		sigs := signByAll(t, ops, SelectorRegisterChain, payload)
+		sigs := signByAll(t, state, ops, SelectorRegisterChain, payload)
 		_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 		require.NoError(t, err)
 	}
@@ -273,7 +275,7 @@ func TestRegistrar_UnregisterDecrementsCount(t *testing.T) {
 
 	// Unregister middle (id=2). The slot should be compacted with the last row.
 	payload := buildUnregisterPayload(2)
-	sigs := signByAll(t, ops, SelectorUnregisterChain, payload)
+	sigs := signByAll(t, state, ops, SelectorUnregisterChain, payload)
 	_, _, err = runRegistrar(t, state, SelectorUnregisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.NoError(t, err)
 
@@ -304,14 +306,14 @@ func TestRegistrar_UnregisterLastRow(t *testing.T) {
 	}
 	for _, c := range chains {
 		payload := buildRegisterPayload(c.ID, c.Name, c.EVM, c.GatewayAt)
-		sigs := signByAll(t, ops, SelectorRegisterChain, payload)
+		sigs := signByAll(t, state, ops, SelectorRegisterChain, payload)
 		_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 		require.NoError(t, err)
 	}
 
 	// Unregister the last row (id=20) — no swap needed; just zero + decrement.
 	payload := buildUnregisterPayload(20)
-	sigs := signByAll(t, ops, SelectorUnregisterChain, payload)
+	sigs := signByAll(t, state, ops, SelectorUnregisterChain, payload)
 	_, _, err := runRegistrar(t, state, SelectorUnregisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.NoError(t, err)
 
@@ -329,7 +331,7 @@ func TestRegistrar_UnregisterUnknownFails(t *testing.T) {
 	require.NoError(t, SeedGovernance(state.db, operatorAddrs(ops), 1))
 
 	payload := buildUnregisterPayload(999)
-	sigs := signByAll(t, ops, SelectorUnregisterChain, payload)
+	sigs := signByAll(t, state, ops, SelectorUnregisterChain, payload)
 	_, _, err := runRegistrar(t, state, SelectorUnregisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.ErrorIs(t, err, ErrNotRegistered)
 }
@@ -342,7 +344,7 @@ func TestRegistrar_AuthBelowThresholdReverts(t *testing.T) {
 	payload := buildRegisterPayload(42, "answer", true, common.Address{})
 
 	// Only 1 signature when threshold is 2.
-	sigs := signByAll(t, ops[:1], SelectorRegisterChain, payload)
+	sigs := signByAll(t, state, ops[:1], SelectorRegisterChain, payload)
 	_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.ErrorIs(t, err, ErrUnauthorized)
 }
@@ -356,7 +358,7 @@ func TestRegistrar_AuthFromNonOperatorReverts(t *testing.T) {
 	payload := buildRegisterPayload(42, "answer", true, common.Address{})
 
 	// One real operator + one stranger — only 1 valid signature, threshold=2.
-	sigs := signByAll(t, []*operator{ops[0], stranger}, SelectorRegisterChain, payload)
+	sigs := signByAll(t, state, []*operator{ops[0], stranger}, SelectorRegisterChain, payload)
 	_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.ErrorIs(t, err, ErrUnauthorized)
 }
@@ -369,7 +371,7 @@ func TestRegistrar_AuthDuplicateSignerReverts(t *testing.T) {
 	payload := buildRegisterPayload(42, "answer", true, common.Address{})
 
 	// Same operator signs twice.
-	sigs := signByAll(t, []*operator{ops[0], ops[0]}, SelectorRegisterChain, payload)
+	sigs := signByAll(t, state, []*operator{ops[0], ops[0]}, SelectorRegisterChain, payload)
 	_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.ErrorIs(t, err, ErrDuplicateSigner)
 }
@@ -395,7 +397,7 @@ func TestRegistrar_AuthWrongSelectorReverts(t *testing.T) {
 	id := ChainID(7)
 	payload := buildRegisterPayload(id, "x", true, common.Address{})
 	// Sign with the WRONG selector — should not authorize a Register call.
-	sigs := signByAll(t, ops, SelectorSetGateway, payload)
+	sigs := signByAll(t, state, ops, SelectorSetGateway, payload)
 	_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.ErrorIs(t, err, ErrUnauthorized)
 }
@@ -411,7 +413,7 @@ func TestRegistrar_SetGatewayPatchesField(t *testing.T) {
 	newGW := common.HexToAddress("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
 	payload := buildRegisterPayload(id, name, true, oldGW)
-	sigs := signByAll(t, ops, SelectorRegisterChain, payload)
+	sigs := signByAll(t, state, ops, SelectorRegisterChain, payload)
 	_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.NoError(t, err)
 
@@ -422,7 +424,7 @@ func TestRegistrar_SetGatewayPatchesField(t *testing.T) {
 
 	// SetGateway.
 	payload = buildSetGatewayPayload(id, newGW)
-	sigs = signByAll(t, ops, SelectorSetGateway, payload)
+	sigs = signByAll(t, state, ops, SelectorSetGateway, payload)
 	_, _, err = runRegistrar(t, state, SelectorSetGateway, appendSigs(payload, sigs), 1_000_000)
 	require.NoError(t, err)
 
@@ -441,7 +443,7 @@ func TestRegistrar_SetGatewayUnknownReverts(t *testing.T) {
 	require.NoError(t, SeedGovernance(state.db, operatorAddrs(ops), 1))
 
 	payload := buildSetGatewayPayload(99999, common.Address{})
-	sigs := signByAll(t, ops, SelectorSetGateway, payload)
+	sigs := signByAll(t, state, ops, SelectorSetGateway, payload)
 	_, _, err := runRegistrar(t, state, SelectorSetGateway, appendSigs(payload, sigs), 1_000_000)
 	require.ErrorIs(t, err, ErrNotRegistered)
 }
@@ -456,7 +458,7 @@ func TestRegistrar_RegisterRoundTripsThroughStateRegistry(t *testing.T) {
 	gw := common.HexToAddress("0x9999999999999999999999999999999999999999")
 
 	payload := buildRegisterPayload(id, name, true, gw)
-	sigs := signByAll(t, ops, SelectorRegisterChain, payload)
+	sigs := signByAll(t, state, ops, SelectorRegisterChain, payload)
 	_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.NoError(t, err)
 
@@ -514,7 +516,7 @@ func TestRegistrar_ReadOnlyRegisterReverts(t *testing.T) {
 	require.NoError(t, SeedGovernance(state.db, operatorAddrs(ops), 1))
 
 	payload := buildRegisterPayload(42, "x", true, common.Address{})
-	sigs := signByAll(t, ops, SelectorRegisterChain, payload)
+	sigs := signByAll(t, state, ops, SelectorRegisterChain, payload)
 	body := appendSigs(payload, sigs)
 	input := append([]byte{SelectorRegisterChain}, body...)
 	_, _, err := RegistrarPrecompile.Run(state, common.Address{}, ContractRegistrarAddress, input, 1_000_000, true)
@@ -527,7 +529,7 @@ func TestRegistrar_RegisterOOG(t *testing.T) {
 	require.NoError(t, SeedGovernance(state.db, operatorAddrs(ops), 1))
 
 	payload := buildRegisterPayload(42, "x", true, common.Address{})
-	sigs := signByAll(t, ops, SelectorRegisterChain, payload)
+	sigs := signByAll(t, state, ops, SelectorRegisterChain, payload)
 	body := appendSigs(payload, sigs)
 	_, _, err := runRegistrar(t, state, SelectorRegisterChain, body, 100)
 	require.ErrorIs(t, err, contract.ErrOutOfGas)
@@ -540,7 +542,7 @@ func TestRegistrar_NameTooLong(t *testing.T) {
 
 	long := "this-name-is-definitely-more-than-thirty-two-bytes"
 	payload := buildRegisterPayload(42, long, true, common.Address{})
-	sigs := signByAll(t, ops, SelectorRegisterChain, payload)
+	sigs := signByAll(t, state, ops, SelectorRegisterChain, payload)
 	_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.ErrorIs(t, err, ErrChainNameTooLong)
 }
@@ -551,7 +553,7 @@ func TestRegistrar_UnseededGovernanceRejectsWrites(t *testing.T) {
 	// Note: SeedGovernance NOT called.
 
 	payload := buildRegisterPayload(42, "x", true, common.Address{})
-	sigs := signByAll(t, ops, SelectorRegisterChain, payload)
+	sigs := signByAll(t, state, ops, SelectorRegisterChain, payload)
 	_, _, err := runRegistrar(t, state, SelectorRegisterChain, appendSigs(payload, sigs), 1_000_000)
 	require.ErrorIs(t, err, ErrUnauthorized)
 }
@@ -682,12 +684,15 @@ func TestRegistrar_DigestPayloadShape(t *testing.T) {
 	// Pin the exact byte shape of registrarDigest. If this changes, on-chain
 	// and off-chain disagree silently.
 	payload := []byte{0x01, 0x02, 0x03}
-	got := registrarDigest(SelectorRegisterChain, payload)
-	expected := crypto.Keccak256(append(
-		append([]byte("lux.bridge.registrar.v1"), SelectorRegisterChain),
-		payload...,
-	))
-	require.Equal(t, expected, got)
+	got := registrarDigest(SelectorRegisterChain, 7, payload)
+
+	buf := append([]byte("lux.bridge.registrar.v1"), SelectorRegisterChain)
+	buf = append(buf, 0, 0, 0, 0, 0, 0, 0, 7) // nonce, big-endian uint64
+	buf = append(buf, payload...)
+	require.Equal(t, crypto.Keccak256(buf), got)
+
+	// The nonce is inside the hash, so two nonces cannot share a digest.
+	require.NotEqual(t, got, registrarDigest(SelectorRegisterChain, 8, payload))
 }
 
 // --- Gas constants pinning --------------------------------------------------

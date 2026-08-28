@@ -25,9 +25,14 @@
 //
 // Signature payload
 //
-//	keccak256("lux.bridge.registrar.v1" || selector(1) || abi_args)
+//	keccak256("lux.bridge.registrar.v1" || selector(1) || nonce(8 BE) || abi_args)
 //
-// where abi_args is the same byte slice the EVM hands the selector.
+// where abi_args is the same byte slice the EVM hands the selector, and nonce is
+// the registrar's current governance nonce, readable with selector 0x06. The
+// nonce advances after every successful write, so an authorisation is
+// single-use: without it, the operators' signatures over "register chain 5"
+// would stay valid forever and anyone who saw the original transaction could
+// re-apply it after an unregister, or re-apply a superseded SetGateway.
 package bridge
 
 import (
@@ -68,15 +73,25 @@ const (
 	SelectorSetGateway      byte = 0x03
 	SelectorGetCount        byte = 0x04
 	SelectorGetChain        byte = 0x05
+	SelectorGetNonce        byte = 0x06
 )
 
-// Gas costs — pinned, no dynamic component.
+// Gas costs. The per-selector figures cover the storage each write touches. The
+// signature term is separate because the caller chooses how many signatures to
+// submit: a flat write fee would buy up to 255 ECRECOVERs — about 765k gas of
+// real work — for 60k, and every one of them runs before any authorisation
+// check, so anyone could spend it.
 const (
 	GasRegisterChain   uint64 = 60_000 // 3 SSTOREs to fresh slots
 	GasUnregisterChain uint64 = 30_000 // 3 SSTOREs to zero + bookkeeping
 	GasSetGateway      uint64 = 22_000 // 1 SSTORE
 	GasGetCount        uint64 = 700    // 1 SLOAD
 	GasGetChain        uint64 = 2_400  // 3 SLOADs
+	GasGetNonce        uint64 = 700    // 1 SLOAD
+
+	// GasPerSignature matches the EVM's ECRECOVER price, which is the work each
+	// submitted signature costs.
+	GasPerSignature uint64 = 3_000
 )
 
 // Errors.
@@ -91,6 +106,7 @@ var (
 	ErrInvalidSignatureBytes    = errors.New("registrar: invalid signature bytes")
 	ErrDuplicateSigner          = errors.New("registrar: duplicate signer in signature set")
 	ErrChainNameTooLong         = errors.New("registrar: chain name exceeds max length")
+	ErrTooManyOperators         = errors.New("registrar: operator set exceeds maximum")
 )
 
 // ABI arg sizes for RegisterChain.
@@ -101,6 +117,12 @@ const (
 	argAddressSize   = 20 // common.Address
 	argSigLen        = 65 // r(32) || s(32) || v(1)
 	maxChainNameSize = 32
+
+	// maxOperators bounds the governance set. loadGovernance allocates from a
+	// count it reads out of storage, and genesis can pre-populate any slot at
+	// any address, so an unbounded count is an allocation an operator never
+	// authorised.
+	maxOperators = 1 << 16
 )
 
 // registrarPrecompile is the singleton 0x0446 stateful contract.
@@ -138,6 +160,8 @@ func (p *registrarPrecompile) Run(
 		return p.runGetCount(state, suppliedGas)
 	case SelectorGetChain:
 		return p.runGetChain(state, args, suppliedGas)
+	case SelectorGetNonce:
+		return p.runGetNonce(state, suppliedGas)
 	default:
 		return nil, suppliedGas, ErrRegistrarUnknownSelector
 	}
@@ -168,6 +192,10 @@ func (p *registrarPrecompile) runRegisterChain(
 		return nil, remaining, err
 	}
 
+	remaining, err = chargeSignatures(remaining, sigs)
+	if err != nil {
+		return nil, 0, err
+	}
 	if err := verifyMultisig(state, sel, payload, sigs); err != nil {
 		return nil, remaining, err
 	}
@@ -187,6 +215,7 @@ func (p *registrarPrecompile) runRegisterChain(
 	binary.BigEndian.PutUint64(cnt[24:], idx+1)
 	state.SetState(BridgeGatewayCanonicalAddress, slotCount(), cnt)
 
+	bumpNonce(state)
 	return encodeU64(idx), remaining, nil
 }
 
@@ -217,6 +246,10 @@ func (p *registrarPrecompile) runUnregisterChain(
 		return nil, remaining, err
 	}
 
+	remaining, err = chargeSignatures(remaining, sigs)
+	if err != nil {
+		return nil, 0, err
+	}
 	if err := verifyMultisig(state, sel, payload, sigs); err != nil {
 		return nil, remaining, err
 	}
@@ -251,6 +284,7 @@ func (p *registrarPrecompile) runUnregisterChain(
 	binary.BigEndian.PutUint64(cnt[24:], last)
 	state.SetState(BridgeGatewayCanonicalAddress, slotCount(), cnt)
 
+	bumpNonce(state)
 	return encodeU64(idx), remaining, nil
 }
 
@@ -277,6 +311,10 @@ func (p *registrarPrecompile) runSetGateway(
 		return nil, remaining, err
 	}
 
+	remaining, err = chargeSignatures(remaining, sigs)
+	if err != nil {
+		return nil, 0, err
+	}
 	if err := verifyMultisig(state, sel, payload, sigs); err != nil {
 		return nil, remaining, err
 	}
@@ -294,6 +332,7 @@ func (p *registrarPrecompile) runSetGateway(
 	copy(hdr[5:25], gw.Bytes())
 	state.SetState(BridgeGatewayCanonicalAddress, hdrKey, hdr)
 
+	bumpNonce(state)
 	return encodeU64(idx), remaining, nil
 }
 
@@ -336,6 +375,26 @@ func (p *registrarPrecompile) runGetChain(
 	}
 	c := r.row(idx)
 	return encodeChain(c), remaining, nil
+}
+
+// runGetNonce — selector 0x06. The value an off-chain signer must bind into the
+// next authorisation. Read-only, unauthenticated, one SLOAD.
+func (p *registrarPrecompile) runGetNonce(
+	state contract.StateDB,
+	suppliedGas uint64,
+) ([]byte, uint64, error) {
+	remaining, err := contract.DeductGas(suppliedGas, GasGetNonce)
+	if err != nil {
+		return nil, 0, err
+	}
+	return encodeU64(governanceNonce(state)), remaining, nil
+}
+
+// chargeSignatures bills the ECRECOVER work the caller asked for. Every
+// signature is recovered before any of them is known to belong to an operator,
+// so an unauthorised caller can spend this and must pay for it.
+func chargeSignatures(remaining uint64, sigs [][]byte) (uint64, error) {
+	return contract.DeductGas(remaining, uint64(len(sigs))*GasPerSignature)
 }
 
 // --- Argument decoders -------------------------------------------------------
@@ -434,9 +493,9 @@ func decodeSigs(b []byte) ([][]byte, error) {
 // --- Multisig verification ---------------------------------------------------
 
 // verifyMultisig checks that at least Threshold operators of the canonical
-// governance set signed keccak256(DomainSeparator || sel || payload).
+// governance set signed the digest for the CURRENT governance nonce.
 func verifyMultisig(state contract.StateDB, sel byte, payload []byte, sigs [][]byte) error {
-	digest := registrarDigest(sel, payload)
+	digest := registrarDigest(sel, governanceNonce(state), payload)
 	operators, threshold, err := loadGovernance(state)
 	if err != nil {
 		return err
@@ -480,10 +539,14 @@ func verifyMultisig(state contract.StateDB, sel byte, payload []byte, sigs [][]b
 
 // registrarDigest computes the canonical signing digest. The off-chain signer
 // MUST produce the same bytes — keep this function and its callers in lock-step.
-func registrarDigest(sel byte, payload []byte) []byte {
-	buf := make([]byte, 0, len(DomainSeparator)+1+len(payload))
+// The nonce makes each authorisation single-use; read it with selector 0x06.
+func registrarDigest(sel byte, nonce uint64, payload []byte) []byte {
+	buf := make([]byte, 0, len(DomainSeparator)+1+8+len(payload))
 	buf = append(buf, []byte(DomainSeparator)...)
 	buf = append(buf, sel)
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], nonce)
+	buf = append(buf, n[:]...)
 	buf = append(buf, payload...)
 	return crypto.Keccak256(buf)
 }
@@ -555,6 +618,37 @@ func govSlot(offset uint64) common.Hash {
 	return h
 }
 
+// nonceBase namespaces the governance nonce. It is deliberately NOT a govSlot
+// offset: SeedGovernance rewrites the govSlot header and operator rows, and a
+// nonce that reset on re-seed would revive every superseded authorisation.
+var nonceBase = [24]byte{
+	// fixed ASCII prefix "lux.bridge.nonce" left-padded with zero bytes
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	'l', 'u', 'x', '.', 'b', 'r', 'i', 'd', 'g', 'e', '.', 'n', 'o', 'n', 'c', 'e',
+}
+
+func nonceSlot() common.Hash {
+	var h common.Hash
+	copy(h[:24], nonceBase[:])
+	return h
+}
+
+// governanceNonce reads the authorisation counter. Zero on a fresh registrar.
+func governanceNonce(state contract.StateDB) uint64 {
+	h := state.GetState(ContractRegistrarAddress, nonceSlot())
+	return binary.BigEndian.Uint64(h[24:])
+}
+
+// bumpNonce advances the counter after a write lands, retiring the signature
+// set that authorised it. Called only on success: a write refused after
+// verification (an already-registered chain, say) leaves the authorisation
+// usable so operators need not re-sign.
+func bumpNonce(state contract.StateDB) {
+	var h common.Hash
+	binary.BigEndian.PutUint64(h[24:], governanceNonce(state)+1)
+	state.SetState(ContractRegistrarAddress, nonceSlot(), h)
+}
+
 // SeedGovernance writes the operator set and threshold to the registrar's
 // state. Idempotent: re-seeding the same configuration is a no-op. Different
 // configuration overwrites — this is intended to be called once at deployment
@@ -563,8 +657,8 @@ func SeedGovernance(state contract.StateDB, operators []common.Address, threshol
 	if threshold == 0 || int(threshold) > len(operators) {
 		return fmt.Errorf("registrar: invalid threshold %d for %d operators", threshold, len(operators))
 	}
-	if len(operators) > 1<<16 {
-		return fmt.Errorf("registrar: too many operators: %d", len(operators))
+	if len(operators) > maxOperators {
+		return fmt.Errorf("%w: %d", ErrTooManyOperators, len(operators))
 	}
 
 	var header common.Hash
@@ -586,6 +680,16 @@ func loadGovernance(state contract.StateDB) ([]common.Address, uint32, error) {
 	count := binary.BigEndian.Uint32(header[24:28])
 	threshold := binary.BigEndian.Uint32(header[28:32])
 	if count == 0 || threshold == 0 {
+		return nil, 0, ErrUnauthorized
+	}
+	// count comes from storage, and genesis alloc can pre-populate any slot at
+	// any address. Allocating on an unvalidated 32-bit count would let a
+	// malformed genesis ask for 4 billion addresses — 80 GB — at boot.
+	if count > maxOperators {
+		return nil, 0, ErrTooManyOperators
+	}
+	// A threshold nobody can reach is a bricked registrar, not an open one.
+	if threshold > count {
 		return nil, 0, ErrUnauthorized
 	}
 	ops := make([]common.Address, count)
