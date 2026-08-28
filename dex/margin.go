@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 )
 
 // Margin account types
@@ -348,7 +349,11 @@ func (me *MarginEngine) UpdatePositionMargin(
 		notional.Div(notional, Q96)
 		newLeverage := new(big.Int).Div(notional, newMargin)
 
-		if newLeverage.Uint64() > uint64(account.MaxLeverage) {
+		// Compared as a 256-bit value. Narrowing first would let the check be
+		// beaten by exceeding it far enough: notional is a product of two
+		// unbounded words, so a leverage of 2^64+1 has low word 1 and reads as
+		// the safest position on the book.
+		if newLeverage.Cmp(new(big.Int).SetUint64(uint64(account.MaxLeverage))) > 0 {
 			return ErrExcessiveLeverage
 		}
 	}
@@ -612,7 +617,14 @@ func (me *MarginEngine) increasePosition(account *MarginAccount, existing *Margi
 	notional := new(big.Int).Mul(existing.Size, existing.MarkPrice)
 	notional.Div(notional, Q96)
 	if existing.Margin.Sign() > 0 {
-		existing.Leverage = uint32(notional.Div(notional, existing.Margin).Uint64())
+		// Leverage is a uint32 field. A quotient past that width used to wrap into
+		// it, and the wrapped value then set the liquidation price — so the
+		// position most in need of liquidating got the price of a safe one.
+		lev, err := contract.Unsigned(notional.Div(notional, existing.Margin), 32)
+		if err != nil {
+			return nil, ErrExcessiveLeverage
+		}
+		existing.Leverage = uint32(lev)
 	}
 
 	// Recalculate liquidation price

@@ -111,7 +111,10 @@ func (pe *PerpetualEngine) OpenPosition(
 	leverage := new(big.Int).Mul(notionalValue, big.NewInt(100))
 	leverage.Div(leverage, margin)
 
-	if leverage.Uint64() > uint64(market.MaxLeverage)*100 {
+	// Compared as a 256-bit value, for the reason margin.go gives at the same
+	// check: a leverage past uint64 narrows to its low word, and the low word of
+	// an unpayable position is usually small.
+	if leverage.Cmp(new(big.Int).SetUint64(uint64(market.MaxLeverage)*100)) > 0 {
 		return nil, ErrExcessiveLeverage
 	}
 

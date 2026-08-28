@@ -272,10 +272,11 @@ func TestZzlPerpOpenPositionLeverageBoundary(t *testing.T) {
 	}
 }
 
-// DEFECT (reported, HIGH): the leverage check narrows the big.Int ratio through
-// Uint64() before comparing. A position whose leverage-in-hundredths is a
-// multiple of 2^64 truncates to a small number and sails past the ceiling.
-func TestZzlPerpLeverageCeilingBypassedByUint64Truncation(t *testing.T) {
+// The leverage ceiling used to narrow the big.Int ratio through Uint64() before
+// comparing, so a position whose leverage-in-hundredths was a multiple of 2^64
+// truncated to a small number and sailed past the ceiling. The comparison is now
+// made at full width; this pins the exact input that used to get through.
+func TestZzlPerpLeverageCeilingHoldsAtFullWidth(t *testing.T) {
 	// At a price of exactly 1 (Q96), notional == size, so leverage in hundredths
 	// is size*100/margin. Choose margin = 100 and size = 2^64 to make that
 	// exactly 2^64, whose low 64 bits are zero.
@@ -292,19 +293,34 @@ func TestZzlPerpLeverageCeilingBypassedByUint64Truncation(t *testing.T) {
 		t.Fatalf("fixture: 2^64 narrowed to %d, want 0", honest.Uint64())
 	}
 
-	pos, err := pe.OpenPosition(zzlOwner, id, size, margin, false)
-	if err != nil {
-		t.Fatalf("the truncated-leverage open was refused (%v); a wide comparison was added — "+
-			"update the reported finding", err)
-	}
-	if pos == nil {
-		t.Fatal("open returned no position")
-	}
-	// The position that got through is astronomically over-levered: its true
-	// leverage is 2^64/100 times the market's stated 10x ceiling.
+	// The true leverage is 2^64/100 times the market's stated 10x ceiling, and the
+	// comparison now sees that rather than the zero its low word carries.
 	trueLev := new(big.Int).Div(honest, big.NewInt(100))
 	if trueLev.Cmp(big.NewInt(int64(pe.Markets[id].MaxLeverage))) <= 0 {
-		t.Fatalf("true leverage %s did not exceed the ceiling %d", trueLev, pe.Markets[id].MaxLeverage)
+		t.Fatalf("fixture: true leverage %s did not exceed the ceiling %d", trueLev, pe.Markets[id].MaxLeverage)
+	}
+
+	pos, err := pe.OpenPosition(zzlOwner, id, size, margin, false)
+	if !errors.Is(err, ErrExcessiveLeverage) {
+		t.Fatalf("a leverage of exactly 2^64 was admitted: (%v, %v)", pos, err)
+	}
+	if pos != nil {
+		t.Fatal("a refused open returned a position")
+	}
+	if p := pe.Positions[zzlOwner]; p != nil && p[id] != nil {
+		t.Fatal("a refused open created a position")
+	}
+
+	// The boundary itself still opens: exactly the ceiling is admitted, one
+	// hundredth past it is not. Without this half the test would pass against a
+	// check that refused everything.
+	pe2, id2 := zzlPerpMarket(t, new(big.Int).Set(Q96), 10, zzlMM(5))
+	if _, err := pe2.OpenPosition(zzlOwner, id2, big.NewInt(1000), big.NewInt(100), false); err != nil {
+		t.Fatalf("leverage exactly at the 10x ceiling was refused: %v", err)
+	}
+	pe3, id3 := zzlPerpMarket(t, new(big.Int).Set(Q96), 10, zzlMM(5))
+	if _, err := pe3.OpenPosition(zzlOwner, id3, big.NewInt(1001), big.NewInt(100), false); !errors.Is(err, ErrExcessiveLeverage) {
+		t.Fatalf("leverage one hundredth past the ceiling was admitted: %v", err)
 	}
 }
 

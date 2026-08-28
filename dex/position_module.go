@@ -227,8 +227,19 @@ func decodePMLifecycle(data []byte) (pmLifecycleArgs, error) {
 	}
 	var a pmLifecycleArgs
 	a.key = key
-	a.tickLower = int24(decodeSigned256(data[160:192]).Int64())
-	a.tickUpper = int24(decodeSigned256(data[192:224]).Int64())
+	// Both ticks are int24 on the wire. Reading them as int24(x.Int64()) meant a
+	// word of 2^32+6 opened a position at tick 6 — a tick the caller never named,
+	// inside a range the caller never asked for.
+	lower, err := contract.Signed(decodeSigned256(data[160:192]), 24)
+	if err != nil {
+		return pmLifecycleArgs{}, ErrInvalidTick
+	}
+	upper, err := contract.Signed(decodeSigned256(data[192:224]), 24)
+	if err != nil {
+		return pmLifecycleArgs{}, ErrInvalidTick
+	}
+	a.tickLower = int24(lower)
+	a.tickUpper = int24(upper)
 	a.delta = decodeSigned256(data[224:256])
 	copy(a.salt[:], data[256:288])
 	if data[319] == byte(MakerSideAsk) {

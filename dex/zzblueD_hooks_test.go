@@ -663,23 +663,41 @@ func TestBlueDVolatilityFeeDegenerateWindows(t *testing.T) {
 	}
 }
 
-// TestBlueDVolatilityFeeWrapsBelowBaseFee pins a DEFECT: `uint24` is a Go alias for
-// uint32, and the fee is built as `BaseFee + uint24(volatilityBps.Uint64())` with
-// no bound. A large enough tick move wraps the uint32 addition and produces a fee
-// BELOW BaseFee -- the arithmetic favours the swapper, which on a value path is
-// exactly the wrong direction.
-func TestBlueDVolatilityFeeWrapsBelowBaseFee(t *testing.T) {
+// TestBlueDVolatilityFeeClampsToMaxFee pins the clamp that replaced a wrap.
+//
+// The fee used to be built as `BaseFee + uint24(volatilityBps.Uint64())`, and
+// `uint24` is a Go alias for uint32, so a large enough tick move wrapped the
+// addition and produced a fee BELOW BaseFee -- the arithmetic favoured the
+// swapper, which on a value path is exactly the wrong direction. It is now summed
+// and clamped in 256 bits and narrowed only once the clamp proves it fits, so the
+// fee rises with volatility and stops at MaxFee.
+func TestBlueDVolatilityFeeClampsToMaxFee(t *testing.T) {
 	calc := &VolatilityFeeCalculator{BaseFee: 3000, MaxFee: 10000, VolatilityScale: 10000}
 	obs := []TWAPObservation{
 		{Timestamp: 1, TickCumulative: big.NewInt(0)},
 		{Timestamp: 2, TickCumulative: big.NewInt(math.MaxUint32)}, // volatilityBps = 2^32-1
 	}
-	fee := calc.CalculateFee(obs)
-	if fee >= calc.BaseFee {
-		t.Fatalf("fee = %d >= BaseFee %d -- the wrap is gone, defect fixed, update this test", fee, calc.BaseFee)
+	if fee := calc.CalculateFee(obs); fee != calc.MaxFee {
+		t.Fatalf("fee = %d, want MaxFee %d", fee, calc.MaxFee)
 	}
-	if fee != 2999 {
-		t.Fatalf("fee = %d, want 2999 (3000 + (2^32-1) mod 2^32)", fee)
+
+	// The clamp is a ceiling, not a floor: below it the fee still tracks volatility,
+	// so a test that only checked the extreme would pass against a constant.
+	mid := []TWAPObservation{
+		{Timestamp: 1, TickCumulative: big.NewInt(0)},
+		{Timestamp: 2, TickCumulative: big.NewInt(4000)},
+	}
+	if fee := calc.CalculateFee(mid); fee != 7000 {
+		t.Fatalf("fee = %d, want 7000 (BaseFee 3000 + 4000 bps)", fee)
+	}
+
+	// And a tick move one unit under the ceiling lands exactly on it, never past.
+	edge := []TWAPObservation{
+		{Timestamp: 1, TickCumulative: big.NewInt(0)},
+		{Timestamp: 2, TickCumulative: big.NewInt(7000)},
+	}
+	if fee := calc.CalculateFee(edge); fee != calc.MaxFee {
+		t.Fatalf("fee = %d, want MaxFee %d at the boundary", fee, calc.MaxFee)
 	}
 }
 
