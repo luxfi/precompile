@@ -4,77 +4,15 @@
 package bridge
 
 import (
-	"math/big"
 	"testing"
 
-	"github.com/holiman/uint256"
 	"github.com/luxfi/geth/common"
-	"github.com/luxfi/geth/core/tracing"
-	ethtypes "github.com/luxfi/geth/core/types"
 )
 
-// memStateDB is a minimal contract.StateDB implementation backed by a map.
-// It implements only the surface SeedRegistry and stateRegistry exercise.
-type memStateDB struct {
-	store map[common.Address]map[common.Hash]common.Hash
-}
-
-func newMemStateDB() *memStateDB {
-	return &memStateDB{store: make(map[common.Address]map[common.Hash]common.Hash)}
-}
-
-func (m *memStateDB) GetState(a common.Address, k common.Hash) common.Hash {
-	s := m.store[a]
-	if s == nil {
-		return common.Hash{}
-	}
-	return s[k]
-}
-
-func (m *memStateDB) SetState(a common.Address, k, v common.Hash) common.Hash {
-	s := m.store[a]
-	if s == nil {
-		s = make(map[common.Hash]common.Hash)
-		m.store[a] = s
-	}
-	prev := s[k]
-	s[k] = v
-	return prev
-}
-
-// Unused surface — implemented to satisfy the interface, panics if exercised.
-func (*memStateDB) SetNonce(common.Address, uint64, tracing.NonceChangeReason) {
-	panic("not implemented")
-}
-func (*memStateDB) GetNonce(common.Address) uint64 { panic("not implemented") }
-func (*memStateDB) GetBalance(common.Address) *uint256.Int {
-	panic("not implemented")
-}
-func (*memStateDB) AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
-	panic("not implemented")
-}
-func (*memStateDB) SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason) uint256.Int {
-	panic("not implemented")
-}
-func (*memStateDB) GetBalanceMultiCoin(common.Address, common.Hash) *big.Int {
-	panic("not implemented")
-}
-func (*memStateDB) AddBalanceMultiCoin(common.Address, common.Hash, *big.Int) {
-	panic("not implemented")
-}
-func (*memStateDB) SubBalanceMultiCoin(common.Address, common.Hash, *big.Int) {
-	panic("not implemented")
-}
-func (*memStateDB) CreateAccount(common.Address) { panic("not implemented") }
-func (*memStateDB) Exist(common.Address) bool    { panic("not implemented") }
-func (*memStateDB) AddLog(*ethtypes.Log)         { panic("not implemented") }
-func (*memStateDB) Logs() []*ethtypes.Log        { panic("not implemented") }
-func (*memStateDB) GetPredicateStorageSlots(common.Address, int) ([]byte, bool) {
-	panic("not implemented")
-}
-func (*memStateDB) TxHash() common.Hash  { panic("not implemented") }
-func (*memStateDB) Snapshot() int        { panic("not implemented") }
-func (*memStateDB) RevertToSnapshot(int) { panic("not implemented") }
+// There is one StateDB fake in this package: regStateDB, in registrar_test.go.
+// The previous second fake answered GetState/SetState and panicked on the other
+// sixteen methods, so any test that reached past the storage surface died
+// instead of failing — and no test could grow past it.
 
 func TestStaticRegistry_GetAndAll(t *testing.T) {
 	r := NewStatic(DefaultSeed())
@@ -105,7 +43,7 @@ func TestStaticRegistry_AllReturnsCopy(t *testing.T) {
 }
 
 func TestStateRegistry_RoundTrip(t *testing.T) {
-	state := newMemStateDB()
+	state := newRegState()
 	addr := common.HexToAddress("0x0000000000000000000000000000000000000440")
 
 	seed := DefaultSeed()
@@ -136,7 +74,7 @@ func TestStateRegistry_RoundTrip(t *testing.T) {
 }
 
 func TestStateRegistry_SeedIsIdempotent(t *testing.T) {
-	state := newMemStateDB()
+	state := newRegState()
 	addr := common.HexToAddress("0x0000000000000000000000000000000000000440")
 
 	if _, err := SeedRegistry(state, addr, DefaultSeed()); err != nil {
@@ -152,7 +90,7 @@ func TestStateRegistry_SeedIsIdempotent(t *testing.T) {
 }
 
 func TestStateRegistry_RejectsLongName(t *testing.T) {
-	state := newMemStateDB()
+	state := newRegState()
 	addr := common.HexToAddress("0x0000000000000000000000000000000000000440")
 
 	long := Chain{ID: 7, Name: "this-name-is-definitely-more-than-thirty-two-bytes", EVM: true}
