@@ -134,14 +134,15 @@ var (
 func (q *QuoterContract) Run(
 	state contract.AccessibleState, caller common.Address, addr common.Address, input []byte, suppliedGas uint64, readOnly bool,
 ) ([]byte, uint64, error) {
-	if len(input) < 4 {
+	cur := contract.Read(input)
+	selector, err := cur.Uint32()
+	if err != nil {
 		return nil, suppliedGas, errors.New("dex: quoter input too short")
 	}
 	if state.GetBlockContext() == nil {
 		return nil, suppliedGas, errors.New("dex: block context unavailable")
 	}
-	selector := uint32(input[0])<<24 | uint32(input[1])<<16 | uint32(input[2])<<8 | uint32(input[3])
-	data := input[4:]
+	data := cur.Rest()
 
 	switch selector {
 	case SelQExactInput, SelQExactInputSingle:

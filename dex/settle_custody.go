@@ -102,18 +102,15 @@ func (s *SettleContract) runSettleDeposit(
 		if _, of := uint256.FromBig(amount); of {
 			return nil, gasLeft, ErrSettleAmountRange
 		}
-		// NATIVE DEPOSIT — OBSERVED DELTA, not an absolute balance test. The precompile cannot
-		// read msg.value (no CallValue surface), so we measure the native this CALL delivered:
-		// the EVM already moved msg.value into 0x9999 before Run, and every native-moving path
-		// keeps settleVault[native] in lock-step with the vault's real native balance, so
-		//   delivered = GetBalance(0x9999) - settleVault[native]
-		// is exactly the value this call carried. An ABSOLUTE check would let a value==0 call
-		// mint an unbacked claim against OTHERS' funds in the SHARED vault; the delta check makes
-		// value==0 deliver 0 (reverts). This is all reads + balance — no nested call — so the
-		// claim/vault writes below are Phase A (never dropped by the nested-call host bug).
-		realBal := stateDB.GetBalance(poolManagerAddr9999).ToBig()
-		tracked := loadSettleVault(stateDB, aid)
-		delivered := new(big.Int).Sub(realBal, tracked)
+		// NATIVE DEPOSIT — OBSERVED DELTA, not an absolute balance test. deliveredNative
+		// (native_zap.go) is the one answer to how much native this CALL carried: the vault's
+		// real balance less every pot already accounted for. An ABSOLUTE check would let a
+		// value==0 call mint a claim against OTHERS' funds in the SHARED vault; the delta makes
+		// value==0 deliver 0 (reverts), and counting the seam and LP pots as accounted keeps a
+		// depositor's claim to what a depositor sent. This is all reads + balance — no nested
+		// call — so the claim/vault writes below are Phase A (never dropped by the nested-call
+		// host bug).
+		delivered := deliveredNative(stateDB, aid)
 		if delivered.Sign() < 0 || delivered.Cmp(amount) < 0 {
 			return nil, gasLeft, ErrSettleDepositShort // value not delivered this call.
 		}

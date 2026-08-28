@@ -4,7 +4,6 @@
 package dex
 
 import (
-	"encoding/binary"
 	"errors"
 
 	"github.com/luxfi/geth/common"
@@ -198,7 +197,9 @@ func (s *SettleContract) Run(
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
-	if len(input) < 4 {
+	cur := contract.Read(input)
+	selector, err := cur.Uint32()
+	if err != nil {
 		return nil, suppliedGas, errors.New("dex: input too short")
 	}
 	if accessibleState.GetBlockContext() == nil {
@@ -213,8 +214,7 @@ func (s *SettleContract) Run(
 	if addr != poolManagerAddr9999 {
 		return nil, suppliedGas, ErrSettleWrongContext
 	}
-	selector := binary.BigEndian.Uint32(input[:4])
-	data := input[4:]
+	data := cur.Rest()
 
 	switch selector {
 	case SelectorSwap:
