@@ -10,75 +10,39 @@ import (
 	"errors"
 )
 
-// Precompile addresses for G-Chain components
-// Reserved range: 0x0500 - 0x050F
-// NOTE: Core addresses are also defined in registry.go for RegistryMap
-const (
-	// G-Chain GraphQL precompile (alias for GraphQLQueryAddress in registry.go)
-	GraphQLAddress = "0x0500" // Main GraphQL query interface
-
-	// Future extensions
-	GraphIndexAddress = "0x0503" // Index management (future)
-)
-
-// Gas costs for GraphQL operations
+// Gas costs for GraphQL operations.
+//
+// The address of this precompile has exactly one spelling: ContractGraphQLAddress in
+// module.go, which is what the module registers.
 const (
 	// Query operations
 	GasQueryBase       uint64 = 5_000  // Base cost for any query
 	GasQuerySimple     uint64 = 10_000 // Simple single-entity query
 	GasQueryComplex    uint64 = 25_000 // Complex multi-entity query
-	GasQueryCrossChain uint64 = 50_000 // Cross-chain aggregation query
+	GasQueryCrossChain uint64 = 50_000 // Cross-chain aggregation query, per target chain
 
-	// Per-result costs
-	GasPerEntity uint64 = 1_000 // Per entity in result
-	GasPerField  uint64 = 100   // Per field returned
-	GasPerByte   uint64 = 3     // Per byte of response data
-
-	// Mutation operations (admin only)
-	GasMutationBase uint64 = 100_000 // Base cost for mutations
-)
-
-// Query types supported by the precompile
-type QueryType uint8
-
-const (
-	QueryTypeChainInfo QueryType = iota
-	QueryTypeBlock
-	QueryTypeAccount
-	QueryTypeBalance
-	QueryTypeFactory
-	QueryTypeBundle
-	QueryTypeToken
-	QueryTypeTokens
-	QueryTypePool
-	QueryTypePools
-	QueryTypePair
-	QueryTypePairs
-	QueryTypeTicks
-	QueryTypeSwaps
-	QueryTypePositions
-	QueryTypeTimeSeries
-	QueryTypeCustom
+	// GasPerByte prices every caller-supplied and every returned byte.
+	GasPerByte uint64 = 3
 )
 
 // Errors
 var (
 	ErrInvalidQuery         = errors.New("invalid GraphQL query")
 	ErrQueryTooLarge        = errors.New("query exceeds maximum size")
-	ErrQueryTimeout         = errors.New("query execution timeout")
-	ErrChainNotFound        = errors.New("chain not found")
-	ErrUnauthorized         = errors.New("unauthorized mutation")
 	ErrGasExceeded          = errors.New("gas limit exceeded for query")
-	ErrInvalidResponse      = errors.New("invalid response format")
 	ErrClientNotInitialized = errors.New("graph client not initialized")
 )
 
 // Maximum limits
 const (
-	MaxQuerySize        = 4096  // Max query string size in bytes
-	MaxResponseSize     = 65536 // Max response size in bytes (64KB)
-	MaxEntitiesPerQuery = 1000  // Max entities in a single query
-	MaxQueryDepth       = 10    // Max nesting depth
+	MaxQuerySize    = 4096  // Max query string size in bytes
+	MaxResponseSize = 65536 // Max response size in bytes (64KB)
+
+	// MaxTargetChains bounds the multi-chain fan-out. TargetChains is decoded straight
+	// out of caller-supplied JSON and drives one client.QueryChain call per entry, so
+	// without a cap the loop count — and the gas arithmetic derived from it — are both
+	// caller-controlled and unbounded.
+	MaxTargetChains = 16
 )
 
 // ChainID constants for cross-chain queries

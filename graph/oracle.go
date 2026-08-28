@@ -247,9 +247,18 @@ func ParsePriceResponse(data []byte) (*PriceResponse, error) {
 		return nil, err
 	}
 
-	// Calculate USD price from derivedETH * ethPriceUSD
-	derivedETH, _ := new(big.Float).SetString(resp.Data.Token.DerivedETH)
-	ethPrice, _ := new(big.Float).SetString(resp.Data.Bundle.EthPriceUSD)
+	// Calculate USD price from derivedETH * ethPriceUSD. A missing or malformed number
+	// makes SetString return nil, and multiplying through a nil *big.Float panics — so a
+	// response that simply omits a price field must be refused here rather than crashing
+	// the caller.
+	derivedETH, ok := new(big.Float).SetString(resp.Data.Token.DerivedETH)
+	if !ok {
+		return nil, ErrInvalidQuery
+	}
+	ethPrice, ok := new(big.Float).SetString(resp.Data.Bundle.EthPriceUSD)
+	if !ok {
+		return nil, ErrInvalidQuery
+	}
 
 	priceFloat := new(big.Float).Mul(derivedETH, ethPrice)
 

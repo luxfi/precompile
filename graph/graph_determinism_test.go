@@ -47,7 +47,7 @@ func TestGraphQL_NilClientReturnsTypedErrorNotPanic(t *testing.T) {
 	p := NewGraphQLPrecompile(nil)
 
 	require.NotPanics(t, func() {
-		_, err := p.Query(nil, common.Address{}, QueryRequest{Query: "query { chainInfo }"}, 1_000_000)
+		_, err := p.Query(QueryRequest{Query: "query { chainInfo }"}, 1_000_000)
 		require.ErrorIs(t, err, ErrClientNotInitialized)
 	})
 
@@ -75,11 +75,11 @@ func TestGraphQL_DeterministicAcrossRuns(t *testing.T) {
 	p := NewGraphQLPrecompile(client)
 	req := QueryRequest{Query: "query { chainInfo { vmName } }"}
 
-	first, err := p.Query(nil, common.Address{}, req, 1_000_000)
+	first, err := p.Query(req, 1_000_000)
 	require.NoError(t, err)
 
 	for i := 0; i < 100; i++ {
-		got, err := p.Query(nil, common.Address{}, req, 1_000_000)
+		got, err := p.Query(req, 1_000_000)
 		require.NoError(t, err)
 		require.Equal(t, first.Data, got.Data, "data must be identical across runs")
 		require.Equal(t, first.GasUsed, got.GasUsed, "gas must be identical across runs (no cache discount)")
@@ -107,7 +107,7 @@ func TestGraphQL_MultiChainSequentialDeterministic(t *testing.T) {
 		}
 		p := NewGraphQLPrecompile(client)
 
-		resp, err := p.Query(nil, common.Address{}, req, 10_000_000)
+		resp, err := p.Query(req, 10_000_000)
 		require.NoError(t, err)
 
 		// Chains are visited in exactly the request order — proof of sequential execution.
@@ -141,7 +141,7 @@ func TestGraphQL_MultiChainFirstErrorDeterministic(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		client := &stubClient{errOn: map[uint64]error{11: errA, 22: errB}}
 		p := NewGraphQLPrecompile(client)
-		resp, err := p.Query(nil, common.Address{}, req, 10_000_000)
+		resp, err := p.Query(req, 10_000_000)
 		// Both chains errored and none produced a result -> the FIRST error (chain 11) wins.
 		require.NoError(t, err) // surfaced as a QueryError, not a Go error
 		require.Len(t, resp.Errors, 1)

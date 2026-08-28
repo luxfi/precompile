@@ -5,20 +5,11 @@ package graph
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/luxfi/geth/common"
 )
-
-// StateDB interface for accessing EVM state
-type StateDB interface {
-	GetState(addr common.Address, key common.Hash) common.Hash
-	SetState(addr common.Address, key common.Hash, value common.Hash)
-}
 
 // GChainClient interface for communication with G-Chain
 type GChainClient interface {
@@ -29,19 +20,23 @@ type GChainClient interface {
 	QueryChain(ctx context.Context, chainID uint64, query string, variables map[string]any) ([]byte, error)
 }
 
-// Precompile address
-var graphQLAddr = common.HexToAddress(GraphQLAddress)
-
-// Storage key prefixes
-var (
-	cachePrefix  = []byte("gcache")
-	statsPrefix  = []byte("gstats")
-	configPrefix = []byte("gconf")
+// Method selectors.
+const (
+	selectorQuery      uint32 = 0x01 // query(bytes)
+	selectorPredefined uint32 = 0x02 // queryPredefined(uint16, bytes[])
+	selectorStats      uint32 = 0x03 // getStats()
 )
+
+// complexQueryLength is the query length above which the complex tier applies.
+const complexQueryLength = 500
 
 // GraphQLPrecompile implements the G-Chain GraphQL query interface
 // This precompile enables any EVM contract to execute GraphQL queries
 // against the unified G-Chain query layer.
+//
+// It is a pure read: it touches no EVM state and does not consult the caller, which is why
+// neither appears in the signatures below. There is nothing here for a readOnly context to
+// forbid and nothing for an access check to gate.
 type GraphQLPrecompile struct {
 	// client is the connection to G-Chain. It is set ONCE during VM init
 	// (SetGraphVMClient), before the precompile is ever invoked in consensus, and is
@@ -93,14 +88,73 @@ func NewGraphQLPrecompile(client GChainClient) *GraphQLPrecompile {
 	}
 }
 
-// makeStorageKey creates a storage key from prefix and data
-func makeStorageKey(prefix []byte, data []byte) common.Hash {
-	h := sha256.New()
-	h.Write(prefix)
-	h.Write(data)
-	var key common.Hash
-	copy(key[:], h.Sum(nil))
-	return key
+// =========================================================================
+// Gas
+// =========================================================================
+
+// maxResponseGas is the price of the largest response the precompile may return. It is the
+// allowance reserved against a response that does not exist yet; see gasForInput.
+const maxResponseGas = uint64(MaxResponseSize) * GasPerByte
+
+// requestGas prices everything the caller controls that is knowable BEFORE any work
+// happens: the query bytes, the variable bytes, and the per-chain fan-out. Bytes cost
+// GasPerByte wherever they appear, so there is one rule rather than one per field. It reads
+// no state, no clock and no client, so every validator computes the same figure.
+func requestGas(req QueryRequest) uint64 {
+	cost := GasQueryBase
+	if len(req.Query) > complexQueryLength {
+		cost += GasQueryComplex
+	} else {
+		cost += GasQuerySimple
+	}
+	// Each additional target chain is another round trip through the client; the fan-out
+	// is capped by validateQuery, which is what keeps this product bounded.
+	if len(req.TargetChains) > 1 {
+		cost += GasQueryCrossChain * uint64(len(req.TargetChains))
+	}
+	cost += uint64(len(req.Query)+len(req.Variables)) * GasPerByte
+	return cost
+}
+
+// gasForInput is the gas reserved before the precompile does anything, and the figure
+// RequiredGas reports.
+//
+// Response size is only known once the work is done, so charging for it afterwards would
+// mean the node had already performed work it might not be paid for. Instead the caller is
+// charged the worst case — requestGas plus the largest response the precompile is allowed
+// to return — before execution starts, and refunded down to the actual figure afterwards.
+// A query therefore never runs unless its caller has already paid for the largest result it
+// could produce, so there is no deduction that can come up short and no path on which work
+// is performed for free. The refund is a pure function of a deterministic result.
+//
+// gasForInput reads only the calldata: no state, no client, no clock.
+func gasForInput(input []byte) uint64 {
+	if len(input) < 4 {
+		return GasQueryBase
+	}
+	body := input[4:]
+	// Decoding the body is itself work proportional to its length, so it is priced even
+	// when it fails and nothing further is attempted.
+	decodeGas := GasQueryBase + uint64(len(body))*GasPerByte
+
+	switch binary.BigEndian.Uint32(input[:4]) {
+	case selectorQuery:
+		req, err := decodeQuery(body)
+		if err != nil {
+			return decodeGas
+		}
+		return requestGas(req) + maxResponseGas
+	case selectorPredefined:
+		req, err := decodePredefined(body)
+		if err != nil {
+			return decodeGas
+		}
+		return requestGas(req) + maxResponseGas
+	case selectorStats:
+		return GasQueryBase
+	default:
+		return decodeGas
+	}
 }
 
 // =========================================================================
@@ -117,12 +171,10 @@ func makeStorageKey(prefix []byte, data []byte) common.Hash {
 //   - a nil client returns a typed error instead of panicking the dispatch path.
 //
 // Every validator therefore computes the same bytes for the same block state.
-func (p *GraphQLPrecompile) Query(
-	stateDB StateDB,
-	caller common.Address,
-	req QueryRequest,
-	gasLimit uint64,
-) (QueryResponse, error) {
+//
+// gasLimit is the caller's budget. On the precompile dispatch path it is the reservation
+// already taken by RequiredGas; a direct caller of this method supplies its own.
+func (p *GraphQLPrecompile) Query(req QueryRequest, gasLimit uint64) (QueryResponse, error) {
 	// Validate query
 	if err := p.validateQuery(req); err != nil {
 		return QueryResponse{}, err
@@ -138,7 +190,7 @@ func (p *GraphQLPrecompile) Query(
 
 	// Gas cost is a pure function of the query (no cache-hit discount), so it is
 	// identical on every node.
-	gasCost := p.calculateGasCost(req)
+	gasCost := requestGas(req)
 	if gasCost > gasLimit {
 		return QueryResponse{}, ErrGasExceeded
 	}
@@ -176,57 +228,103 @@ func (p *GraphQLPrecompile) Query(
 		}, nil
 	}
 
-	// Validate response size
+	// Validate response size. This bound is what makes the upfront reservation total:
+	// the response term can never exceed the allowance already taken.
 	if len(result) > MaxResponseSize {
 		return QueryResponse{}, ErrQueryTooLarge
 	}
 
-	responseGas := uint64(len(result)) * GasPerByte
 	return QueryResponse{
 		Data:    result,
-		GasUsed: gasCost + responseGas,
+		GasUsed: gasCost + uint64(len(result))*GasPerByte,
 	}, nil
 }
 
 // QueryPredefined executes a pre-defined query template
 // This provides lower gas costs for common queries
-func (p *GraphQLPrecompile) QueryPredefined(
-	stateDB StateDB,
-	caller common.Address,
-	queryID QueryID,
-	args [][]byte,
-	gasLimit uint64,
-) (QueryResponse, error) {
+func (p *GraphQLPrecompile) QueryPredefined(queryID QueryID, args [][]byte, gasLimit uint64) (QueryResponse, error) {
+	req, err := expandPredefined(queryID, args)
+	if err != nil {
+		return QueryResponse{}, err
+	}
+	return p.Query(req, gasLimit)
+}
+
+// =========================================================================
+// Decoding
+// =========================================================================
+
+// decodeQuery decodes selector-0x01 calldata. Pricing and execution share it, so the gas
+// reserved is always computed from the same request that is subsequently run.
+func decodeQuery(body []byte) (QueryRequest, error) {
+	var req QueryRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return QueryRequest{}, ErrInvalidQuery
+	}
+	return req, nil
+}
+
+// decodePredefined decodes selector-0x02 calldata into the request its template expands to.
+// Pricing and execution share it for the same reason as decodeQuery.
+func decodePredefined(body []byte) (QueryRequest, error) {
+	if len(body) < 2 {
+		return QueryRequest{}, ErrInvalidQuery
+	}
+	args, err := decodeArgs(body[2:])
+	if err != nil {
+		return QueryRequest{}, err
+	}
+	return expandPredefined(QueryID(binary.BigEndian.Uint16(body[:2])), args)
+}
+
+// decodeArgs parses length-prefixed byte arrays. A truncated tail is REFUSED rather than
+// silently accepted as a shorter argument list: a caller must not be able to change which
+// arguments a query is expanded with by cutting its calldata short.
+func decodeArgs(body []byte) ([][]byte, error) {
+	var args [][]byte
+	for offset := 0; offset < len(body); {
+		if offset+4 > len(body) {
+			return nil, ErrInvalidQuery
+		}
+		argLen := int(binary.BigEndian.Uint32(body[offset : offset+4]))
+		offset += 4
+		if argLen < 0 || offset+argLen > len(body) {
+			return nil, ErrInvalidQuery
+		}
+		args = append(args, body[offset:offset+argLen])
+		offset += argLen
+	}
+	return args, nil
+}
+
+// argNames binds positional arguments to template variable names.
+var argNames = []string{"address", "id", "first", "orderBy", "owner"}
+
+// expandPredefined turns a template ID plus positional arguments into the request that will
+// actually be executed. It is the single expander: gas is computed from its output and so
+// is the query that runs, so the two cannot disagree.
+func expandPredefined(queryID QueryID, args [][]byte) (QueryRequest, error) {
 	template, ok := PredefinedQueries[queryID]
 	if !ok {
-		return QueryResponse{}, ErrInvalidQuery
+		return QueryRequest{}, ErrInvalidQuery
 	}
-
 	if len(args) > template.MaxArgs {
-		return QueryResponse{}, ErrInvalidQuery
+		return QueryRequest{}, ErrInvalidQuery
 	}
 
-	if template.GasCost > gasLimit {
-		return QueryResponse{}, ErrGasExceeded
-	}
-
-	// Build variables from args
-	variables := make(map[string]any)
-	argNames := []string{"address", "id", "first", "orderBy", "owner"}
+	variables := make(map[string]any, len(args))
 	for i, arg := range args {
 		if i < len(argNames) {
 			variables[argNames[i]] = string(arg)
 		}
 	}
-
-	varsJSON, _ := json.Marshal(variables)
-
-	req := QueryRequest{
-		Query:     template.Query,
-		Variables: varsJSON,
+	// json.Marshal sorts map keys, so the encoding is byte-identical on every validator.
+	varsJSON, err := json.Marshal(variables)
+	if err != nil {
+		return QueryRequest{}, ErrInvalidQuery
 	}
 
-	return p.Query(stateDB, caller, req, gasLimit)
+	return QueryRequest{Query: template.Query, Variables: varsJSON}, nil
 }
 
 // =========================================================================
@@ -241,31 +339,12 @@ func (p *GraphQLPrecompile) validateQuery(req QueryRequest) error {
 	if len(req.Query) > MaxQuerySize {
 		return ErrQueryTooLarge
 	}
+	// The fan-out drives one client round trip per entry and one GasQueryCrossChain term
+	// per entry. Capping the slice bounds both the loop and the arithmetic.
+	if len(req.TargetChains) > MaxTargetChains {
+		return ErrQueryTooLarge
+	}
 	return nil
-}
-
-// calculateGasCost estimates the gas cost for a query
-func (p *GraphQLPrecompile) calculateGasCost(req QueryRequest) uint64 {
-	// Base cost
-	cost := GasQueryBase
-
-	// Add cost based on query complexity
-	queryLen := len(req.Query)
-	if queryLen > 500 {
-		cost += GasQueryComplex
-	} else {
-		cost += GasQuerySimple
-	}
-
-	// Add cost for cross-chain queries
-	if len(req.TargetChains) > 1 {
-		cost += GasQueryCrossChain * uint64(len(req.TargetChains))
-	}
-
-	// Add cost for variables
-	cost += uint64(len(req.Variables)) * GasPerByte
-
-	return cost
 }
 
 // executeMultiChainQuery executes a query across multiple chains SEQUENTIALLY. The
@@ -323,94 +402,57 @@ func (p *GraphQLPrecompile) GetConfig() *Config {
 // EVM Precompile Interface
 // =========================================================================
 
-// RequiredGas returns the gas required for the input
+// RequiredGas returns the gas that must be reserved before Run is allowed to execute.
 func (p *GraphQLPrecompile) RequiredGas(input []byte) uint64 {
+	return gasForInput(input)
+}
+
+// Run executes the precompile and reports the gas actually consumed, which is never more
+// than the RequiredGas reserved for the same input.
+func (p *GraphQLPrecompile) Run(input []byte) ([]byte, uint64, error) {
 	if len(input) < 4 {
-		return GasQueryBase
+		return nil, GasQueryBase, ErrInvalidQuery
 	}
 
-	// Parse method selector
-	selector := binary.BigEndian.Uint32(input[:4])
+	body := input[4:]
+	decodeGas := GasQueryBase + uint64(len(body))*GasPerByte
 
-	switch selector {
-	case 0x01: // query(bytes)
-		return GasQueryComplex
-	case 0x02: // queryPredefined(uint16, bytes[])
-		return GasQuerySimple
-	case 0x03: // getStats()
-		return GasQueryBase
-	default:
-		return GasQueryComplex
-	}
-}
-
-// Run executes the precompile
-func (p *GraphQLPrecompile) Run(input []byte) ([]byte, error) {
-	if len(input) < 4 {
-		return nil, ErrInvalidQuery
-	}
-
-	selector := binary.BigEndian.Uint32(input[:4])
-
-	switch selector {
-	case 0x01: // query(bytes)
-		return p.runQuery(input[4:])
-	case 0x02: // queryPredefined(uint16, bytes[])
-		return p.runQueryPredefined(input[4:])
-	case 0x03: // getStats()
-		return p.runGetStats()
-	default:
-		return nil, fmt.Errorf("unknown method: %x", selector)
-	}
-}
-
-// runQuery handles the query method call
-func (p *GraphQLPrecompile) runQuery(input []byte) ([]byte, error) {
-	// Decode QueryRequest from input
-	var req QueryRequest
-	if err := json.Unmarshal(input, &req); err != nil {
-		return nil, ErrInvalidQuery
-	}
-
-	// Execute query (uses default gas limit)
-	resp, err := p.Query(nil, common.Address{}, req, 1_000_000)
-	if err != nil {
-		return nil, err
-	}
-
-	return resp.Data, nil
-}
-
-// runQueryPredefined handles the queryPredefined method call
-func (p *GraphQLPrecompile) runQueryPredefined(input []byte) ([]byte, error) {
-	if len(input) < 2 {
-		return nil, ErrInvalidQuery
-	}
-
-	queryID := QueryID(binary.BigEndian.Uint16(input[:2]))
-
-	// Parse args (simple format: length-prefixed byte arrays)
-	var args [][]byte
-	offset := 2
-	for offset < len(input) {
-		if offset+4 > len(input) {
-			break
+	switch binary.BigEndian.Uint32(input[:4]) {
+	case selectorQuery:
+		req, err := decodeQuery(body)
+		if err != nil {
+			return nil, decodeGas, err
 		}
-		argLen := binary.BigEndian.Uint32(input[offset : offset+4])
-		offset += 4
-		if offset+int(argLen) > len(input) {
-			break
+		return p.run(req)
+	case selectorPredefined:
+		req, err := decodePredefined(body)
+		if err != nil {
+			return nil, decodeGas, err
 		}
-		args = append(args, input[offset:offset+int(argLen)])
-		offset += int(argLen)
+		return p.run(req)
+	case selectorStats:
+		out, err := p.runGetStats()
+		return out, GasQueryBase, err
+	default:
+		return nil, decodeGas, fmt.Errorf("unknown method: %x", input[:4])
 	}
+}
 
-	resp, err := p.QueryPredefined(nil, common.Address{}, queryID, args, 1_000_000)
+// run executes an already-decoded request under the reservation RequiredGas took for it.
+//
+// A response carrying GraphQL errors is surfaced as a Go error so the EVM call reverts:
+// returning empty data with no error would leave a caller unable to tell a failed query
+// from a genuinely empty result.
+func (p *GraphQLPrecompile) run(req QueryRequest) ([]byte, uint64, error) {
+	reserved := requestGas(req) + maxResponseGas
+	resp, err := p.Query(req, reserved)
 	if err != nil {
-		return nil, err
+		return nil, reserved, err
 	}
-
-	return resp.Data, nil
+	if len(resp.Errors) > 0 {
+		return nil, resp.GasUsed, fmt.Errorf("graphql: %s", resp.Errors[0].Message)
+	}
+	return resp.Data, resp.GasUsed, nil
 }
 
 // runGetStats handles the getStats method call. It returns the deterministic zero stats

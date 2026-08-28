@@ -62,13 +62,11 @@ func (c *GraphVMClient) Query(ctx context.Context, query string, variables map[s
 
 	// Check for errors
 	if len(resp.Errors) > 0 {
-		// Return first error as the main error
-		var errMsg strings.Builder
-		errMsg.WriteString(resp.Errors[0].Message)
-		for i := 1; i < len(resp.Errors); i++ {
-			errMsg.WriteString("; " + resp.Errors[i].Message)
+		msgs := make([]string, len(resp.Errors))
+		for i, e := range resp.Errors {
+			msgs[i] = e.Message
 		}
-		return nil, fmt.Errorf("GraphQL error: %s", errMsg.String())
+		return nil, fmt.Errorf("GraphQL error: %s", strings.Join(msgs, "; "))
 	}
 
 	// Marshal the data response to JSON

@@ -134,7 +134,13 @@ func (c *GraphConfig) Verify(chainConfig precompileconfig.ChainConfig) error {
 	return nil
 }
 
-// Run implements StatefulPrecompiledContract
+// Run implements StatefulPrecompiledContract.
+//
+// Gas is reserved before any work and refunded down to the actual figure afterwards. The
+// reservation covers the largest response the precompile may return, so a query never
+// executes unless its caller has already paid for the worst case — the alternative,
+// charging for the response after producing it, would have the node perform caller-sized
+// work before discovering it cannot be paid for.
 func (c *GraphQLContract) Run(
 	accessibleState contract.AccessibleState,
 	caller common.Address,
@@ -143,15 +149,24 @@ func (c *GraphQLContract) Run(
 	suppliedGas uint64,
 	readOnly bool,
 ) (ret []byte, remainingGas uint64, err error) {
-	requiredGas := c.precompile.RequiredGas(input)
-	if suppliedGas < requiredGas {
-		return nil, 0, fmt.Errorf("out of gas: required %d, supplied %d", requiredGas, suppliedGas)
+	reserved := c.precompile.RequiredGas(input)
+	if suppliedGas < reserved {
+		return nil, 0, fmt.Errorf("out of gas: required %d, supplied %d", reserved, suppliedGas)
 	}
 
-	result, runErr := c.precompile.Run(input)
+	result, used, runErr := c.precompile.Run(input)
 	if runErr != nil {
-		return nil, suppliedGas - requiredGas, runErr
+		// A failed run consumes the whole reservation. How much work it managed before
+		// failing is not measurable — an oversized response is rejected only after it has
+		// been produced — so the caller pays the bound it agreed to, which is by
+		// construction at least the work performed. Refunding here would make a malformed
+		// request a cheap way to probe the precompile.
+		return nil, suppliedGas - reserved, runErr
 	}
 
-	return result, suppliedGas - requiredGas, nil
+	// min keeps the subtraction total. RequiredGas and Run price the same decoded request
+	// with the same functions, and the response term is bounded by the allowance the
+	// reservation already holds, so used <= reserved by construction —
+	// TestGraphQL_UpfrontBoundCoversActual asserts it directly rather than relying on it.
+	return result, suppliedGas - min(used, reserved), nil
 }
