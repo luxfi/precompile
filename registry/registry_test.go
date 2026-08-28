@@ -4,748 +4,323 @@
 package registry
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/modules"
 	"github.com/stretchr/testify/require"
 )
 
 // ============================================================================
-// PrecompileAddress Tests
+// PrecompileAddress
 // ============================================================================
 
-func TestPrecompileAddress_ValidInputs(t *testing.T) {
+func TestPrecompileAddress(t *testing.T) {
 	tests := []struct {
 		name     string
-		p        uint8
-		c        uint8
-		ii       uint8
-		expected string
+		p, c, ii uint8
+		want     string
 	}{
-		{
-			name:     "FROST C-Chain (LP-5200)",
-			p:        5,
-			c:        2,
-			ii:       0x00,
-			expected: "0x0000000000000000000000000000000000005200",
-		},
-		{
-			name:     "FROST Q-Chain (LP-5300)",
-			p:        5,
-			c:        3,
-			ii:       0x00,
-			expected: "0x0000000000000000000000000000000000005300",
-		},
-		{
-			name:     "ML-DSA C-Chain (LP-2200)",
-			p:        2,
-			c:        2,
-			ii:       0x00,
-			expected: "0x0000000000000000000000000000000000002200",
-		},
-		{
-			name:     "DEX LXPool (LP-9010)",
-			p:        9,
-			c:        0,
-			ii:       0x10,
-			expected: "0x0000000000000000000000000000000000009010",
-		},
-		{
-			name:     "DEX LXOracle (LP-9011)",
-			p:        9,
-			c:        0,
-			ii:       0x11,
-			expected: "0x0000000000000000000000000000000000009011",
-		},
-		{
-			name:     "Max valid nibbles",
-			p:        15,
-			c:        15,
-			ii:       0xFF,
-			expected: "0x000000000000000000000000000000000000FFFF",
-		},
-		{
-			name:     "Zero values",
-			p:        0,
-			c:        0,
-			ii:       0x00,
-			expected: "0x0000000000000000000000000000000000000000",
-		},
+		{"FROST C-Chain (LP-5200)", 5, 2, 0x00, "0x0000000000000000000000000000000000005200"},
+		{"FROST Q-Chain (LP-5300)", 5, 3, 0x00, "0x0000000000000000000000000000000000005300"},
+		{"ML-DSA C-Chain (LP-2200)", 2, 2, 0x00, "0x0000000000000000000000000000000000002200"},
+		{"LXPool (LP-9010)", 9, 0, 0x10, "0x0000000000000000000000000000000000009010"},
+		{"LXOracle (LP-9011)", 9, 0, 0x11, "0x0000000000000000000000000000000000009011"},
+		{"max nibbles", 15, 15, 0xFF, "0x000000000000000000000000000000000000ffff"},
+		{"all zero", 0, 0, 0x00, "0x0000000000000000000000000000000000000000"},
+		{"item carries the low byte alone", 0, 0, 0xFF, "0x00000000000000000000000000000000000000ff"},
+		{"chain nibble is the low half of byte 18", 0, 1, 0x00, "0x0000000000000000000000000000000000000100"},
+		{"family nibble is the high half of byte 18", 1, 0, 0x00, "0x0000000000000000000000000000000000001000"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			addr := PrecompileAddress(tt.p, tt.c, tt.ii)
-			require.Equal(t, common.HexToAddress(tt.expected), addr)
+			got, ok := PrecompileAddress(tt.p, tt.c, tt.ii)
+			require.True(t, ok)
+			require.Equal(t, common.HexToAddress(tt.want), got)
 		})
 	}
 }
 
-func TestPrecompileAddress_InvalidInputs(t *testing.T) {
-	tests := []struct {
-		name string
-		p    uint8
-		c    uint8
-		ii   uint8
-	}{
-		{
-			name: "P nibble out of range",
-			p:    16,
-			c:    2,
-			ii:   0x00,
-		},
-		{
-			name: "C nibble out of range",
-			p:    5,
-			c:    16,
-			ii:   0x00,
-		},
-		{
-			name: "Both nibbles out of range",
-			p:    20,
-			c:    20,
-			ii:   0x00,
-		},
+func TestPrecompileAddressRejectsOverflowingNibbles(t *testing.T) {
+	// A nibble is 4 bits. Packing 16 into it would silently corrupt the
+	// neighbouring nibble — 16<<4 overflows byte 18's high half into nothing and
+	// the address would collide with (0, c, ii).
+	for _, tt := range []struct{ p, c uint8 }{{16, 2}, {5, 16}, {20, 20}, {255, 0}, {0, 255}} {
+		got, ok := PrecompileAddress(tt.p, tt.c, 0)
+		require.False(t, ok, "p=%d c=%d must be refused", tt.p, tt.c)
+		require.Equal(t, common.Address{}, got)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			addr := PrecompileAddress(tt.p, tt.c, tt.ii)
-			require.Equal(t, common.Address{}, addr, "should return zero address for invalid inputs")
-		})
-	}
+	// The boundary itself is accepted: 15 is the largest nibble.
+	_, ok := PrecompileAddress(15, 15, 0)
+	require.True(t, ok)
 }
 
-// ============================================================================
-// ChainSlot Tests
-// ============================================================================
+func TestPrecompileAddressZeroIsDistinguishableFromRefusal(t *testing.T) {
+	// (0,0,0) is a legitimate address that happens to be zero. A refusal is also
+	// zero. Only the boolean separates them — a caller ignoring it would treat a
+	// bad family page as "the zero address", which is a live burn address.
+	zero, ok := PrecompileAddress(0, 0, 0)
+	require.True(t, ok)
+	require.Equal(t, common.Address{}, zero)
 
-func TestChainSlot_AllChains(t *testing.T) {
-	tests := []struct {
-		chain    string
-		expected uint8
-	}{
-		{"P", 0},
-		{"p", 0},
-		{"X", 1},
-		{"x", 1},
-		{"C", 2},
-		{"c", 2},
-		{"Q", 3},
-		{"q", 3},
-		{"A", 4},
-		{"a", 4},
-		{"B", 5},
-		{"b", 5},
-		{"Z", 6},
-		{"z", 6},
-		{"M", 7},
-		{"m", 7},
-		{"Zoo", 8},
-		{"zoo", 8},
-		{"Hanzo", 9},
-		{"hanzo", 9},
-		{"SPC", 0xA},
-		{"spc", 0xA},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.chain, func(t *testing.T) {
-			slot := ChainSlot(tt.chain)
-			require.Equal(t, tt.expected, slot)
-		})
-	}
+	refused, ok := PrecompileAddress(16, 0, 0)
+	require.False(t, ok)
+	require.Equal(t, zero, refused)
 }
 
-func TestChainSlot_InvalidChain(t *testing.T) {
-	invalidChains := []string{"", "unknown", "D", "E", "invalid", "PCHAIN"}
-
-	for _, chain := range invalidChains {
-		t.Run(chain, func(t *testing.T) {
-			slot := ChainSlot(chain)
-			require.Equal(t, uint8(0xFF), slot, "invalid chain should return 0xFF")
-		})
-	}
-}
-
-// ============================================================================
-// FamilyPage Tests
-// ============================================================================
-
-func TestFamilyPage_AllFamilies(t *testing.T) {
-	tests := []struct {
-		family   string
-		expected uint8
-	}{
-		{"PQ", 2},
-		{"pq", 2},
-		{"EVM", 3},
-		{"evm", 3},
-		{"Crypto", 3},
-		{"crypto", 3},
-		{"Privacy", 4},
-		{"privacy", 4},
-		{"ZK", 4},
-		{"zk", 4},
-		{"Threshold", 5},
-		{"threshold", 5},
-		{"MPC", 5},
-		{"mpc", 5},
-		{"Bridge", 6},
-		{"bridge", 6},
-		{"AI", 7},
-		{"ai", 7},
-		{"DEX", 9},
-		{"dex", 9},
-		{"Markets", 9},
-		{"markets", 9},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.family, func(t *testing.T) {
-			page := FamilyPage(tt.family)
-			require.Equal(t, tt.expected, page)
-		})
-	}
-}
-
-func TestFamilyPage_InvalidFamily(t *testing.T) {
-	invalidFamilies := []string{"", "unknown", "NFT", "Gaming", "INVALID"}
-
-	for _, family := range invalidFamilies {
-		t.Run(family, func(t *testing.T) {
-			page := FamilyPage(family)
-			require.Equal(t, uint8(0xFF), page, "invalid family should return 0xFF")
-		})
-	}
-}
-
-// ============================================================================
-// GetPrecompileAddress Tests
-// ============================================================================
-
-func TestGetPrecompileAddress_ValidNames(t *testing.T) {
-	tests := []struct {
-		name     string
-		expected string
-	}{
-		{"FROST", FROSTCChain},
-		{"ML_DSA", MLDSACChain},
-		{"GROTH16", Groth16CChain},
-		{"LX_POOL", LXPool},
-		{"LX_ORACLE", LXOracle},
-		{"GPU_ATTEST", GPUAttestCChain},
-		{"WARP_SEND", WarpSendCChain},
-		{"P256_VERIFY", P256VerifyAddress},
-		{"BLS12381_G1ADD", BLS12381G1AddAddress},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			addr := GetPrecompileAddress(tt.name)
-			require.Equal(t, common.HexToAddress(tt.expected), addr)
-		})
-	}
-}
-
-func TestGetPrecompileAddress_InvalidName(t *testing.T) {
-	invalidNames := []string{"", "INVALID", "NOTEXIST", "foo", "bar"}
-
-	for _, name := range invalidNames {
-		t.Run(name, func(t *testing.T) {
-			addr := GetPrecompileAddress(name)
-			require.Equal(t, common.Address{}, addr, "invalid name should return zero address")
-		})
-	}
-}
-
-// ============================================================================
-// GetChainPrecompiles Tests
-// ============================================================================
-
-func TestGetChainPrecompiles_ValidChains(t *testing.T) {
-	chains := []string{"C", "Q", "A", "B", "Z", "Zoo", "Hanzo", "P", "X"}
-
-	for _, chain := range chains {
-		t.Run(chain, func(t *testing.T) {
-			addrs := GetChainPrecompiles(chain)
-			require.NotNil(t, addrs, "chain %s should have precompiles", chain)
-			require.Greater(t, len(addrs), 0, "chain %s should have at least one precompile", chain)
-
-			// All addresses should be valid (non-zero)
-			for i, addr := range addrs {
-				require.NotEqual(t, common.Address{}, addr, "chain %s precompile %d should not be zero", chain, i)
+func TestPrecompileAddressIsInjective(t *testing.T) {
+	// Every (p, c, ii) triple must map to its own address. A shift or mask slip
+	// would fold two coordinates onto one address — two precompiles, one slot.
+	seen := make(map[common.Address][3]uint8, 16*16*256)
+	for p := uint8(0); p <= nibbleMax; p++ {
+		for c := uint8(0); c <= nibbleMax; c++ {
+			for ii := 0; ii < 256; ii++ {
+				a, ok := PrecompileAddress(p, c, uint8(ii))
+				require.True(t, ok)
+				if prev, dup := seen[a]; dup {
+					t.Fatalf("address %s produced by both %v and %v", a.Hex(), prev, [3]uint8{p, c, uint8(ii)})
+				}
+				seen[a] = [3]uint8{p, c, uint8(ii)}
 			}
-		})
-	}
-}
-
-func TestGetChainPrecompiles_InvalidChain(t *testing.T) {
-	invalidChains := []string{"", "INVALID", "D", "E"}
-
-	for _, chain := range invalidChains {
-		t.Run(chain, func(t *testing.T) {
-			addrs := GetChainPrecompiles(chain)
-			require.Nil(t, addrs, "invalid chain should return nil")
-		})
-	}
-}
-
-func TestGetChainPrecompiles_CChainHasDEX(t *testing.T) {
-	addrs := GetChainPrecompiles("C")
-	require.NotNil(t, addrs)
-
-	// C-Chain should have all DEX precompiles
-	dexAddrs := []string{LXPool, LXOracle, LXRouter, LXHooks, LXFlash, LXBook, LXVault, LXFeed, LXLend, LXLiquid, Liquidator, LiquidFX}
-
-	for _, dex := range dexAddrs {
-		found := slices.Contains(addrs, common.HexToAddress(dex))
-		require.True(t, found, "C-Chain should have DEX precompile %s", dex)
-	}
-}
-
-func TestGetChainPrecompiles_QChainHasPQ(t *testing.T) {
-	addrs := GetChainPrecompiles("Q")
-	require.NotNil(t, addrs)
-
-	// Q-Chain should have PQ precompiles
-	pqAddrs := []string{MLDSAQChain, MLKEMQChain, SLHDSAQChain, FalconQChain, KyberQChain}
-
-	for _, pq := range pqAddrs {
-		found := slices.Contains(addrs, common.HexToAddress(pq))
-		require.True(t, found, "Q-Chain should have PQ precompile %s", pq)
-	}
-}
-
-// ============================================================================
-// IsPrecompileEnabled Tests
-// ============================================================================
-
-func TestIsPrecompileEnabled_ValidCases(t *testing.T) {
-	tests := []struct {
-		chain   string
-		addr    string
-		enabled bool
-	}{
-		// C-Chain should have FROST
-		{"C", FROSTCChain, true},
-		// Q-Chain should have FROST
-		{"Q", FROSTQChain, true},
-		// C-Chain should have LXPool
-		{"C", LXPool, true},
-		// Zoo should have LXPool
-		{"Zoo", LXPool, true},
-		// A-Chain should have GPU attestation
-		{"A", GPUAttestAChain, true},
-		// Hanzo should have inference
-		{"Hanzo", InferenceHanzo, true},
-		// Z-Chain should have ZK precompiles
-		{"Z", Groth16ZChain, true},
-		// B-Chain should have bridge precompiles
-		{"B", WarpSendBChain, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.chain+"_"+tt.addr[:10], func(t *testing.T) {
-			enabled := IsPrecompileEnabled(tt.chain, common.HexToAddress(tt.addr))
-			require.Equal(t, tt.enabled, enabled)
-		})
-	}
-}
-
-func TestIsPrecompileEnabled_DisabledCases(t *testing.T) {
-	tests := []struct {
-		chain string
-		addr  string
-	}{
-		// Q-Chain should NOT have DEX precompiles
-		{"Q", LXPool},
-		// P-Chain should NOT have ZK precompiles
-		{"P", Groth16CChain},
-		// X-Chain should NOT have AI precompiles
-		{"X", GPUAttestCChain},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.chain+"_"+tt.addr[:10], func(t *testing.T) {
-			enabled := IsPrecompileEnabled(tt.chain, common.HexToAddress(tt.addr))
-			require.False(t, enabled)
-		})
-	}
-}
-
-func TestIsPrecompileEnabled_InvalidChain(t *testing.T) {
-	enabled := IsPrecompileEnabled("INVALID", common.HexToAddress(LXPool))
-	require.False(t, enabled)
-}
-
-// ============================================================================
-// GetPrecompilesByFamily Tests
-// ============================================================================
-
-func TestGetPrecompilesByFamily_ValidFamilies(t *testing.T) {
-	families := []struct {
-		family      string
-		expectedMin int
-	}{
-		{"PQ", 3},        // At least ML-DSA, ML-KEM, SLH-DSA, Hybrid
-		{"Threshold", 4}, // At least FROST, CGGMP21, LSS, DKG
-		{"AI", 4},        // At least GPU, TEE, Inference, Session
-	}
-
-	for _, tt := range families {
-		t.Run(tt.family, func(t *testing.T) {
-			precompiles := GetPrecompilesByFamily(tt.family)
-			require.NotNil(t, precompiles)
-			require.GreaterOrEqual(t, len(precompiles), tt.expectedMin)
-		})
-	}
-}
-
-func TestGetPrecompilesByFamily_InvalidFamily(t *testing.T) {
-	precompiles := GetPrecompilesByFamily("INVALID")
-	require.Nil(t, precompiles)
-}
-
-func TestGetPrecompilesByFamily_DEXFamily(t *testing.T) {
-	// NOTE: GetPrecompilesByFamily expects LPRange to be "LP-9xxx" format,
-	// but DEX precompiles use specific LP numbers like "LP-9010", "LP-9011".
-	// This means GetPrecompilesByFamily("DEX") returns nil for DEX family.
-	// This is a known limitation in registry.go that could be fixed by
-	// using "LP-9xxx" for DEX precompiles or updating the lookup logic.
-	precompiles := GetPrecompilesByFamily("DEX")
-
-	// Currently returns nil due to LPRange format mismatch
-	// Uncomment this check once registry.go is fixed:
-	// require.NotNil(t, precompiles)
-
-	// For now, just verify the function doesn't panic
-	if precompiles != nil {
-		names := make(map[string]bool)
-		for _, p := range precompiles {
-			names[p.Name] = true
 		}
-		require.True(t, names["LX_POOL"], "DEX family should include LX_POOL")
+	}
+	require.Len(t, seen, 16*16*256)
+}
+
+func TestPrecompileAddressRoundTripsThroughFamilyPage(t *testing.T) {
+	// The address encodes its own family. Building one and reading the family
+	// back must agree, or InFamily and PrecompileAddress disagree about layout.
+	for p := uint8(0); p <= nibbleMax; p++ {
+		for c := uint8(0); c <= nibbleMax; c++ {
+			a, ok := PrecompileAddress(p, c, 0x42)
+			require.True(t, ok)
+			got, inScheme := familyPageOf(a)
+			require.True(t, inScheme)
+			require.Equal(t, p, got)
+		}
 	}
 }
 
 // ============================================================================
-// Address Collision Tests
+// ChainSlot / FamilyPage
 // ============================================================================
 
-func TestNoAddressCollisions(t *testing.T) {
+func TestChainSlot(t *testing.T) {
+	want := map[string]uint8{
+		"P": 0, "X": 1, "C": 2, "Q": 3, "A": 4, "B": 5,
+		"Z": 6, "M": 7, "Zoo": 8, "Hanzo": 9, "SPC": 0xA,
+	}
+	for name, slot := range want {
+		got, ok := ChainSlot(name)
+		require.True(t, ok, "%s must resolve", name)
+		require.Equal(t, slot, got, "%s", name)
+	}
+
+	// Every slot is claimed by exactly one chain: a duplicate would route two
+	// chains' precompiles to one address.
+	claimed := make(map[uint8]string, len(want))
+	for name, slot := range want {
+		require.NotContains(t, claimed, slot, "slot %d claimed twice", slot)
+		claimed[slot] = name
+	}
+
+	// Slots fit in a nibble, so composing ChainSlot with PrecompileAddress
+	// always succeeds.
+	for name := range want {
+		slot, ok := ChainSlot(name)
+		require.True(t, ok)
+		_, ok = PrecompileAddress(2, slot, 0)
+		require.True(t, ok, "%s slot %d does not fit a nibble", name, slot)
+	}
+}
+
+func TestChainSlotCaseVariants(t *testing.T) {
+	// Only the documented spellings resolve. A lowercase alias is accepted; an
+	// arbitrary casing is not, so a typo fails loudly instead of routing to a
+	// neighbouring chain.
+	for _, pair := range [][2]string{{"C", "c"}, {"Zoo", "zoo"}, {"Hanzo", "hanzo"}, {"SPC", "spc"}} {
+		up, ok := ChainSlot(pair[0])
+		require.True(t, ok)
+		lo, ok := ChainSlot(pair[1])
+		require.True(t, ok)
+		require.Equal(t, up, lo)
+	}
+	for _, bad := range []string{"ZOO", "hANZO", "spC"} {
+		_, ok := ChainSlot(bad)
+		require.False(t, ok, "%q must not resolve", bad)
+	}
+}
+
+func TestChainSlotUnknown(t *testing.T) {
+	for _, bad := range []string{"", "D", "T", "G", "K", "I", "O", "R", "unknown", "0", "  C  "} {
+		slot, ok := ChainSlot(bad)
+		require.False(t, ok, "%q must not resolve to a slot", bad)
+		require.Zero(t, slot, "a refused lookup must not hand back a usable slot")
+	}
+}
+
+func TestFamilyPage(t *testing.T) {
+	want := map[string]uint8{
+		"PQ": 2, "EVM": 3, "Crypto": 3, "Privacy": 4, "ZK": 4,
+		"Threshold": 5, "MPC": 5, "Bridge": 6, "AI": 7, "DEX": 9, "Markets": 9,
+	}
+	for name, page := range want {
+		got, ok := FamilyPage(name)
+		require.True(t, ok, "%s must resolve", name)
+		require.Equal(t, page, got, "%s", name)
+
+		lower, ok := FamilyPage(lowerASCII(name))
+		require.True(t, ok, "lowercase %s must resolve", name)
+		require.Equal(t, page, lower)
+	}
+
+	// The page is the LP range's first digit, so it must fit a nibble and be a
+	// decimal digit — LP-Pxxx has no hex page.
+	for name := range want {
+		page, ok := FamilyPage(name)
+		require.True(t, ok)
+		require.LessOrEqual(t, page, uint8(9), "%s page %d is not an LP digit", name, page)
+	}
+}
+
+func lowerASCII(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+func TestFamilyPageUnknown(t *testing.T) {
+	for _, bad := range []string{"", "INVALID", "Pq", "dEx", "8", "LP-9xxx"} {
+		page, ok := FamilyPage(bad)
+		require.False(t, ok, "%q must not resolve to a page", bad)
+		require.Zero(t, page)
+	}
+}
+
+// ============================================================================
+// InFamily — derived from what actually registered
+// ============================================================================
+
+func TestInFamilyUnknownFamily(t *testing.T) {
+	got, ok := InFamily("INVALID")
+	require.False(t, ok)
+	require.Nil(t, got)
+}
+
+func TestInFamilyReturnsOnlyMatchingPage(t *testing.T) {
+	for _, family := range []string{"PQ", "EVM", "Privacy", "Threshold", "Bridge", "AI", "DEX"} {
+		page, ok := FamilyPage(family)
+		require.True(t, ok)
+
+		got, ok := InFamily(family)
+		require.True(t, ok, "%s is a known family", family)
+		for _, m := range got {
+			p, inScheme := familyPageOf(m.Address)
+			require.True(t, inScheme, "%s: %s is not a PCII address", family, m.Address.Hex())
+			require.Equal(t, page, p, "%s: %s has page %d", family, m.Address.Hex(), p)
+		}
+	}
+}
+
+func TestInFamilyIsAPartitionOfThePCIIAddresses(t *testing.T) {
+	// Every registered PCII-scheme precompile belongs to exactly one family
+	// page, and InFamily over all known families must find each of them at most
+	// once. A precompile appearing in two families would mean two answers to
+	// "what is this".
 	seen := make(map[common.Address]string)
-
-	for _, p := range AllPrecompiles {
-		addr := common.HexToAddress(p.Address)
-
-		if existing, found := seen[addr]; found {
-			t.Errorf("Address collision detected: %s and %s both use address %s",
-				existing, p.Name, p.Address)
-		}
-		seen[addr] = p.Name
-	}
-}
-
-func TestNoAddressCollisionsInChainMaps(t *testing.T) {
-	for chain, addrs := range ChainPrecompiles {
-		seen := make(map[common.Address]bool)
-
-		for _, addrStr := range addrs {
-			addr := common.HexToAddress(addrStr)
-
-			if seen[addr] {
-				t.Errorf("Duplicate address in chain %s: %s", chain, addrStr)
+	for _, family := range []string{"PQ", "EVM", "Privacy", "Threshold", "Bridge", "AI", "DEX"} {
+		got, ok := InFamily(family)
+		require.True(t, ok)
+		for _, m := range got {
+			if prev, dup := seen[m.Address]; dup {
+				t.Fatalf("%s is in both %q and %q", m.Address.Hex(), prev, family)
 			}
-			seen[addr] = true
+			seen[m.Address] = family
 		}
 	}
+	require.NotEmpty(t, seen, "no PCII precompiles found — the blank imports are the fixture")
 }
 
-// ============================================================================
-// Address Validity Tests
-// ============================================================================
-
-func TestAllPrecompileAddressesValid(t *testing.T) {
-	for _, p := range AllPrecompiles {
-		t.Run(p.Name, func(t *testing.T) {
-			addr := common.HexToAddress(p.Address)
-
-			// Address should not be zero
-			require.NotEqual(t, common.Address{}, addr, "precompile %s has zero address", p.Name)
-
-			// Address string should be valid hex
-			require.Equal(t, 42, len(p.Address), "precompile %s address should be 42 chars (0x + 40 hex)", p.Name)
-			require.Equal(t, "0x", p.Address[:2], "precompile %s address should start with 0x", p.Name)
-		})
+func TestInFamilyPreservesRegistryOrder(t *testing.T) {
+	// The host dispatches in address order. A family view that reorders would
+	// give a caller a different picture of the same set.
+	order := make(map[common.Address]int)
+	for i, m := range modules.RegisteredModules() {
+		order[m.Address] = i
 	}
-}
-
-func TestAllChainPrecompileAddressesValid(t *testing.T) {
-	for chain, addrs := range ChainPrecompiles {
-		for i, addrStr := range addrs {
-			addr := common.HexToAddress(addrStr)
-
-			require.NotEqual(t, common.Address{}, addr,
-				"chain %s precompile %d has zero address", chain, i)
+	for _, family := range []string{"PQ", "EVM", "Privacy", "Threshold", "Bridge", "AI", "DEX"} {
+		got, ok := InFamily(family)
+		require.True(t, ok)
+		for i := 1; i < len(got); i++ {
+			require.Less(t, order[got[i-1].Address], order[got[i].Address],
+				"%s is out of registry order", family)
 		}
 	}
 }
 
-// ============================================================================
-// LP Number Alignment Tests
-// ============================================================================
+func TestInFamilyDEXFindsTheDexPrecompiles(t *testing.T) {
+	// The DEX settlement precompile is the money path; it must be discoverable
+	// through the family view. Before this package derived from the module
+	// registry, the DEX family resolved to nil because the hand-written table
+	// tagged DEX rows "LP-9010" while the lookup compared against "LP-9xxx".
+	got, ok := InFamily("DEX")
+	require.True(t, ok)
+	require.NotEmpty(t, got, "DEX family must not be empty")
 
-func TestDEXAddressesMatchLPNumbers(t *testing.T) {
-	tests := []struct {
-		name     string
-		addr     string
-		lpNumber string
-	}{
-		{"LXPool", LXPool, "9010"},
-		{"LXOracle", LXOracle, "9011"},
-		{"LXRouter", LXRouter, "9012"},
-		{"LXHooks", LXHooks, "9013"},
-		{"LXFlash", LXFlash, "9014"},
-		{"LXBook", LXBook, "9020"},
-		{"LXVault", LXVault, "9030"},
-		{"LXFeed", LXFeed, "9040"},
-		{"LXLend", LXLend, "9050"},
-		{"LXLiquid", LXLiquid, "9060"},
-		{"Liquidator", Liquidator, "9070"},
-		{"LiquidFX", LiquidFX, "9080"},
+	keys := make(map[string]bool, len(got))
+	for _, m := range got {
+		keys[m.ConfigKey] = true
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Address should end with the LP number
-			require.Contains(t, tt.addr, tt.lpNumber,
-				"address %s should contain LP number %s", tt.addr, tt.lpNumber)
-		})
-	}
+	require.True(t, keys["dexSettleConfig"], "DEX family must include the settlement precompile")
 }
 
-func TestPQAddressesMatchLPNumbers(t *testing.T) {
-	tests := []struct {
-		name     string
-		addr     string
-		lpNumber string
-	}{
-		{"MLDSACChain", MLDSACChain, "2200"},
-		{"MLDSAQChain", MLDSAQChain, "2300"},
-		{"MLKEMCChain", MLKEMCChain, "2201"},
-		{"MLKEMQChain", MLKEMQChain, "2301"},
-		{"SLHDSACChain", SLHDSACChain, "2202"},
-		{"SLHDSAQChain", SLHDSAQChain, "2302"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Address should end with the LP number
-			require.Contains(t, tt.addr, tt.lpNumber,
-				"address %s should contain LP number %s", tt.addr, tt.lpNumber)
-		})
+func TestInFamilyExcludesLegacyLeadingSignificantAddresses(t *testing.T) {
+	// math (0x0400..0050) and stableswap (0x0400..0060) are leading-significant
+	// legacy addresses: byte 0 is nonzero, so they carry no P-nibble and belong
+	// to no family. Reading byte 18 of those would report a bogus family.
+	for _, key := range []string{"fixedPointMathConfig", "stableSwapConfig"} {
+		m, found := modules.GetPrecompileModule(key)
+		require.True(t, found, "%s must be registered", key)
+		_, inScheme := familyPageOf(m.Address)
+		require.False(t, inScheme, "%s (%s) must not be read as a PCII address", key, m.Address.Hex())
 	}
 }
 
 // ============================================================================
-// PrecompileInfo Tests
+// EIP-mandated addresses
 // ============================================================================
 
-func TestAllPrecompileInfoComplete(t *testing.T) {
-	for _, p := range AllPrecompiles {
-		t.Run(p.Name, func(t *testing.T) {
-			require.NotEmpty(t, p.Address, "precompile should have address")
-			require.NotEmpty(t, p.Name, "precompile should have name")
-			require.NotEmpty(t, p.Description, "precompile should have description")
-			require.Greater(t, p.GasBase, uint64(0), "precompile should have positive gas cost")
-			require.NotEmpty(t, p.Chains, "precompile should have at least one chain")
-			require.NotEmpty(t, p.LPRange, "precompile should have LP range")
-		})
-	}
-}
-
-func TestPrecompileGasCostsReasonable(t *testing.T) {
-	for _, p := range AllPrecompiles {
-		t.Run(p.Name, func(t *testing.T) {
-			// Gas should be between 500 and 1,000,000
-			require.GreaterOrEqual(t, p.GasBase, uint64(500),
-				"gas cost for %s seems too low", p.Name)
-			require.LessOrEqual(t, p.GasBase, uint64(1_000_000),
-				"gas cost for %s seems too high", p.Name)
-		})
-	}
-}
-
-// ============================================================================
-// Address Range Tests
-// ============================================================================
-
-func TestStandardEVMPrecompilesInLowRange(t *testing.T) {
-	// Standard EVM precompiles (BLS12-381) should be in the 0x0B-0x11 range
-	blsAddrs := []string{
-		BLS12381G1AddAddress,
-		BLS12381G1MulAddress,
-		BLS12381G1MSMAddress,
-		BLS12381G2AddAddress,
-		BLS12381G2MulAddress,
-		BLS12381G2MSMAddress,
-		BLS12381PairingAddress,
+// TestEIPAddressesAreClaimedByTheRightPrecompiles is the one place the external
+// standards' addresses are written down in this package, and it checks them
+// against what actually registered rather than against another table. Lux ships
+// EIP-2537 and EIP-7212 as stateful precompiles, so a module MUST occupy each
+// address — an empty slot means the chain silently lacks the EIP.
+func TestEIPAddressesAreClaimedByTheRightPrecompiles(t *testing.T) {
+	eip := map[string]string{
+		// EIP-2537 BLS12-381.
+		"0x000000000000000000000000000000000000000b": "bls12381G1AddConfig",
+		"0x000000000000000000000000000000000000000c": "bls12381G1MulConfig",
+		"0x000000000000000000000000000000000000000d": "bls12381G1MSMConfig",
+		"0x000000000000000000000000000000000000000e": "bls12381G2AddConfig",
+		"0x000000000000000000000000000000000000000f": "bls12381G2MulConfig",
+		"0x0000000000000000000000000000000000000010": "bls12381G2MSMConfig",
+		"0x0000000000000000000000000000000000000011": "bls12381PairingConfig",
+		// EIP-7212 secp256r1 / P-256 verify (passkeys, WebAuthn).
+		"0x0000000000000000000000000000000000000100": "secp256r1Config",
 	}
 
-	for _, addrStr := range blsAddrs {
-		addr := common.HexToAddress(addrStr)
-		// Check that it's in the low range (first 19 bytes should be zero)
-		for i := range 18 {
-			require.Equal(t, byte(0), addr[i],
-				"BLS address %s should have zeros in bytes 0-17", addrStr)
-		}
-	}
-}
-
-func TestP256VerifyAddress(t *testing.T) {
-	// P256 (EIP-7212) should be at 0x100
-	addr := common.HexToAddress(P256VerifyAddress)
-	require.Equal(t, common.HexToAddress("0x0000000000000000000000000000000000000100"), addr)
-}
-
-// ============================================================================
-// Consistency Tests
-// ============================================================================
-
-func TestChainPrecompilesCoverAllPrecompiles(t *testing.T) {
-	// NOTE: AllPrecompiles contains metadata entries that use C-Chain addresses.
-	// Some precompiles have chain-specific address variants that are in ChainPrecompiles
-	// but the C-Chain version from AllPrecompiles might not be mapped.
-	//
-	// Known exceptions:
-	// - NVTRUST (NVTrustCChain) is listed in AllPrecompiles but only NVTrustAChain
-	//   is in ChainPrecompiles["A"]. The C-Chain version is not in ChainPrecompiles["C"].
-
-	knownExceptions := map[string]bool{
-		"NVTRUST": true, // Uses NVTrustAChain in A-Chain, NVTrustCChain not in C-Chain
-	}
-
-	for _, p := range AllPrecompiles {
-		t.Run(p.Name, func(t *testing.T) {
-			if knownExceptions[p.Name] {
-				t.Skip("known registry data inconsistency")
-			}
-
-			addr := common.HexToAddress(p.Address)
-			enabled := false
-
-			for chain := range ChainPrecompiles {
-				if IsPrecompileEnabled(chain, addr) {
-					enabled = true
-					break
-				}
-			}
-
-			require.True(t, enabled,
-				"precompile %s is not enabled on any chain", p.Name)
-		})
-	}
-}
-
-func TestPrecompileChainsMatchChainPrecompiles(t *testing.T) {
-	// NOTE: This test validates that AllPrecompiles metadata matches ChainPrecompiles map.
-	// Some precompiles have chain-specific address variants (e.g., FROSTCChain vs FROSTQChain,
-	// GPUAttestCChain vs GPUAttestHanzo). The AllPrecompiles list contains the "canonical"
-	// C-Chain address, while ChainPrecompiles maps each chain to its chain-specific variant.
-	//
-	// Known data inconsistencies that need fixing in registry.go:
-	// - NVTRUST claims C-Chain in AllPrecompiles but not in ChainPrecompiles["C"]
-	// - GPU_ATTEST, INFERENCE, SESSION claim Hanzo but use C-Chain addresses in AllPrecompiles
-	//
-	// This test skips known inconsistencies and focuses on DEX precompiles which use
-	// identical addresses across C-Chain and Zoo.
-
-	// Test DEX precompiles - these use identical addresses on C-Chain and Zoo
-	dexPrecompiles := []string{"LX_POOL", "LX_ORACLE", "LX_ROUTER", "LX_HOOKS", "LX_FLASH",
-		"LX_BOOK", "LX_VAULT", "LX_FEED", "LX_LEND", "LX_LIQUID", "LIQUIDATOR", "LIQUID_FX"}
-
-	for _, p := range AllPrecompiles {
-		t.Run(p.Name, func(t *testing.T) {
-			// Only check DEX precompiles which have consistent addresses
-			isDEX := slices.Contains(dexPrecompiles, p.Name)
-
-			if isDEX {
-				addr := common.HexToAddress(p.Address)
-
-				if containsChain(p.Chains, "C") {
-					enabled := IsPrecompileEnabled("C", addr)
-					require.True(t, enabled,
-						"precompile %s claims C-Chain but is not enabled there", p.Name)
-				}
-
-				if containsChain(p.Chains, "Zoo") {
-					enabled := IsPrecompileEnabled("Zoo", addr)
-					require.True(t, enabled,
-						"precompile %s claims Zoo but is not enabled there", p.Name)
-				}
-			}
-		})
-	}
-}
-
-// containsChain checks if a chain is in the list
-func containsChain(chains []string, target string) bool {
-	return slices.Contains(chains, target)
-}
-
-// ============================================================================
-// Benchmarks
-// ============================================================================
-
-func BenchmarkPrecompileAddress(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		_ = PrecompileAddress(5, 2, 0x00)
-	}
-}
-
-func BenchmarkChainSlot(b *testing.B) {
-	chains := []string{"C", "Q", "A", "Zoo", "Hanzo"}
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_ = ChainSlot(chains[i%len(chains)])
-	}
-}
-
-func BenchmarkFamilyPage(b *testing.B) {
-	families := []string{"PQ", "ZK", "Threshold", "DEX", "AI"}
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_ = FamilyPage(families[i%len(families)])
-	}
-}
-
-func BenchmarkGetPrecompileAddress(b *testing.B) {
-	names := []string{"FROST", "ML_DSA", "GROTH16", "LX_POOL", "GPU_ATTEST"}
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_ = GetPrecompileAddress(names[i%len(names)])
-	}
-}
-
-func BenchmarkIsPrecompileEnabled(b *testing.B) {
-	addr := common.HexToAddress(LXPool)
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_ = IsPrecompileEnabled("C", addr)
-	}
-}
-
-func BenchmarkGetChainPrecompiles(b *testing.B) {
-	chains := []string{"C", "Q", "A", "Z", "Zoo"}
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_ = GetChainPrecompiles(chains[i%len(chains)])
+	for addr, key := range eip {
+		a := common.HexToAddress(addr)
+		m, ok := modules.GetPrecompileModuleByAddress(a)
+		require.True(t, ok, "no precompile registered at EIP address %s", addr)
+		require.Equal(t, key, m.ConfigKey,
+			"%s is occupied by %q, not the expected precompile", addr, m.ConfigKey)
+		require.NotNil(t, m.Contract)
 	}
 }

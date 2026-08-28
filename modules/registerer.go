@@ -143,7 +143,9 @@ var (
 			Start: common.HexToAddress("0x0000000000000000000000000000000000007000"),
 			End:   common.HexToAddress("0x0000000000000000000000000000000000007fff"),
 		},
-		// LP-9xxx: DEX/Markets (0x0..9000 - 0x0..9FFF)
+		// LP-9xxx: DEX/Markets and Lux Crypto Privacy — HPKE, ECIES, FHE
+		// (0x0..9000 - 0x0..9FFF). One page, two families; the allowlist is a
+		// range check, so a second identical entry could never change an answer.
 		{
 			Start: common.HexToAddress("0x0000000000000000000000000000000000009000"),
 			End:   common.HexToAddress("0x0000000000000000000000000000000000009fff"),
@@ -171,11 +173,6 @@ var (
 		{
 			Start: common.HexToAddress("0x0000000000000000000000000000000000008000"),
 			End:   common.HexToAddress("0x0000000000000000000000000000000000008fff"),
-		},
-		// Lux Crypto Privacy (0x9000-0x9FFF) - HPKE, ECIES, FHE
-		{
-			Start: common.HexToAddress("0x0000000000000000000000000000000000009000"),
-			End:   common.HexToAddress("0x0000000000000000000000000000000000009fff"),
 		},
 		// Lux Hashing & ZK (0xA000-0xAFFF) - Poseidon2, Blake3, STARK, etc.
 		{
@@ -293,8 +290,14 @@ func GetPrecompileModule(key string) (Module, bool) {
 	return Module{}, false
 }
 
+// RegisteredModules returns every registered module in ascending address order.
+// The host walks this slice to build the per-block precompile set, so the order
+// is consensus-visible; the returned slice is a copy so a caller that sorts or
+// truncates it cannot reorder the registry for every subsequent block.
 func RegisteredModules() []Module {
-	return registeredModules
+	out := make([]Module, len(registeredModules))
+	copy(out, registeredModules)
+	return out
 }
 
 // AlwaysOnModules returns the registered modules marked AlwaysOn — precompiles that
