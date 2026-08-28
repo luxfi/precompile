@@ -86,8 +86,9 @@ func markSettlementConsumed(stateDB stateKV, outputID ids.ID, blockNumber uint64
 //     refused after it; reclaim is allowed only after it.
 //   - status     : Open (settlable / reclaimable) or Reclaimed (terminal — no further
 //     settlement or reclaim).
-//   - priceLimit : the taker's OWN worst-acceptable CLOB price (quote-per-base, float64
-//     bits), derived at submit from the taker's V4 SqrtPriceLimitX96 (priceLimitToCLOB).
+//   - priceLimit : the taker's OWN worst-acceptable CLOB price, quote-per-base as a
+//     uint64 on the PriceInt grid (x priceScale), derived at submit from the taker's V4
+//     SqrtPriceLimitX96 by priceLimitToCLOB using EXACT big.Int arithmetic.
 //     limitIsUpper says which side it bounds (true = a BUY ceiling, false = a SELL floor).
 //     ImportSettlement enforces it on the PROCEEDS leg against the realized fill price
 //     (out/spent) — INDEPENDENTLY of the keeper-relayed RelayOrderTx.PriceLimit — so a
@@ -116,8 +117,9 @@ type swapIntentRecord struct {
 	Remaining uint64
 	Deadline  uint64
 	Status    swapIntentStatus
-	// PriceLimit is the taker's OWN worst-acceptable CLOB price (quote-per-base, IEEE-754
-	// float64 bits) recorded at SubmitSwapIntent from the taker's V4 SqrtPriceLimitX96.
+	// PriceLimit is the taker's OWN worst-acceptable CLOB price: quote-per-base as an
+	// EXACT uint64 on the PriceInt grid (x priceScale), recorded at SubmitSwapIntent from
+	// the taker's V4 SqrtPriceLimitX96. No float ever touches it (see priceLimitToCLOB).
 	// 0 = no limit. ImportSettlement enforces it against the realized proceeds price so the
 	// floor is TAKER-authenticated, not keeper-relayed (the MEV sandwich fix).
 	PriceLimit uint64
@@ -132,7 +134,7 @@ var (
 	swapIntentAssetSuffix  = []byte("a") // assetIn (bytes32)
 	swapIntentMetaSuffix   = []byte("m") // status(1) | limitIsUpper(1) | deadline(uint64, big-endian in low 8 bytes)
 	swapIntentRemainSuffix = []byte("r") // remaining principal (uint64)
-	swapIntentLimitSuffix  = []byte("l") // taker's recorded CLOB price limit (float64 bits, uint64)
+	swapIntentLimitSuffix  = []byte("l") // taker's recorded CLOB price limit (uint64, PriceInt grid)
 )
 
 func swapIntentSlot(intentID ids.ID, suffix []byte) common.Hash {
