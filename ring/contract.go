@@ -82,16 +82,18 @@ func (p *ringSignaturePrecompile) Address() common.Address {
 	return ContractAddress
 }
 
-// RequiredGas calculates gas for ring signature operations
+// RequiredGas calculates gas for ring signature operations.
+//
+// The price is read off the three-byte header [op][scheme][ring size] and
+// nothing else. A call too short to carry the header, or naming another
+// operation, is free -- Run refuses it before any verification work happens.
+// A price cannot report a parse failure, so a short read is that free case.
 func (p *ringSignaturePrecompile) RequiredGas(input []byte) uint64 {
-	if len(input) < 3 {
-		return 0
-	}
-
-	op := input[0]
-	scheme := input[1]
-
-	if op != OpVerify {
+	in := contract.Read(input)
+	op, opErr := in.Byte()
+	scheme, schemeErr := in.Byte()
+	ringSize, ringSizeErr := in.Byte()
+	if opErr != nil || schemeErr != nil || ringSizeErr != nil || op != OpVerify {
 		return 0
 	}
 
@@ -111,7 +113,6 @@ func (p *ringSignaturePrecompile) RequiredGas(input []byte) uint64 {
 		return 0
 	}
 
-	ringSize := int(input[2])
 	return baseGas + uint64(ringSize)*perMemberGas
 }
 
@@ -130,18 +131,24 @@ func (p *ringSignaturePrecompile) Run(
 		return nil, 0, err
 	}
 
-	if len(input) < 3 {
+	// The same three-byte header RequiredGas priced. The ring size is read
+	// here rather than inside verify so that calldata too short to carry the
+	// header is refused as short calldata whatever operation or scheme it
+	// names -- and so the refusal is reachable through the precompile, which
+	// is where it has to hold.
+	in := contract.Read(input)
+	op, opErr := in.Byte()
+	scheme, schemeErr := in.Byte()
+	ringSize, ringSizeErr := in.Byte()
+	if opErr != nil || schemeErr != nil || ringSizeErr != nil {
 		return nil, remainingGas, ErrInvalidInput
 	}
-
-	op := input[0]
-	scheme := input[1]
 
 	var result []byte
 
 	switch op {
 	case OpVerify:
-		result, err = p.verify(scheme, input[2:])
+		result, err = p.verify(scheme, int(ringSize), in)
 	default:
 		err = fmt.Errorf("unsupported operation: 0x%02x", op)
 	}
@@ -160,43 +167,41 @@ type LSAGSignature struct {
 	S        []*big.Int // n responses
 }
 
-// verify verifies an LSAG ring signature
-func (p *ringSignaturePrecompile) verify(scheme byte, input []byte) ([]byte, error) {
+// verify verifies an LSAG ring signature. Run has already read the header, so
+// in is positioned at the first ring member and ringSize is what the size byte
+// claimed -- a claim, not a measurement, which is why every field below is
+// taken from the cursor rather than sliced off calldata. See
+// contract/cursor.go: past the declared end lies memory the caller filled, so
+// a ring read by slice expression is a ring the caller chose.
+func (p *ringSignaturePrecompile) verify(scheme byte, ringSize int, in *contract.Cursor) ([]byte, error) {
 	if scheme != SchemeLSAGSecp256k1 {
 		return nil, ErrInvalidScheme
 	}
 
-	if len(input) < 1 {
-		return nil, ErrInvalidInput
-	}
-
-	ringSize := int(input[0])
 	if ringSize < 2 {
 		return nil, ErrInvalidRingSize
 	}
 
-	offset := 1
-
 	// Parse ring
 	ring := make([][]byte, ringSize)
 	for i := range ringSize {
-		if len(input) < offset+CompressedPubKeySize {
+		member, err := in.Bytes(CompressedPubKeySize)
+		if err != nil {
 			return nil, ErrInvalidInput
 		}
-		ring[i] = make([]byte, CompressedPubKeySize)
-		copy(ring[i], input[offset:offset+CompressedPubKeySize])
-		offset += CompressedPubKeySize
+		ring[i] = member
 	}
 
 	// Signature: keyImage (33) + c[n] (32 each) + s[n] (32 each)
 	sigLen := CompressedPubKeySize + ringSize*ScalarSize + ringSize*ScalarSize
-	if len(input) < offset+sigLen {
+	signature, err := in.Bytes(uint64(sigLen))
+	if err != nil {
 		return nil, ErrInvalidInput
 	}
-	signature := input[offset : offset+sigLen]
-	offset += sigLen
 
-	message := input[offset:]
+	// The format ends open: whatever follows the signature is the message, so
+	// there is no End() here. Rest stops at the declared end all the same.
+	message := in.Rest()
 
 	// Parse and verify signature
 	sig, err := parseLSAGSignature(signature, ringSize)
@@ -227,11 +232,12 @@ func lsagVerify(ring [][]byte, sig *LSAGSignature, message []byte) bool {
 		return false
 	}
 
-	// Precompute all hash-to-point values.
+	// Precompute all hash-to-point values. batchHashToPoint returns
+	// make([]*Point, len(ring)), which is never nil and always exactly n long,
+	// so there is nothing here to check: the nil arm that used to sit here was
+	// a fossil of the GPU batch path removed under M-06, and no test could
+	// reach it.
 	hps := batchHashToPoint(ring)
-	if hps == nil {
-		return false
-	}
 
 	// Verify ring -- sequential: c[i+1] = H(m, L_i, R_i)
 	cPrev := sig.C[0]
@@ -368,33 +374,36 @@ func scalar(b []byte) (*big.Int, bool) {
 	return x, x.Sign() > 0 && x.Cmp(order) < 0
 }
 
+// parseLSAGSignature reads keyImage || c[0..n-1] || s[0..n-1] out of data.
+// Trailing bytes are ignored rather than refused: verify hands over exactly
+// the field it bounded, so a longer data can only come from a direct caller.
 func parseLSAGSignature(data []byte, ringSize int) (*LSAGSignature, error) {
-	expectedLen := CompressedPubKeySize + ringSize*ScalarSize*2
-	if len(data) < expectedLen {
+	in := contract.Read(data)
+
+	keyImage, err := in.Bytes(CompressedPubKeySize)
+	if err != nil {
 		return nil, ErrInvalidSignature
 	}
 
 	sig := &LSAGSignature{
-		KeyImage: make([]byte, CompressedPubKeySize),
+		KeyImage: keyImage,
 		C:        make([]*big.Int, ringSize),
 		S:        make([]*big.Int, ringSize),
 	}
 
-	copy(sig.KeyImage, data[:CompressedPubKeySize])
-
-	var ok bool
-	offset := CompressedPubKeySize
-	for i := range ringSize {
-		if sig.C[i], ok = scalar(data[offset : offset+ScalarSize]); !ok {
-			return nil, ErrInvalidSignature
+	// Challenges then responses: same shape, same rule, read back to back.
+	for _, field := range [][]*big.Int{sig.C, sig.S} {
+		for i := range field {
+			b, err := in.Bytes(ScalarSize)
+			if err != nil {
+				return nil, ErrInvalidSignature
+			}
+			x, ok := scalar(b)
+			if !ok {
+				return nil, ErrInvalidSignature
+			}
+			field[i] = x
 		}
-		offset += ScalarSize
-	}
-	for i := range ringSize {
-		if sig.S[i], ok = scalar(data[offset : offset+ScalarSize]); !ok {
-			return nil, ErrInvalidSignature
-		}
-		offset += ScalarSize
 	}
 
 	return sig, nil

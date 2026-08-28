@@ -883,26 +883,32 @@ func (zv *ZKVerifier) plonkVerify(
 		return false
 	}
 
-	// Minimum proof size: 9 G1 points (576 bytes) + 6 scalars (192 bytes) = 768 bytes
-	const minProofSize = 768
-	if len(proof) < minProofSize {
+	// The frame is 9 G1 points at 64 bytes then 6 scalars at 32: 768 bytes.
+	// Both vectors are read through the cursor, so neither the points nor
+	// the evaluations can reach past what the caller declared.
+	in := contract.Read(proof)
+	rawPoints, err := in.Fields(plonkPoints, plonkPointSize)
+	if err != nil {
+		return false
+	}
+	rawEvals, err := in.Fields(plonkEvals, fieldLen)
+	if err != nil {
 		return false
 	}
 
 	// Parse G1 commitments from proof
-	commitments := make([]*bn256.G1, 9)
-	for i := range 9 {
+	commitments := make([]*bn256.G1, len(rawPoints))
+	for i, b := range rawPoints {
 		commitments[i] = new(bn256.G1)
-		if _, err := commitments[i].Unmarshal(proof[i*64 : (i+1)*64]); err != nil {
+		if _, err := commitments[i].Unmarshal(b); err != nil {
 			return false
 		}
 	}
 
 	// Parse evaluations
-	evalOffset := 576
-	evaluations := make([]*big.Int, 6)
-	for i := range 6 {
-		evaluations[i] = new(big.Int).SetBytes(proof[evalOffset+i*32 : evalOffset+(i+1)*32])
+	evaluations := make([]*big.Int, len(rawEvals))
+	for i, b := range rawEvals {
+		evaluations[i] = new(big.Int).SetBytes(b)
 	}
 
 	// Parse verification key selectors and permutation commitments

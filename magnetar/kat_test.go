@@ -9,6 +9,7 @@ import (
 
 	"github.com/luxfi/crypto/slhdsa"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -81,12 +82,18 @@ func word(v byte) []byte {
 	return w
 }
 
-// call invokes the precompile with exactly the gas RequiredGas asks for.
+// call invokes the precompile with exactly the gas RequiredGas asks for, over
+// the input shape the EVM actually hands a precompile: len is what the caller
+// declared and paid for, and behind it lies memory the same caller filled.
+// Without the poison an over-read lands on zeros and every bound below passes
+// whether or not it is there, which makes the fixture the subject of the test
+// instead of the parser.
 func call(t *testing.T, input []byte) ([]byte, error) {
 	t.Helper()
+	in := contract.Poisoned(input, 256)
 	out, _, err := MagnetarVerifyPrecompile.Run(
 		nil, common.Address{}, ContractMagnetarVerifyAddress,
-		input, MagnetarVerifyPrecompile.RequiredGas(input), true,
+		in, MagnetarVerifyPrecompile.RequiredGas(in), true,
 	)
 	return out, err
 }
