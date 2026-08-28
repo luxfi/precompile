@@ -493,6 +493,15 @@ func (ba *BatchAccumulator) Size() int {
 // each element, so it is byte-stable across the whole validator set
 // regardless of build tags or hardware.
 func BatchVerifyMLDSA(pubkeys, messages, signatures [][]byte) ([]bool, error) {
+	// The three slices are indexed in lockstep, so a caller that supplies fewer keys or
+	// messages than signatures used to index past the end and panic. Refuse instead:
+	// there is no sensible answer for a signature with no key to check it against, and
+	// silently verifying the shortest prefix would report "all valid" for a batch that
+	// was never fully checked.
+	if len(pubkeys) != len(signatures) || len(messages) != len(signatures) {
+		return nil, ErrInvalidWorkProof
+	}
+
 	// CPU is the single source of truth (see BatchAccumulator.flushLocked):
 	// the accel batch kernel truncates messages to 32 bytes and is mode-fixed,
 	// so it cannot match VerifyMLDSA. Verify each element on the CPU oracle.

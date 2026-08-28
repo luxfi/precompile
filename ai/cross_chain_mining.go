@@ -40,39 +40,49 @@ const (
 // ErrInputTooShort is returned when calldata is truncated.
 var ErrInputTooShort = fmt.Errorf("input too short")
 
-// parseTriple decodes three length-prefixed blobs followed by a uint64 chainId:
+// blobs decodes count length-prefixed blobs from the front of input and reports the offset
+// just past the last one:
 //
-//	[4]lenA | A | [4]lenB | B | [4]lenC | C | [8]chainId
-func parseTriple(input []byte) (a, b, c []byte, chainId uint64, err error) {
+//	[4]len0 | blob0 | [4]len1 | blob1 | ...
+//
+// Every length is widened to int before it is used. Computing the bound in uint32 — as
+// `uint32(len(input)) < 4+n+4` — wraps for n near 2^32, so the check passes and the slice
+// expression that follows panics with "slice bounds out of range". A panic inside a
+// precompile is not recovered anywhere on the execution path, so it takes down every
+// validator that processed the transaction; eight bytes of calldata were enough. int is
+// wide enough on 64-bit, and the n < 0 test covers a 32-bit build where int(uint32) can go
+// negative.
+func blobs(input []byte, count int) ([][]byte, int, error) {
+	out := make([][]byte, 0, count)
 	off := 0
-	readBlob := func() ([]byte, error) {
+	for range count {
 		if off+4 > len(input) {
-			return nil, ErrInputTooShort
+			return nil, 0, ErrInputTooShort
 		}
 		n := int(binary.BigEndian.Uint32(input[off : off+4]))
 		off += 4
 		if n < 0 || off+n > len(input) {
-			return nil, ErrInputTooShort
+			return nil, 0, ErrInputTooShort
 		}
-		blob := input[off : off+n]
+		out = append(out, input[off:off+n])
 		off += n
-		return blob, nil
 	}
-	if a, err = readBlob(); err != nil {
-		return
-	}
-	if b, err = readBlob(); err != nil {
-		return
-	}
-	if c, err = readBlob(); err != nil {
+	return out, off, nil
+}
+
+// parseTriple decodes three length-prefixed blobs followed by a uint64 chainId:
+//
+//	[4]lenA | A | [4]lenB | B | [4]lenC | C | [8]chainId
+func parseTriple(input []byte) (a, b, c []byte, chainId uint64, err error) {
+	parts, off, err := blobs(input, 3)
+	if err != nil {
 		return
 	}
 	if off+8 > len(input) {
 		err = ErrInputTooShort
 		return
 	}
-	chainId = binary.BigEndian.Uint64(input[off : off+8])
-	return
+	return parts[0], parts[1], parts[2], binary.BigEndian.Uint64(input[off : off+8]), nil
 }
 
 // mintWork atomically settles an attested compute work-proof: workId is bound to

@@ -4,6 +4,7 @@
 package fhe
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/big"
@@ -179,6 +180,10 @@ var (
 	ErrInsufficientGas   = fmt.Errorf("insufficient gas for FHE operation: %w", contract.ErrOutOfGas)
 	ErrInvalidCiphertext = errors.New("invalid ciphertext handle")
 
+	// ErrReadOnly is returned when a state-writing operation is invoked through a
+	// static call.
+	ErrReadOnly = errors.New("FHE write attempted in read-only mode")
+
 	// ErrACLUnauthorized is returned when a caller requests an operation on a
 	// ciphertext handle it is not authorized for (it is not the owner). The
 	// caller is rejected outright — it is never handed any plaintext-shaped
@@ -197,6 +202,37 @@ var (
 
 // FHEContract implements the main FHE precompile
 type FHEContract struct{}
+
+// selectorDecrypt and selectorSealOutput are the only two operations that read state
+// without writing any: both resolve a handle's owner and then fail closed pending the
+// F-Chain threshold ceremony.
+const (
+	selectorDecrypt    = "\x12\x3d\x4c\x87" // decrypt(bytes32)
+	selectorSealOutput = "\x56\x7a\x11\x98" // sealOutput(bytes32,bytes)
+)
+
+// writesState reports whether a selector persists anything. Everything that is not one of
+// the two pure reads stores a ciphertext, so an unrecognised selector counts as a writer
+// and is refused under a static call before it can reach a handler.
+func writesState(selector string) bool {
+	return selector != selectorDecrypt && selector != selectorSealOutput
+}
+
+// zeroHandle is what every perform* helper returns when it cannot complete: no evaluator
+// installed, a handle that resolves to nothing, an operand type mismatch, a ciphertext that
+// will not deserialize. That convention is fine inside the package, where the caller
+// inspects it — but handed back through Run it became a 32-byte zero word with a nil error,
+// so an EVM caller could not tell a completed operation from a failed one and would go on
+// to use a handle that references nothing. Failure is surfaced as an error at the one
+// boundary where it stops being a package-internal convention.
+var zeroHandle = make([]byte, common.HashLength)
+
+// failedResult reports whether a handler's return value is the failure sentinel. Only
+// operations that answer with a handle are considered: decrypt and sealOutput return
+// errors, never handles.
+func failedResult(selector string, ret []byte) bool {
+	return writesState(selector) && bytes.Equal(ret, zeroHandle)
+}
 
 // Run executes the FHE precompile
 func (c *FHEContract) Run(
@@ -233,8 +269,33 @@ func (c *FHEContract) Run(
 	selector := input[:4]
 	data := input[4:]
 
-	// Route to appropriate handler based on selector
-	switch string(selector) {
+	// STATICCALL promises the callee mutates nothing. Every operation here except
+	// decrypt and sealOutput persists a ciphertext to the state trie, and readOnly was
+	// threaded through all forty-two handlers without a single one reading it — so a
+	// static call could create handles, write ciphertext chunks and record ownership.
+	// The property belongs to the selector, so it is decided once here rather than
+	// repeated in every handler.
+	if readOnly && writesState(string(selector)) {
+		return nil, suppliedGas, ErrReadOnly
+	}
+
+	ret, remainingGas, err = c.dispatch(accessibleState, caller, string(selector), data, suppliedGas, readOnly)
+	if err == nil && failedResult(string(selector), ret) {
+		return nil, remainingGas, ErrOperationFailed
+	}
+	return ret, remainingGas, err
+}
+
+// dispatch routes a decoded selector to its handler.
+func (c *FHEContract) dispatch(
+	accessibleState contract.AccessibleState,
+	caller common.Address,
+	selector string,
+	data []byte,
+	suppliedGas uint64,
+	readOnly bool,
+) ([]byte, uint64, error) {
+	switch selector {
 	// Arithmetic operations
 	case "\x23\xb8\x72\xdd": // add(bytes32,bytes32)
 		return c.handleAdd(accessibleState, caller, data, suppliedGas, readOnly)
@@ -337,42 +398,6 @@ func (c *FHEContract) Run(
 
 	default:
 		return nil, suppliedGas, ErrNotImplemented
-	}
-}
-
-// Gas returns the gas required for the FHE operation
-func (c *FHEContract) Gas(input []byte) uint64 {
-	if len(input) < 4 {
-		return 0
-	}
-	selector := string(input[:4])
-	switch selector {
-	case "\x23\xb8\x72\xdd": // add
-		return GasAdd
-	case "\x51\xca\xb0\x91": // sub
-		return GasSub
-	case "\xc8\xa4\xac\x9c": // mul
-		return GasMul
-	case "\xa9\x05\x9c\xbb", "\x4b\x64\xe4\x92": // lt, gt
-		return GasLt
-	case "\x1c\xf4\x86\x63": // eq
-		return GasEq
-	case "\x2e\x17\xde\x78": // select
-		return GasSelect
-	case "\xa5\x17\x5c\x89", "\xd4\x3f\x02\x80": // asEuint64, asEaddress
-		return GasEncrypt
-	case "\x6e\x32\x91\x28", "\x7a\x8f\x63\xb8": // max, min
-		return GasMax
-	case "\xcd\x30\x32\x00", "\x5a\x6b\x26\xba": // and, or
-		return GasAnd
-	case "\x6b\x3a\x00\x11": // not
-		return GasNot
-	case "\xe4\x7e\xf3\xfc": // neg
-		return GasNeg
-	case "\x71\x5a\xd3\x11": // rand
-		return GasRand
-	default:
-		return 100000 // Default high gas for unknown operations
 	}
 }
 
@@ -1044,20 +1069,30 @@ func (c *FHEContract) handleDecrypt(state contract.AccessibleState, caller commo
 	return nil, gasLeft, ErrThresholdDecryptionRequired
 }
 
+// GasVerifyPerByte prices the caller-supplied ciphertext that verify deserializes and then
+// persists. verify is the one operation whose work is set by the length of a blob the
+// caller chooses: it walks the whole encoding and then writes it to the state trie 32 bytes
+// at a time, one keccak and one SetState per chunk. Charged as a flat fee it was the
+// cheapest way to grow the state permanently, and the only op in the schedule whose cost
+// was independent of the work it did.
+const GasVerifyPerByte uint64 = 32
+
 func (c *FHEContract) handleVerify(state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool) ([]byte, uint64, error) {
 	if len(data) < 33 {
 		return nil, gas, ErrInvalidInput
-	}
-	if gas < GasEncrypt {
-		return nil, gas, ErrInsufficientGas
 	}
 
 	ctType := data[0]
 	inputHandle := data[1:]
 
+	cost := GasEncrypt + uint64(len(inputHandle))*GasVerifyPerByte
+	if gas < cost {
+		return nil, gas, ErrInsufficientGas
+	}
+
 	result := performFHEVerify(state.GetStateDB(), inputHandle, ctType, caller)
 
-	return result.Bytes(), gas - GasEncrypt, nil
+	return result.Bytes(), gas - cost, nil
 }
 
 // handleSealOutput re-encrypts (seals) a ciphertext to a caller-provided public
@@ -1192,6 +1227,10 @@ func performFHEOperation(stateDB contract.StateDB, op string, handle1, handle2 c
 		result = tfheSub(lhs, rhs, lhsType)
 	case "mul":
 		result = tfheMul(lhs, rhs, lhsType)
+	case "div":
+		result = tfheDiv(lhs, rhs, lhsType)
+	case "rem":
+		result = tfheRem(lhs, rhs, lhsType)
 	case "lt":
 		result = tfheLt(lhs, rhs, lhsType)
 	case "gt":

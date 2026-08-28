@@ -370,44 +370,33 @@ func TestRunVerifyMLDSARealSig(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, byte(1), ret[31])
 
-	// Invalid pubkey length overflow
-	badPK := make([]byte, 4+10)
-	binary.BigEndian.PutUint32(badPK[:4], 0xFFFFFFFF) // huge length
-	fullBad := make([]byte, 4+len(badPK))
-	binary.BigEndian.PutUint32(fullBad[:4], SelectorVerifyMLDSA)
-	copy(fullBad[4:], badPK)
-	// But input is short, so "input too short" first -- need 96+ bytes
-	// Pad to 96 to get past first check, then hit pubkey length check
+	// A declared length that overruns the calldata is refused, at each of the three
+	// positions. The assertion is the behaviour -- refusal, and specifically
+	// ErrInputTooShort -- not the wording, so the three positions share one rule.
 	padded := make([]byte, 4+100)
 	binary.BigEndian.PutUint32(padded[:4], SelectorVerifyMLDSA)
-	binary.BigEndian.PutUint32(padded[4:8], 0xFFFF) // pubkeyLen = huge
+	binary.BigEndian.PutUint32(padded[4:8], 0xFFFF) // pubkeyLen overruns
 	_, _, err = c.Run(newTestAS(), common.Address{}, ContractAddress, padded, 100000, false)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid pubkey length")
+	require.ErrorIs(t, err, ErrInputTooShort)
 
-	// Invalid message length
 	fakeData := make([]byte, 200)
-	binary.BigEndian.PutUint32(fakeData[:4], 10) // pkLen=10
-	// pk at 4:14, then msgLen at 14:18
-	binary.BigEndian.PutUint32(fakeData[14:18], 0xFFFF) // msgLen = huge
+	binary.BigEndian.PutUint32(fakeData[:4], 10)        // pkLen=10
+	binary.BigEndian.PutUint32(fakeData[14:18], 0xFFFF) // msgLen overruns
 	fullFake := make([]byte, 4+len(fakeData))
 	binary.BigEndian.PutUint32(fullFake[:4], SelectorVerifyMLDSA)
 	copy(fullFake[4:], fakeData)
 	_, _, err = c.Run(newTestAS(), common.Address{}, ContractAddress, fullFake, 100000, false)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid message length")
+	require.ErrorIs(t, err, ErrInputTooShort)
 
-	// Invalid signature length
 	fakeData2 := make([]byte, 200)
 	binary.BigEndian.PutUint32(fakeData2[:4], 10)        // pkLen=10
 	binary.BigEndian.PutUint32(fakeData2[14:18], 10)     // msgLen=10
-	binary.BigEndian.PutUint32(fakeData2[28:32], 0xFFFF) // sigLen = huge
+	binary.BigEndian.PutUint32(fakeData2[28:32], 0xFFFF) // sigLen overruns
 	fullFake2 := make([]byte, 4+len(fakeData2))
 	binary.BigEndian.PutUint32(fullFake2[:4], SelectorVerifyMLDSA)
 	copy(fullFake2[4:], fakeData2)
 	_, _, err = c.Run(newTestAS(), common.Address{}, ContractAddress, fullFake2, 100000, false)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid signature length")
+	require.ErrorIs(t, err, ErrInputTooShort)
 }
 
 // --- ML-DSA 44 and 87 ---

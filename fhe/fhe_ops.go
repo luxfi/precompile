@@ -153,9 +153,62 @@ func serializeBitCiphertext(ct *fhe.BitCiphertext) []byte {
 	return data
 }
 
-// deserializeBitCiphertext converts bytes to BitCiphertext
+// MaxCiphertextBits is the widest supported ciphertext. euint256 is the largest FHE type
+// this precompile offers, so nothing legitimate carries more bits than this.
+const MaxCiphertextBits = 256
+
+// wellFramed reports whether data is a complete, self-consistent BitCiphertext encoding:
+//
+//	[4]numBits | [1]fheType | numBits x ( [4]bitLen | bitLen bytes )
+//
+// It must run before the bytes reach UnmarshalBinary, which reads each declared length and
+// allocates for it BEFORE checking that the input actually contains that many bytes:
+// `make([]*Ciphertext, numBits)` then `make([]byte, bitLen)`. Both counts are little-endian
+// uint32 read straight off the wire, so five bytes of calldata ask for a 34 GB slice and
+// nine ask for 4 GB — a remote memory-exhaustion primitive behind a flat 50,000 gas fee.
+// Every declared length is checked against the bytes actually present, in int arithmetic,
+// before any of them is used to allocate.
+func wellFramed(data []byte) bool {
+	if len(data) < 5 {
+		return false
+	}
+	numBits := int(binary.LittleEndian.Uint32(data[:4]))
+	if numBits < 0 || numBits > MaxCiphertextBits {
+		return false
+	}
+	off := 5 // numBits + fheType
+	for range numBits {
+		if off+4 > len(data) {
+			return false
+		}
+		bitLen := int(binary.LittleEndian.Uint32(data[off : off+4]))
+		off += 4
+		if bitLen < 0 || off+bitLen > len(data) {
+			return false
+		}
+		off += bitLen
+	}
+	return true
+}
+
+// boolBit extracts the single encrypted bit out of a serialized boolean BitCiphertext.
+//
+// Every TypeEbool value this precompile stores is a BitCiphertext of width one, but the
+// evaluator's Select takes a bare *Ciphertext, and the pinned luxfi/fhe exposes no accessor
+// for the bit inside (the field is unexported). The wire format does expose it: after the
+// 4-byte width and the 1-byte type, a one-bit value carries exactly one length-prefixed
+// blob, and that blob IS the inner Ciphertext's own encoding. Returns nil for anything that
+// is not a well-framed single-bit value.
+func boolBit(data []byte) []byte {
+	if !wellFramed(data) || binary.LittleEndian.Uint32(data[:4]) != 1 {
+		return nil
+	}
+	n := int(binary.LittleEndian.Uint32(data[5:9]))
+	return data[9 : 9+n]
+}
+
 func deserializeBitCiphertext(data []byte) *fhe.BitCiphertext {
-	if len(data) == 0 {
+	if !wellFramed(data) {
 		return nil
 	}
 	ct := new(fhe.BitCiphertext)
@@ -549,8 +602,13 @@ func tfheSelect(control, ifTrue, ifFalse []byte, fheType uint8) []byte {
 		return nil
 	}
 
-	// Control is a single encrypted bit
-	ctControl := deserializeCiphertext(control)
+	// The control is a boolean HANDLE, and every TypeEbool value this precompile stores is
+	// a BitCiphertext: comparisons wrap their single-bit result with WrapBoolCiphertext
+	// before serializing, and asEbool encrypts through the same path. Decoding the control
+	// as a bare Ciphertext therefore matched nothing the precompile is able to produce, so
+	// select failed for every input it was ever given — silently, because a failed
+	// operation used to be returned as the zero handle with a nil error.
+	ctControl := deserializeCiphertext(boolBit(control))
 	ctTrue := deserializeBitCiphertext(ifTrue)
 	ctFalse := deserializeBitCiphertext(ifFalse)
 	if ctControl == nil || ctTrue == nil || ctFalse == nil {

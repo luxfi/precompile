@@ -149,32 +149,14 @@ func (c *AIMiningContract) runVerifyMLDSA(
 		return nil, 0, fmt.Errorf("out of gas")
 	}
 
-	// Parse input: pubkey (32 bytes length prefix), message, signature
-	if len(input) < 96 {
-		return nil, suppliedGas - GasVerifyMLDSA, fmt.Errorf("input too short")
+	// pubkey | message | signature, each length-prefixed. blobs is the one decoder for
+	// this framing; see its comment for why the lengths may not be handled in uint32.
+	parts, _, err := blobs(input, 3)
+	if err != nil {
+		return nil, suppliedGas - GasVerifyMLDSA, err
 	}
 
-	pubkeyLen := binary.BigEndian.Uint32(input[0:4])
-	if uint32(len(input)) < 4+pubkeyLen+4 {
-		return nil, suppliedGas - GasVerifyMLDSA, fmt.Errorf("invalid pubkey length")
-	}
-	pubkey := input[4 : 4+pubkeyLen]
-
-	offset := 4 + pubkeyLen
-	msgLen := binary.BigEndian.Uint32(input[offset : offset+4])
-	if uint32(len(input)) < offset+4+msgLen+4 {
-		return nil, suppliedGas - GasVerifyMLDSA, fmt.Errorf("invalid message length")
-	}
-	message := input[offset+4 : offset+4+msgLen]
-
-	offset = offset + 4 + msgLen
-	sigLen := binary.BigEndian.Uint32(input[offset : offset+4])
-	if uint32(len(input)) < offset+4+sigLen {
-		return nil, suppliedGas - GasVerifyMLDSA, fmt.Errorf("invalid signature length")
-	}
-	signature := input[offset+4 : offset+4+sigLen]
-
-	valid, err := VerifyMLDSA(pubkey, message, signature)
+	valid, err := VerifyMLDSA(parts[0], parts[1], parts[2])
 	if err != nil {
 		return nil, suppliedGas - GasVerifyMLDSA, err
 	}
@@ -221,24 +203,13 @@ func (c *AIMiningContract) runVerifyTEE(
 		return nil, 0, fmt.Errorf("out of gas")
 	}
 
-	if len(input) < 8 {
-		return nil, suppliedGas - GasVerifyTEE, fmt.Errorf("input too short")
+	// receipt | signature, each length-prefixed.
+	parts, _, err := blobs(input, 2)
+	if err != nil {
+		return nil, suppliedGas - GasVerifyTEE, err
 	}
 
-	receiptLen := binary.BigEndian.Uint32(input[0:4])
-	if uint32(len(input)) < 4+receiptLen+4 {
-		return nil, suppliedGas - GasVerifyTEE, fmt.Errorf("invalid receipt length")
-	}
-	receipt := input[4 : 4+receiptLen]
-
-	offset := 4 + receiptLen
-	sigLen := binary.BigEndian.Uint32(input[offset : offset+4])
-	if uint32(len(input)) < offset+4+sigLen {
-		return nil, suppliedGas - GasVerifyTEE, fmt.Errorf("invalid signature length")
-	}
-	signature := input[offset+4 : offset+4+sigLen]
-
-	valid, err := VerifyTEE(receipt, signature)
+	valid, err := VerifyTEE(parts[0], parts[1])
 	if err != nil {
 		return nil, suppliedGas - GasVerifyTEE, err
 	}
