@@ -1,4 +1,4 @@
-// Copyright (C) 2026, Lux Partners Limited. All rights reserved.
+// Copyright (C) 2026, Lux Industries Inc. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //
 // receipt.go — the A-Chain inference RECEIPT, its canonical encoding, and its hash.
