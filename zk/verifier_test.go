@@ -11,6 +11,7 @@ import (
 
 	"github.com/luxfi/crypto/bn256"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 )
 
 // TestNewZKVerifier tests verifier creation
@@ -657,12 +658,18 @@ func TestVerifyRangeProof(t *testing.T) {
 	// There is no bulletproof verifier, so this must refuse. It used to
 	// answer "true" to any non-empty byte strings, which made every range
 	// proof valid and every confidential amount unconstrained.
-	valid, err := zv.VerifyRangeProof(commitment, rangeProof, 64)
-	if valid {
+	v := zv.VerifyRangeProof(commitment, rangeProof, 64)
+	if v.OK() {
 		t.Fatal("VerifyRangeProof accepted a proof it cannot check")
 	}
-	if !errors.Is(err, ErrRangeProofUnavailable) {
-		t.Fatalf("expected ErrRangeProofUnavailable, got %v", err)
+	if !errors.Is(v.Err(), ErrRangeProofUnavailable) {
+		t.Fatalf("expected ErrRangeProofUnavailable, got %v", v.Err())
+	}
+	// The zero Verdict says the same thing, which is the point: a path that
+	// forgot to answer denies rather than admitting.
+	var unanswered contract.Verdict
+	if unanswered.OK() {
+		t.Fatal("the zero Verdict must not be a positive")
 	}
 }
 

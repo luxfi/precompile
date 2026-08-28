@@ -4,7 +4,6 @@
 package frost
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -59,6 +58,71 @@ const (
 
 type frostVerifyPrecompile struct{}
 
+// claim is one call's submission: the committee it names, and the Schnorr
+// signature it asks to have checked against a key and a message hash.
+type claim struct {
+	threshold uint32
+	signers   uint32
+	key       []byte
+	hash      []byte
+	sig       []byte
+}
+
+// parse reads the wire format off calldata:
+//
+//	[0:4]    threshold t          (uint32, big-endian)
+//	[4:8]    total signers n      (uint32, big-endian)
+//	[8:40]   aggregated public key (32 bytes)
+//	[40:72]  message hash          (32 bytes)
+//	[72:136] Schnorr signature     (64 bytes: R || s)
+//
+// Every field is bounded by a contract.Cursor rather than by a slice
+// expression, and the difference is not stylistic. A precompile's input is a
+// window into EVM memory: opCall takes it with Memory.GetPtr, which returns
+// the two-index slice m.store[off : off+size], and nothing on the path to Run
+// copies it. So len is the size the caller declared and paid gas for, while
+// cap is the rest of memory that same caller filled with MSTORE beforehand. A
+// slice expression past len but within cap does not refuse -- it returns bytes
+// the caller chose, and the verifier answers over material nobody declared.
+// The cursor bounds every read against Len and caps what it hands back, so a
+// field cannot be completed out of the next one or out of spare capacity.
+// See contract/cursor.go.
+//
+// The format is fixed-size, so parse refuses exactly when the calldata holds
+// fewer than MinInputSize bytes -- the same condition the hand-written length
+// check tested, now enforced per field and not by a line that can be deleted.
+//
+// Trailing bytes are accepted. This format has always admitted them (it took
+// len(input) >= MinInputSize, never ==), so parse reads its fields and stops
+// rather than calling End. Whether to keep admitting them is a question about
+// the wire format, not about the parser: padding lets one signature ride many
+// distinct calldatas.
+func parse(input []byte) (claim, error) {
+	in := contract.Read(input)
+
+	threshold, err := in.Uint32()
+	if err != nil {
+		return claim{}, err
+	}
+	signers, err := in.Uint32()
+	if err != nil {
+		return claim{}, err
+	}
+	key, err := in.Bytes(FROSTPublicKeySize)
+	if err != nil {
+		return claim{}, err
+	}
+	hash, err := in.Bytes(FROSTMessageHashSize)
+	if err != nil {
+		return claim{}, err
+	}
+	sig, err := in.Bytes(FROSTSignatureSize)
+	if err != nil {
+		return claim{}, err
+	}
+	return claim{threshold: threshold, signers: signers, key: key, hash: hash, sig: sig}, nil
+}
+
 // Address returns the address of the FROST verify precompile
 func (p *frostVerifyPrecompile) Address() common.Address {
 	return ContractFROSTVerifyAddress
@@ -69,15 +133,19 @@ func (p *frostVerifyPrecompile) RequiredGas(input []byte) uint64 {
 	return FROSTVerifyGasCost(input)
 }
 
-// FROSTVerifyGasCost calculates the gas cost for FROST verification
+// FROSTVerifyGasCost calculates the gas cost for FROST verification.
+//
+// Calldata too short to carry a signer count is billed at base: parse refuses
+// exactly below MinInputSize, which is the boundary this function has always
+// priced at.
 func FROSTVerifyGasCost(input []byte) uint64 {
-	if len(input) < MinInputSize {
+	c, err := parse(input)
+	if err != nil {
 		return FROSTVerifyBaseGas
 	}
 
 	// Base cost + per-signer cost, on the clamped signer count.
-	totalSigners := min(binary.BigEndian.Uint32(input[ThresholdSize:ThresholdSize+TotalSignersSize]), MaxBilledSigners)
-	return FROSTVerifyBaseGas + (uint64(totalSigners) * FROSTVerifyPerSignerGas)
+	return FROSTVerifyBaseGas + (uint64(min(c.signers, MaxBilledSigners)) * FROSTVerifyPerSignerGas)
 }
 
 // Run implements the FROST threshold signature verification precompile
@@ -96,31 +164,21 @@ func (p *frostVerifyPrecompile) Run(
 		return nil, 0, err
 	}
 
-	// Input format:
-	// [0:4]      = threshold t (uint32)
-	// [4:8]      = total signers n (uint32)
-	// [8:40]     = aggregated public key (32 bytes)
-	// [40:72]    = message hash (32 bytes)
-	// [72:136]   = Schnorr signature (64 bytes: R || s)
-
-	if len(input) < MinInputSize {
+	// parse reads the fields through a contract.Cursor; see its doc comment
+	// for why a slice expression is the wrong tool on calldata.
+	c, err := parse(input)
+	if err != nil {
+		// parse refuses only by running out of calldata, and the deployed
+		// error names both sizes, so keep that wording rather than the
+		// cursor's.
 		return nil, remainingGas, fmt.Errorf("%w: expected at least %d bytes, got %d",
 			ErrInvalidInputLength, MinInputSize, len(input))
 	}
 
-	// Parse threshold and total signers
-	threshold := binary.BigEndian.Uint32(input[0:4])
-	totalSigners := binary.BigEndian.Uint32(input[4:8])
-
 	// Validate threshold
-	if threshold == 0 || threshold > totalSigners {
+	if c.threshold == 0 || c.threshold > c.signers {
 		return nil, remainingGas, ErrInvalidThreshold
 	}
-
-	// Parse public key, message hash, and signature
-	publicKey := input[8:40]
-	messageHash := input[40:72]
-	signature := input[72:136]
 
 	// CPU is the single source of truth. FROST produces SCHNORR signatures;
 	// the luxfi/accel SigECDSA kernel verifies a different equation entirely
@@ -129,7 +187,7 @@ func (p *frostVerifyPrecompile) Run(
 	// signature -- that was a wrong-primitive forgery surface and a CPU/GPU
 	// consensus split. Re-introducing accel requires a Schnorr (secp256k1)
 	// kernel proven byte-identical to verifySchnorrSignature.
-	valid := verifySchnorrSignature(publicKey, messageHash, signature)
+	valid := verifySchnorrSignature(c.key, c.hash, c.sig)
 
 	// Return result as 32-byte word (1 = valid, 0 = invalid)
 	result := make([]byte, 32)

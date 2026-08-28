@@ -159,3 +159,50 @@ func TestCursorSentinelsAreDistinct(t *testing.T) {
 	require.True(t, errors.Is(ErrTrailing, ErrInvalidInput))
 	require.False(t, errors.Is(ErrInvalidInput, ErrShort))
 }
+
+// TestCursorFieldsBoundsTheCountBeforeAllocating is the property Fields
+// exists for. A declared count must be refused against what the input can
+// hold BEFORE it sizes anything — otherwise the refusal arrives after the
+// allocation it was supposed to prevent.
+func TestCursorFieldsBoundsTheCountBeforeAllocating(t *testing.T) {
+	in := Poisoned([]byte{
+		1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
+	}, 1<<16)
+
+	c := Read(in)
+	got, err := c.Fields(3, 4)
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{{1, 1, 1, 1}, {2, 2, 2, 2}, {3, 3, 3, 3}}, got)
+	require.Equal(t, 0, c.Len())
+	for _, f := range got {
+		require.Equal(t, len(f), cap(f), "each field is capped")
+	}
+
+	// A count the input cannot back is refused, and nothing is consumed.
+	for _, n := range []uint64{4, 1 << 20, 1 << 32, ^uint64(0), ^uint64(0) / 2} {
+		c := Read(in)
+		_, err := c.Fields(n, 4)
+		require.ErrorIs(t, err, ErrShort, "n=%d fields of 4 do not fit in %d bytes", n, len(in))
+		require.Equal(t, len(in), c.Len(), "a refused read consumes nothing")
+	}
+
+	// The bound divides rather than multiplying: these counts times their
+	// width wrap uint64, and a wrapped product compares as small.
+	c = Read(in)
+	_, err = c.Fields(1<<63, 4)
+	require.ErrorIs(t, err, ErrShort, "n*w wrapping must not admit the read")
+	_, err = c.Fields((^uint64(0)/32)+1, 32)
+	require.ErrorIs(t, err, ErrShort)
+
+	// Degenerate shapes.
+	c = Read(in)
+	zero, err := c.Fields(0, 4)
+	require.NoError(t, err)
+	require.Empty(t, zero)
+	require.Equal(t, len(in), c.Len(), "zero fields consume nothing")
+
+	nothing, err := c.Fields(1<<40, 0)
+	require.NoError(t, err, "fields of zero width are the empty read")
+	require.Empty(t, nothing)
+	require.Equal(t, len(in), c.Len())
+}

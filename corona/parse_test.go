@@ -4,12 +4,12 @@
 package coronathreshold
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/luxfi/corona/sign"
 	"github.com/luxfi/corona/threshold"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -101,11 +101,11 @@ func TestPolyReaderRefusesShortRead(t *testing.T) {
 	require.NoError(t, err)
 	r := params.R
 
-	require.NoError(t, deserializePoly(bytes.NewReader(make([]byte, PolyWireSize)), r, r.NewPoly()),
+	require.NoError(t, deserializePoly(contract.Read(contract.Poisoned(make([]byte, PolyWireSize), 256)), r, r.NewPoly()),
 		"control: exactly one polynomial's worth of bytes reads cleanly")
 
 	for _, n := range []int{0, 1, CoefficientSize - 1, PolyWireSize - CoefficientSize, PolyWireSize - 1} {
-		err := deserializePoly(bytes.NewReader(make([]byte, n)), r, r.NewPoly())
+		err := deserializePoly(contract.Read(contract.Poisoned(make([]byte, n), 256)), r, r.NewPoly())
 		require.Error(t, err, "a %d-byte buffer is not a polynomial", n)
 		require.ErrorContains(t, err, "failed to read coefficient")
 	}
@@ -339,4 +339,47 @@ func TestCanonicalizesCoefficientsModTheRing(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), sig.Delta[0].Coeffs[0][0])
 	require.Equal(t, uint64(1), gk.BTilde[0].Coeffs[0][0])
+}
+
+// TestNoPrefixEscapesTheParser sweeps every truncation of a valid call
+// and requires each to be refused with a length error, never a verdict
+// and never a panic.
+//
+// Every input is submitted through contract.Poisoned, which is what a
+// precompile's calldata actually looks like: len is the size the caller
+// declared and paid for, cap is the rest of EVM memory, and the caller
+// MSTOREd that memory. So a parser reaching past its input does not
+// crash — it reads bytes the caller chose and answers over them. A
+// fixture built with append carries spare capacity too, but zeroed, so
+// an over-read reads as harmless zeros and the test passes whether or
+// not the bound exists.
+//
+// The boundaries between fields are where an off-by-one lives and there
+// is no reason to guess which, so this sweeps the header exhaustively
+// and then samples the body.
+func TestNoPrefixEscapesTheParser(t *testing.T) {
+	real, hash, err := generateThresholdSignature(2, 3, "prefix sweep")
+	require.NoError(t, err)
+	full := createInput(2, 3, hash, real)
+
+	out, _, err := CoronaThresholdPrecompile.Run(nil, addr(), addr(),
+		contract.Poisoned(full, 4096), 10_000_000, true)
+	require.NoError(t, err)
+	require.Equal(t, byte(1), out[31], "control: the whole input verifies")
+
+	cuts := make([]int, 0, MinInputSize+8)
+	for n := 0; n <= MinInputSize; n++ {
+		cuts = append(cuts, n)
+	}
+	cuts = append(cuts, MinInputSize+1, MinInputSize+PolyWireSize,
+		len(full)/2, len(full)-1)
+
+	for _, n := range cuts {
+		in := contract.Poisoned(full[:n], 4096)
+		require.NotPanics(t, func() {
+			_, _, err := CoronaThresholdPrecompile.Run(nil, addr(), addr(), in, 10_000_000, true)
+			require.ErrorIs(t, err, ErrInvalidInputLength,
+				"a %d-byte prefix must be refused on length", n)
+		}, "prefix of length %d panicked", n)
+	}
 }

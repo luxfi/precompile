@@ -12,6 +12,7 @@ import (
 
 	"github.com/luxfi/crypto/kzg4844"
 	"github.com/luxfi/geth/common"
+	"github.com/luxfi/precompile/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -258,7 +259,7 @@ func TestSound_StatementBinding(t *testing.T) {
 	stmtA := []*big.Int{big.NewInt(7), big.NewInt(42)}
 	proof := buildValidFflonkProof(t, vk, stmtA, 8)
 
-	require.True(t, zv.fflonkVerify(vk, proof, stmtA),
+	require.True(t, zv.fflonkVerify(vk, proof, stmtA).OK(),
 		"control: the proof must verify for the statement it was made for")
 
 	for _, stmtB := range [][]*big.Int{
@@ -269,13 +270,13 @@ func TestSound_StatementBinding(t *testing.T) {
 		{big.NewInt(42), big.NewInt(7)}, // same values, reordered
 		{big.NewInt(7), big.NewInt(42), big.NewInt(0)},
 	} {
-		require.Falsef(t, zv.fflonkVerify(vk, proof, stmtB),
+		require.Falsef(t, zv.fflonkVerify(vk, proof, stmtB).OK(),
 			"proof for %v verified against %v", stmtA, stmtB)
 	}
 
 	// Binding to the KEY as well: the same proof under a different key.
 	other := &VerifyingKey{ProofSystem: ProofSystemFflonk, Hash: [32]byte{0xAA}}
-	require.False(t, zv.fflonkVerify(other, proof, stmtA),
+	require.False(t, zv.fflonkVerify(other, proof, stmtA).OK(),
 		"proof verified under a different verifying key")
 }
 
@@ -287,7 +288,7 @@ func TestSound_ProofElementTampering(t *testing.T) {
 	vk := fflonkTestVK()
 	pub := []*big.Int{big.NewInt(7)}
 	valid := buildValidFflonkProof(t, vk, pub, 8)
-	require.True(t, zv.fflonkVerify(vk, valid, pub), "control")
+	require.True(t, zv.fflonkVerify(vk, valid, pub).OK(), "control")
 
 	// 4 compressed G1 points (48 bytes each) then 8 scalars (32 each).
 	type elem struct {
@@ -306,7 +307,7 @@ func TestSound_ProofElementTampering(t *testing.T) {
 		for _, off := range []int{0, e.size / 2, e.size - 1} {
 			tampered := bytes.Clone(valid)
 			tampered[e.start+off] ^= 0x01
-			require.Falsef(t, zv.fflonkVerify(vk, tampered, pub),
+			require.Falsef(t, zv.fflonkVerify(vk, tampered, pub).OK(),
 				"a bit flip in %s at byte %d was not detected", e.name, off)
 		}
 	}
@@ -364,10 +365,16 @@ func TestSound_RangeProofRefusesWithVerifierAttached(t *testing.T) {
 		}
 	}
 
-	// Directly on the verifier, which is also a public entry point.
-	ok, err := zv.VerifyRangeProof(make([]byte, 32), make([]byte, 128), 64)
-	require.False(t, ok)
-	require.ErrorIs(t, err, ErrRangeProofUnavailable)
+	// Directly on the verifier, which is also a public entry point. It
+	// answers one contract.Verdict rather than a (bool, error) pair, so a
+	// caller cannot take the error while dropping the answer — and the
+	// refusal is distinguishable from a negative verdict, which is the
+	// distinction that matters here: nothing checked this proof.
+	v := zv.VerifyRangeProof(make([]byte, 32), make([]byte, 128), 64)
+	require.False(t, v.OK())
+	require.ErrorIs(t, v.Err(), ErrRangeProofUnavailable)
+	require.NotErrorIs(t, v.Err(), contract.ErrRejected,
+		"an unwired verifier is not a failed verification")
 
 	// And as a batch member: verifyBatch dispatches 0x23, so the refusal
 	// must propagate rather than being swallowed into a passing batch.
@@ -377,7 +384,7 @@ func TestSound_RangeProofRefusesWithVerifierAttached(t *testing.T) {
 	batch = binary.BigEndian.AppendUint32(batch, uint32(len(body)))
 	batch = append(batch, body...)
 
-	_, _, err = ZKVerifyPrecompile.Run(nil, addr0, ZKVerifyContractAddress,
+	_, _, err := ZKVerifyPrecompile.Run(nil, addr0, ZKVerifyContractAddress,
 		batch, 10_000_000, true)
 	require.ErrorIs(t, err, ErrRangeProofUnavailable,
 		"a batch containing an uncheckable range proof must not report success")

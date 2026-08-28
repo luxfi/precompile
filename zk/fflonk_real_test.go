@@ -83,7 +83,7 @@ func TestFflonkVerifyValid(t *testing.T) {
 	pub := []*big.Int{big.NewInt(7), big.NewInt(42)}
 	proof := buildValidFflonkProof(t, vk, pub, 8)
 
-	if !zv.fflonkVerify(vk, proof, pub) {
+	if !zv.fflonkVerify(vk, proof, pub).OK() {
 		t.Fatal("a valid fflonk proof must verify")
 	}
 }
@@ -96,7 +96,7 @@ func TestFflonkVerifyTamperedClaim(t *testing.T) {
 	proof := buildValidFflonkProof(t, vk, pub, 8)
 
 	proof[192] ^= 0x01 // flip a bit in evaluations[0] (the C1 opening value)
-	if zv.fflonkVerify(vk, proof, pub) {
+	if zv.fflonkVerify(vk, proof, pub).OK() {
 		t.Fatal("tampered claim must be REJECTED")
 	}
 }
@@ -109,7 +109,7 @@ func TestFflonkVerifyTamperedProofPoint(t *testing.T) {
 	proof := buildValidFflonkProof(t, vk, pub, 8)
 
 	proof[96] ^= 0x01 // flip a bit in W1 (BLS12-381 G1 point)
-	if zv.fflonkVerify(vk, proof, pub) {
+	if zv.fflonkVerify(vk, proof, pub).OK() {
 		t.Fatal("tampered opening-proof point must be REJECTED")
 	}
 }
@@ -123,7 +123,7 @@ func TestFflonkVerifyTamperedBoundEval(t *testing.T) {
 	proof := buildValidFflonkProof(t, vk, pub, 8)
 
 	proof[192+3*32] ^= 0x01 // flip a bit in evaluations[3] (a bound eval)
-	if zv.fflonkVerify(vk, proof, pub) {
+	if zv.fflonkVerify(vk, proof, pub).OK() {
 		t.Fatal("tampered bound evaluation must be REJECTED")
 	}
 }
@@ -135,7 +135,7 @@ func TestFflonkVerifyWrongPublicInputs(t *testing.T) {
 	vk := fflonkTestVK()
 	proof := buildValidFflonkProof(t, vk, []*big.Int{big.NewInt(7)}, 8)
 
-	if zv.fflonkVerify(vk, proof, []*big.Int{big.NewInt(8)}) {
+	if zv.fflonkVerify(vk, proof, []*big.Int{big.NewInt(8)}).OK() {
 		t.Fatal("verification under different public inputs must be REJECTED")
 	}
 }
@@ -151,7 +151,7 @@ func TestFflonkVerifyOffCurvePoint(t *testing.T) {
 	for i := 0; i < 48; i++ {
 		proof[i] = 0xFF // C1 is no longer a valid compressed G1 point
 	}
-	if zv.fflonkVerify(vk, proof, pub) {
+	if zv.fflonkVerify(vk, proof, pub).OK() {
 		t.Fatal("off-curve / invalid G1 commitment must be REJECTED")
 	}
 }
@@ -165,7 +165,7 @@ func TestFflonkVerifyNonCanonicalScalar(t *testing.T) {
 	proof := buildValidFflonkProof(t, vk, pub, 8)
 
 	copy(proof[192:224], padScalar32(blsScalarField())) // evaluations[0] = r
-	if zv.fflonkVerify(vk, proof, pub) {
+	if zv.fflonkVerify(vk, proof, pub).OK() {
 		t.Fatal("non-canonical scalar evaluation must be REJECTED")
 	}
 }
@@ -173,7 +173,7 @@ func TestFflonkVerifyNonCanonicalScalar(t *testing.T) {
 // TestFflonkVerifyShortProof: an undersized proof is rejected.
 func TestFflonkVerifyShortProof(t *testing.T) {
 	zv := NewZKVerifier()
-	if zv.fflonkVerify(fflonkTestVK(), make([]byte, 100), nil) {
+	if zv.fflonkVerify(fflonkTestVK(), make([]byte, 100), nil).OK() {
 		t.Fatal("short proof must be REJECTED")
 	}
 }
