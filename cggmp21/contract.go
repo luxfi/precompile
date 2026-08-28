@@ -45,6 +45,15 @@ const (
 
 	// Minimum input size
 	MinInputSize = ThresholdSize + TotalSignersSize + CGGMP21PublicKeySize + CGGMP21MessageHashSize + CGGMP21SignatureSize
+
+	// MaxBilledSigners clamps the signer count read from calldata before it
+	// is multiplied into the fee. `n` is attacker-chosen and the verifier
+	// never consults it: verifyECDSASignature is handed a fixed 65-byte key,
+	// a fixed 32-byte hash and a fixed 65-byte signature, so the work is the
+	// same for every declared n. Without the clamp a caller quotes an
+	// arbitrary fee -- up to 2^32-1 signers -- for constant work. Matches the
+	// clamp the sibling threshold precompiles apply.
+	MaxBilledSigners uint32 = 1000
 )
 
 type cggmp21VerifyPrecompile struct{}
@@ -65,10 +74,8 @@ func CGGMP21VerifyGasCost(input []byte) uint64 {
 		return CGGMP21VerifyBaseGas
 	}
 
-	// Extract total signers from input
-	totalSigners := min(binary.BigEndian.Uint32(input[ThresholdSize:ThresholdSize+TotalSignersSize]), 1000)
-
-	// Base cost + per-signer cost
+	// Base cost + per-signer cost, on the clamped signer count.
+	totalSigners := min(binary.BigEndian.Uint32(input[ThresholdSize:ThresholdSize+TotalSignersSize]), MaxBilledSigners)
 	return CGGMP21VerifyBaseGas + (uint64(totalSigners) * CGGMP21VerifyPerSignerGas)
 }
 
@@ -153,17 +160,8 @@ func verifyECDSASignature(publicKeyBytes, messageHash, signatureBytes []byte) (b
 		return false, fmt.Errorf("%w: %v", ErrInvalidPublicKey, err)
 	}
 
-	// Extract v from signature (r and s are at positions 0:32 and 32:64)
-	v := signatureBytes[64]
-
-	// Normalize v (should be 27 or 28, or 0 or 1)
-	if v >= 27 {
-		v -= 27
-	}
-	_ = v // v is used in recovery below
-
-	// Verify signature
-	// CGGMP21 produces standard ECDSA signatures that can be verified normally
+	// Verify signature. CGGMP21 emits standard ECDSA, so r||s verifies
+	// normally; the recovery byte is consumed by recoverPublicKey below.
 	sig := make([]byte, 64)
 	copy(sig[0:32], signatureBytes[0:32])   // r
 	copy(sig[32:64], signatureBytes[32:64]) // s

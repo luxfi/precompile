@@ -46,6 +46,15 @@ const (
 
 	// Minimum input size
 	MinInputSize = ThresholdSize + TotalSignersSize + FROSTPublicKeySize + FROSTMessageHashSize + FROSTSignatureSize
+
+	// MaxBilledSigners clamps the signer count read from calldata before it
+	// is multiplied into the fee. `n` is attacker-chosen and the verifier
+	// never consults it: verifySchnorrSignature is handed a fixed 32-byte
+	// key, a fixed 32-byte hash and a fixed 64-byte signature, so the work
+	// is the same for every declared n. Without the clamp a caller quotes an
+	// arbitrary fee -- up to 2^32-1 signers -- for constant work. Matches the
+	// clamp the sibling threshold precompiles apply.
+	MaxBilledSigners uint32 = 1000
 )
 
 type frostVerifyPrecompile struct{}
@@ -66,12 +75,8 @@ func FROSTVerifyGasCost(input []byte) uint64 {
 		return FROSTVerifyBaseGas
 	}
 
-	// Extract total signers from input
-	totalSigners := min(
-		// Cap totalSigners to prevent gas abuse
-		binary.BigEndian.Uint32(input[ThresholdSize:ThresholdSize+TotalSignersSize]), 1000)
-
-	// Base cost + per-signer cost
+	// Base cost + per-signer cost, on the clamped signer count.
+	totalSigners := min(binary.BigEndian.Uint32(input[ThresholdSize:ThresholdSize+TotalSignersSize]), MaxBilledSigners)
 	return FROSTVerifyBaseGas + (uint64(totalSigners) * FROSTVerifyPerSignerGas)
 }
 
