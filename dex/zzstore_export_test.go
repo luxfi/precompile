@@ -4,6 +4,7 @@
 package dex
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1048,9 +1049,222 @@ func TestZzstSnapshotDoesNotCarryThePoolKeyDEFECT(t *testing.T) {
 	}
 }
 
+// Nothing in the database contract makes a prefix iterator ascending, which is
+// why ReadFromZapDB sorts what it read. Served the same rows in DESCENDING order,
+// it must still hand back the same snapshot — otherwise one database decodes into
+// two different snapshots on two backends.
+func TestZzstReadFromZapDBNormalisesPoolOrder(t *testing.T) {
+	rng := rand.New(rand.NewSource(zzstSeed + 27))
+	pm := zzstManagerFixture(rng, 12)
+	snap, err := pm.ExportState(nil)
+	if err != nil {
+		t.Fatalf("ExportState: %v", err)
+	}
+	inner := memdb.New()
+	if err := WriteToZapDB(inner, snap); err != nil {
+		t.Fatalf("WriteToZapDB: %v", err)
+	}
+
+	back, err := ReadFromZapDB(&zzstReverseIterDB{Database: inner})
+	if err != nil {
+		t.Fatalf("ReadFromZapDB: %v", err)
+	}
+	if len(back.Pools) != len(snap.Pools) {
+		t.Fatalf("read %d pools, want %d", len(back.Pools), len(snap.Pools))
+	}
+	for i := 1; i < len(back.Pools); i++ {
+		if back.Pools[i-1].PoolID >= back.Pools[i].PoolID {
+			t.Fatalf("ReadFromZapDB returned pools in the backend's iteration order at %d — "+
+				"one database would decode to two different snapshots on two backends", i)
+		}
+	}
+	a, _ := json.Marshal(snap.Pools)
+	b, _ := json.Marshal(back.Pools)
+	if string(a) != string(b) {
+		t.Fatalf("reading through a descending iterator changed the snapshot")
+	}
+}
+
+// A Batch may keep the key slice it is handed. Every key here is built with
+// append() on a PACKAGE-LEVEL prefix, so if a prefix ever carried spare capacity
+// two keys would share one array and the second append would rewrite the first key
+// in place. The prefixes have cap == len today; this states the property rather
+// than the accident, so a later change to how they are built cannot bring it back.
+func TestZzstWriteToZapDBKeysDoNotAlias(t *testing.T) {
+	rng := rand.New(rand.NewSource(zzstSeed + 28))
+	ps := zzstPoolStateFixture(rng, 3, 3, 3)
+	snap := &DEXStateSnapshot{
+		Version: SnapshotVersion,
+		Pools:   []PoolSnapshot{exportPoolState([32]byte{0x01}, ps), exportPoolState([32]byte{0x02}, ps)},
+	}
+	// Short ids are the dangerous case: a short append is the one that fits in
+	// spare capacity without reallocating.
+	snap.Pools[0].PoolID, snap.Pools[1].PoolID = "a", "b"
+	for i := range snap.Pools {
+		for j := range snap.Pools[i].Positions {
+			snap.Pools[i].Positions[j].PositionID = fmt.Sprintf("%d", j)
+		}
+	}
+
+	rec := &zzstKeepKeyDB{Database: memdb.New()}
+	if err := WriteToZapDB(rec, snap); err != nil {
+		t.Fatalf("WriteToZapDB: %v", err)
+	}
+	if len(rec.keys) < 8 {
+		t.Fatalf("recorded only %d keys", len(rec.keys))
+	}
+	seen := map[string]bool{}
+	for i, k := range rec.keys {
+		if !bytes.Equal(k.live, k.taken) {
+			t.Fatalf("key %d changed after it was handed to the batch: %q became %q — "+
+				"the key builders share a backing array", i, k.taken, k.live)
+		}
+		if seen[string(k.live)] {
+			t.Fatalf("key %d (%q) was written twice in one batch", i, k.live)
+		}
+		seen[string(k.live)] = true
+	}
+}
+
+// DEFECT characterisation. WriteToZapDB only PUTs. It never clears what an earlier
+// snapshot left, and ReadFromZapDB reads every row under the pool prefix, so a
+// second export over the same database yields the UNION of the two snapshots. For
+// the periodic exporter that means a pool which leaves the manager never leaves the
+// database, and the metadata's poolCount — which IS overwritten — then disagrees
+// with the rows. state_export.go:194 has to clear its namespace, or the reader has
+// to be told which generation to read.
+func TestZzstZapDBSecondExportUnionsWithTheFirstDEFECT(t *testing.T) {
+	rng := rand.New(rand.NewSource(zzstSeed + 29))
+	ps := zzstPoolStateFixture(rng, 1, 1, 1)
+	db := memdb.New()
+
+	first := &DEXStateSnapshot{Version: SnapshotVersion, Pools: []PoolSnapshot{exportPoolState([32]byte{0x0A}, ps)}}
+	if err := WriteToZapDB(db, first); err != nil {
+		t.Fatalf("first WriteToZapDB: %v", err)
+	}
+	second := &DEXStateSnapshot{Version: SnapshotVersion, Pools: []PoolSnapshot{exportPoolState([32]byte{0x0B}, ps)}}
+	if err := WriteToZapDB(db, second); err != nil {
+		t.Fatalf("second WriteToZapDB: %v", err)
+	}
+
+	back, err := ReadFromZapDB(db)
+	if err != nil {
+		t.Fatalf("ReadFromZapDB: %v", err)
+	}
+	if len(back.Pools) != 2 {
+		t.Fatalf("state_export.go:194 now replaces the previous snapshot (%d pools read) — "+
+			"update this characterisation test to assert the replacement", len(back.Pools))
+	}
+	if back.Pools[0].PoolID != fmt.Sprintf("%x", [32]byte{0x0A}) {
+		t.Fatalf("the first snapshot's pool is not the one that survived: %s", back.Pools[0].PoolID)
+	}
+}
+
+// DEFECT characterisation. The metadata carries poolCount, but ReadFromZapDB never
+// compares it against what it actually read, so a database that lost pool rows
+// decodes as a smaller, apparently valid snapshot with no error. That is precisely
+// the truncation a snapshot reader exists to refuse (state_export.go:269).
+func TestZzstReadFromZapDBIgnoresPoolCountDEFECT(t *testing.T) {
+	rng := rand.New(rand.NewSource(zzstSeed + 30))
+	pm := zzstManagerFixture(rng, 3)
+	snap, err := pm.ExportState(nil)
+	if err != nil {
+		t.Fatalf("ExportState: %v", err)
+	}
+	db := memdb.New()
+	if err := WriteToZapDB(db, snap); err != nil {
+		t.Fatalf("WriteToZapDB: %v", err)
+	}
+
+	// Lose one pool row, exactly as a partial copy or a truncated restore would.
+	dropped := append(append([]byte(nil), dbPrefixPool...), []byte(snap.Pools[1].PoolID)...)
+	if err := db.Delete(dropped); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	back, err := ReadFromZapDB(db)
+	if err != nil {
+		t.Fatalf("state_export.go:269 now refuses a database with fewer pools than its metadata "+
+			"claims (%v) — update this characterisation test to assert the refusal", err)
+	}
+	if len(back.Pools) != 2 {
+		t.Fatalf("read %d pools after dropping one of three", len(back.Pools))
+	}
+}
+
 // =========================================================================
 // Test doubles
 // =========================================================================
+
+// zzstRow is one (key, value) pair the iterator doubles hold in memory.
+type zzstRow struct{ key, val []byte }
+
+// zzstSliceIter serves a fixed list of rows.
+type zzstSliceIter struct {
+	rows []zzstRow
+	pos  int
+	err  error
+}
+
+func (it *zzstSliceIter) Next() bool   { it.pos++; return it.pos < len(it.rows) }
+func (it *zzstSliceIter) Error() error { return it.err }
+func (it *zzstSliceIter) Release()     {}
+
+func (it *zzstSliceIter) Key() []byte {
+	if it.pos < 0 || it.pos >= len(it.rows) {
+		return nil
+	}
+	return it.rows[it.pos].key
+}
+
+func (it *zzstSliceIter) Value() []byte {
+	if it.pos < 0 || it.pos >= len(it.rows) {
+		return nil
+	}
+	return it.rows[it.pos].val
+}
+
+// zzstReverseIterDB serves prefix rows in DESCENDING key order.
+type zzstReverseIterDB struct{ database.Database }
+
+func (d *zzstReverseIterDB) NewIteratorWithPrefix(prefix []byte) database.Iterator {
+	inner := d.Database.NewIteratorWithPrefix(prefix)
+	defer inner.Release()
+	var rows []zzstRow
+	for inner.Next() {
+		rows = append(rows, zzstRow{
+			key: append([]byte(nil), inner.Key()...),
+			val: append([]byte(nil), inner.Value()...),
+		})
+	}
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
+	return &zzstSliceIter{rows: rows, pos: -1, err: inner.Error()}
+}
+
+// zzstKeepKeyDB records the exact key slice each Put is handed, alongside a copy
+// taken at that instant, so a later in-place rewrite of that array is visible.
+type zzstKeepKeyDB struct {
+	database.Database
+	keys []zzstKeyPair
+}
+
+type zzstKeyPair struct{ live, taken []byte }
+
+func (d *zzstKeepKeyDB) NewBatch() database.Batch {
+	return &zzstKeepKeyBatch{Batch: d.Database.NewBatch(), db: d}
+}
+
+type zzstKeepKeyBatch struct {
+	database.Batch
+	db *zzstKeepKeyDB
+}
+
+func (b *zzstKeepKeyBatch) Put(key, value []byte) error {
+	b.db.keys = append(b.db.keys, zzstKeyPair{live: key, taken: append([]byte(nil), key...)})
+	return b.Batch.Put(key, value)
+}
 
 // zzstSortedJoin sorts and joins lines so a fingerprint is order-independent.
 func zzstSortedJoin(lines []string) string {
