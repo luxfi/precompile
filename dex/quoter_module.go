@@ -207,9 +207,7 @@ func (q *QuoterContract) quote(
 	// (input, StateDB) so every validator computes the identical output — a live-D
 	// engine read (even write-isolated) returns per-node-divergent numbers that a
 	// reading contract could act on, so it is not used here. The C-side registry has
-	// no resting-book depth, so depthAvailable is always false (never faked). Note:
-	// _ = exactIn keeps the signature stable for callers; the projection is symmetric.
-	_ = exactIn
+	// no resting-book depth, so depthAvailable is always false (never faked).
 	amountOut := projectSingleTick(rec, amount, zeroForOne, exactIn)
 
 	feeAmount := feeOnInput(amount, rec.Fee)
@@ -232,16 +230,47 @@ func (q *QuoterContract) quote(
 	}
 }
 
-// projectSingleTick is the C-side deterministic fallback quote: one ComputeSwapStep
-// at the registered price with no tick crossing. It is a COARSE preview (no resting
-// depth, no multi-tick walk) — honest for an advisory quote when the node has no D
-// book. amountIn is fed as V4-signed (negative = exact input).
+// projectSingleTick is the C-side deterministic fallback quote at the registered
+// price with no tick crossing. It is a COARSE preview (no resting depth, no
+// multi-tick walk) — honest for an advisory quote when the node has no D book.
+//
+// exactIn selects which question is asked. Given an input, the output it buys;
+// given a desired output, the input it costs. Those are inverses of one
+// price-and-fee map, not one number: at price p the first scales by p and the
+// second by 1/p, and the fee comes off the input in the first and is grossed onto
+// it in the second.
 func projectSingleTick(rec MarketRecord, amount *big.Int, zeroForOne, exactIn bool) *big.Int {
-	// Target the price extreme in the swap direction so a single step consumes as
-	// much as the liquidity allows; with zero liquidity in the registry we fall back
-	// to a constant-price projection (amountOut ≈ amount * price, fee-adjusted),
-	// which is the best a price-only registry can offer.
-	return spotOutputFeeAdjusted(rec, amount, zeroForOne)
+	if exactIn {
+		return spotOutputFeeAdjusted(rec, amount, zeroForOne)
+	}
+	return spotInputForOutput(rec, amount, zeroForOne)
+}
+
+// spotInputForOutput inverts spotOutputFeeAdjusted: the smallest input that buys
+// amountOut at the registered spot price. Every step rounds UP, so the quoted input
+// always covers the output asked for and no smaller input does — a quote of what a
+// taker must supply may overstate by a unit, but one that understates is a quote
+// that cannot fill. Returns 0 for a market carrying no price, matching spotOutput.
+func spotInputForOutput(rec MarketRecord, amountOut *big.Int, zeroForOne bool) *big.Int {
+	if amountOut.Sign() <= 0 || rec.SqrtPriceX96 == nil || rec.SqrtPriceX96.Sign() == 0 {
+		return big.NewInt(0)
+	}
+	sq := new(big.Int).Mul(rec.SqrtPriceX96, rec.SqrtPriceX96) // price = sq / 2^192
+	var net *big.Int
+	if zeroForOne {
+		// out1 = floor(net0 * sq / 2^192)  =>  net0 = ceil(out1 * 2^192 / sq)
+		net = UnsafeDivRoundingUp(new(big.Int).Lsh(amountOut, 192), sq)
+	} else {
+		// out0 = floor(net1 * 2^192 / sq)  =>  net1 = ceil(out0 * sq / 2^192)
+		net = UnsafeDivRoundingUp(new(big.Int).Mul(amountOut, sq), new(big.Int).Lsh(bigOne, 192))
+	}
+	// The fee comes off the input, so net = in - floor(in*fee/1e6), which is
+	// ceil(in*(1e6-fee)/1e6). The smallest in reaching net is therefore
+	// ceil(((net-1)*1e6 + 1) / (1e6-fee)). FeeMax is a tenth of the denominator, so
+	// the divisor is never zero.
+	den := new(big.Int).Sub(feeDenominator, big.NewInt(int64(rec.Fee)))
+	num := new(big.Int).Mul(new(big.Int).Sub(net, bigOne), feeDenominator)
+	return UnsafeDivRoundingUp(num.Add(num, bigOne), den)
 }
 
 // spotOutput projects amount through the registered spot price with NO fee and NO

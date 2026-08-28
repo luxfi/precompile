@@ -5,6 +5,7 @@ package dex
 
 import (
 	"errors"
+	"math"
 
 	"github.com/luxfi/database"
 	"github.com/luxfi/geth/common"
@@ -156,8 +157,8 @@ func writeBytesToSlots(stateDB stateKV, prefix []byte, seq uint64, b []byte) {
 
 func readBytesFromSlots(stateDB stateKV, prefix []byte, seq uint64) []byte {
 	lenWord := stateDB.GetState(poolManagerAddr9999, stageSlotKey(prefix, seq, 0))
-	n := int(bytesToU64(lenWord[24:32]))
-	if n == 0 {
+	n, ok := slotLen(lenWord)
+	if !ok {
 		return nil
 	}
 	out := make([]byte, n)
@@ -170,6 +171,19 @@ func readBytesFromSlots(stateDB stateKV, prefix []byte, seq uint64) []byte {
 		copy(out[i*32:end], w[:end-i*32])
 	}
 	return out
+}
+
+// slotLen reads a byte length or element count out of the low 8 bytes of a storage
+// word. A number that cannot be an int is not a length: int(uint64) is negative
+// above 2^63, and make takes a negative length as a panic — which from a precompile
+// is a halt, not a refusal. ok is false for zero and for anything that cannot
+// address memory, and every caller reads that as an absent record.
+func slotLen(w common.Hash) (int, bool) {
+	n := bytesToU64(w[24:32])
+	if n == 0 || n > math.MaxInt32 {
+		return 0, false
+	}
+	return int(n), true
 }
 
 func bytesToU64(b []byte) uint64 {
