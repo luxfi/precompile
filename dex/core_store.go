@@ -70,8 +70,8 @@ func (s *evmStore) valueSlot(key []byte, word int) common.Hash {
 // Get returns the value at key, or database.ErrNotFound when absent (length 0).
 func (s *evmStore) Get(key []byte) ([]byte, error) {
 	lenWord := s.sdb.GetState(poolManagerAddr9999, s.valueSlot(key, 0))
-	n := int(bytesToU64(lenWord[24:32]))
-	if n == 0 {
+	n, ok := slotLen(lenWord)
+	if !ok {
 		return nil, database.ErrNotFound
 	}
 	out := make([]byte, n)
@@ -142,8 +142,8 @@ func (s *evmStore) indexSlot(poolID [32]byte, word int) common.Hash {
 // indexIDs reads the current order-id list for poolID.
 func (s *evmStore) indexIDs(poolID [32]byte) []uint64 {
 	countWord := s.sdb.GetState(poolManagerAddr9999, s.indexSlot(poolID, 0))
-	n := int(bytesToU64(countWord[24:32]))
-	if n == 0 {
+	n, ok := slotLen(countWord)
+	if !ok {
 		return nil
 	}
 	ids := make([]uint64, 0, n)

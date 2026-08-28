@@ -831,10 +831,14 @@ func enforceProceedsPriceFloor(priceLimit uint64, limitIsUpper bool, spent, out 
 //     (creditSettlementOutput: NO MINT — the seam's own pot must back it; it does,
 //     because the lock at SubmitSwapIntent added exactly this to seamReserve and no
 //     settlement drew it down past `remaining`).
-//  7. STAGE a compensating C->D Remove of the ORIGINAL intent object (keyed by intentID)
-//     so a dexvm that has NOT yet imported the C->D object can never later fund a D order
-//     from a reclaimed intent (double-fund). If D already imported it, the Remove is a
-//     no-op on a missing key; the now-zero remaining still prevents a double payout.
+//
+// What reclaim guarantees, and where the guarantee ends: on C the principal exits
+// exactly once, because the zeroed remaining caps any later settlement naming this
+// intent at nothing. The C->D object exported at submit is a different question. A
+// chain's atomic Requests carry RemoveRequests against the INBOUND side — the way a
+// chain consumes an object a peer exported to it — so the export itself is not
+// something the exporter can withdraw. Cross-domain backing therefore rests on the
+// importer honouring the intent's deadline, not on anything C does here.
 func (c *NativeDChainClient) ReclaimIntent(
 	state contract.AccessibleState,
 	atomicState contract.AtomicState,
@@ -889,13 +893,10 @@ func (c *NativeDChainClient) ReclaimIntent(
 	intent.Status = swapIntentReclaimed
 	putSwapIntentRecord(stateDB, intentID, intent)
 
-	// (6) PHASE A — stage the compensating C->D Remove + emit the reclaim event BEFORE the
-	// terminal refund, so the geth nested-call host bug cannot drop these 0x9999 writes.
-	// Staging a Remove of the original intent object stops a dexvm that has not yet imported
-	// it from later funding a D order from a reclaimed intent (double-fund); if D already
-	// imported it the Remove no-ops on a missing key and the now-zero remaining still prevents
-	// a double payout.
-	stageAtomicRemove(stateDB, dChainID, intentID)
+	// (6) PHASE A — emit the reclaim event BEFORE the terminal refund, so the geth
+	// nested-call host bug cannot drop this 0x9999 write. Nothing is staged: a remove
+	// names a key in the INBOUND (D->C) space, which is where an object a peer exported
+	// to C lives. The intent object went the other way, so no staged remove can name it.
 	emitNativeReclaimEvent(stateDB, intentID, intent.Owner, intent.AssetIn, refunded)
 
 	// (7) PHASE B — REFUND the locked principal from seamReserve as the frame's TERMINAL
