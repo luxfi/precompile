@@ -20,7 +20,8 @@ import (
 // See LP-9015 for canonical specification
 const (
 	// ─────────────────────────────────────────────────────────────────────────
-	// CANONICAL V4 DEX PRECOMPILE SURFACE (LP-9999 family, receipt-settlement).
+	// CANONICAL V4 DEX PRECOMPILE SURFACE — the 0x999x family, receipt-
+	// settlement, specified by LP-9999's address table.
 	//
 	// ONE money path, three read views, one position adapter. Each is its OWN
 	// modules.Module at its OWN address (orthogonal: a new primitive per slot,
@@ -36,7 +37,7 @@ const (
 	//                          book off-consensus or the C-side registry projection.
 	//                          STRUCTURALLY INCAPABLE OF WRITING (see quoter_module.go).
 	//   0x9997 StateView     — read-only pool/book/market/position/account VIEW.
-	//   0x9996 PositionManager— CLOB order-POSITION adapter (NOT an ERC-721 NFT). Holds
+	//   0x9996 PositionManager— CLOB position adapter (NOT an ERC-721 NFT). Holds
 	//                          NO custody of its own: every lifecycle op routes into
 	//                          0x9999 modifyLiquidity (+/- delta). Reads enumerate the
 	//                          0x9999 ownerOrders index.
@@ -48,20 +49,20 @@ const (
 	// 0x9999. No duplicate money paths; one consumedReceipt + one halt namespace
 	// (dex.precompile.v1.9999.*). DEXPoolManagerAddress == LXSettleAddress.
 	// ─────────────────────────────────────────────────────────────────────────
-	DEXPoolManagerAddress     = "0x0000000000000000000000000000000000009999" // LP-9999 V4 PoolManager — THE money path (== LXSettleAddress)
-	DEXQuoterAddress          = "0x0000000000000000000000000000000000009998" // LP-9998 Quoter — read-only swap-quote VIEW (advisory)
-	DEXStateViewAddress       = "0x0000000000000000000000000000000000009997" // LP-9997 StateView — read-only pool/book/position VIEW
-	DEXPositionManagerAddress = "0x0000000000000000000000000000000000009996" // LP-9996 PositionManager — CLOB order-position adapter (composes 0x9999)
+	DEXPoolManagerAddress     = "0x0000000000000000000000000000000000009999" // 0x9999 V4 PoolManager — THE money path (== LXSettleAddress)
+	DEXQuoterAddress          = "0x0000000000000000000000000000000000009998" // 0x9998 Quoter — read-only swap-quote VIEW (advisory)
+	DEXStateViewAddress       = "0x0000000000000000000000000000000000009997" // 0x9997 StateView — read-only pool/book/position VIEW
+	DEXPositionManagerAddress = "0x0000000000000000000000000000000000009996" // 0x9996 PositionManager — CLOB position adapter (composes 0x9999)
 
-	DEXPermitAddress = "0x0000000000000000000000000000000000009995" // LP-9995 Permit (RESERVED — constant only, not implemented)
-	DEXFHEAddress    = "0x0000000000000000000000000000000000009994" // LP-9994 FHE (RESERVED — constant only, not implemented)
-	DEXAdminAddress  = "0x0000000000000000000000000000000000009993" // LP-9993 Admin (RESERVED — constant only, not implemented)
+	DEXPermitAddress = "0x0000000000000000000000000000000000009995" // 0x9995 Permit (RESERVED — constant only, not implemented)
+	DEXFHEAddress    = "0x0000000000000000000000000000000000009994" // 0x9994 FHE (RESERVED — constant only, not implemented)
+	DEXAdminAddress  = "0x0000000000000000000000000000000000009993" // 0x9993 Admin (RESERVED — constant only, not implemented)
 
 	// Core DEX (LP-901x) — RETIRED address space. 0x9010 was removed; 0x9999 is the
 	// sole DEX precompile. These addresses are kept as constants ONLY so the values
 	// are not reused; nothing dispatches at them. The canonical surface is the
 	// LP-9999 family above.
-	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // LP-9010 LXPool (REMOVED — constant only, not dispatched)
+	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // 0x9010 LXPool — deprecated by LP-9999 (constant only, not dispatched)
 	LXOracleAddress = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (legacy)
 	LXRouterAddress = "0x0000000000000000000000000000000000009012" // LP-9012 LXRouter (legacy)
 	LXHooksAddress  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (legacy)

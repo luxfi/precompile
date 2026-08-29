@@ -196,7 +196,7 @@ var (
 	// ceremony, where no single party can decrypt. That async Warp round-trip
 	// (requestDecryption → threshold combine → fulfill) is not yet wired into
 	// this precompile, so these ops fail closed rather than ever returning
-	// plaintext from a local key. See LP-134.
+	// plaintext from a local key. See LP-1340.
 	ErrThresholdDecryptionRequired = errors.New("FHE decrypt requires F-Chain threshold ceremony (no local secret key)")
 )
 
