@@ -3,7 +3,7 @@
 
 // FHE operations for the EVM gateway precompile, backed by github.com/luxfi/fhe.
 //
-// Confidentiality model (LP-134, threshold FHE):
+// Confidentiality model (LP-1340, threshold FHE):
 //
 //	The precompile holds ONLY PUBLIC key material — the network encryption
 //	public key and the bootstrap/evaluation key — both published by the

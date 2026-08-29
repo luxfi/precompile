@@ -161,7 +161,7 @@ var (
 		//   0x12206 = Corona    (Module-LWE threshold)
 		//   0x12207 = Magnetar  (hash-based threshold,  FIPS 205 byte-equal)
 		//   0x12208 = HQC       (code-based KEM, family-disjoint backup)
-		//   0x12220 = STARK-FRI (strict-PQ STARK / FRI verifier — LP-221)
+		//   0x12220 = STARK-FRI (strict-PQ STARK / FRI verifier — LP-4835)
 		{
 			Start: common.HexToAddress("0x0000000000000000000000000000000000012000"),
 			End:   common.HexToAddress("0x0000000000000000000000000000000000012fff"),
