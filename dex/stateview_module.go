@@ -277,7 +277,7 @@ func (v *StateViewContract) Run(
 		var rid ids.ID
 		copy(rid[:], data[:32])
 		out := make([]byte, 32)
-		if isSettlementConsumed(rv, rid) {
+		if isClaimConsumed(rv, rid) {
 			out[31] = 1
 		}
 		return out, gasLeft, nil

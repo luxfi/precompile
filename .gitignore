@@ -1,6 +1,5 @@
 .DS_Store
 AGENTS.md
-CLAUDE.md
 GEMINI.md
 QWEN.md
 **/target/
@@ -8,3 +7,9 @@ QWEN.md
 *.test
 cabi
 *.eco
+
+# build output
+/blue
+/evmcustody
+/safekatdump
+/safekatverify

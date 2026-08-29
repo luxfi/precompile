@@ -79,9 +79,9 @@ func TestStableSwap_NewtonBoundedAndTypedError(t *testing.T) {
 	// Adversarial-but-valid pools must all RETURN (bounded loop) with either a value or a
 	// typed error — the test completing at all is the termination proof.
 	adversarial := [][]*big.Int{
-		{big.NewInt(1), new(big.Int).Lsh(big.NewInt(1), 200)},          // 1 vs 2^200
-		{big.NewInt(1e18), big.NewInt(1)},                              // extreme imbalance
-		{new(big.Int).Lsh(big.NewInt(1), 250), big.NewInt(3)},          // near-uint256 vs tiny
+		{big.NewInt(1), new(big.Int).Lsh(big.NewInt(1), 200)}, // 1 vs 2^200
+		{big.NewInt(1e18), big.NewInt(1)},                     // extreme imbalance
+		{new(big.Int).Lsh(big.NewInt(1), 250), big.NewInt(3)}, // near-uint256 vs tiny
 	}
 	for i, bal := range adversarial {
 		d, derr := computeD(bal, big.NewInt(1), 2)

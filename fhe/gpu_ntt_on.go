@@ -24,7 +24,7 @@ const builtWithGPU = true
 const gpuProbeVectors = 64
 
 // armGPUNTT derives the FHE bootstrap ring for the precompile's parameter
-// literal (fhe.PN10QP27), binds the lattice GPU Montgomery NTT context to that
+// literal (Params), binds the lattice GPU Montgomery NTT context to that
 // exact SubRing, and runs the byte-equality gate: forward and inverse GPU NTT
 // versus the canonical pure-Go SubRing NTT across a deterministic corpus. GPU
 // dispatch is enabled ONLY if every coefficient is byte-identical. Any
@@ -45,7 +45,7 @@ func armGPUNTT() GPUNTTStatus {
 	// Derive the exact bootstrap ring parameters from the precompile's FHE
 	// parameter literal so this gate tracks any future parameter change
 	// instead of hard-coding (N, Q).
-	params, err := luxfhe.NewParametersFromLiteral(luxfhe.PN10QP27)
+	params, err := luxfhe.NewParametersFromLiteral(Params)
 	if err != nil {
 		return GPUNTTStatus{Built: true, Backend: "CPU (pure Go)",
 			Reason: fmt.Sprintf("param load failed: %v; pure-Go NTT", err)}

@@ -15,16 +15,15 @@ import (
 // native_seed_test.go is the FIX-4 suite: the swap rail's first matched settlement of
 // an output asset is backed by a PRODUCTION operator seed (seedSeamReserve), not a
 // test-only state poke. It proves:
-//   - an UN-seeded first fill reverts ErrNativeSettleUnbacked (no mint), and
+//   - an UN-seeded first fill reverts ErrCustodyUnbacked (no mint), and
 //   - after the operator seeds seamReserve through the real gated selector, the first
 //     matched swap settles, and
 //   - the seed is operator-gated (a non-operator caller is refused) and value-backed
 //     (a native seed with no delivered msg.value reverts), and
-//   - the LP-rail fee credit (creditPositionFee) is symmetric (gated + value-backed).
 
-// TestFIX4_FirstFillRevertsWithoutSeed — before any opposing-direction intent lock or
+// TestFIX4_FirstFillRevertsWithoutSeed — before any opposing-direction order lock or
 // operator seed, seamReserve[assetOut] is empty, so the first matched swap settlement
-// (consuming a real railSwap D->C object) reverts ErrNativeSettleUnbacked. No mint, no
+// (consuming a real D->C object) reverts ErrCustodyUnbacked. No mint, no
 // raid of another pot — the credit needs the seam's OWN backing.
 func TestFIX4_FirstFillRevertsWithoutSeed(t *testing.T) {
 	h := newSettleHarness(t)
@@ -32,16 +31,17 @@ func TestFIX4_FirstFillRevertsWithoutSeed(t *testing.T) {
 	native := h.inAssetID()
 	db := newPoolStateAdapter(h.state)
 
-	if loadSeamReserve(db, native).Sign() != 0 {
+	if loadCustody(db, native).Sign() != 0 {
 		t.Fatal("seam reserve must start empty (no seed, no opposing lock)")
 	}
-	// A real railSwap D->C object exists, but seamReserve[native] is empty.
+	// A real D->C object exists, but custody[native] is empty.
 	obj := ids.ID{0xF1, 0x00, 0x01}
-	h.putDtoCObjectRail(t, railSwap, h.caller, obj, native, 250)
-	if _, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: native, AssetAddr: common.Address{}, Amount: 250, Recipient: h.caller,
-	}); err != ErrNativeSettleUnbacked {
-		t.Fatalf("an unseeded first fill MUST revert ErrNativeSettleUnbacked, got: %v", err)
+	h.putDtoCObject(t, h.caller, obj, native, 250)
+	if _, err := h.c.atomicImport(h.state, Claim{
+		ID: obj, Asset: native, Beneficiary: h.caller,
+		Object: encodeClaim(h.caller, native, 250),
+	}); err != ErrCustodyUnbacked {
+		t.Fatalf("an unseeded first fill MUST revert ErrCustodyUnbacked, got: %v", err)
 	}
 }
 
@@ -57,17 +57,18 @@ func TestFIX4_OperatorSeedBacksFirstFill(t *testing.T) {
 
 	// Operator seeds 1000 native counterparty backing via the real selector.
 	h.fundVaultNativeOut(1000)
-	if loadSeamReserve(db, native).Int64() != 1000 {
-		t.Fatalf("seedSeamReserve must set seamReserve[native]=1000, got %s", loadSeamReserve(db, native))
+	if loadCustody(db, native).Int64() != 1000 {
+		t.Fatalf("seedSeamReserve must set custody[native]=1000, got %s", loadCustody(db, native))
 	}
 	h.vaultInvariantNative(t, "after operator seed")
 
 	// The FIRST matched swap now settles from the seeded reserve.
 	obj := ids.ID{0xF2, 0x00, 0x01}
-	h.putDtoCObjectRail(t, railSwap, h.caller, obj, native, 250)
+	h.putDtoCObject(t, h.caller, obj, native, 250)
 	before := h.state.stateDB.GetBalance(h.caller).ToBig()
-	credited, err := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: obj, Asset: native, AssetAddr: common.Address{}, Amount: 250, Recipient: h.caller,
+	credited, err := h.c.atomicImport(h.state, Claim{
+		ID: obj, Asset: native, Beneficiary: h.caller,
+		Object: encodeClaim(h.caller, native, 250),
 	})
 	if err != nil || credited != 250 {
 		t.Fatalf("a seam-seeded first fill must settle 250: credited=%d err=%v", credited, err)
@@ -75,8 +76,8 @@ func TestFIX4_OperatorSeedBacksFirstFill(t *testing.T) {
 	if new(big.Int).Sub(h.state.stateDB.GetBalance(h.caller).ToBig(), before).Int64() != 250 {
 		t.Fatal("the first matched swap must credit the taker 250 from the seeded reserve")
 	}
-	if loadSeamReserve(db, native).Int64() != 750 {
-		t.Fatalf("seam reserve must fall to 750 after the 250 settlement, got %s", loadSeamReserve(db, native))
+	if loadCustody(db, native).Int64() != 750 {
+		t.Fatalf("seam reserve must fall to 750 after the 250 settlement, got %s", loadCustody(db, native))
 	}
 	h.vaultInvariantNative(t, "after first fill")
 }
@@ -113,23 +114,5 @@ func TestFIX4_SeedIsOperatorGatedAndValueBacked(t *testing.T) {
 	if _, _, err := h.c.Run(h.state, h.operator(), poolManagerAddr9999,
 		prependSelector(SelectorSeedSeamReserve, okData), 5_000_000, false); err != ErrSeedUndelivered {
 		t.Fatalf("a value-less native seed must revert ErrSeedUndelivered (no mint), got: %v", err)
-	}
-}
-
-// TestFIX4_FeeCreditIsOperatorGated — the symmetric LP-rail fee credit
-// (creditPositionFee) is also operator-gated.
-func TestFIX4_FeeCreditIsOperatorGated(t *testing.T) {
-	h := newSettleHarness(t)
-	h.registerMarket(t)
-	recordID, _ := h.commitNativePosition(t, -60, 60, 500, lpSalt(0x61))
-
-	notOp := common.HexToAddress("0xBADBAD0000000000000000000000000000000002")
-	data := make([]byte, 96)
-	copy(data[0:32], recordID[:])
-	big.NewInt(50).FillBytes(data[64:96])
-	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(50))
-	if _, _, err := h.c.Run(h.state, notOp, poolManagerAddr9999,
-		prependSelector(SelectorCreditPositionFee, data), 5_000_000, false); err != ErrUnauthorized {
-		t.Fatalf("a non-operator fee credit must revert ErrUnauthorized, got: %v", err)
 	}
 }

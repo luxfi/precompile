@@ -106,10 +106,11 @@ func (s *SettleContract) runSettleDeposit(
 		// (native_zap.go) is the one answer to how much native this CALL carried: the vault's
 		// real balance less every pot already accounted for. An ABSOLUTE check would let a
 		// value==0 call mint a claim against OTHERS' funds in the SHARED vault; the delta makes
-		// value==0 deliver 0 (reverts), and counting the seam and LP pots as accounted keeps a
-		// depositor's claim to what a depositor sent. This is all reads + balance — no nested
-		// call — so the claim/vault writes below are Phase A (never dropped by the nested-call
-		// host bug).
+		// value==0 deliver 0 (reverts), and counting custody as accounted keeps a depositor's
+		// claim to what a depositor sent — subtracting settleVault alone reads the whole
+		// custody pot as this call's delivery. This is all reads + balance — no nested call —
+		// so the claim/vault writes below are Phase A (never dropped by the nested-call host
+		// bug).
 		delivered := deliveredNative(stateDB, aid)
 		if delivered.Sign() < 0 || delivered.Cmp(amount) < 0 {
 			return nil, gasLeft, ErrSettleDepositShort // value not delivered this call.

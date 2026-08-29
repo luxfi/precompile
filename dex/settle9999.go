@@ -5,7 +5,6 @@ package dex
 
 import (
 	"errors"
-	"math"
 	"math/big"
 
 	"github.com/luxfi/geth/common"
@@ -24,47 +23,36 @@ import (
 // THE V4 swap selector is two-phase, keyed on hookData (the V4 ABI is UNCHANGED —
 // web/mobile already pass `bytes hookData`; only its CONTENTS select the phase):
 //
-//   - PHASE A — INTENT (hookData empty, or tagged INTENT): lock the taker's input
-//     on C and write a C->D atomic intent object. Returns the intent id (NOT a
-//     fill). D imports the object and matches under its own consensus.
-//   - PHASE B — SETTLEMENT (hookData tagged SETTLE, carrying a D->C object ref):
-//     consume the D->C atomic settlement object ONCE and credit the output. This
-//     is the ONLY path that credits C.
+//   - PHASE A — CROSSING IN (hookData empty): debit the caller's C value into
+//     custody and write a C->D claim. Returns the claim id (NOT a fill). D consumes
+//     the claim and credits the beneficiary's own account; what they then trade is a
+//     D-local decision they take with their own D transactions.
+//   - PHASE B — CROSSING OUT (hookData tagged SETTLE, carrying a D->C claim):
+//     consume the claim ONCE and credit its beneficiary. This is the ONLY path that
+//     credits C.
 //
-// THE SHIP RULE (enforced structurally, not by trust): a C balance can be credited
-// by 0x9999 ONLY by consuming a D->C atomic object (Phase B / ImportSettlement); a
-// D order/position can be funded ONLY by consuming a C->D atomic object (Phase A /
-// SubmitSwapIntent -> dexvm executeImport). No fill VALUE returned by any live
-// matcher can credit C — Phase B has no fill-amount parameter; the credit is the
-// RECORDED atomic object's amount, and absent a real object in shared memory it
-// reverts.
+// THE RULE, ENFORCED STRUCTURALLY: a C balance can be credited by 0x9999 ONLY by
+// consuming a D->C claim; a D balance can be funded ONLY by consuming a C->D claim.
+// No amount any caller states can credit C — Phase B has no amount parameter, the
+// credit is the RECORDED object's, and a forged object kills the block.
 //
-// WHAT C ENFORCES INDEPENDENTLY vs RELIES ON D FOR (the swap rail, precisely):
-//   - C enforces, with NO trust in D: the credit binds to the RECORDED object's
-//     owner/asset/amount (no aliasing/re-denomination), the object's rail is railSwap
-//     (no cross-rail pot drain), the object is consumed at most once (replay), the
-//     credit is drawn ONLY from seamReserve (never a depositor/maker/LP pot), AND —
-//     the per-taker cap (MEDIUM) — the credit is bounded by the taker's OWN intent's
-//     remaining locked principal, so an over-export for one taker can never draw on
-//     other takers' pooled tokenIn. C ALSO guarantees liveness independently: a locked
-//     intent's principal can always exit via reclaimIntent once its deadline passes,
-//     with no dependence on D or the keeper.
-//   - C relies on D for: WHICH fills occurred and their amounts (D is the matcher;
-//     conservation of proceeds vs refund within a single taker's locked principal is
-//     enforced on D by settleFromFills' spent<=locked). C does NOT re-derive the match;
-//     it bounds the blast radius of a faulty/hostile D export to the taker's OWN stake
-//     (the per-taker cap) and refuses anything past the deadline.
+// WHAT C ENFORCES vs WHAT D ENFORCES. C enforces, with no trust in D: the credit
+// binds to the recorded object's beneficiary/asset/amount, the claim is consumed at
+// most once, and custody must already back it. D enforces the other half: an export
+// debits a real balance and refuses an over-debit, so C is never asked to credit more
+// than D held. Between the two, value is conserved across the boundary without either
+// side re-deriving the other's ledger.
 
 // --- 0x9999 native-seam chain identity (networkID, cChainID, dChainID). It is NOT
 // configured and NOT persisted: 0x9999 is ALWAYS-ON with zero per-net config, so the
 // chain identity is resolved at RUNTIME from the host's atomic capability
 // (contract.AtomicState: NetworkID()/CChainID()/DChainID(), sourced from the consensus
-// context). The native intent id still binds the full (networkID, cChainID, dChainID)
+// context). The native order id still binds the full (networkID, cChainID, dChainID)
 // so an object minted on one chain/network can never be consumed on another — that
 // binding is unchanged; only its SOURCE moved from genesis config to runtime context.
 
 // --- Settlement value movement vault. The 0x9999 vault (the precompile self-
-// address) is the counterparty reserve: a Phase-A intent locks tokenIn into the
+// address) is the counterparty reserve: a Phase-A order locks tokenIn into the
 // vault, a Phase-B settlement releases tokenOut from the vault. NO MINT — a credit
 // the vault cannot back reverts (conservation).
 
@@ -97,30 +85,9 @@ var (
 // fixed shared-memory write/read + one StateDB replay slot + the value move. No
 // per-validator crypto (the BLS pairing model is gone), so a flat tier suffices.
 const (
-	GasNativeIntent     uint64 = 40_000 // decode + lock + SM put + replay slot. Phase A emits NO log.
+	GasNativeOrder      uint64 = 40_000 // decode + lock + SM put + replay slot. Phase A emits NO log.
 	GasNativeSettlement uint64 = 50_000 // decode + SM get/bind + replay slot + credit + SM remove + DEXFill log (Phase B).
 )
-
-// maxIntentTTL is the FINITE reclaim horizon applied to any value-path swap intent that
-// did NOT name an explicit deadline (a plain swap(), or a DI01 body with deadline 0). It
-// bounds how long a taker's locked principal can sit unsettled before reclaimIntent can
-// refund it. Seven days (in seconds) is generous enough for any honest cross-domain
-// settlement to land yet guarantees the principal is never permanently stranded — the
-// structural fix for the deadline-0 fund-lock. A taker who wants a tighter window passes an
-// explicit DI01 deadline; this is only the floor for those who pass none.
-const maxIntentTTL uint64 = 7 * 24 * 60 * 60 // 604800s = 7 days
-
-// defaultedReclaimDeadline returns the finite deadline to stamp on an intent that supplied
-// none: blockTimestamp + maxIntentTTL, saturating at the uint64 max so the addition can
-// never wrap to a SMALL (already-past) value (which would let reclaim fire immediately, or —
-// worse — a wrapped tiny deadline could let a Phase-B settlement be rejected as "late" right
-// away). Saturation keeps the horizon in the future for every realistic block time.
-func defaultedReclaimDeadline(blockTimestamp uint64) uint64 {
-	if blockTimestamp > math.MaxUint64-maxIntentTTL {
-		return math.MaxUint64
-	}
-	return blockTimestamp + maxIntentTTL
-}
 
 // isNativeAsset reports whether an injective AssetID is native LUX (all-zero).
 func isNativeAsset(id [32]byte) bool { return id == ([32]byte{}) }
@@ -159,7 +126,7 @@ var nativeClient = NewNativeDChainClient("Lux DEX")
 // SettleSwap is THE 0x9999 swap handler — the native C<->D two-phase money path.
 // It decodes the V4 swap call (key, params, hookData) and dispatches on the
 // hookData phase. The V4 ABI is UNCHANGED. Returns the V4 BalanceDelta on a
-// Phase-B credit, or a packed intent-id marker on a Phase-A intent.
+// Phase-B credit, or a packed order-id marker on a Phase-A order.
 func SettleSwap(
 	state contract.AccessibleState,
 	caller common.Address,
@@ -198,9 +165,11 @@ func SettleSwap(
 	defer exitCustodyKV(stateDB)
 
 	blockNumber := state.GetBlockContext().Number().Uint64()
-	blockTimestamp := state.GetBlockContext().Timestamp()
 
-	phase, body, taggedIntent := decodeSwapPhase(hookData)
+	phase, body, _, perr := decodeSwapPhase(hookData)
+	if perr != nil {
+		return nil, suppliedGas, perr
+	}
 	switch phase {
 	case swapPhaseSettlement:
 		// PHASE B — consume a D->C atomic settlement object and credit C.
@@ -217,7 +186,7 @@ func SettleSwap(
 		if derr != nil {
 			return nil, gasLeft, derr
 		}
-		credited, ierr := nativeClient.ImportSettlement(state, atomicState, claim)
+		credited, ierr := nativeClient.Import(state, atomicState, claim)
 		if ierr != nil {
 			return nil, gasLeft, ierr
 		}
@@ -236,209 +205,61 @@ func SettleSwap(
 		return PackBalanceDelta(delta.Amount0, delta.Amount1), gasLeft, nil
 
 	default:
-		// PHASE A — lock input on C and create a C->D atomic intent.
-		if suppliedGas < GasNativeIntent {
+		// PHASE A — cross value C->D. It funds the caller's D account and creates NO
+		// order: what they trade, at what price and in what size is a D-local decision
+		// they take with their own D transactions, against money that is already
+		// theirs. That is what makes a million trades cost zero further crossings.
+		if suppliedGas < GasNativeOrder {
 			return nil, 0, errors.New("dex: out of gas")
 		}
-		gasLeft := suppliedGas - GasNativeIntent
+		gasLeft := suppliedGas - GasNativeOrder
 
 		if herr := checkHalt(stateDB, key, params); herr != nil {
 			return nil, gasLeft, herr
 		}
-		// The OPTIONAL deadline + nonce ride in an EXPLICIT DI01 intent body (the V4
-		// SwapParams tuple is unchanged). They are read ONLY for a DI01-tagged intent; an
-		// untagged / opaque hook body carries neither (taggedIntent=false => body ignored),
-		// so a hook contract's arbitrary bytes are never mis-parsed. The deadline gates late
-		// settlement + reclaim; the NONCE is folded into the intent id so it is
-		// chain-observable (the off-chain keeper derives the SAME id from the SAME calldata —
-		// the watch-correlation fix) and disambiguates otherwise-identical swaps.
-		var deadline, nonce uint64
-		if taggedIntent {
-			d, n, derr := decodeIntentBody(body)
-			if derr != nil {
-				return nil, gasLeft, derr
-			}
-			deadline, nonce = d, n
-		}
-		// FIX (do-not-ship fund-lock): a plain swap() — and any intent that did not name an
-		// explicit deadline — MUST still carry a FINITE reclaim horizon. Without it the taker's
-		// full input is locked under SubmitSwapIntent with Deadline==0, and reclaimIntent then
-		// PERMANENTLY refuses (ErrReclaimNoDeadline) => the principal can never exit if D never
-		// settles. We default a missing deadline to block.timestamp + maxIntentTTL so EVERY
-		// value-path intent is reclaimable after a bounded wait. An explicit deadline (DI01) is
-		// honored as-is. This is the structural guarantee that swap() can never strand funds.
-		if deadline == 0 {
-			deadline = defaultedReclaimDeadline(blockTimestamp)
-		}
-		req, berr := buildIntentRequest(key, params, caller, deadline, nonce)
+		t, berr := buildTransfer(key, params, caller)
 		if berr != nil {
 			return nil, gasLeft, berr
 		}
-		intentID, serr := nativeClient.SubmitSwapIntent(state, atomicState, req)
+		claimID, _, serr := nativeClient.Export(state, atomicState, t)
 		if serr != nil {
 			return nil, gasLeft, serr
 		}
-		// Return the intent id (32 bytes) so the caller / keeper can track the
-		// async D->C settlement. NOT a fill — Phase A returns no output value.
+		// Return the claim id (32 bytes) so the caller can track the crossing and
+		// deliver it on D. NOT a fill — a crossing produces no output value.
 		out := make([]byte, 32)
-		copy(out, intentID[:])
+		copy(out, claimID[:])
 		return out, gasLeft, nil
 	}
 }
 
-// buildIntentRequest derives the C->D intent from the V4 swap: the taker is the
-// caller, the input asset/amount come from the swap direction + amountSpecified
-// (exact-input magnitude), the market is the pool id, the recipient defaults to the
-// caller, and the deadline is the (optional) value parsed from the Phase-A hookData
-// body. A non-zero deadline is persisted in the per-intent record so Phase-B refuses
-// a late settlement and the locker can reclaim the principal past it.
-func buildIntentRequest(key PoolKey, params SwapParams, caller common.Address, deadline, nonce uint64) (IntentRequest, error) {
+// buildTransfer derives the C->D crossing from the V4 swap: the owner and the
+// beneficiary are the caller, and the asset/amount come from the swap direction plus
+// amountSpecified (exact-input magnitude). Nothing else is read, because nothing else
+// crosses.
+func buildTransfer(key PoolKey, params SwapParams, caller common.Address) (Transfer, error) {
 	in, _ := swapAssetDirection(key, params)
-	// Exact-input: AmountSpecified < 0, magnitude is the input. Exact-output is a P4
-	// router concern; the native intent locks the exact input the taker commits.
+	// Exact-input: AmountSpecified < 0, magnitude is the input. Exact-output is a
+	// router concern; a crossing moves the exact amount the caller commits.
 	if params.AmountSpecified == nil || params.AmountSpecified.Sign() == 0 {
-		return IntentRequest{}, ErrInvalidAmount
+		return Transfer{}, ErrInvalidAmount
 	}
 	mag := new(big.Int).Abs(params.AmountSpecified)
 	if !mag.IsUint64() || mag.Sign() <= 0 {
-		return IntentRequest{}, ErrInvalidAmount
+		return Transfer{}, ErrInvalidAmount
 	}
-	priceLimit, limitIsUpper := priceLimitToCLOB(params)
-	return IntentRequest{
-		Account:      caller,
-		AssetIn:      in,
-		AmountIn:     mag.Uint64(),
-		AssetInAddr:  assetAddress(in),
-		MarketID:     key.ID(),
-		MinAmountOut: minAmountOut(params),
-		PriceLimit:   priceLimit,
-		LimitIsUpper: limitIsUpper,
-		Recipient:    caller,
-		Deadline:     deadline,
-		Nonce:        nonce,
+	return Transfer{
+		Owner:       caller,
+		Beneficiary: caller,
+		Asset:       in,
+		AssetAddr:   assetAddress(in),
+		Amount:      mag.Uint64(),
 	}, nil
 }
 
-// priceScale is the fixed-point scale of the CLOB price wire (price × 1e8) — the
-// matcher's PriceInt grid, byte-identical with dex/pkg/zapwire.PriceScale (==
-// lx.PriceMultiplier) and the chains/dexvm proxy's PriceScale. Quote-per-base limits
-// and Fill prices cross the C<->D seam as EXACT integers on this grid; there is NO
-// float64 on the value path (its out-of-range int conversion is architecture-
-// dependent and forks — the cross-arch consensus bug the integer wire closes).
-const priceScale = 100000000
-
-// priceLimitToCLOB converts the V4 SqrtPriceLimitX96 into the CLOB price domain the
-// dexvm settles in — quote-per-base as a uint64 FIXED-POINT ×priceScale value (the
-// PriceInt grid), computed as an EXACT integer so no float→int conversion ever
-// touches the value the settle path compares against. It is the slippage floor the
-// matcher / settle path enforces: a fill WORSE than this is refused (bounded MEV).
-//
-//	price (quote/base) = (sqrtPriceX96 / 2^96)^2 = currency1 per currency0,
-//	grid value         = round(price × priceScale) = round(s^2 × priceScale / 2^192).
-//
-// Round-to-NEAREST (not floor): the client's sqrtPriceLimitX96 is a floored sqrt, so its
-// exact square sits an epsilon below the intended price; flooring the grid value would
-// quantize a "50" limit to 49.99999999 and fail to cross a maker resting AT 50. Rounding
-// to the nearest PriceInt quantizes to the price the taker meant, deterministically.
-//
-// DIRECTION. limitIsUpper reports which side the limit bounds, matching the dexvm's
-// fill-side convention:
-//   - zeroForOne (sell currency0/base for currency1/quote => CLOB SELL): the V4 limit is
-//     the MINIMUM sqrt price, i.e. a price FLOOR — reject fills BELOW it (limitIsUpper=false).
-//   - !zeroForOne (buy currency0/base with currency1/quote => CLOB BUY): the V4 limit is
-//     the MAXIMUM sqrt price, i.e. a price CEILING — reject fills ABOVE it (limitIsUpper=true).
-//
-// A SqrtPriceLimitX96 at/beyond the V4 sentinel bounds (MinSqrtRatio for zeroForOne,
-// MaxSqrtRatio for !zeroForOne) means "no limit" — returns 0 so the settle path imposes
-// no floor (the pre-existing unbounded behavior, preserved).
-func priceLimitToCLOB(params SwapParams) (priceLimitUnits uint64, limitIsUpper bool) {
-	limitIsUpper = !params.ZeroForOne
-	s := params.SqrtPriceLimitX96
-	if s == nil || s.Sign() <= 0 {
-		return 0, limitIsUpper // unset => no limit
-	}
-	// Treat the V4 "no limit" sentinels as unbounded: a zeroForOne floor at/below
-	// MinSqrtRatio, or a !zeroForOne ceiling at/above MaxSqrtRatio, imposes nothing.
-	if params.ZeroForOne {
-		if s.Cmp(MinSqrtRatio) <= 0 {
-			return 0, limitIsUpper
-		}
-	} else {
-		if s.Cmp(MaxSqrtRatio) >= 0 {
-			return 0, limitIsUpper
-		}
-	}
-	// grid = round(s^2 × priceScale / 2^192), EXACT big.Int arithmetic (add 2^191 before
-	// the >>192 floor-divide = round-half-up). The matcher's crossing loop may project this
-	// back to a float for display, but the CONSENSUS value the settle floor compares against
-	// is this exact PriceInt grid integer.
-	units := new(big.Int).Mul(s, s)
-	units.Mul(units, big.NewInt(priceScale))
-	units.Add(units, new(big.Int).Lsh(big.NewInt(1), 191)) // + 2^191 for round-to-nearest
-	units.Rsh(units, 192)
-	if units.Sign() <= 0 || !units.IsUint64() {
-		return 0, limitIsUpper // degenerate / out of range => no limit (unbounded)
-	}
-	return units.Uint64(), limitIsUpper
-}
-
-// runSettleReclaimIntent is the reclaimIntent(bytes32 intentID) handler: the swap
-// rail's deadline-reclaim. It decodes the intent id, takes the shared custody
-// non-reentrant guard (the refund moves value through the seam reserve, and an ERC-20
-// transfer can re-enter), and calls ReclaimIntent which refunds the remaining locked
-// principal to the caller (the locker) once the deadline has passed. Returns the
-// refunded amount. NOT gated by the swap halt — funds must always be able to exit.
-func (s *SettleContract) runSettleReclaimIntent(
-	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
-) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, gas, errors.New("dex: cannot reclaimIntent in read-only mode")
-	}
-	if gas < GasNativeSettlement {
-		return nil, 0, errors.New("dex: out of gas")
-	}
-	gasLeft := gas - GasNativeSettlement
-
-	atomicState, ok := state.(contract.AtomicState)
-	if !ok || atomicState.AtomicMemory() == nil {
-		return nil, gasLeft, ErrSettleNoAtomicState
-	}
-	if len(data) < 32 {
-		return nil, gasLeft, ErrReclaimBadInput
-	}
-	var intentID ids.ID
-	copy(intentID[:], data[0:32])
-
-	stateDB := newPoolStateAdapter(state)
-	if !enterCustodyKV(stateDB) {
-		return nil, gasLeft, ErrCustodyReentrant
-	}
-	defer exitCustodyKV(stateDB)
-
-	refunded, rerr := nativeClient.ReclaimIntent(state, atomicState, caller, intentID)
-	if rerr != nil {
-		return nil, gasLeft, rerr
-	}
-	out := make([]byte, 32)
-	new(big.Int).SetUint64(refunded).FillBytes(out)
-	return out, gasLeft, nil
-}
-
-// EncodeReclaimIntentInput builds reclaimIntent(bytes32) calldata for the locker's
-// reclaim tx and tests.
-func EncodeReclaimIntentInput(intentID ids.ID) []byte {
-	out := make([]byte, 32)
-	copy(out, intentID[:])
-	return out
-}
-
-// ErrReclaimBadInput is returned when reclaimIntent calldata is too short to carry an
-// intent id.
-var ErrReclaimBadInput = errors.New("dex: reclaimIntent input too short (need bytes32 intentID)")
-
 // balanceDeltaForOutput maps a credited output amount to the V4 BalanceDelta
-// convention (output paid out to taker = negative on the output side; the input
-// side already moved at Phase A so it is zero on the settlement leg).
+// convention (output paid out to caller = negative on the output side; the input
+// side already moved when the value crossed, so it is zero on the import leg).
 func balanceDeltaForOutput(params SwapParams, amountOut *big.Int) BalanceDelta {
 	out := new(big.Int).Neg(amountOut)
 	if params.ZeroForOne {
@@ -446,15 +267,6 @@ func balanceDeltaForOutput(params SwapParams, amountOut *big.Int) BalanceDelta {
 		return BalanceDelta{Amount0: big.NewInt(0), Amount1: out}
 	}
 	return BalanceDelta{Amount0: out, Amount1: big.NewInt(0)}
-}
-
-// minAmountOut derives the swap's slippage floor from V4 SwapParams (exact-output
-// names the floor; exact-input leaves it to the D price limit). Routing only.
-func minAmountOut(params SwapParams) *big.Int {
-	if params.AmountSpecified != nil && params.AmountSpecified.Sign() > 0 {
-		return new(big.Int).Set(params.AmountSpecified)
-	}
-	return big.NewInt(0)
 }
 
 // swapAssetDirection returns the (tokenIn, tokenOut) injective AssetIDs implied by

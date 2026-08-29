@@ -41,9 +41,9 @@ func StableSwapDemo() []examples.Result {
 
 	getDyInput := make([]byte, 0, 1+1+1+32+1+64+32)
 	getDyInput = append(getDyInput, stableswap.OpGetDy)
-	getDyInput = append(getDyInput, 0)          // i = token 0
-	getDyInput = append(getDyInput, 1)          // j = token 1
-	getDyInput = append(getDyInput, dx...)       // swap 1000
+	getDyInput = append(getDyInput, 0)     // i = token 0
+	getDyInput = append(getDyInput, 1)     // j = token 1
+	getDyInput = append(getDyInput, dx...) // swap 1000
 	getDyInput = append(getDyInput, numTokens)
 	getDyInput = append(getDyInput, balance1...)
 	getDyInput = append(getDyInput, balance2...)

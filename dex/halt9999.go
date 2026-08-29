@@ -88,7 +88,7 @@ func isHalted(stateDB stateKV, key common.Hash) bool {
 }
 
 // checkHalt is the single, ordered halt gate the native settle handler calls
-// before any value movement, for BOTH phases (intent and settlement). It keys on
+// before any value movement, for BOTH phases (order and settlement). It keys on
 // the POOL identity (key.ID()) and the swap's two asset ids — the SAME ids
 // SetHaltMarket / SetHaltAsset, the registry, analytics, and StateView use. A
 // halted scope reverts cleanly with no partial state. Returns the FIRST applicable

@@ -169,7 +169,7 @@ contract PrivateBalance {
 
 - `luxfi/lattice` - Pure Go CKKS implementation
 - `node/vms/zkvm/fhe` - Z-Chain FHE processor
-- `node/vms/thresholdvm` - T-Chain threshold operations
+- `node/vms/mpcvm` - T-Chain threshold operations
 - `standard/contracts/fhe` - Solidity FHE library
 
 ## License

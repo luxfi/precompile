@@ -964,7 +964,7 @@ func TestBlueF_OrderIDIsInjective(t *testing.T) {
 
 // blueFStageObject builds a canonical C->D atomic object for the harness's owner.
 func blueFStageObject(owner common.Address, asset [32]byte, amount uint64) []byte {
-	return encodeAtomicObject(railSwap, owner, asset, amount)
+	return encodeClaim(owner, asset, amount)
 }
 
 // TestBlueF_StagedRemoveRoundTrip pins the D->C REMOVE half of the staging window.
@@ -1222,7 +1222,7 @@ func TestBlueF_StagedObjectIsConsumedExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the D side must see the object: %v", err)
 	}
-	if len(vals) != 1 || len(vals[0]) != exportedOutputSize9999 {
+	if len(vals) != 1 || len(vals[0]) != claimSize {
 		t.Fatalf("the D side must see exactly one canonical object, got %d values", len(vals))
 	}
 
@@ -1281,8 +1281,8 @@ func TestBlueF_StagedPutRejectsANonCanonicalObject(t *testing.T) {
 	owner := common.HexToAddress("0x6666666666666666666666666666666666666666")
 	good := blueFStageObject(owner, [32]byte{0x06}, 4)
 
-	for n := 0; n <= exportedOutputSize9999+2; n++ {
-		if n == exportedOutputSize9999 {
+	for n := 0; n <= claimSize+2; n++ {
+		if n == claimSize {
 			continue // the canonical width is covered by the round-trip test
 		}
 		hh := newSettleHarness(t)
@@ -1293,7 +1293,7 @@ func TestBlueF_StagedPutRejectsANonCanonicalObject(t *testing.T) {
 		markStageKind(kv, 0, stageKindPut)
 		setStageSeq(kv, 1)
 		if _, err := CollectStagedAtomicRange(kv, 0, 1); !errors.Is(err, ErrStagedOpMalformed) {
-			t.Fatalf("a %d-byte object must fail the flush (canonical is %d), got %v", n, exportedOutputSize9999, err)
+			t.Fatalf("a %d-byte object must fail the flush (canonical is %d), got %v", n, claimSize, err)
 		}
 	}
 	_ = h
@@ -1417,56 +1417,6 @@ func TestBlueF_ERC20TransferReturnSemantics(t *testing.T) {
 		}
 		if len(env.lastIn) != 68 || string(env.lastIn[:4]) != string(selERC20Transfer) {
 			t.Fatalf("%s: the sub-call must be transfer(address,uint256), got %x", tc.name, env.lastIn)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// native_events.go — the routing event's slippage floor
-// ---------------------------------------------------------------------------
-
-// TestBlueF_RoutingEventCarriesTheLimitSide pins the two words the keeper reads to
-// carry a taker's slippage floor onto the settling relay. The SIDE of the limit is a
-// single flag; if it encoded the same for a buy ceiling and a sell floor, the
-// bounded-MEV guard would compare against the wrong bound and pass a sandwich.
-func TestBlueF_RoutingEventCarriesTheLimitSide(t *testing.T) {
-	for _, upper := range []bool{false, true} {
-		db := NewMockStateDB()
-		req := IntentRequest{
-			Account:      common.HexToAddress("0x00000000000000000000000000000000000000E1"),
-			AssetIn:      [32]byte{0x01},
-			MarketID:     [32]byte{0x02},
-			MinAmountOut: big.NewInt(5),
-			Recipient:    common.HexToAddress("0x00000000000000000000000000000000000000E2"),
-			Deadline:     99,
-			PriceLimit:   1234,
-			LimitIsUpper: upper,
-		}
-		emitNativeRoutingEvent(db, ids.ID{0xF1}, ids.ID{0xF2}, req, 17, intentKindSwap)
-
-		logs := db.Logs()
-		if len(logs) != 1 {
-			t.Fatalf("upper=%v: expected exactly one log, got %d", upper, len(logs))
-		}
-		data := logs[0].Data
-		if len(data) != 10*32 {
-			t.Fatalf("upper=%v: the routing event must carry ten words, got %d bytes", upper, len(data))
-		}
-		priceLimit := new(big.Int).SetBytes(data[8*32 : 9*32])
-		if priceLimit.Uint64() != 1234 {
-			t.Fatalf("upper=%v: the price limit must round-trip, got %s", upper, priceLimit)
-		}
-		flag := new(big.Int).SetBytes(data[9*32:]).Uint64()
-		want := uint64(0)
-		if upper {
-			want = 1
-		}
-		if flag != want {
-			t.Fatalf("upper=%v: the limit side must encode as %d, got %d", upper, want, flag)
-		}
-		locked := new(big.Int).SetBytes(data[2*32 : 3*32])
-		if locked.Uint64() != 17 {
-			t.Fatalf("upper=%v: the locked amount must round-trip, got %s", upper, locked)
 		}
 	}
 }

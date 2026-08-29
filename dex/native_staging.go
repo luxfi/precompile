@@ -34,7 +34,7 @@ import (
 // commits; nothing needs it mid-block, so deferral costs nothing.)
 //
 // STAGED RECORD LAYOUTS (in StateDB, under the 0x9999 namespace):
-//   - C->D PUT:    stagePutPrefix | seq      -> dChainID(32) | key(32) | object(60)
+//   - C->D PUT:    stagePutPrefix | seq      -> dChainID(32) | key(32) | claim(60)
 //   - D->C REMOVE: stageRemovePrefix | seq   -> dChainID(32) | key(32)
 //   - a monotonic per-block seq counter (stageSeqKey) orders them deterministically.
 //
@@ -60,8 +60,9 @@ func setStageSeq(stateDB stateKV, n uint64) {
 }
 
 // stagePutKey / stageRemoveKey key a staged op by its sequence number. We store the
-// variable-length record across consecutive 32-byte slots (the EVM word size) since
-// a staged Put record is dChainID(32)|key(32)|object(60) = 124 bytes = 4 words.
+// variable-length record across consecutive 32-byte slots (the EVM word size). A
+// staged Put record is version(1)|dChainID(32)|key(32)|claim(60). The length lives
+// in slot 0, so no caller assumes a fixed word count.
 func stageSlotKey(prefix []byte, seq uint64, word int) common.Hash {
 	id := make([]byte, 0, 16)
 	var s [8]byte
@@ -90,10 +91,17 @@ const (
 
 // stagedOpVersion is the only staged-op record version the flush accepts. A record
 // with any other version is malformed and FAILS block accept (never skipped).
-const stagedOpVersion byte = 1
+//
+// v2 is the 60-byte funding claim: beneficiary|asset|amount. v1 was the 118-byte
+// object the braided seam carried, and the byte stayed at 1 across that change — which
+// is the one thing it exists to prevent. A version byte that does not move when the
+// layout moves is not a version byte, it is a constant; the record it stamps decodes by
+// width alone, and two layouts that happen to agree on width decode into each other's
+// value. Nothing has ever flushed a staged Put on any live network, so this rotation
+// migrates nothing. It makes the stamp true again before anything depends on it.
+const stagedOpVersion byte = 2
 
-// stageAtomicPut stages a C->D Put (revert-aware): version|dChainID|key|object. The
-// object (encodeAtomicObject: owner|asset|amount) is the value bound at flush.
+// stageAtomicPut stages a C->D Put (revert-aware): version|dChainID|key|claim.
 func stageAtomicPut(stateDB stateKV, dChainID ids.ID, key ids.ID, object []byte) {
 	seq := stageSeq(stateDB)
 	writeBytesToSlots(stateDB, stagePutPrefix, seq, packPut(dChainID, key, object))
@@ -119,7 +127,7 @@ func markStageKind(stateDB stateKV, seq uint64, kind byte) {
 // leading version byte so a future layout change is an explicit new version (and an
 // unknown version fails the flush rather than silently mis-decoding value).
 //
-//	Put:    version(1) | dChainID(32) | key(32) | object(60)
+//	Put:    version(1) | dChainID(32) | key(32) | claim(60)
 //	Remove: version(1) | dChainID(32) | key(32)
 func packPut(dChainID, key ids.ID, object []byte) []byte {
 	b := make([]byte, 1+32+32+len(object))
@@ -278,27 +286,28 @@ func collectRange(stateDB stateKV, fromSeq, toSeq uint64) (map[ids.ID]*atomic.Re
 		switch kindWord[31] {
 		case stageKindPut:
 			rec := readBytesFromSlots(stateDB, stagePutPrefix, i)
-			// version(1)|dChainID(32)|key(32)|object(>=61). Reject malformed (fatal).
-			if len(rec) < 1+32+32+exportedOutputSize9999 || rec[0] != stagedOpVersion {
+			// version(1)|dChainID(32)|key(32)|claim(60). Reject malformed (fatal).
+			if len(rec) != 1+32+32+claimSize || rec[0] != stagedOpVersion {
 				return nil, ErrStagedOpMalformed
 			}
 			var dChainID, key ids.ID
 			copy(dChainID[:], rec[1:33])
 			copy(key[:], rec[33:65])
 			object := rec[65:]
-			// The object must be a well-formed atomic value (rail|owner|asset|amount).
-			// The owner Trait is read from the decoded value (offset past the rail byte),
-			// so the destination indexes the object by recipient — the same Trait the
-			// precompile/dexvm export side writes.
-			_, owner, _, _, _, ok := decodeAtomicObject(object)
+			// The object must be a well-formed claim. Its beneficiary is written as the
+			// destination Trait, so the far side indexes the claim by recipient — the
+			// only lookup the rail needs. A deposit is delivered by whoever holds the
+			// claim id; nothing has to scan for it. Any other width is fatal.
+			beneficiary, _, _, ok := decodeClaim(object)
 			if !ok {
 				return nil, ErrStagedOpMalformed
 			}
 			req := forChain(dChainID)
+			traits := [][]byte{append([]byte(nil), beneficiary[:]...)}
 			req.PutRequests = append(req.PutRequests, &atomic.Element{
 				Key:    append([]byte(nil), key[:]...),
 				Value:  append([]byte(nil), object...),
-				Traits: [][]byte{append([]byte(nil), owner[:]...)},
+				Traits: traits,
 			})
 		case stageKindRemove:
 			rec := readBytesFromSlots(stateDB, stageRemovePrefix, i)
