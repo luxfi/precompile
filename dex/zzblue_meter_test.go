@@ -134,7 +134,7 @@ func TestBlueMeterValueArmsGrowMoreStateThanTheyCharge(t *testing.T) {
 	// real-asset verifier is bound to the harness's own state object, so a metering
 	// decorator around it is refused fail-closed — correctly.)
 	arms := []arm{
-		{"swap (phase A order)", GasNativeOrder, 13, func(h *settleHarness) (blueMWrites, error) {
+		{"swap (phase A order)", GasNativeOrder, 10, func(h *settleHarness) (blueMWrites, error) {
 			h.fundCallerNative(1_000_000)
 			return blueMMeasure(t, h, SelectorSwap, h.crossCalldata(), false)
 		}},

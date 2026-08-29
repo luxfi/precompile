@@ -121,10 +121,10 @@ const (
 //     so that gasLimit / GasMul ≥ MinSafeGasMulRatio.
 const (
 	// Bootstrap-dominated arithmetic ops.
-	GasAdd uint64 = WallClockMsAddUint8 * 12_000              // 180_000_000
+	GasAdd uint64 = WallClockMsAddUint8 * 12_000              // 300_000_000
 	GasSub uint64 = GasAdd                                    // same algorithm
-	GasMul uint64 = WallClockMsMulUint8 * 12_000              // 936_000_000
-	GasDiv uint64 = (WallClockMsMulUint8 * 12_000) * 70 / 100 // 655_200_000 — binary long div ~0.7x mul
+	GasMul uint64 = WallClockMsMulUint8 * 12_000              // 2_880_000_000
+	GasDiv uint64 = (WallClockMsMulUint8 * 12_000) * 70 / 100 // 2_016_000_000 — binary long div ~0.7x mul
 	GasRem uint64 = GasDiv                                    // same algorithm
 	GasNeg uint64 = GasAdd                                    // single subtraction from zero
 
