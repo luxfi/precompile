@@ -99,7 +99,7 @@ func TestSwapDoesNotAskWhereItsSiblingsDo(t *testing.T) {
 	// And it is not free: the accepted swap locked the caller's asset against a
 	// market that does not exist, and staged a cross-chain record naming its id.
 	aid := assetID(key.Currency0)
-	if got := loadSeamReserve(zzmpDB(h), aid); got.Sign() == 0 {
+	if got := loadCustody(zzmpDB(h), aid); got.Sign() == 0 {
 		t.Fatal("the accepted swap locked nothing — re-read what this test characterises")
 	}
 	if got := stageSeq(zzmpDB(h)); got == 0 {

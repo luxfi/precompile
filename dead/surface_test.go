@@ -348,7 +348,7 @@ func TestConfigureWithoutAdminProvisionsNobody(t *testing.T) {
 func TestAllThreeModulesRegistered(t *testing.T) {
 	seen := map[common.Address]string{}
 	for _, m := range []struct {
-		mod  interface{ }
+		mod  interface{}
 		addr common.Address
 		key  string
 	}{
@@ -377,8 +377,8 @@ func TestAllThreeModulesRegistered(t *testing.T) {
 // otherConfig is a foreign precompileconfig.Config used to exercise type checks.
 type otherConfig struct{}
 
-func (otherConfig) Key() string                                  { return "other" }
-func (otherConfig) Timestamp() *uint64                           { return nil }
-func (otherConfig) IsDisabled() bool                             { return false }
-func (otherConfig) Equal(precompileconfig.Config) bool           { return false }
-func (otherConfig) Verify(precompileconfig.ChainConfig) error    { return nil }
+func (otherConfig) Key() string                               { return "other" }
+func (otherConfig) Timestamp() *uint64                        { return nil }
+func (otherConfig) IsDisabled() bool                          { return false }
+func (otherConfig) Equal(precompileconfig.Config) bool        { return false }
+func (otherConfig) Verify(precompileconfig.ChainConfig) error { return nil }

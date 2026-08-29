@@ -420,4 +420,3 @@ func (p *hpkePrecompile) singleShotSealCPU(params *sealParams) ([]byte, error) {
 	copy(result[len(enc):], ciphertext)
 	return result, nil
 }
-

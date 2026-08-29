@@ -21,8 +21,8 @@ import (
 //
 // This interface is the canonical seam that surface migrates onto. It is the
 // Stage-1 target (see the package design): the synchronous V4 swap path is moved
-// off the live-query Engine surface and onto SubmitSwapIntent (Pattern A: a
-// C tx records a D-Chain order intent; the local dexvm executes it under D
+// off the live-query Engine surface and onto Export (Pattern A: a
+// C tx records a D-Chain order; the local dexvm executes it under D
 // consensus; the result settles asynchronously through the D->C atomic boundary)
 // or GetReceipt (Pattern B: a C tx carries a committed D receipt that 0x9010
 // deterministically verifies). Both are consensus-safe; a SYNCHRONOUS in-block
@@ -36,26 +36,26 @@ import (
 // precompile is a leaf library that cannot — and must not — reach up into the
 // node chain manager). A remote / standalone venue is never a valid target.
 type DChainClient interface {
-	// SubmitOrder records a resting (maker) order intent on the local D-Chain
+	// SubmitOrder records a resting (maker) order on the local D-Chain
 	// and returns its order id. The order rests under D consensus; it is not
 	// matched synchronously here.
 	SubmitOrder(ctx context.Context, o Order) (orderID uint64, err error)
 
-	// SubmitSwapIntent records a marketable (taker) swap INTENT on the local
+	// Export records a marketable (taker) swap ORDER on the local
 	// D-Chain (Pattern A) and returns a receipt id the caller polls / observes
 	// for the asynchronous settlement. It does NOT return an in-block fill.
-	SubmitSwapIntent(ctx context.Context, in SwapIntent) (receiptID [32]byte, err error)
+	Export(ctx context.Context, in SwapOrder) (receiptID [32]byte, err error)
 
 	// GetMarket returns the committed market (order book) metadata for marketID,
 	// a read of already-committed D state (safe to fold into a C read path).
 	GetMarket(ctx context.Context, marketID [32]byte) (Market, error)
 
-	// GetReceipt returns a committed D receipt for a prior intent (Pattern B:
+	// GetReceipt returns a committed D receipt for a prior order (Pattern B:
 	// the C side deterministically verifies it before applying the C effect).
 	GetReceipt(ctx context.Context, receiptID [32]byte) (Receipt, error)
 }
 
-// Order is a resting (maker) limit-order intent submitted to the local D-Chain.
+// Order is a resting (maker) limit-order submitted to the local D-Chain.
 // Identity (maker) is bound by the C tx caller; size/price are the V4-derived
 // resting parameters. (Field set intentionally minimal for the Stage-1 seam; the
 // frozen wire frame lives in engine_zap.go.)
@@ -67,10 +67,10 @@ type Order struct {
 	Size     *big.Int
 }
 
-// SwapIntent is a marketable (taker) swap intent submitted to the local D-Chain.
+// SwapOrder is a marketable (taker) swap order submitted to the local D-Chain.
 // The taker is the C tx caller; the D-Chain settles the realized fills through
 // the atomic D->C boundary, NOT into C StateDB synchronously.
-type SwapIntent struct {
+type SwapOrder struct {
 	MarketID [32]byte
 	Taker    common.Address
 	Params   SwapParams
@@ -84,7 +84,7 @@ type Market struct {
 	Initialized bool
 }
 
-// Receipt is a committed D receipt for an intent (Pattern B verification target).
+// Receipt is a committed D receipt for an order (Pattern B verification target).
 // Fills are the D-Chain's confirmed executions; the reserved Sig is the d-chain
 // fill-attestation (P3Q -> starkfri) that makes verification trustless.
 type Receipt struct {

@@ -53,10 +53,10 @@ The EVM depends on `github.com/luxfi/precompile v0.4.10` (see `evm/go.mod:34`).
 
 ### ThresholdVM Status
 
-ThresholdVM at `~/work/lux/node/vms/thresholdvm/` is **complete and registered**:
+ThresholdVM at `~/work/lux/node/vms/mpcvm/` is **complete and registered**:
 
 - Factory registered in `node/node/vms_allvms.go:50` under `constants.ThresholdVMID`
-- Aliases: `T`, `threshold`, `thresholdvm`, `mpc`
+- Aliases: `T`, `threshold`, `mpcvm`, `mpc`
 - Implements `chain.ChainVM` interface
 - Full MPC protocol suite (LSS, FROST, CGGMP21, Pulsar)
 - FHE acceleration (GPU optional, CPU fallback)
@@ -263,12 +263,12 @@ lux network start --testnet
 # Check precompile responds at LXPool address
 cast call 0x0000000000000000000000000000000000009010 \
   "0x08000000" \
-  --rpc-url http://127.0.0.1:9740/ext/bc/C/rpc
+  --rpc-url http://127.0.0.1:9740/v1/bc/C/rpc
 
 # Check LXRouter
 cast call 0x0000000000000000000000000000000000009012 \
   "0x0C000000" \
-  --rpc-url http://127.0.0.1:9740/ext/bc/C/rpc
+  --rpc-url http://127.0.0.1:9740/v1/bc/C/rpc
 
 # Initialize a test pool (ETH/USDC 0.3% fee)
 # Use the method selector 0x01000000 (SelectorInitialize)

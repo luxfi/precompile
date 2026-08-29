@@ -27,12 +27,12 @@ import (
 //   CGO_ENABLED=1 GOWORK=off go test -tags gpu ./fhe/ -run GPU -v
 
 // fheBootstrapRing returns the precompile's actual TFHE blind-rotation ring
-// (PN10QP27: N=1024, Q=0x7fff801) as a fully-initialized pure-Go SubRing.
+// (whatever Params names) as a fully-initialized pure-Go SubRing.
 func fheBootstrapRing(t *testing.T) (*ring.SubRing, int, uint64) {
 	t.Helper()
-	params, err := luxfhe.NewParametersFromLiteral(luxfhe.PN10QP27)
+	params, err := luxfhe.NewParametersFromLiteral(Params)
 	if err != nil {
-		t.Fatalf("load PN10QP27: %v", err)
+		t.Fatalf("load Params: %v", err)
 	}
 	N, Q := params.NBR(), params.QBR()
 	r, err := ring.NewRing(N, []uint64{Q})
@@ -46,7 +46,7 @@ func fheBootstrapRing(t *testing.T) (*ring.SubRing, int, uint64) {
 // precompile's exact bootstrap modulus, the GPU forward and inverse NTT equal
 // the pure-Go SubRing NTT coefficient-for-coefficient across a large corpus.
 // The existing lattice gpu suite only covers a 61-bit prime; this proves it for
-// 0x7fff801, the 27-bit modulus the precompile actually uses.
+// the bootstrap modulus the precompile actually uses.
 func TestGPU_FHEBootstrapNTT_ByteIdenticalToCPU(t *testing.T) {
 	if !gpu.Available() {
 		t.Skip("GPU library not available at runtime")
@@ -172,8 +172,16 @@ func TestGPU_ArmGPUNTT_ArmsAndIsByteSafe(t *testing.T) {
 	if st.Backend == "CPU (pure Go)" {
 		t.Fatalf("armed but backend still CPU: %s", st.Reason)
 	}
-	if st.N != 1024 || st.Q != 0x7fff801 {
-		t.Fatalf("unexpected FHE ring params N=%d Q=%#x (want 1024/0x7fff801)", st.N, st.Q)
+	// Derived from Params, never restated: a hard-coded pair here would keep
+	// asserting the OLD ring after a parameter change and pass while the GPU
+	// evaluated a different one than the CPU.
+	want, perr := luxfhe.NewParametersFromLiteral(Params)
+	if perr != nil {
+		t.Fatalf("load Params: %v", perr)
+	}
+	if st.N != want.NBR() || st.Q != want.QBR() {
+		t.Fatalf("GPU ring N=%d Q=%#x does not match Params N=%d Q=%#x — the GPU would "+
+			"evaluate a different ring than the CPU evaluator", st.N, st.Q, want.NBR(), want.QBR())
 	}
 	t.Logf("armed: %s", st.Reason)
 }

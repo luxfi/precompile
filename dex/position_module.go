@@ -147,7 +147,7 @@ func (p *PositionManagerContract) Run(
 		return nil, suppliedGas, errors.New("dex: block context unavailable")
 	}
 	// CALL-only guard (same invariant as 0x9999): 0x9996 composes the 0x9999 kernel,
-	// whose LP-commit ERC-20 leg (commitAssetIn -> pullERC20Terminal) moves
+	// whose LP-commit ERC-20 leg (Export -> pullERC20Terminal) moves
 	// token value with the precompile self as msg.sender. geth binds self here as
 	// `addr`; only DELEGATECALL makes addr != 0x9996 (CALL/CALLCODE both pass self =
 	// 0x9996), which would commit ERC-20 liquidity as the WRONG msg.sender and break
@@ -293,7 +293,7 @@ func (p *PositionManagerContract) routeLifecycle(
 // withdrawable principal + fees). It moves NO C value — the value returns when the LP
 // consumes the resulting D->C object via 0x9999 collectPosition. The owner bind here
 // is defense-in-depth; the value credit is bound again to the recorded object in
-// ImportPositionCollect, so a non-owner cannot collect another LP's funds.
+// Import, so a non-owner cannot collect another LP's funds.
 func (p *PositionManagerContract) routeCollectRequest(
 	state contract.AccessibleState, caller common.Address, data []byte, gas uint64, readOnly bool,
 ) ([]byte, uint64, error) {
@@ -320,7 +320,7 @@ func (p *PositionManagerContract) routeCollectRequest(
 	}
 	// Emit the collect routing event (reuse the native collect event — the keeper
 	// forwards it to D to export the maker's withdrawable balance for this position).
-	emitNativeCollectEvent(stateDB, ids.ID(orderID), poolID, caller)
+	emitPositionCollecting(stateDB, ids.ID(orderID), poolID, caller)
 	out := make([]byte, 32)
 	copy(out, orderID[:])
 	return out, gasLeft, nil

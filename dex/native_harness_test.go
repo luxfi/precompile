@@ -147,7 +147,7 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 		memdbBacking: backing,
 	}
 	// V4 pool: currency0 = native (0x0), currency1 = token 0x..02. zeroForOne = swap
-	// native in, token out. AmountSpecified < 0 (exact-input) for the native intent.
+	// native in, token out. AmountSpecified < 0 (exact-input) for the native order.
 	h.key = PoolKey{
 		Currency0:   Currency{Address: common.Address{}},
 		Currency1:   Currency{Address: common.HexToAddress("0x0000000000000000000000000000000000000002")},
@@ -155,7 +155,10 @@ func newSettleHarnessN(t testing.TB, _ int) *settleHarness {
 		TickSpacing: 60,
 		Hooks:       common.Address{},
 	}
-	h.params = SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-100), SqrtPriceLimitX96: big.NewInt(0)}
+	// The V4 SwapParams tuple is unchanged, so the harness fills SqrtPriceLimitX96 with
+	// what a router actually sends. The funding rail never reads it: a crossing moves
+	// value, and the price the caller eventually trades at is settled on D.
+	h.params = SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-100), SqrtPriceLimitX96: sqrtX96For(2.0)}
 
 	// The native-seam chain identity (networkID, cChainID) and the D-Chain peer are
 	// supplied at RUNTIME by the host via the AtomicState capability (nativeAtomicState
@@ -220,7 +223,7 @@ func (h *settleHarness) wrapper() *contractStateDBWrapper {
 	return h.state.GetStateDB().(*contractStateDBWrapper)
 }
 
-// fundCallerNative seeds the caller's native balance so it can fund an intent.
+// fundCallerNative seeds the caller's native balance so it can fund an order.
 func (h *settleHarness) fundCallerNative(amount int64) {
 	h.state.stateDB.AddBalance(h.caller, uint256.NewInt(uint64(amount)))
 }
@@ -261,29 +264,11 @@ func (h *settleHarness) fundVaultNativeOut(amount int64) {
 	}
 }
 
-// creditPositionFeeNative credits `amount` of NATIVE earned fees into a SPECIFIC LP
-// position via the REAL operator-gated creditPositionFee selector (the keeper's
-// per-owner reflection of D-Chain maker-fee credits). It raises the named record's
-// withdrawable + the owner reserve + the committedPositions pot together, so the LP
-// can collect principal+fees while the per-owner committed bound (FIX-2) stays exact.
-func (h *settleHarness) creditPositionFeeNative(t testing.TB, positionID [32]byte, amount int64) {
-	t.Helper()
-	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(uint64(amount))) // host frame moved msg.value
-	data := make([]byte, 96)
-	copy(data[0:32], positionID[:])
-	// asset word: native == address(0) in the right 20 bytes (left-padded), so word stays zero.
-	big.NewInt(amount).FillBytes(data[64:96])
-	if _, _, err := h.c.Run(h.state, h.operator(), poolManagerAddr9999,
-		prependSelector(SelectorCreditPositionFee, data), 5_000_000, false); err != nil {
-		t.Fatalf("creditPositionFeeNative: %v", err)
-	}
-}
-
 // commitNativePosition drives a native LP COMMIT through the 0x9999 modifyLiquidity
 // selector: it funds the caller, runs the ADD, flushes the staged C->D object, and
 // returns the position record id (MakerOrderID) and the C->D commit object id
 // (DerivePositionCommitID, read off the record). The commit moves `amount` from the
-// caller's CSpendable balance into committedPositions (DCommitted).
+// caller's CSpendable balance into custody (DCommitted).
 func (h *settleHarness) commitNativePosition(t testing.TB, tickLower, tickUpper int24, amount int64, salt [32]byte) (recordID, commitObjID ids.ID) {
 	t.Helper()
 	h.fundCallerNative(amount)
@@ -302,11 +287,25 @@ func (h *settleHarness) commitNativePosition(t testing.TB, tickLower, tickUpper 
 }
 
 // collectNative drives a native LP COLLECT/WITHDRAW through the 0x9999
-// collectPosition selector: it consumes the railLP D->C object at outputID for
+// collectPosition selector: it consumes the D->C claim at outputID for
 // `amount` of native against the named position record, crediting the caller out of
-// committedPositions. Returns the call error.
+// custody. Returns the call error.
+//
+// The calldata now CARRIES the object (settle_import.go): there is no separate amount
+// word, so `amount` no longer rides the wire — the credited value IS the object's
+// amount. The bytes come from recordedObject, exactly as a keeper reads them off D.
 func (h *settleHarness) collectNative(outputID ids.ID, amount uint64, positionID [32]byte) ([]byte, error) {
-	input := EncodeCollectPositionInput(outputID, [32]byte{}, amount, positionID)
+	_ = amount // the amount is inside the object; the wire no longer restates it.
+	return h.collectCarrying(outputID, positionID, h.recordedObject(outputID))
+}
+
+// collectCarrying drives the SAME collectPosition selector with EXPLICIT object bytes.
+// Carrying the object is the keeper's real degree of freedom now that execution never
+// reads shared memory (settle_import.go), so it is also the attacker's: the redteam
+// tests use this to supply bytes shared memory does NOT hold and then prove the
+// resulting declaration cannot authenticate.
+func (h *settleHarness) collectCarrying(outputID ids.ID, positionID [32]byte, object []byte) ([]byte, error) {
+	input := EncodeCollectPositionInput(outputID, [32]byte{}, positionID, object)
 	out, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
 		prependSelector(SelectorCollectPosition, input), 5_000_000, false)
 	return out, err
@@ -347,41 +346,17 @@ func (s *seqOnlyState) GetState(addr common.Address, key common.Hash) common.Has
 	return common.Hash{}
 }
 
-// putDtoCObject simulates the dexvm's executeExport of a SWAP-rail (railSwap) D->C
-// object — the swap rail's fill/refund settlement. It PUTs the object into shared
-// memory keyed by the C chain (so ImportSettlement reads it via Get(dChainID)).
-func (h *settleHarness) putDtoCObject(t testing.TB, owner common.Address, outputID ids.ID, asset [32]byte, amount uint64) {
+// putDtoCObject simulates D's executeExport: it PUTs a funding claim into shared
+// memory keyed by the C chain, so the C-side Import reads it via Get(dChainID). The
+// recorded (beneficiary, asset, amount) is the value the C-side consume path binds.
+func (h *settleHarness) putDtoCObject(t testing.TB, beneficiary common.Address, claimID ids.ID, asset [32]byte, amount uint64) {
 	t.Helper()
-	h.putDtoCObjectRail(t, railSwap, owner, outputID, asset, amount)
-}
-
-// putDtoCLPObject simulates the dexvm's executeWithdraw of an LP-rail (railLP) D->C
-// object — the LP collect/withdraw leg ImportPositionCollect consumes.
-func (h *settleHarness) putDtoCLPObject(t testing.TB, owner common.Address, outputID ids.ID, asset [32]byte, amount uint64) {
-	t.Helper()
-	h.putDtoCObjectRail(t, railLP, owner, outputID, asset, amount)
-}
-
-// putDtoCObjectRail PUTs a D->C atomic object of the given RAIL into shared memory
-// (the dexvm export side stamps the lane). rail/owner/asset/amount are the recorded
-// value the C-side consume path binds — including the rail gate.
-func (h *settleHarness) putDtoCObjectRail(t testing.TB, rail Rail, owner common.Address, outputID ids.ID, asset [32]byte, amount uint64) {
-	t.Helper()
-	h.putDtoCObjectRailSpent(t, rail, owner, outputID, asset, amount, 0)
-}
-
-// putDtoCObjectRailSpent PUTs a D->C atomic object carrying an explicit spent witness —
-// the matched-input amount the dexvm's settleFromFills stamps on a swap PROCEEDS leg. The
-// existing same-asset-refund / LP-collect helpers pass spent=0 (no price is realized on
-// those legs); the MEV-floor redteam test uses spent>0 to drive the realized-price check.
-func (h *settleHarness) putDtoCObjectRailSpent(t testing.TB, rail Rail, owner common.Address, outputID ids.ID, asset [32]byte, amount, spent uint64) {
-	t.Helper()
-	obj := encodeAtomicObjectSpent(rail, owner, asset, amount, spent)
+	obj := encodeClaim(beneficiary, asset, amount)
 	reqs := map[ids.ID]*atomic.Requests{
 		h.cChainID: {PutRequests: []*atomic.Element{{
-			Key:    outputID[:],
+			Key:    claimID[:],
 			Value:  obj,
-			Traits: [][]byte{owner[:]},
+			Traits: [][]byte{beneficiary[:]},
 		}}},
 	}
 	// The D side applies to the C chain's partition (D is the source).
@@ -390,111 +365,58 @@ func (h *settleHarness) putDtoCObjectRailSpent(t testing.TB, rail Rail, owner co
 	}
 }
 
+// recordedObject reads back the D->C object BYTES a test PUT into shared memory for
+// outputID — the same read a keeper performs off D when it builds the settle/collect
+// transaction, whose calldata now CARRIES those bytes (settle_import.go). Empty when
+// nothing was recorded at that key.
+func (h *settleHarness) recordedObject(outputID ids.ID) []byte {
+	vals, err := h.cSM.Get(h.dChainID, [][]byte{outputID[:]})
+	if err != nil || len(vals) != 1 {
+		return nil
+	}
+	return vals[0]
+}
+
 // readCtoDObject simulates the dexvm's executeImport READ: it Gets the C->D object
 // the precompile PUT (keyed by the D chain), readable by D via Get(cChainID).
-func (h *settleHarness) readCtoDObject(t testing.TB, intentID ids.ID) ([]byte, bool) {
+func (h *settleHarness) readCtoDObject(t testing.TB, orderID ids.ID) ([]byte, bool) {
 	t.Helper()
-	vals, err := h.dSM.Get(h.cChainID, [][]byte{intentID[:]})
+	vals, err := h.dSM.Get(h.cChainID, [][]byte{orderID[:]})
 	if err != nil || len(vals) != 1 || len(vals[0]) == 0 {
 		return nil, false
 	}
 	return vals[0], true
 }
 
-// settlementCalldata builds a Phase-B swap calldata that consumes a D->C object,
-// bound to a standing per-taker swap intent for the caller (auto-seeded with ample
-// principal + no deadline) so the per-taker cap (MEDIUM) is satisfied. Tests that
-// exercise the cap/deadline directly seed their own intent and use
-// settlementCalldataFor with a specific intent id.
-func (h *settleHarness) settlementCalldata(outputID ids.ID, amount uint64) []byte {
-	intentID := h.standingIntent(amount)
-	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, amount, intentID))
-}
-
-// settlementCalldataFor builds a Phase-B swap calldata naming a SPECIFIC intent id
-// (for the per-taker cap / deadline tests).
-func (h *settleHarness) settlementCalldataFor(outputID ids.ID, amount uint64, intentID ids.ID) []byte {
-	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(outputID, amount, intentID))
-}
-
-// intentCalldata builds a Phase-A swap calldata. After the decomplect EVERY swap routes to
-// the native C<->D atomic seam: a plain (empty-hookData) swap is ALSO a Phase-A intent, and
-// an explicit DI01 tag is the same phase carrying an optional deadline/nonce. The async-seam
-// tests drive the DI01-tagged form (deadline 0 => defaulted to a finite reclaim horizon,
-// nonce 0) so they can pin the deadline/nonce; there is no longer any synchronous matcher an
-// untagged swap could take instead.
-func (h *settleHarness) intentCalldata() []byte {
-	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(0, 0))
-}
-
-// intentCalldataWithDeadline builds a Phase-A swap calldata carrying an explicit
-// deadline in the hookData body (nonce 0; the V4 SwapParams tuple is unchanged).
-func (h *settleHarness) intentCalldataWithDeadline(deadline uint64) []byte {
-	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(deadline, 0))
-}
-
-// intentCalldataWithNonce builds a Phase-A swap calldata carrying an explicit nonce
-// (and optional deadline) in the DI01 hookData — the taker's intent disambiguator that
-// is folded into the (chain-observable) intent id.
-func (h *settleHarness) intentCalldataWithNonce(deadline, nonce uint64) []byte {
-	return buildSwapCalldata(h.key, h.params, EncodeIntentHookData(deadline, nonce))
-}
-
-// standingIntent lazily seeds (once) a per-taker swap intent for the caller covering
-// the OUTPUT asset with ample principal and NO deadline, and returns its id. It is the
-// default intent settlementCalldata binds to so existing settle tests (which assert the
-// object-bind / replay / rail axes) satisfy the per-taker cap without each restating it.
-func (h *settleHarness) standingIntent(minPrincipal uint64) ids.ID {
-	id := ids.ID{0x57, 0x7A, 0x11} // a fixed standing-intent id for the harness.
-	db := newPoolStateAdapter(h.state)
-	rec := loadSwapIntentRecord(db, id)
-	if rec.Status != swapIntentOpen || rec.Remaining < minPrincipal {
-		// (Re)seed with generous principal so the cap never spuriously bites the
-		// object-bind tests; cap-specific tests use seedSwapIntent with exact principal.
-		principal := minPrincipal * 4
-		if principal < 1_000_000 {
-			principal = 1_000_000
+// nextTx advances the harness to a NEW transaction. A claim id is derived from
+// (source, dest, sourceTx, index), so two crossings are distinct because the chain
+// gives them distinct transactions — which is what a real host does and what this
+// stands in for. Without it a test issuing two crossings is really issuing the same
+// one twice, and the replay guard says so.
+func (h *settleHarness) nextTx() {
+	var t ids.ID
+	copy(t[:], h.state.txID[:])
+	for i := len(t) - 1; i >= 0; i-- {
+		t[i]++
+		if t[i] != 0 {
+			break
 		}
-		putSwapIntentRecord(db, id, swapIntentRecord{
-			Owner:     h.caller,
-			AssetIn:   h.outAssetID(), // bound only on owner; asset axis is not cross-checked.
-			Remaining: principal,
-			Deadline:  0,
-			Status:    swapIntentOpen,
-		})
 	}
-	return id
+	h.state.txID = t
 }
 
-// seedSwapIntent writes a per-taker swap intent record directly (the test analog of
-// SubmitSwapIntent's record write) and returns its id, so the per-taker cap / deadline
-// / reclaim tests have a precise intent (exact owner/principal/deadline) to bind to.
-func (h *settleHarness) seedSwapIntent(owner common.Address, assetIn [32]byte, principal, deadline uint64, id ids.ID) ids.ID {
-	putSwapIntentRecord(newPoolStateAdapter(h.state), id, swapIntentRecord{
-		Owner:     owner,
-		AssetIn:   assetIn,
-		Remaining: principal,
-		Deadline:  deadline,
-		Status:    swapIntentOpen,
-	})
-	return id
+// crossCalldata builds a Phase-A swap calldata: the crossing that funds D. The
+// hookData is empty because there is nothing left to say — a crossing moves value
+// and creates no order, so it carries no deadline, no nonce and no operation.
+func (h *settleHarness) crossCalldata() []byte {
+	return buildSwapCalldata(h.key, h.params, nil)
 }
 
-// seedSwapIntentLimit seeds an intent carrying the taker's OWN recorded slippage limit
-// (priceLimit float64 bits, limitIsUpper side) — what SubmitSwapIntent persists from the
-// taker's V4 SqrtPriceLimitX96. The MEV-floor redteam test uses it to prove ImportSettlement
-// enforces the RECORDED limit (taker-authenticated), independent of any keeper relay value.
-func (h *settleHarness) seedSwapIntentLimit(owner common.Address, assetIn [32]byte, principal, deadline uint64, priceLimit uint64, limitIsUpper bool, id ids.ID) ids.ID {
-	putSwapIntentRecord(newPoolStateAdapter(h.state), id, swapIntentRecord{
-		Owner:        owner,
-		AssetIn:      assetIn,
-		Remaining:    principal,
-		Deadline:     deadline,
-		Status:       swapIntentOpen,
-		PriceLimit:   priceLimit,
-		LimitIsUpper: limitIsUpper,
-	})
-	return id
+// settlementCalldata builds a Phase-B swap calldata that consumes a D->C claim,
+// carrying the recorded object bytes exactly as a client reads them off D. There is
+// no separate amount word: the credited value IS the object's amount.
+func (h *settleHarness) settlementCalldata(claimID ids.ID, _ uint64) []byte {
+	return buildSwapCalldata(h.key, h.params, EncodeSettlementHookData(claimID, h.recordedObject(claimID)))
 }
 
 // buildSwapCalldata encodes a V4 swap call (UNCHANGED ABI) carrying hookData. The
@@ -545,5 +467,15 @@ func prependSelector(sel uint32, data []byte) []byte {
 func leftPad32(b []byte) []byte {
 	out := make([]byte, 32)
 	copy(out[32-len(b):], b)
+	return out
+}
+
+// sqrtX96For builds a V4 SqrtPriceLimitX96 for a quote-per-base price. The funding
+// rail never reads it — a crossing carries no price — but the V4 SwapParams tuple is
+// unchanged, so the harness still fills the field the ABI defines.
+func sqrtX96For(price float64) *big.Int {
+	s := new(big.Float).Sqrt(big.NewFloat(price))
+	s.Mul(s, new(big.Float).SetInt(new(big.Int).Lsh(big.NewInt(1), 96)))
+	out, _ := s.Int(nil)
 	return out
 }
