@@ -3,7 +3,7 @@
 
 // See the file LICENSE for licensing terms.
 
-// Confidentiality regression tests for the FHE gateway precompile (LP-134).
+// Confidentiality regression tests for the FHE gateway precompile (LP-1340).
 //
 // These tests pin the launch-safety invariant that the original code violated:
 // the precompile held a deterministic in-source secret key and returned real

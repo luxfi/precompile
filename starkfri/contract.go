@@ -7,29 +7,24 @@
 // hashes over the Goldilocks 64-bit prime field, no KZG, no
 // pairings).
 //
-// History. This dispatch was previously misnamed "P3Q" and registered
-// at slot 0x012205. Per HANZO-CRYPTO-SUITE §5.2, ROADMAP-CRYPTO-STACK
-// §B.11, and LP-218, slot 0x012205 is reserved for "P3Q — Post-Quantum
-// Pulsar Proof", the on-chain Pulsar / FIPS 204 ML-DSA verifier. The
-// STARK dispatch lives here under its actual algorithmic identity
-// (STARK / FRI / SHAKE) at a separate slot. The previous P3Q-as-STARK
-// label was an aliasing error; this rename closes it.
+// The verifier occupies slot 0x012220, specified by LP-4835. The
+// neighbouring 0x012205 holds a different primitive — the P3Q
+// PQ threshold-signature verifier family (LP-4805) — not a STARK.
 //
-// LP-4200 unified PQCrypto block (post-fix):
+// LP-4200 unified PQCrypto block:
 //
 //	0x012201 = ML-KEM          (Module-LWE KEM, FIPS 203)
 //	0x012202 = ML-DSA          (Module-LWE single-party signature, FIPS 204)
 //	0x012203 = SLH-DSA         (hash-based signature, FIPS 205)
 //	0x012204 = Pulsar          (Module-LWE threshold FIPS 204, byte-equal)
-//	0x012205 = P3Q             (Post-Quantum Pulsar Proof — see precompile/p3q)
+//	0x012205 = P3Q             (PQ threshold-signature verifier family;
+//	                            kinds Pulsar/Corona/Magnetar — see precompile/p3q)
 //	0x012206 = Corona          (Module-LWE threshold)
 //	0x012207 = Magnetar        (SLH-DSA threshold, FIPS 205 byte-equal)
 //	0x012208 = HQC             (code-based KEM, family-disjoint backup)
 //	0x012220 = STARK-FRI       ← this precompile (strict-PQ STARK / FRI / SHAKE)
 //
-// The 0x012220 slot is a placeholder pending dedicated LP allocation
-// (the prior 0x012205 claim is reverted to its canonical owner). The
-// 0x012220 base is one nibble above the dense PQ-signature block,
+// The 0x012220 base is one nibble above the dense PQ-signature block,
 // chosen so the strict-PQ STARK family can grow its own sub-range
 // (0x012220..0x01222F) without recolliding with the 0x012201..0x01220F
 // PQ-signature block.

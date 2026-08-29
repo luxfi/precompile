@@ -19,7 +19,7 @@
 //	0x012206 = Corona     (Module-LWE threshold signatures)
 //	0x012207 = Magnetar   ← this precompile (hash-based threshold FIPS 205)
 //	0x012208 = HQC        (code-based KEM, family-disjoint backup)
-//	0x012220 = STARK-FRI  (strict-PQ STARK / FRI — see precompile/starkfri, LP-221)
+//	0x012220 = STARK-FRI  (strict-PQ STARK / FRI — see precompile/starkfri, LP-4835)
 //
 // Why a distinct slot if the verifier is interchangeable with SLH-DSA's?
 //

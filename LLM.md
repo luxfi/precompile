@@ -1119,7 +1119,7 @@ EVM interface to B-Chain MPC bridge operations:
 
 ### Threshold Precompiles (threshold/)
 
-EVM interface to **M-Chain** MPC-as-a-service. Per LP-134 (Lux Chain
+EVM interface to **M-Chain** MPC-as-a-service. Per LP-1340 (Lux Chain
 Topology), M-Chain hosts the MPC ceremonies (CGGMP21 / FROST /
 Corona-gen) that the legacy T-Chain monolith used to host. The
 implementation lives in `chains/mpcvm/` running in MPC mode; the
