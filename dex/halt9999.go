@@ -33,8 +33,13 @@ import (
 //
 // SAFE DEFAULT: halting stops NEW swaps but NEVER strands funds — withdraw /
 // balanceOf / cancel / settle remain callable so escrowed value can always exit.
-// The withdraw path lives on the deprecated-but-forwarding custody selectors and
-// is intentionally NOT gated by the swap halt.
+// withdraw dispatches directly on 0x9999 (settle_module.go) into the seam reserve,
+// and it is deliberately NOT gated here: a halt exists to stop new exposure, and
+// gating the exit would turn every halt into a freeze of funds already escrowed.
+// Leaving it open is safe because it moves only what the caller already deposited —
+// runSettleWithdraw clamps the amount to that caller's own depositor claim and again
+// to the vault total, and debits both before the transfer — so it can neither open
+// new exposure nor reach another account's funds.
 
 // Halt layers (each an independent key; checked in order, cheapest scope first).
 // The BLS-era certType / validatorSet halt layers are GONE with the cert value
@@ -88,20 +93,19 @@ func isHalted(stateDB stateKV, key common.Hash) bool {
 }
 
 // checkHalt is the single, ordered halt gate the native settle handler calls
-// before any value movement, for BOTH phases (order and settlement). It keys on
-// the POOL identity (key.ID()) and the swap's two asset ids — the SAME ids
-// SetHaltMarket / SetHaltAsset, the registry, analytics, and StateView use. A
-// halted scope reverts cleanly with no partial state. Returns the FIRST applicable
-// halt error, or nil.
-func checkHalt(stateDB stateKV, key PoolKey, params SwapParams) error {
+// before any value movement, for BOTH phases (order and settlement). It takes the
+// scopes already resolved — a REGISTERED poolID (marketID) and the swap's two asset
+// ids — and derives nothing itself, so the id it consults is never one the caller
+// steered. Those are the SAME ids SetHaltMarket / SetHaltAsset, the registry,
+// analytics and StateView use. A halted scope reverts cleanly with no partial state.
+// Returns the FIRST applicable halt error, or nil.
+func checkHalt(stateDB stateKV, poolID, in, out [32]byte) error {
 	if isHalted(stateDB, haltGlobalKey) {
 		return ErrDEXHalted
 	}
-	poolID := key.ID()
 	if isHalted(stateDB, makeStorageKey(haltMarketPrefix, poolID[:])) {
 		return ErrMarketHalted
 	}
-	in, out := swapAssetDirection(key, params)
 	if isHalted(stateDB, makeStorageKey(haltAssetPrefix, in[:])) ||
 		isHalted(stateDB, makeStorageKey(haltAssetPrefix, out[:])) {
 		return ErrAssetHalted

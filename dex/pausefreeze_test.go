@@ -422,9 +422,8 @@ func TestPauseFreeze_FrozenPoolReadable(t *testing.T) {
 // =========================================================================
 
 func TestPauseFreeze_ExternalVenueQuote(t *testing.T) {
-	pm := newPauseTestPM()
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
+	router := NewLXRouter()
 
 	// Register an external venue offering 5x pricing.
 	venue := &mockVenue{

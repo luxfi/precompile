@@ -214,7 +214,7 @@ func (s *SettleContract) Run(
 		//   - UNTAGGED / opaque / DI01 hookData => PHASE A (ORDER): lock the taker's input on
 		//     C and write a C->D atomic object. D imports it and matches under ITS OWN
 		//     consensus. Phase A returns the order id — NOT a fill; no output is credited here.
-		//   - DS01-tagged hookData => PHASE B (SETTLEMENT): consume a real D->C atomic object
+		//   - DS02-tagged hookData => PHASE B (SETTLEMENT): consume a real D->C atomic object
 		//     ONCE and credit the output. This is the ONLY path that credits C, and the credit
 		//     is the RECORDED object's amount — never a caller-supplied fill value.
 		//

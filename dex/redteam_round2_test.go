@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -574,23 +575,16 @@ func TestRedTeam_AddressSort_PoolManagerConsistent(t *testing.T) {
 }
 
 // =========================================================================
-// Finding 9: V3/V2 fallback returns ErrNoOnChainLiquidity (not phantom amounts)
+// Finding 9: the router quotes no phantom amounts
 //
-// If V4 pool exists but is empty and V3/V2 are not deployed, the result
-// should be ErrNoOnChainLiquidity. No path should return non-zero without
-// actual on-chain execution.
+// A quote is advisory, so the guard is that the router fabricates nothing for a
+// pair no market was registered for, and that where a market IS registered the
+// number it returns is the registered price's, bounded by the zero-impact spot.
 // =========================================================================
 
-func TestRedTeam_Router_EmptyPoolQuoteReturnsZero(t *testing.T) {
-	// Initialize a pool but do NOT add liquidity. Quote should return zero.
-	// This tests the quote path which is what the router uses for venue selection.
-	// A real engine would also fail on Swap, but the mockEngine's Swap doesn't
-	// check liquidity. The important property is: Quote returns 0, causing the
-	// router to fall through to V3/V2, which are also unavailable, yielding
-	// ErrNoOnChainLiquidity.
-	pm := NewPoolManager(&mockEngine{})
+func TestRedTeam_Router_UnregisteredPairQuotesNothing(t *testing.T) {
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
+	router := NewLXRouter()
 
 	key := PoolKey{
 		Currency0:   Currency{Address: testTokenA},
@@ -598,25 +592,41 @@ func TestRedTeam_Router_EmptyPoolQuoteReturnsZero(t *testing.T) {
 		Fee:         Fee030,
 		TickSpacing: TickSpacing030,
 	}
-	_, err := pm.Initialize(stateDB, key, new(big.Int).Set(Q96), nil)
+	if MarketExists(stateDB, key) {
+		t.Fatal("fixture: the pair under test must have no registered market")
+	}
+
+	// No registry record at any tier: quoteV4 refuses rather than projecting off a
+	// zero price, and the aggregate surface reports no liquidity at all.
+	if _, _, _, err := router.quoteV4(stateDB, testTokenA, testTokenB, big.NewInt(10_000), 0); !errors.Is(err, ErrPoolNotFound) {
+		t.Fatalf("VULN: quoteV4 answered for an unregistered pair: err=%v", err)
+	}
+	if _, err := router.QuoteExactInputSingle(stateDB, testTokenA, testTokenB, big.NewInt(10_000), 0); !errors.Is(err, ErrInsufficientLiquidity) {
+		t.Fatalf("VULN: the router quoted an unregistered pair: err=%v", err)
+	}
+
+	// Register the market at price 1.0 and the projection appears — at the
+	// registered price, never above the zero-impact spot (the fee comes off the
+	// input, so a fee-bearing tier quotes strictly less).
+	rec := MarketRecord{
+		Status:       MarketStatusActive,
+		SqrtPriceX96: new(big.Int).Set(Q96),
+		Currency0:    testTokenA,
+		Currency1:    testTokenB,
+		Fee:          key.Fee,
+		TickSpacing:  key.TickSpacing,
+	}
+	storeMarket(stateDB, key.ID(), rec)
+
+	amount, poolID, _, err := router.quoteV4(stateDB, testTokenA, testTokenB, big.NewInt(10_000), Fee030)
 	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
+		t.Fatalf("a registered market must quote: %v", err)
 	}
-
-	// Pool exists but has zero liquidity.
-	// Verify Quote returns 0 for zero-liquidity pool (the critical guard).
-	poolId := key.ID()
-	quoted := pm.calculateSwapOutput(stateDB, key, poolId, big.NewInt(10_000), true)
-	if quoted.Sign() > 0 {
-		t.Errorf("VULN: Quote returned positive amount for zero-liquidity pool: %s (phantom quote)", quoted)
+	if poolID != key.ID() {
+		t.Fatalf("quote came from pool %x, want the registered %x", poolID[:4], key.ID())
 	}
-
-	// Verify the fee-scan quoteV4 path: should fail because all fee tiers have zero quote.
-	_, _, _, err = router.quoteV4(stateDB, testTokenA, testTokenB, big.NewInt(10_000), 0)
-	// The pool exists at Fee030 but quote=0, so quoteV4 should not return a positive best.
-	// It may return error or zero amount.
-	if err == nil {
-		t.Log("quoteV4 returned no error for zero-liquidity pool (acceptable if amount=0)")
+	if spot := spotOutput(rec, big.NewInt(10_000), true); amount.Cmp(spot) >= 0 {
+		t.Fatalf("VULN: quote %s is not below the zero-impact spot %s (phantom quote)", amount, spot)
 	}
 }
 

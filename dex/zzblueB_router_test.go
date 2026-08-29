@@ -78,14 +78,12 @@ func (blueBNoBlock) GetBlockContext() contract.BlockContext { return nil }
 
 var _ contract.AccessibleState = blueBNoBlock{}
 
-// blueBLive builds a RouterContract whose pool manager has a LIVE quoting engine.
-// The registered singleton's engine is dchainUnavailable, whose Quote returns zero
-// by design, so no V4 route can ever price through it; a local instance runs the
-// IDENTICAL Run dispatch over a manager that can. Hermetic: no package singleton is
-// touched.
-func blueBLive() (*RouterContract, *PoolManager) {
-	pm := NewPoolManager(&mockEngine{})
-	return &RouterContract{router: NewLXRouter(pm)}, pm
+// blueBLive builds a RouterContract to run the dispatch against. It is a local
+// instance rather than the package singleton so nothing leaks between tests; it is
+// otherwise identical, because the router holds no state — every venue it quotes
+// reads through the StateDB it is handed.
+func blueBLive() *RouterContract {
+	return &RouterContract{router: NewLXRouter()}
 }
 
 // blueBAddr renders a distinct, sort-ordered token address: blueBAddr(1) < blueBAddr(2).
@@ -96,23 +94,75 @@ func blueBAddr(n byte) common.Address {
 	return a
 }
 
-// blueBPool initializes a pool at (fee, tickSpacing) and funds it with in-range
-// liquidity, returning its canonical pool ID. Fee-parameterised because the whole
-// point of the determinism tests is to stand four fee tiers side by side.
-func blueBPool(t testing.TB, pm *PoolManager, sdb StateDB, a, b common.Address, fee uint24, ts int24) [32]byte {
+// blueBPool registers a market at (fee, tickSpacing) in the 0x9999 registry — the
+// namespace the money path writes and the router's V4 leg quotes from — at price
+// 1.0, returning its canonical pool ID. Fee-parameterised because the whole point of
+// the determinism tests is to stand four fee tiers side by side.
+func blueBPool(t testing.TB, sdb stateKV, a, b common.Address, fee uint24, ts int24) [32]byte {
 	t.Helper()
 	key := sortedPoolKey(a, b, fee, ts, common.Address{})
-	_, err := pm.Initialize(sdb, key, new(big.Int).Set(Q96), nil)
-	require.NoErrorf(t, err, "initialize fee=%d spacing=%d", fee, ts)
-	// -6000..6000 is divisible by every standard spacing (1, 10, 60, 200) and
-	// straddles tick 0, which is the tick at price 1.0 — so the liquidity is ACTIVE.
-	_, _, err = pm.ModifyLiquidity(sdb, testLP, key, ModifyLiquidityParams{
-		TickLower:      -6000,
-		TickUpper:      6000,
-		LiquidityDelta: big.NewInt(1_000_000),
-	}, nil)
-	require.NoErrorf(t, err, "modifyLiquidity fee=%d spacing=%d", fee, ts)
+	storeMarket(sdb, key.ID(), MarketRecord{
+		Status:       MarketStatusActive,
+		SqrtPriceX96: new(big.Int).Set(Q96), // price 1.0, tick 0
+		Currency0:    key.Currency0.Address,
+		Currency1:    key.Currency1.Address,
+		Fee:          key.Fee,
+		TickSpacing:  key.TickSpacing,
+	})
 	return key.ID()
+}
+
+// blueBHop is the output one hop yields at price 1.0: the LP fee comes off the input
+// and the rest passes through one-for-one. Written out here rather than called from
+// the package so the expected value is computed independently of the code under test.
+func blueBHop(in int64, fee uint24) int64 { return in - in*int64(fee)/1_000_000 }
+
+// blueBWatchDB counts every touch of one address's storage on the way through to the
+// real StateDB, reads included. The value path type-asserts optional capabilities on
+// the concrete StateDB, so each is forwarded rather than dropped — a decorator that
+// swallowed them would turn a real path into a fail-closed one and the count would
+// measure nothing.
+type blueBWatchDB struct {
+	contract.StateDB
+	addr common.Address
+	n    *int
+	host *contractStateDBWrapper
+}
+
+func (d blueBWatchDB) CodeSizeOf(a common.Address) int { return d.host.inner.CodeSizeOf(a) }
+func (d blueBWatchDB) TokenBalanceOf(token, owner common.Address) *big.Int {
+	return d.host.TokenBalanceOf(token, owner)
+}
+func (d blueBWatchDB) TransferTokenFrom(token, from, to common.Address, amount *big.Int) error {
+	return d.host.TransferTokenFrom(token, from, to, amount)
+}
+func (d blueBWatchDB) TransferTokenTo(token, to common.Address, amount *big.Int) error {
+	return d.host.TransferTokenTo(token, to, amount)
+}
+
+func (d blueBWatchDB) GetState(a common.Address, k common.Hash) common.Hash {
+	if a == d.addr {
+		*d.n++
+	}
+	return d.StateDB.GetState(a, k)
+}
+
+func (d blueBWatchDB) SetState(a common.Address, k, v common.Hash) common.Hash {
+	if a == d.addr {
+		*d.n++
+	}
+	return d.StateDB.SetState(a, k, v)
+}
+
+type blueBWatchState struct {
+	*nativeAtomicState
+	addr common.Address
+	n    *int
+}
+
+func (s blueBWatchState) GetStateDB() contract.StateDB {
+	host := s.nativeAtomicState.GetStateDB().(*contractStateDBWrapper)
+	return blueBWatchDB{StateDB: host, addr: s.addr, n: s.n, host: host}
 }
 
 // blueBBindV2 binds the native constant-product reserves the router's V2 venue reads.
@@ -249,8 +299,8 @@ func TestBlueBRouterVerdictIgnoresUndeclaredBytes(t *testing.T) {
 	withV2Configured(t)
 	blueBBindV2(t, h.state.stateDB, blueBAddr(1), blueBAddr(2), 1_000_000, 2_000_000, 30)
 
-	c, pm := blueBLive()
-	blueBPool(t, pm, h.state.stateDB, blueBAddr(1), blueBAddr(2), Fee030, TickSpacing030)
+	c := blueBLive()
+	blueBPool(t, h.state.stateDB, blueBAddr(1), blueBAddr(2), Fee030, TickSpacing030)
 
 	bodies := map[string][]byte{
 		"quote":      blueBQuoteBody(blueBAddr(1), blueBAddr(2), big.NewInt(1_000), Fee030),
@@ -330,30 +380,38 @@ func TestBlueBRouterNeedsABlockContext(t *testing.T) {
 // came from ranging a map, two validators would pick different pools from the same
 // calldata and fork.
 //
-// The setup forces the worst case: four pools, one per standard tier, all with the
-// same liquidity, quoted by an engine whose price does not depend on the pool — a
-// perfect four-way tie. The winner must be the FIRST tier of the fixed scan slice
-// (Fee001), every time, including from a cold pool manager that shares nothing but
-// the state trie with the warm one (the just-restarted-validator case).
+// The setup forces the worst case: four markets, one per standard tier, all at price
+// 1.0, quoted at an amount so small that even the widest standard fee rounds to
+// nothing — a perfect four-way tie, asserted rather than assumed. The winner must be
+// the FIRST tier of the fixed scan slice (Fee001), every time, including from a cold
+// router that shares nothing but the state trie with the warm one (the
+// just-restarted-validator case).
 func TestBlueBRouteChoiceIsDeterministicUnderTies(t *testing.T) {
 	h := newSettleHarness(t)
 	tin, tout := blueBAddr(1), blueBAddr(2)
 
-	c, pm := blueBLive()
+	c := blueBLive()
 	tiers := []struct {
 		fee uint24
 		ts  int24
 	}{{Fee001, TickSpacing001}, {Fee005, TickSpacing005}, {Fee030, TickSpacing030}, {Fee100, TickSpacing100}}
 	ids := make(map[uint24][32]byte, len(tiers))
 	for _, tr := range tiers {
-		ids[tr.fee] = blueBPool(t, pm, h.state.stateDB, tin, tout, tr.fee, tr.ts)
+		ids[tr.fee] = blueBPool(t, h.state.stateDB, tin, tout, tr.fee, tr.ts)
 	}
 
-	// All four tiers must genuinely tie, or the test proves nothing about ordering.
+	// The tie fixture: at this size the fee rounds to zero on every standard tier, so
+	// all four price identically and only the scan order can decide.
+	const tieAmount int64 = 99
+	for _, tr := range tiers {
+		require.Equalf(t, tieAmount, blueBHop(tieAmount, tr.fee),
+			"tier %d must price identically at the tie amount, or this test proves nothing about ordering", tr.fee)
+	}
+
 	quoted := blueBDecodeQuotes(t, func() []byte {
 		v := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle,
-			blueBQuoteBody(tin, tout, big.NewInt(1_000), 0)), 1_000_000, true)
-		require.True(t, v.ok, "a funded pair must quote: %s", v.err)
+			blueBQuoteBody(tin, tout, big.NewInt(tieAmount), 0)), 1_000_000, true)
+		require.True(t, v.ok, "a registered pair must quote: %s", v.err)
 		return v.out
 	}())
 	require.Len(t, quoted, 1, "only the V4 venue is live here")
@@ -361,15 +419,15 @@ func TestBlueBRouteChoiceIsDeterministicUnderTies(t *testing.T) {
 	require.Equal(t, ids[Fee001], quoted[0].poolID,
 		"a four-way tie must resolve to the FIRST tier of the fixed scan order, not to whichever the map yielded")
 
-	// Stable across repeats on one manager AND across independently built managers
-	// with cold caches — the two validators that must agree.
+	// Stable across repeats on one router AND across independently built routers —
+	// the two validators that must agree.
 	want := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle,
-		blueBQuoteBody(tin, tout, big.NewInt(1_000), 0)), 1_000_000, true)
+		blueBQuoteBody(tin, tout, big.NewInt(tieAmount), 0)), 1_000_000, true)
 	for i := range 64 {
-		cold, _ := blueBLive()
+		cold := blueBLive()
 		for _, target := range []*RouterContract{c, cold} {
 			got := blueBRun(target, h.state, blueBCall(SelectorQuoteExactInputSingle,
-				blueBQuoteBody(tin, tout, big.NewInt(1_000), 0)), 1_000_000, true)
+				blueBQuoteBody(tin, tout, big.NewInt(tieAmount), 0)), 1_000_000, true)
 			require.Equalf(t, want.out, got.out, "run %d: the same calldata must yield the same bytes", i)
 			require.Equalf(t, want.gas, got.gas, "run %d: the same calldata must cost the same", i)
 		}
@@ -379,7 +437,7 @@ func TestBlueBRouteChoiceIsDeterministicUnderTies(t *testing.T) {
 	// deterministically, and only among equals. Sweep every tier.
 	for _, tr := range tiers {
 		v := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle,
-			blueBQuoteBody(tin, tout, big.NewInt(1_000), tr.fee)), 1_000_000, true)
+			blueBQuoteBody(tin, tout, big.NewInt(tieAmount), tr.fee)), 1_000_000, true)
 		require.Truef(t, v.ok, "preferred fee %d must still quote: %s", tr.fee, v.err)
 		qs := blueBDecodeQuotes(t, v.out)
 		require.Lenf(t, qs, 1, "preferred fee %d", tr.fee)
@@ -388,9 +446,21 @@ func TestBlueBRouteChoiceIsDeterministicUnderTies(t *testing.T) {
 		// Repeat: the preference must not flap either.
 		for range 16 {
 			again := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle,
-				blueBQuoteBody(tin, tout, big.NewInt(1_000), tr.fee)), 1_000_000, true)
+				blueBQuoteBody(tin, tout, big.NewInt(tieAmount), tr.fee)), 1_000_000, true)
 			require.Equalf(t, v.out, again.out, "preferred fee %d must be stable", tr.fee)
 		}
+	}
+
+	// Above the rounding floor the tie breaks on PRICE, not on scan order: the
+	// cheapest tier wins even from the back of the scan, and naming a dearer tier
+	// does not buy it the route.
+	for _, pref := range []uint24{0, Fee100} {
+		v := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle,
+			blueBQuoteBody(tin, tout, big.NewInt(1_000_000), pref)), 1_000_000, true)
+		require.Truef(t, v.ok, "preferred fee %d: %s", pref, v.err)
+		qs := blueBDecodeQuotes(t, v.out)
+		require.Equalf(t, ids[Fee001], qs[0].poolID,
+			"at a size where the fee bites, the cheapest tier must win (preferred %d)", pref)
 	}
 }
 
@@ -402,8 +472,8 @@ func TestBlueBRouteChoiceIsDeterministicUnderTies(t *testing.T) {
 func TestBlueBUnknownFeeTierCannotSteerTheRoute(t *testing.T) {
 	h := newSettleHarness(t)
 	tin, tout := blueBAddr(1), blueBAddr(2)
-	c, pm := blueBLive()
-	want := blueBPool(t, pm, h.state.stateDB, tin, tout, Fee030, TickSpacing030)
+	c := blueBLive()
+	want := blueBPool(t, h.state.stateDB, tin, tout, Fee030, TickSpacing030)
 
 	base := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle,
 		blueBQuoteBody(tin, tout, big.NewInt(1_000), 0)), 1_000_000, true)
@@ -421,27 +491,30 @@ func TestBlueBUnknownFeeTierCannotSteerTheRoute(t *testing.T) {
 	}
 
 	// The fallback spacing is not arbitrary — it decides which pool a non-standard
-	// tier can even name. A pool opened at fee 12345 is reachable from the router
+	// tier can even name. A market opened at fee 12345 is reachable from the router
 	// ONLY if it uses the standard spacing, because that is what the router assumes
-	// for a tier it does not know. Open one at the standard spacing and one at a
-	// different spacing, and only the first is findable.
+	// for a tier it does not know. Open one at each spacing, on a pair with no
+	// standard-tier market so nothing else can answer, and only the first is findable.
 	const oddFee uint24 = 12_345
-	findable := blueBPool(t, pm, h.state.stateDB, tin, tout, oddFee, TickSpacing030)
-	hidden := blueBPool(t, pm, h.state.stateDB, tin, tout, oddFee, TickSpacing100)
+	oin, oout := blueBAddr(5), blueBAddr(6)
+	findable := blueBPool(t, h.state.stateDB, oin, oout, oddFee, TickSpacing030)
+	hidden := blueBPool(t, h.state.stateDB, oin, oout, oddFee, TickSpacing100)
 	require.NotEqual(t, findable, hidden, "the two pools must be distinct")
 
 	v := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle,
-		blueBQuoteBody(tin, tout, big.NewInt(1_000), oddFee)), 1_000_000, true)
-	require.True(t, v.ok, "a pool at a non-standard tier and the standard spacing is quotable: %s", v.err)
+		blueBQuoteBody(oin, oout, big.NewInt(1_000), oddFee)), 1_000_000, true)
+	require.True(t, v.ok, "a market at a non-standard tier and the standard spacing is quotable: %s", v.err)
 	require.Equal(t, findable, blueBDecodeQuotes(t, v.out)[0].poolID,
 		"an unknown fee tier resolves at the STANDARD tick spacing — that is the fallback, and it is load-bearing")
 
-	// The pool at the same fee but a different spacing stays invisible: no request
+	// The market at the same fee but a different spacing stays invisible: no request
 	// the router accepts can reach it, because the caller cannot name a spacing.
 	for _, fee := range []uint24{oddFee, Fee001, Fee005, Fee030, Fee100, 0} {
 		q := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle,
-			blueBQuoteBody(tin, tout, big.NewInt(1_000), fee)), 1_000_000, true)
-		require.Truef(t, q.ok, "fee %d: %s", fee, q.err)
+			blueBQuoteBody(oin, oout, big.NewInt(1_000), fee)), 1_000_000, true)
+		if !q.ok {
+			continue // a tier nothing was opened at prices nothing; it cannot name the hidden pool either
+		}
 		for _, got := range blueBDecodeQuotes(t, q.out) {
 			require.NotEqualf(t, hidden, got.poolID,
 				"fee %d: a pool whose spacing is not the one derived from its fee is unreachable", fee)
@@ -468,7 +541,7 @@ func TestBlueBBestRouteIsAMaximumAndRefusesTheEmptySet(t *testing.T) {
 	h := newSettleHarness(t)
 	withV2Configured(t)
 	tin, tout := blueBAddr(1), blueBAddr(2)
-	c, pm := blueBLive()
+	c := blueBLive()
 
 	// (a) Nothing bound anywhere: refused, with no bytes at all.
 	v := blueBRun(c, h.state, blueBCall(SelectorGetBestRoute,
@@ -477,15 +550,23 @@ func TestBlueBBestRouteIsAMaximumAndRefusesTheEmptySet(t *testing.T) {
 	require.Nil(t, v.out, "a refused route must return NO bytes — never a zero route a caller reads as valid")
 	require.Equal(t, uint64(1_000_000)-GasRouteLookup, v.gas, "the lookup fee is charged even on refusal")
 
-	// (b) Exact tie between V4 and V2. mockEngine prices amountIn/2, so amountIn=2
-	// gives 1; reserves (2,2) give ConstantProductOut(2,2,2) = 2*2/(2+2) = 1.
-	blueBPool(t, pm, h.state.stateDB, tin, tout, Fee030, TickSpacing030)
-	blueBBindV2(t, h.state.stateDB, tin, tout, 2, 2, 30)
-	require.Equal(t, uint64(1), lx.ConstantProductOut(2, 2, 2), "the tie fixture must actually tie")
+	// (b) Exact tie between V4 and V2. At price 1.0 an input of 2 is below every
+	// standard fee's rounding floor, so V4 prices 2; reserves (1e6, 1e6+2) give
+	// ConstantProductOut = 2*(1e6+2)/(1e6+2) = 2.
+	const (
+		tieIn        int64  = 2
+		tieBase      uint64 = 1_000_000
+		tieQuoteResv uint64 = tieBase + 2
+	)
+	blueBPool(t, h.state.stateDB, tin, tout, Fee030, TickSpacing030)
+	blueBBindV2(t, h.state.stateDB, tin, tout, tieBase, tieQuoteResv, 30)
+	require.Equal(t, tieIn, blueBHop(tieIn, Fee030), "the V4 half of the tie must price 1:1 at this size")
+	require.Equal(t, uint64(tieIn), lx.ConstantProductOut(tieBase, tieQuoteResv, uint64(tieIn)),
+		"the V2 half of the tie must match it")
 
 	all := blueBDecodeQuotes(t, func() []byte {
 		q := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle,
-			blueBQuoteBody(tin, tout, big.NewInt(2), 0)), 1_000_000, true)
+			blueBQuoteBody(tin, tout, big.NewInt(tieIn), 0)), 1_000_000, true)
 		require.True(t, q.ok, "both venues price this pair: %s", q.err)
 		return q.out
 	}())
@@ -556,7 +637,7 @@ func TestBlueBV2QuoteDiscardsTheBoundFee(t *testing.T) {
 	h := newSettleHarness(t)
 	withV2Configured(t)
 	tin, tout := blueBAddr(3), blueBAddr(4)
-	c, _ := blueBLive()
+	c := blueBLive()
 
 	in := blueBCall(SelectorQuoteExactInputSingle, blueBQuoteBody(tin, tout, big.NewInt(1_000), 0))
 
@@ -591,9 +672,9 @@ func TestBlueBQuoteV3HasNoSuccessPath(t *testing.T) {
 	prevQuoter, prevFactory := v3QuoterAddr, v3FactoryAddr
 	t.Cleanup(func() { v3QuoterAddr, v3FactoryAddr = prevQuoter, prevFactory })
 
-	c, pm := blueBLive()
+	c := blueBLive()
 	tin, tout := blueBAddr(1), blueBAddr(2)
-	blueBPool(t, pm, h.state.stateDB, tin, tout, Fee030, TickSpacing030)
+	blueBPool(t, h.state.stateDB, tin, tout, Fee030, TickSpacing030)
 	withV2Configured(t)
 	blueBBindV2(t, h.state.stateDB, tin, tout, 1_000_000, 2_000_000, 30)
 
@@ -605,7 +686,7 @@ func TestBlueBQuoteV3HasNoSuccessPath(t *testing.T) {
 	} {
 		v3QuoterAddr, v3FactoryAddr = quoter, quoter
 
-		amount, err := NewLXRouter(pm).quoteV3(h.state.stateDB, tin, tout, big.NewInt(1_000), Fee030)
+		amount, err := NewLXRouter().quoteV3(h.state.stateDB, tin, tout, big.NewInt(1_000), Fee030)
 		require.Errorf(t, err, "quoter %s: quoteV3 has no success arm", quoter.Hex())
 		require.Equalf(t, 0, amount.Sign(), "quoter %s: a failed V3 quote must be zero", quoter.Hex())
 
@@ -628,8 +709,8 @@ func TestBlueBQuoteV3HasNoSuccessPath(t *testing.T) {
 func TestBlueBQuoteV4PricesOnePoolWhicheverWayTheCallerNamesIt(t *testing.T) {
 	h := newSettleHarness(t)
 	lo, hi := blueBAddr(1), blueBAddr(2)
-	c, pm := blueBLive()
-	id := blueBPool(t, pm, h.state.stateDB, lo, hi, Fee030, TickSpacing030)
+	c := blueBLive()
+	id := blueBPool(t, h.state.stateDB, lo, hi, Fee030, TickSpacing030)
 
 	for _, d := range []struct {
 		name           string
@@ -648,7 +729,7 @@ func TestBlueBQuoteV4PricesOnePoolWhicheverWayTheCallerNamesIt(t *testing.T) {
 		require.Positivef(t, qs[0].amount.Sign(), "%s must return a positive quote", d.name)
 
 		// The direction flag really is derived from the ordering, not fixed.
-		amount, poolID, key, err := NewLXRouter(pm).quoteV4(h.state.stateDB, d.tokenIn, d.tOut, big.NewInt(1_000), Fee030)
+		amount, poolID, key, err := NewLXRouter().quoteV4(h.state.stateDB, d.tokenIn, d.tOut, big.NewInt(1_000), Fee030)
 		require.NoErrorf(t, err, "%s", d.name)
 		require.Equalf(t, id, poolID, "%s", d.name)
 		require.Equalf(t, lo, key.Currency0.Address, "%s: currency0 is the LOWER address regardless of call order", d.name)
@@ -701,37 +782,41 @@ func TestBlueBMultiHopComposesEveryHop(t *testing.T) {
 			"two hops are charged as two hops")
 	})
 
-	t.Run("v4 binary path over live pools", func(t *testing.T) {
-		h := newSettleHarness(t) // a private trie: pools are created here, not shared
-		c, pm := blueBLive()
-		blueBPool(t, pm, h.state.stateDB, a, b, Fee030, TickSpacing030)
-		blueBPool(t, pm, h.state.stateDB, b, cAddr, Fee030, TickSpacing030)
+	t.Run("v4 binary path over registered markets", func(t *testing.T) {
+		h := newSettleHarness(t) // a private trie: markets are registered here, not shared
+		c := blueBLive()
+		blueBPool(t, h.state.stateDB, a, b, Fee030, TickSpacing030)
+		blueBPool(t, h.state.stateDB, b, cAddr, Fee030, TickSpacing030)
 
 		const amountIn int64 = 10_000
+		hop1 := blueBHop(amountIn, Fee030)
+		hop2 := blueBHop(hop1, Fee030)
+		require.Less(t, hop2, hop1, "the fixture must lose something on the second hop, or it proves nothing")
+
 		keys := []PathKey{
 			{IntermediateCurrency: b, Fee: Fee030, TickSpacing: TickSpacing030},
 			{IntermediateCurrency: cAddr, Fee: Fee030, TickSpacing: TickSpacing030},
 		}
 		v := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInput,
 			blueBV4(a, keys, big.NewInt(amountIn))), 1_000_000, true)
-		require.True(t, v.ok, "a two-hop V4 path over live pools must quote: %s", v.err)
+		require.True(t, v.ok, "a two-hop V4 path over registered markets must quote: %s", v.err)
 		require.Len(t, v.out, 32)
-		require.Equal(t, int64(amountIn/4), new(big.Int).SetBytes(v.out).Int64(),
-			"each hop halves, so two hops must quarter — proving both hops ran")
+		require.Equal(t, hop2, new(big.Int).SetBytes(v.out).Int64(),
+			"each hop takes its fee, so the answer must be hop2(hop1(in)) — proving both hops ran")
 		require.Equal(t, uint64(1_000_000)-(GasQuoteBase+2*GasQuotePerHop), v.gas)
 
-		// One hop for comparison: half, and a hop cheaper.
+		// One hop for comparison: one fee, and a hop cheaper.
 		one := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInput,
 			blueBV4(a, keys[:1], big.NewInt(amountIn))), 1_000_000, true)
 		require.True(t, one.ok, "%s", one.err)
-		require.Equal(t, int64(amountIn/2), new(big.Int).SetBytes(one.out).Int64())
+		require.Equal(t, hop1, new(big.Int).SetBytes(one.out).Int64())
 		require.Equal(t, uint64(1_000_000)-(GasQuoteBase+GasQuotePerHop), one.gas)
 	})
 
 	t.Run("a dead hop names its own index", func(t *testing.T) {
 		h := newSettleHarness(t) // a private trie: only hop 0's pool exists in it
-		c, pm := blueBLive()
-		blueBPool(t, pm, h.state.stateDB, a, b, Fee030, TickSpacing030) // hop 0 only
+		c := blueBLive()
+		blueBPool(t, h.state.stateDB, a, b, Fee030, TickSpacing030) // hop 0 only
 		keys := []PathKey{
 			{IntermediateCurrency: b, Fee: Fee030, TickSpacing: TickSpacing030},
 			{IntermediateCurrency: blueBAddr(9), Fee: Fee030, TickSpacing: TickSpacing030},
@@ -909,8 +994,8 @@ func TestBlueBRouterViewsWriteNothingAndIgnoreStaticMode(t *testing.T) {
 	blueBBindV2(t, h.state.stateDB, a, b, 1_000_000, 2_000_000, 30)
 	blueBBindV2(t, h.state.stateDB, b, cAddr, 5_000_000, 3_000_000, 30)
 
-	c, pm := blueBLive()
-	blueBPool(t, pm, h.state.stateDB, a, b, Fee030, TickSpacing030)
+	c := blueBLive()
+	blueBPool(t, h.state.stateDB, a, b, Fee030, TickSpacing030)
 
 	inputs := map[string][]byte{
 		"quoteSingle": blueBCall(SelectorQuoteExactInputSingle, blueBQuoteBody(a, b, big.NewInt(1_000), Fee030)),
@@ -941,26 +1026,76 @@ func TestBlueBRouterViewsWriteNothingAndIgnoreStaticMode(t *testing.T) {
 		"a router view must not emit a log")
 }
 
-// TestBlueBQuoteGrowsProcessMemoryPerUnknownPair records a LIVENESS defect that the
-// consensus-correctness design deliberately leaves open. getPool caches every pool
-// it is asked about in the PoolManager's process map — including pools that do not
-// exist, which it stores as a fresh empty Pool. That entry is only ever evicted by a
-// later lookup of the SAME id, so a caller who never repeats a pair never triggers
-// eviction.
+// TestBlueBNoDispatchedPathTouchesTheRetiredNamespace pins the storage decision
+// behind LXPoolAddress. The PoolManager lineage keys its pool, position, tick,
+// binding and ERC-20 vault slots under that address; 0x9999 keys the money path
+// under LXSettleAddress. Two namespaces are a split brain only if a dispatched
+// selector reads one while another writes the other — and the router's V4 quote leg
+// was exactly that reader, pricing off slots the money path never wrote.
 //
-// quoteV4 asks getPool once per fee tier before it checks whether the pool exists,
-// so one quote over a fresh pair adds one entry per tier. The quote selectors are
-// read-only views: reachable by eth_call at no cost to the caller, and by STATICCALL
-// for the flat quote fee. The map is on the process singleton and lives as long as
-// the node.
-//
-// Correctness is unaffected — every cached entry is re-validated against the state
-// trie before use — so this is memory growth, not a fork. It is pinned here with the
-// MEASURED growth rate so a change to either side is visible.
-func TestBlueBQuoteGrowsProcessMemoryPerUnknownPair(t *testing.T) {
+// The write half is already closed by construction: nothing is registered at 0x9010
+// (TestDex9010_NotRegistered) and 0x9012's value selectors revert PRECOMPILE_MOVED
+// (TestRouterValueSelectorsAreRetired), so no dispatched call reaches a PoolManager
+// mutation. This asserts the read half over the whole dispatched surface, counting
+// reads as well as writes. Nothing reaches the retired namespace, so leaving the
+// constant where it is orphans nothing.
+func TestBlueBNoDispatchedPathTouchesTheRetiredNamespace(t *testing.T) {
 	h := newSettleHarness(t)
-	c, pm := blueBLive()
-	require.Empty(t, pm.pools, "a fresh manager caches nothing")
+	withV2Configured(t)
+	c := blueBLive()
+	tin, tout := blueBAddr(1), blueBAddr(2)
+
+	// A fixture rich enough that every arm below does real work rather than bailing
+	// out early: a registered market for the V4 leg, bound reserves for the V2 leg.
+	blueBPool(t, h.state.stateDB, tin, tout, Fee030, TickSpacing030)
+	blueBPool(t, h.state.stateDB, tout, blueBAddr(3), Fee030, TickSpacing030)
+	blueBBindV2(t, h.state.stateDB, tin, tout, 1_000_000, 2_000_000, 30)
+	h.registerMarket(t)
+	h.fundCallerNative(1_000_000)
+
+	var touches int
+	watch := blueBWatchState{nativeAtomicState: h.state, addr: poolManagerAddr, n: &touches}
+
+	// Every dispatched router selector, over a pair each of them can price.
+	for _, in := range [][]byte{
+		blueBCall(SelectorQuoteExactInputSingle, blueBQuoteBody(tin, tout, big.NewInt(1_000), Fee030)),
+		blueBCall(SelectorGetBestRoute, blueBQuoteBody(tin, tout, big.NewInt(1_000), 0)),
+		blueBCall(SelectorQuoteExactInput, blueBSimple([]common.Address{tin, tout, blueBAddr(3)}, big.NewInt(1_000))),
+		blueBCall(SelectorQuoteExactInput, blueBV4(tin,
+			[]PathKey{{IntermediateCurrency: tout, Fee: Fee030, TickSpacing: TickSpacing030}}, big.NewInt(1_000))),
+	} {
+		v := blueBRun(c, watch, in, 1_000_000, true)
+		require.Truef(t, v.ok, "the fixture must let every router arm do real work: %s", v.err)
+	}
+
+	// And the money path, whose own namespace is the other half of the question.
+	out, _, err := h.c.Run(watch, h.caller, poolManagerAddr9999,
+		prependSelector(SelectorSwap, h.crossCalldata()), 5_000_000, false)
+	require.NoError(t, err, "a Phase-A order must settle so the arm is exercised")
+	require.Len(t, out, 32, "Phase A returns a claim id")
+
+	require.Zerof(t, touches,
+		"the dispatched surface touched the retired %s namespace %d times", poolManagerAddr, touches)
+}
+
+// TestBlueBQuoteRetainsNoProcessMemory. A quote reads the registry and returns; it
+// retains nothing about the pair it was asked about.
+//
+// The quote selectors are read-only views, reachable by eth_call at no cost to the
+// caller and by STATICCALL for the flat quote fee, and the pair is entirely
+// caller-chosen. So any per-pair retention on a process singleton is unbounded
+// growth an attacker drives for free, and it lives as long as the node. The V4 leg
+// used to reach getPool, which caches every id it is asked about — including ids
+// with no pool, stored as a fresh empty Pool and evicted only by a repeat lookup of
+// the SAME id, which a caller who never repeats a pair never triggers.
+//
+// The registry read has no cache to grow, and the singleton's pool maps are now
+// untouched by any quote.
+func TestBlueBQuoteRetainsNoProcessMemory(t *testing.T) {
+	h := newSettleHarness(t)
+	c := blueBLive()
+	pm := DEXPrecompile.poolManager
+	before := len(pm.pools) + len(pm.poolStates) + len(pm.positions)
 
 	const calls = 200
 	for i := range calls {
@@ -968,28 +1103,13 @@ func TestBlueBQuoteGrowsProcessMemoryPerUnknownPair(t *testing.T) {
 		in := blueBQuoteBody(blueBAddr(byte(i%250+1)), common.BigToAddress(big.NewInt(int64(i)+1<<40)),
 			big.NewInt(1_000), 0)
 		v := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle, in), 1_000_000, true)
-		require.Falsef(t, v.ok, "call %d prices nothing — no pool exists for this pair", i)
+		require.Falsef(t, v.ok, "call %d prices nothing — no market is registered for this pair", i)
 	}
 
-	perCall := float64(len(pm.pools)) / float64(calls)
-	require.Positivef(t, len(pm.pools),
-		"a read-only quote over pairs that do not exist retained %d cache entries", len(pm.pools))
-	require.GreaterOrEqualf(t, perCall, 1.0,
-		"measured growth: %d entries after %d free read-only quotes (%.1f per call)", len(pm.pools), calls, perCall)
-	t.Logf("process-cache growth: %d entries after %d read-only quotes over fresh pairs (%.1f per call)",
-		len(pm.pools), calls, perCall)
-
-	// Repeating ONE pair does not grow the cache further — the growth is per distinct
-	// pair, which is exactly what an attacker controls.
-	fixed := blueBQuoteBody(blueBAddr(200), blueBAddr(201), big.NewInt(1_000), 0)
-	v := blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle, fixed), 1_000_000, true)
-	require.False(t, v.ok, "%s", v.err)
-	settled := len(pm.pools)
-	for range 50 {
-		v = blueBRun(c, h.state, blueBCall(SelectorQuoteExactInputSingle, fixed), 1_000_000, true)
-		require.False(t, v.ok, "%s", v.err)
-	}
-	require.Equal(t, settled, len(pm.pools), "repeating one pair is bounded; varying the pair is not")
+	after := len(pm.pools) + len(pm.poolStates) + len(pm.positions)
+	require.Equalf(t, before, after,
+		"%d free read-only quotes over fresh pairs retained %d process-cache entries",
+		calls, after-before)
 }
 
 // =========================================================================
@@ -1039,7 +1159,7 @@ func TestBlueBConfigureAppliesEveryAddress(t *testing.T) {
 	// bound pair quotes; zeroed, the same pair does not. That is the assignment
 	// having an observable effect rather than only a variable changing.
 	h := newSettleHarness(t)
-	c, _ := blueBLive()
+	c := blueBLive()
 	tin, tout := blueBAddr(1), blueBAddr(2)
 	blueBBindV2(t, h.state.stateDB, tin, tout, 1_000_000, 2_000_000, 30)
 	in := blueBCall(SelectorQuoteExactInputSingle, blueBQuoteBody(tin, tout, big.NewInt(1_000), 0))

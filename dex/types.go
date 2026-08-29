@@ -59,10 +59,15 @@ const (
 	DEXAdminAddress  = "0x0000000000000000000000000000000000009993" // 0x9993 Admin (RESERVED — constant only, not implemented)
 
 	// Core DEX (LP-901x) — RETIRED address space. 0x9010 was removed; 0x9999 is the
-	// sole DEX precompile. These addresses are kept as constants ONLY so the values
-	// are not reused; nothing dispatches at them. The canonical surface is the
-	// LP-9999 family above.
-	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // 0x9010 LXPool — deprecated by LP-9999 (constant only, not dispatched)
+	// sole DEX precompile. Nothing dispatches at these addresses, so they are kept so
+	// the values are not reused. The canonical surface is the LP-9999 family above.
+	//
+	// LXPoolAddress is not inert, though: it derives poolManagerAddr, the storage
+	// namespace of the undispatched PoolManager lineage, and lxPoolAddr, the log
+	// address that lineage emits under. No dispatched selector reads or writes it
+	// (TestBlueBNoDispatchedPathTouchesTheRetiredNamespace), which is what makes
+	// leaving it at 0x9010 rather than rebasing it onto 0x9999 orphan nothing.
+	LXPoolAddress   = "0x0000000000000000000000000000000000009010" // 0x9010 LXPool — deprecated by LP-9999 (not dispatched)
 	LXOracleAddress = "0x0000000000000000000000000000000000009011" // LP-9011 LXOracle (legacy)
 	LXRouterAddress = "0x0000000000000000000000000000000000009012" // LP-9012 LXRouter (legacy)
 	LXHooksAddress  = "0x0000000000000000000000000000000000009013" // LP-9013 LXHooks (legacy)

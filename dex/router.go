@@ -171,13 +171,14 @@ type SmartOrderRouter struct {
 // It queries V4 native pools first (zero-cost precompile state lookup),
 // then falls back to V3 and V2 deployed contracts via STATICCALL.
 type LXRouter struct {
-	poolManager *PoolManager
-	venues      []ExternalVenue
+	venues []ExternalVenue
 }
 
-// NewLXRouter creates a router linked to the singleton PoolManager.
-func NewLXRouter(pm *PoolManager) *LXRouter {
-	return &LXRouter{poolManager: pm}
+// NewLXRouter creates a router. It holds no pool state: every venue it quotes reads
+// through the StateDB it is handed — V4 from the 0x9999 market registry, V2 from the
+// 0x9999 AMM rows — so the router has nothing to be constructed against.
+func NewLXRouter() *LXRouter {
+	return &LXRouter{}
 }
 
 // RegisterVenue adds an external venue quoter to the router.
@@ -328,6 +329,14 @@ func (r *LXRouter) GetBestRoute(
 
 // quoteV4 checks all V4 pools for the given pair and returns the best quote.
 // Returns the best output amount, pool ID, pool key, and any error.
+//
+// It resolves each candidate tier through marketFor — the 0x9999 market registry,
+// which is the namespace the money path writes — and prices it with
+// projectSingleTick, the same record and the same deterministic projection the
+// 0x9998 Quoter serves. One registry, one projection, so the two quote surfaces
+// cannot answer differently about one pool. The projection is a COARSE preview at
+// the registered price with no resting-book depth, which is what an advisory quote
+// can honestly offer; a caller wanting depth reads the D book off-consensus.
 func (r *LXRouter) quoteV4(
 	stateDB StateDB,
 	tokenIn, tokenOut common.Address,
@@ -379,21 +388,12 @@ func (r *LXRouter) quoteV4(
 			Hooks:       common.Address{}, // no hooks for standard routing
 		}
 
-		poolID := key.ID()
-		pool := r.poolManager.getPool(stateDB, poolID)
-
-		if !pool.IsInitialized() || pool.Liquidity.Sign() <= 0 {
+		rec, poolID, ok := marketFor(stateDB, key)
+		if !ok {
 			continue
 		}
 
-		// Calculate expected output via the single routed quote path: the ZAP
-		// backend reads its canonical D-Chain pool; an inert backend returns zero.
-		var output *big.Int
-		if zeroForOne {
-			output = r.poolManager.calculateSwapOutput(stateDB, key, poolID, amountIn, true)
-		} else {
-			output = r.poolManager.calculateSwapOutput(stateDB, key, poolID, amountIn, false)
-		}
+		output := projectSingleTick(rec, amountIn, zeroForOne, true /*exactIn*/)
 
 		if output.Sign() > 0 && (bestAmount == nil || output.Cmp(bestAmount) > 0) {
 			bestAmount = output

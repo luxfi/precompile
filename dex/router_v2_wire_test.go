@@ -29,9 +29,8 @@ func withV2Configured(t *testing.T) {
 }
 
 func TestRouterQuoteV2ResolvesNativeAMM(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
+	router := NewLXRouter()
 	withV2Configured(t)
 
 	// Unbound pair: quoteV2 must fall through (no native liquidity), returning 0 + error.
@@ -90,7 +89,7 @@ func TestRouterQuoteV2ResolvesNativeAMM(t *testing.T) {
 // uint64 domain falls through (0, error) rather than truncating.
 func TestRouterQuoteV2AmountOutOfUint64Domain(t *testing.T) {
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(NewPoolManager(&mockEngine{}))
+	router := NewLXRouter()
 	withV2Configured(t)
 
 	poolID := sortedPoolKey(testTokenA, testTokenB, Fee030, TickSpacing030, common.Address{}).ID()
@@ -110,7 +109,7 @@ func TestRouterQuoteV2AmountOutOfUint64Domain(t *testing.T) {
 // only bound venue (no V4 pool, V3 unconfigured).
 func TestRouterQuoteExactInputSingleSelectsV2(t *testing.T) {
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(NewPoolManager(&mockEngine{}))
+	router := NewLXRouter()
 	withV2Configured(t)
 
 	const baseReserve, quoteReserve = uint64(1_000_000), uint64(2_000_000)
