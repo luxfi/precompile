@@ -122,8 +122,8 @@ func (s *SettleContract) runSettleModifyLiquidity(
 
 	stateDB := newPoolStateAdapter(state)
 
-	poolID := key.ID()
-	if loadMarket(stateDB, poolID).Status != MarketStatusActive {
+	_, poolID, known := marketFor(stateDB, key)
+	if !known {
 		return nil, gasLeft, ErrMakerNoMarket
 	}
 

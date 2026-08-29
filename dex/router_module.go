@@ -34,7 +34,7 @@ const RouterConfigKey = "routerConfig"
 
 // RouterPrecompile is the singleton router instance.
 var RouterPrecompile = &RouterContract{
-	router: NewLXRouter(DEXPrecompile.poolManager),
+	router: NewLXRouter(),
 }
 
 // RouterModule is the precompile module (LXRouter at LP-9012).
@@ -171,14 +171,13 @@ func (c *RouterContract) Run(
 	}
 }
 
-// The RouterContract value-execution handlers (runExactInputSingle / runExactInput /
-// runExactOutputSingle / runExactOutput) were REMOVED: 0x9012's value selectors now revert
-// PRECOMPILE_MOVED at the dispatch (see Run), so these dispatch handlers had no caller. They
-// routed swaps through the engine's synchronous in-block matcher (LXRouter.Exact* ->
-// poolManager.Swap), which forks consensus — the second money path the decomplect eliminates.
-// The underlying LXRouter.Exact* + poolManager.Swap engine remains for now (legacy-engine unit
-// tests exercise it directly; it is UNREACHABLE via any dispatched precompile selector) and is
-// staged for a follow-up removal. Only the read-only quote/route views survive on 0x9012.
+// 0x9012 has no value-execution handlers and no synchronous matcher behind them.
+// Its value selectors revert PRECOMPILE_MOVED at the dispatch (see Run); the
+// LXRouter.Exact* methods and PoolManager.Swap they called are gone. A live matcher
+// inside C-Chain block execution forks consensus — each validator observes
+// independently-timed fills, so their state roots diverge — which is why there is one
+// money path and it settles at 0x9999. What remains here are the read-only quote and
+// route views, which price against the 0x9999 registry and move no value.
 
 func (c *RouterContract) runQuoteExactInputSingle(
 	state contract.AccessibleState,

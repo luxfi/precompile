@@ -52,6 +52,13 @@ func haltAsset(h *settleHarness, caller common.Address, assetID [32]byte, on boo
 	return err
 }
 
+// checkHarnessHalt runs the halt gate over the harness swap's scopes — the same
+// (poolID, tokenIn, tokenOut) triple SettleSwap resolves before it calls the gate.
+func checkHarnessHalt(h *settleHarness) error {
+	in, out := swapAssetDirection(h.key, h.params)
+	return checkHalt(newPoolStateAdapter(h.state), h.key.ID(), in, out)
+}
+
 // haltMarket builds and runs setHaltMarket(marketID, on) from `caller`.
 func haltMarket(h *settleHarness, caller common.Address, marketID [32]byte, on bool) error {
 	data := make([]byte, 64)
@@ -89,7 +96,7 @@ func TestHIGH3_OnlyGovernanceCanHalt_RetiredEOACannot(t *testing.T) {
 
 	// Confirm none of those rejected calls actually halted anything (the gate ran before
 	// any state write; a reverted halt write rolls back with the revert).
-	if checkHalt(newPoolStateAdapter(h.state), h.key, h.params) != nil {
+	if checkHarnessHalt(h) != nil {
 		t.Fatal("an unauthorized halt attempt wrote halt state (do-not-ship)")
 	}
 
@@ -97,14 +104,14 @@ func TestHIGH3_OnlyGovernanceCanHalt_RetiredEOACannot(t *testing.T) {
 	if err := haltGlobal(h, gov, true); err != nil {
 		t.Fatalf("governance controller must be able to setHaltGlobal, got: %v", err)
 	}
-	if got := checkHalt(newPoolStateAdapter(h.state), h.key, h.params); !errors.Is(got, ErrDEXHalted) {
+	if got := checkHarnessHalt(h); !errors.Is(got, ErrDEXHalted) {
 		t.Fatalf("global halt did not bite: checkHalt = %v, want ErrDEXHalted", got)
 	}
 	// And governance can lift it (no mint, just unhalt).
 	if err := haltGlobal(h, gov, false); err != nil {
 		t.Fatalf("governance controller must be able to clear the global halt, got: %v", err)
 	}
-	if got := checkHalt(newPoolStateAdapter(h.state), h.key, h.params); got != nil {
+	if got := checkHarnessHalt(h); got != nil {
 		t.Fatalf("global halt not cleared: checkHalt = %v, want nil", got)
 	}
 
@@ -112,7 +119,7 @@ func TestHIGH3_OnlyGovernanceCanHalt_RetiredEOACannot(t *testing.T) {
 	if err := haltAsset(h, gov, h.inAssetID(), true); err != nil {
 		t.Fatalf("governance setHaltAsset(in) failed: %v", err)
 	}
-	if got := checkHalt(newPoolStateAdapter(h.state), h.key, h.params); !errors.Is(got, ErrAssetHalted) {
+	if got := checkHarnessHalt(h); !errors.Is(got, ErrAssetHalted) {
 		t.Fatalf("asset halt did not bite: checkHalt = %v, want ErrAssetHalted", got)
 	}
 	if err := haltAsset(h, gov, h.inAssetID(), false); err != nil {
@@ -124,7 +131,7 @@ func TestHIGH3_OnlyGovernanceCanHalt_RetiredEOACannot(t *testing.T) {
 	if err := haltMarket(h, gov, poolID, true); err != nil {
 		t.Fatalf("governance setHaltMarket failed: %v", err)
 	}
-	if got := checkHalt(newPoolStateAdapter(h.state), h.key, h.params); !errors.Is(got, ErrMarketHalted) {
+	if got := checkHarnessHalt(h); !errors.Is(got, ErrMarketHalted) {
 		t.Fatalf("market halt did not bite: checkHalt = %v, want ErrMarketHalted", got)
 	}
 }
@@ -153,7 +160,7 @@ func TestHIGH3_FailClosed_NoGovernanceConfigured_NobodyCanHalt(t *testing.T) {
 		}
 	}
 	// Nothing was halted: the swap path is unaffected (no fail-OPEN, no fail-into-halt).
-	if got := checkHalt(newPoolStateAdapter(h.state), h.key, h.params); got != nil {
+	if got := checkHarnessHalt(h); got != nil {
 		t.Fatalf("fail-closed authority must not have written halt state: checkHalt = %v", got)
 	}
 }

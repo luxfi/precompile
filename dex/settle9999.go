@@ -79,6 +79,9 @@ var (
 	ErrSettleAmountRange   = errors.New("dex: settle amount exceeds uint256")
 	ErrSettleERC20Vault    = errors.New("dex: ERC-20 settlement requires an erc20Vault-capable StateDB")
 	ErrSettleNoAtomicState = errors.New("dex: 0x9999 native settle requires the cross-chain atomic capability")
+	// ErrSwapNoMarket refuses a swap whose PoolKey names no registered market — the
+	// swap-path sibling of ErrMakerNoMarket and ErrQuoteNoMarket.
+	ErrSwapNoMarket = errors.New("dex: swap on an unregistered market (initialize first)")
 )
 
 // --- Gas model for the native seam. The C->D / D->C work is bounded: a small
@@ -152,6 +155,19 @@ func SettleSwap(
 
 	stateDB := newPoolStateAdapter(state)
 
+	// Resolve the caller's key against the market registry ONCE, above the phase
+	// switch, and carry the resolved poolID down. Nothing below re-derives it, so no
+	// phase — including one added later — can key a halt slot, a volume shard or a
+	// fill event on a pool the registry never registered. This is the check the LP
+	// rail already makes at runSettleModifyLiquidity; here it dominates both phases
+	// instead of sitting in each. Assets come off the same resolution so checkHalt
+	// derives nothing of its own.
+	_, poolID, known := marketFor(stateDB, key)
+	if !known {
+		return nil, suppliedGas, ErrSwapNoMarket
+	}
+	inAsset, outAsset := swapAssetDirection(key, params)
+
 	// GLOBAL non-reentrant guard for the 0x9999 custody+settle surface (the SAME single
 	// slot deposit / withdraw / modifyLiquidity take). Both phases move value through
 	// the seam reserve (Phase A locks tokenIn, Phase B credits tokenOut), and a phase's
@@ -179,7 +195,7 @@ func SettleSwap(
 		gasLeft := suppliedGas - GasNativeSettlement
 
 		// Halt gate (global/market/asset) — cheapest scope first.
-		if herr := checkHalt(stateDB, key, params); herr != nil {
+		if herr := checkHalt(stateDB, poolID, inAsset, outAsset); herr != nil {
 			return nil, gasLeft, herr
 		}
 		claim, derr := decodeSettlementBody(body, key, params, caller)
@@ -192,13 +208,13 @@ func SettleSwap(
 		}
 		// Analytics — sharded, no global hot write.
 		creditedAmt := new(big.Int).SetUint64(credited)
-		accrueVolume(stateDB, key.ID(), creditedAmt, blockNumber)
+		accrueVolume(stateDB, poolID, creditedAmt, blockNumber)
 		// Indexable settled-fill signal for the DEX graph / lux.exchange. Emitted
 		// on the money path (Phase-B credit) so eth_getLogs surfaces native-CLOB
 		// fills. accrueVolume is sharded state (not a log); this is the log. 0x9999 is
 		// AlwaysOn (active from genesis, no dated fork), so the log is emitted
 		// unconditionally — every settlement that executes emits it, from block 0.
-		emitDEXFillEvent(stateDB, key.ID(), caller, creditedAmt, blockNumber)
+		emitDEXFillEvent(stateDB, poolID, caller, creditedAmt, blockNumber)
 		// V4 return: the taker received `credited` of the output asset. Map to the
 		// BalanceDelta direction (output paid out to taker = negative to pool).
 		delta := balanceDeltaForOutput(params, new(big.Int).SetUint64(credited))
@@ -214,7 +230,7 @@ func SettleSwap(
 		}
 		gasLeft := suppliedGas - GasNativeOrder
 
-		if herr := checkHalt(stateDB, key, params); herr != nil {
+		if herr := checkHalt(stateDB, poolID, inAsset, outAsset); herr != nil {
 			return nil, gasLeft, herr
 		}
 		t, berr := buildTransfer(key, params, caller)

@@ -15,9 +15,9 @@ import (
 //
 // A market becomes real at initialize (settle_market.go), which resolves both
 // assets through the installed AssetResolver and requires live on-chain code at
-// each. Several surfaces re-read that record and require it Active before they
-// act: the LP commit, the quoter, the stateview reads. The swap money path does
-// not, and this file records that as a measured fact rather than an assumption.
+// each. Every surface that acts on a pool identity re-reads that record and
+// requires it Active first: the LP commit, the quoter, the stateview reads, and
+// the swap money path. marketID is the one predicate all of them ask.
 
 // admissionKey is a well-formed PoolKey over two addresses that initialize never
 // registered as a market.
@@ -73,16 +73,10 @@ func TestTheViewSurfacesRequireARegisteredMarket(t *testing.T) {
 	}
 }
 
-// TestSwapDoesNotAskWhereItsSiblingsDo records the gap. A Phase-A swap against an
-// uninitialized key is accepted: it locks the caller's asset into the seam and
-// stages a cross-chain object carrying a market id nothing admitted.
-//
-// Closing it is a one-line status check identical to the LP commit's in
-// position_commit.go, but it changes which calls a chain accepts, so it is a
-// coordinated upgrade rather than a patch — and adding it fails eighteen existing
-// tests, every one of which swaps against a key it never registered. When the check
-// lands, this test asserts the refusal instead of the acceptance.
-func TestSwapDoesNotAskWhereItsSiblingsDo(t *testing.T) {
+// TestSwapAsksWhereItsSiblingsDo. A Phase-A swap against an uninitialized key is
+// refused before it locks anything: no asset enters custody and no cross-chain
+// object is staged naming an id nothing admitted.
+func TestSwapAsksWhereItsSiblingsDo(t *testing.T) {
 	h := newSettleHarness(t)
 	h.fundCallerNative(10_000)
 	key := admissionKey()
@@ -92,17 +86,60 @@ func TestSwapDoesNotAskWhereItsSiblingsDo(t *testing.T) {
 	params := SwapParams{ZeroForOne: true, AmountSpecified: big.NewInt(-1_000)}
 
 	if _, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
-		prependSelector(SelectorSwap, buildSwapCalldata(key, params, nil)), 5_000_000, false); err != nil {
-		t.Fatalf("swap against an unregistered market now returns %v — the admission check "+
-			"was added; assert the refusal here instead of the acceptance", err)
+		prependSelector(SelectorSwap, buildSwapCalldata(key, params, nil)), 5_000_000, false); !errors.Is(err, ErrSwapNoMarket) {
+		t.Fatalf("swap against an unregistered market: want ErrSwapNoMarket, got %v", err)
 	}
-	// And it is not free: the accepted swap locked the caller's asset against a
-	// market that does not exist, and staged a cross-chain record naming its id.
-	aid := assetID(key.Currency0)
-	if got := loadCustody(zzmpDB(h), aid); got.Sign() == 0 {
-		t.Fatal("the accepted swap locked nothing — re-read what this test characterises")
+	if got := loadCustody(zzmpDB(h), assetID(key.Currency0)); got.Sign() != 0 {
+		t.Fatalf("a refused swap locked %s into custody", got)
 	}
-	if got := stageSeq(zzmpDB(h)); got == 0 {
-		t.Fatal("the accepted swap staged nothing — re-read what this test characterises")
+	if got := stageSeq(zzmpDB(h)); got != 0 {
+		t.Fatalf("a refused swap staged %d cross-chain objects", got)
+	}
+}
+
+// TestHaltBindsTheRegisteredMarketNotTheSuppliedKey moves the axis the halt suite
+// never moved. Every halt test varies the HALT and holds the PoolKey fixed, so none
+// of them can tell "the halt binds a registered market" from "the halt binds a
+// number the caller supplied". Here the halt is fixed on the real market and the KEY
+// varies by one calldata field.
+//
+// The forged key keeps both currencies, so the asset-halt scope is byte-identical
+// and the swap direction resolves to the same pair; only the fee tier differs, which
+// is enough to move key.ID() to a slot governance never set. Without the registry
+// resolution that key settles around the halt.
+func TestHaltBindsTheRegisteredMarketNotTheSuppliedKey(t *testing.T) {
+	h := newSettleHarness(t)
+	h.registerMarket(t)
+	h.fundCallerNative(10_000)
+
+	// Governance halts the REAL market. Global and asset halts stay off.
+	if err := haltMarket(h, h.operator(), h.key.ID(), true); err != nil {
+		t.Fatalf("governance setHaltMarket: %v", err)
+	}
+	if _, err := h.runSwap(t, h.crossCalldata(), false); !errors.Is(err, ErrMarketHalted) {
+		t.Fatalf("the halted market must refuse its own key: got %v", err)
+	}
+
+	// One field of the tuple changes. Same currencies, same direction, same amount.
+	forged := h.key
+	forged.Fee = 500
+	forgedID := forged.ID()
+	if forgedID == h.key.ID() {
+		t.Fatal("fixture: the forged key must hash to a different pool id")
+	}
+	in0, out0 := swapAssetDirection(h.key, h.params)
+	in1, out1 := swapAssetDirection(forged, h.params)
+	if in0 != in1 || out0 != out1 {
+		t.Fatal("fixture: the forged key must move the pool id and nothing else")
+	}
+	if isHalted(zzmpDB(h), makeStorageKey(haltMarketPrefix, forgedID[:])) {
+		t.Fatal("fixture: governance never set a halt at the forged pool id")
+	}
+
+	if _, err := h.runSwap(t, buildSwapCalldata(forged, h.params, nil), false); !errors.Is(err, ErrSwapNoMarket) {
+		t.Fatalf("a fabricated pool key settled around a market halt: want ErrSwapNoMarket, got %v", err)
+	}
+	if got := loadCustody(zzmpDB(h), in1); got.Sign() != 0 {
+		t.Fatalf("the fabricated key locked %s into custody past a halted market", got)
 	}
 }

@@ -26,16 +26,23 @@ import (
 // replacement by Export (order + async D->C settlement), not removed
 // in this pass; see the package design.
 //
-// Two implementations live in-tree:
+// Two implementations live in-tree, and both refuse every operation on this
+// surface:
 //
 //   - dchainUnavailable (dchain_client.go) — the package DEFAULT. No local
 //     D-Chain reachable: every call reverts ErrDChainUnavailable. The public EVM
 //     ships this so a node not running its local dexvm cleanly reverts (the
 //     on-ramp is closed) instead of fabricating a fill.
-//   - ZAPEngine (engine_zap.go) — the stateless V4->CLOB adapter that forwards
-//     every operation to the node-LOCAL D-Chain over loopback ZAP. The EVM
-//     plugin resolves it via dex.InstallDChainClient(...) when this node serves
-//     the DEX path and its local D-Chain endpoint is configured.
+//   - NativeDChainClient (native_dchain_client.go) — the C<->D atomic client the
+//     money path routes value through. Its value moves are Export/Import, which
+//     are not on this interface; the methods below exist on it only to satisfy the
+//     surface and each returns ErrDChainUnavailable.
+//
+// A host may install its own via the exported InstallDChainClient. That is also
+// the only way the optional seams below (custodyEngine, poolRouter,
+// cancelAuthority) acquire an implementation: nothing in this package provides
+// one, so every type assertion for them fails and the PoolManager takes its
+// no-backend branch.
 //
 // The on-chain ABI (selectors at LP-9010) is invariant — a contract compiled
 // against the precompile address runs unchanged on every chain.
@@ -57,7 +64,10 @@ type Engine interface {
 	// Donate distributes tokens to LPs via fee growth updates.
 	Donate(pool *PoolState, amount0, amount1 *big.Int) (BalanceDelta, error)
 
-	// Quote estimates swap output without mutating state. Used by router.
+	// Quote estimates swap output without mutating state. No dispatched path calls
+	// it: the router prices against the 0x9999 market registry, which every
+	// validator reads identically, because a live query to a separate chain's book
+	// answers differently per node.
 	Quote(pool *Pool, amountIn *big.Int, zeroForOne bool) *big.Int
 
 	// Brand returns the human-readable identity of the client. The precompile
@@ -75,10 +85,9 @@ type Engine interface {
 // vault) and OUT of it (Withdraw, before releasing the asset), and to bind a
 // market's assets (OpenMarket) so the ledger value-checks orders.
 //
-// The inertEngine does NOT implement this (no ledger to fund). The PoolManager
-// type-asserts for custodyEngine and a deposit/withdraw selector reverts cleanly
-// when the backend is not custody-capable. ZAPEngine implements it by relaying
-// clob_deposit / clob_withdraw / clob_open_market to the D-Chain.
+// Neither in-tree client implements it — there is no ledger here to fund — so the
+// PoolManager's type assertion fails and a deposit/withdraw reverts cleanly. A host
+// that runs a custody ledger supplies one through InstallDChainClient.
 //
 // asset ids: a Currency's 20-byte address maps INJECTIVELY to its full 32-byte
 // D-Chain asset id (assetID in engine_zap.go — left-padded address); native LUX
@@ -118,13 +127,12 @@ type custodyEngine interface {
 }
 
 // poolRouter is the OPTIONAL seam a backend implements when its canonical pool
-// state lives elsewhere (e.g. ZAPEngine, whose pools live on the D-Chain DEX
-// server). The PoolManager, which alone knows the V4 poolId, threads it to the
-// backend so operations route to the right canonical pool.
+// state lives elsewhere — on the D-Chain DEX server, say. The PoolManager, which
+// alone knows the V4 poolId, threads it to the backend so operations route to the
+// right canonical pool.
 //
-// The inertEngine does NOT implement this: it has no backend to route to. The
-// PoolManager type-asserts for poolRouter and only calls it when present, so a
-// backend that holds its own state (none in-tree today) needs no routing.
+// Neither in-tree client implements it: neither has a backend to route to. The
+// PoolManager type-asserts and only calls it when present.
 type poolRouter interface {
 	// InitializePool creates the canonical pool on the backend keyed by poolID
 	// and records the route for ps. Returns the authoritative initial tick.
@@ -143,7 +151,7 @@ type poolRouter interface {
 // cache cannot provide (RED H1). See PoolManager.swapBindKey / loadSwapBinding.
 
 // cancelAuthority is the OPTIONAL seam a backend exposes when it resolves a maker's
-// resting order through an in-process handle map (e.g. ZAPEngine.orderRef). The
+// resting order through an in-process handle map. The
 // AUTHORITATIVE owner<->order binding lives in the PoolManager's durable StateDB
 // (cancelAuthKey / loadCancelAuth); the backend map is only a read-through cache,
 // exactly like the pool/positions caches. The PoolManager uses this seam to:
@@ -155,9 +163,9 @@ type poolRouter interface {
 //     executions of the cancel tx (the place's in-memory binding does not survive
 //     to a later tx / a node restart).
 //
-// The inertEngine does NOT implement this (no resting book). The PoolManager type-
-// asserts and only drives the durable binding when the backend is cancelAuthority-
-// capable, so a stateless backend needs no seam.
+// Neither in-tree client implements it — neither holds a resting book. The
+// PoolManager type-asserts and only drives the durable binding when the backend is
+// cancelAuthority-capable, so a stateless backend needs no seam.
 type cancelAuthority interface {
 	// OrderHandle returns the server orderID the backend currently has bound to the
 	// (maker, poolId, salt) handle, or ok=false if none. Read straight after a

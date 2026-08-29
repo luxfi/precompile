@@ -26,10 +26,12 @@ import (
 // writes three bytes, so it hashed to the pool id of fee 3000 while the field
 // carried 16780216: 5593 times the fee the pool was created with.
 //
-// The refusal is at the decode, not at each use, so every consumer inherits it —
-// settle_market's FeeMax check on the dispatched path, and calculateFlashFee /
-// getPoolState on the PoolManager lineage that is not dispatched today and does
-// spend the calldata value directly.
+// The refusal is at the decode, not at each use, so every consumer inherits it. Two
+// consumers spend the calldata value rather than merely hashing it: settle_market's
+// initialize bounds fee against FeeMax before storing it, and calculateFlashFee /
+// getPoolState on the undispatched PoolManager lineage multiply and grid by it
+// directly. Bounding at the decoder covers both without either having to remember,
+// which is what keeps the lineage's arithmetic honest if it is ever dispatched again.
 
 // zznWord renders v as a 32-byte big-endian ABI slot, two's complement for
 // negatives — the encoding a caller actually puts on the wire.
@@ -253,6 +255,26 @@ func TestZznEntryDecodersSurfaceThePoolKeyRefusal(t *testing.T) {
 	}
 	if _, err := decodePMLifecycle(pad(good, 320)); err != nil {
 		t.Fatalf("decodePMLifecycle refused a valid key: %v", err)
+	}
+
+	// The 0x9998 quote view has the same shape — its own length check, then a
+	// 160-byte prefix to DecodePoolKey — and it is a dispatched surface that turns a
+	// caller's key into a poolID. It must surface the refusal rather than look up a
+	// registry slot addressed by fields the decoded key does not hold.
+	h := newSettleHarness(t)
+	quoteArgs := func(key []byte) []byte {
+		args := make([]byte, 224)
+		copy(args[:160], key)
+		big.NewInt(1_000).FillBytes(args[160:192])
+		args[223] = 1 // zeroForOne
+		return prependSelector(SelQExactInputSingle, args)
+	}
+	q := &QuoterContract{}
+	if _, _, err := q.Run(h.state, h.caller, quoterAddr, quoteArgs(bad), 5_000_000, true); !errors.Is(err, ErrInvalidFee) {
+		t.Fatalf("the 0x9998 quote view admitted a wide fee: %v", err)
+	}
+	if _, _, err := q.Run(h.state, h.caller, quoterAddr, quoteArgs(good), 5_000_000, true); !errors.Is(err, ErrQuoteNoMarket) {
+		t.Fatalf("an in-range key must get past the decode to the registry lookup: %v", err)
 	}
 }
 

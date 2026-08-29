@@ -19,49 +19,27 @@ var (
 	testCaller = common.HexToAddress("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 )
 
-// setupV4Pool creates and initializes a V4 pool with liquidity for testing.
-func setupV4Pool(t *testing.T, pm *PoolManager, stateDB StateDB, c0, c1 common.Address) PoolKey {
+// setupV4Market registers a market for the pair at price 1.0 in the 0x9999 registry
+// — the namespace the money path writes and the router's V4 leg quotes from.
+func setupV4Market(t *testing.T, stateDB stateKV, c0, c1 common.Address) PoolKey {
 	t.Helper()
-	key := PoolKey{
-		Currency0:   Currency{Address: c0},
-		Currency1:   Currency{Address: c1},
-		Fee:         Fee030,
-		TickSpacing: TickSpacing030,
-	}
-	tick, err := pm.Initialize(stateDB, key, new(big.Int).Set(Q96), nil)
-	if err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	// Use tick range that encompasses the actual tick returned by Initialize
-	tickLower := tick - 10000
-	tickUpper := tick + 10000
-	if tickLower < MinTick {
-		tickLower = MinTick
-	}
-	if tickUpper > MaxTick {
-		tickUpper = MaxTick
-	}
-
-	// Add liquidity
-	_, _, err = pm.ModifyLiquidity(stateDB, testLP, key, ModifyLiquidityParams{
-		TickLower:      tickLower,
-		TickUpper:      tickUpper,
-		LiquidityDelta: big.NewInt(1_000_000),
-	}, nil)
-	if err != nil {
-		t.Fatalf("ModifyLiquidity failed: %v", err)
-	}
-
+	key := sortedPoolKey(c0, c1, Fee030, TickSpacing030, common.Address{})
+	storeMarket(stateDB, key.ID(), MarketRecord{
+		Status:       MarketStatusActive,
+		SqrtPriceX96: new(big.Int).Set(Q96),
+		Currency0:    key.Currency0.Address,
+		Currency1:    key.Currency1.Address,
+		Fee:          key.Fee,
+		TickSpacing:  key.TickSpacing,
+	})
 	return key
 }
 
 func TestRouterQuoteV4(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
+	router := NewLXRouter()
 
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
+	setupV4Market(t, stateDB, testTokenA, testTokenB)
 
 	amountIn := big.NewInt(10_000)
 	amount, poolID, poolKey, err := router.quoteV4(stateDB, testTokenA, testTokenB, amountIn, 0)
@@ -82,9 +60,8 @@ func TestRouterQuoteV4(t *testing.T) {
 }
 
 func TestRouterQuoteNoPool(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
+	router := NewLXRouter()
 
 	_, _, _, err := router.quoteV4(stateDB, testTokenA, testTokenB, big.NewInt(1000), 0)
 	if err == nil {
@@ -93,11 +70,10 @@ func TestRouterQuoteNoPool(t *testing.T) {
 }
 
 func TestRouterGetBestRoute(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
+	router := NewLXRouter()
 
-	setupV4Pool(t, pm, stateDB, testTokenA, testTokenB)
+	setupV4Market(t, stateDB, testTokenA, testTokenB)
 
 	best, err := router.GetBestRoute(stateDB, testTokenA, testTokenB, big.NewInt(10_000))
 	if err != nil {
@@ -114,9 +90,8 @@ func TestRouterGetBestRoute(t *testing.T) {
 }
 
 func TestRouterFallbackOrder(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
+	router := NewLXRouter()
 
 	// No V4 pool, V3/V2 not configured — should get error
 	quotes, err := router.QuoteExactInputSingle(stateDB, testTokenA, testTokenB, big.NewInt(1000), 0)
@@ -265,9 +240,8 @@ func (v *mockVenue) Quote(stateDB StateDB, tokenIn, tokenOut common.Address, amo
 }
 
 func TestRouterExternalVenueQuote(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
+	router := NewLXRouter()
 
 	// Register a mock venue that offers 10x output (simulating external liquidity)
 	venue := &mockVenue{
@@ -300,9 +274,8 @@ func TestRouterExternalVenueQuote(t *testing.T) {
 }
 
 func TestRouterExternalVenueStillWorksInQuotes(t *testing.T) {
-	pm := NewPoolManager(&mockEngine{})
 	stateDB := NewMockStateDB()
-	router := NewLXRouter(pm)
+	router := NewLXRouter()
 
 	// External venue should still appear in quote results
 	router.RegisterVenue(&mockVenue{

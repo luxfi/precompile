@@ -347,10 +347,28 @@ func bestEffortOpenMarketOnLocalD(poolID [32]byte, key PoolKey) {
 	}
 }
 
+// marketFor resolves a caller-supplied PoolKey against the registry, returning the
+// REGISTERED record and its poolID and reporting false when no active record exists.
+// It is the one way a handler turns a proposed key into a pool identity, and every
+// path that acts on one takes it first: a halt slot, a volume shard, an event topic,
+// a position record and a quote are all addressed by poolID, and an id nobody
+// registered addresses a slot nobody set. Because a record exists only where
+// initialize admitted both currencies as real on-chain assets, resolving through the
+// registry also carries that admission to the paths that do not repeat it.
+func marketFor(stateDB stateKV, key PoolKey) (MarketRecord, [32]byte, bool) {
+	poolID := key.ID()
+	rec := loadMarket(stateDB, poolID)
+	if rec.Status != MarketStatusActive {
+		return MarketRecord{}, [32]byte{}, false
+	}
+	return rec, poolID, true
+}
+
 // MarketExists reports whether a market is registered for key. Read-only helper
 // shared by StateView/PositionManager so "is this a real pool" is answered one way.
 func MarketExists(stateDB stateKV, key PoolKey) bool {
-	return loadMarket(stateDB, key.ID()).Status == MarketStatusActive
+	_, _, ok := marketFor(stateDB, key)
+	return ok
 }
 
 // ensure uint256 import is used (range checks on price are big.Int; the import is

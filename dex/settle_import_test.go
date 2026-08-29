@@ -37,7 +37,7 @@ func TestSettlementReExecutesWithoutSharedMemory(t *testing.T) {
 
 	// --- Node 1: the live view. The object IS in shared memory. -----------------
 	live := newSettleHarness(t)
-	live.installDefaultMarketResolver(t)
+	live.registerMarket(t)
 	live.fundVaultOut(int64(settled))
 	live.putDtoCObject(t, live.caller, outputID, live.outAssetID(), settled)
 
@@ -59,7 +59,7 @@ func TestSettlementReExecutesWithoutSharedMemory(t *testing.T) {
 	// into shared memory, exactly as a bootstrapping node sees it after the object
 	// has been consumed and removed by the accept that this block already caused.
 	replay := newSettleHarness(t)
-	replay.installDefaultMarketResolver(t)
+	replay.registerMarket(t)
 	replay.fundVaultOut(int64(settled))
 	if _, err := replay.cSM.Get(replay.dChainID, [][]byte{outputID[:]}); err == nil {
 		t.Fatal("replay harness must start with the object ABSENT from shared memory")
@@ -89,7 +89,7 @@ func TestSettlementDeclarationAuthenticatesTheObject(t *testing.T) {
 	outputID := ids.ID{0x51, 0xAA}
 
 	h := newSettleHarness(t)
-	h.installDefaultMarketResolver(t)
+	h.registerMarket(t)
 	h.fundVaultOut(int64(settled))
 	h.putDtoCObject(t, h.caller, outputID, h.outAssetID(), settled)
 	object := h.recordedObject(outputID)
@@ -140,7 +140,7 @@ func TestForgedObjectIsDeclaredAndThereforeRejectable(t *testing.T) {
 	outputID := ids.ID{0x51, 0xBB}
 
 	h := newSettleHarness(t)
-	h.installDefaultMarketResolver(t)
+	h.registerMarket(t)
 	h.fundVaultOut(int64(inflated))
 	h.putDtoCObject(t, h.caller, outputID, h.outAssetID(), real)
 
@@ -172,7 +172,7 @@ func TestForgedObjectIsDeclaredAndThereforeRejectable(t *testing.T) {
 func TestMalformedObjectRefusedAtExecution(t *testing.T) {
 	outputID := ids.ID{0x51, 0xCC}
 	h := newSettleHarness(t)
-	h.installDefaultMarketResolver(t)
+	h.registerMarket(t)
 	h.fundVaultOut(100)
 
 	short := make([]byte, claimSize-1)
@@ -210,7 +210,7 @@ func TestRetiredDS01NeverBecomesAnOrder(t *testing.T) {
 
 	// And it must not settle or lock through the live entrypoint either.
 	h := newSettleHarness(t)
-	h.installDefaultMarketResolver(t)
+	h.registerMarket(t)
 	h.fundCallerNative(1_000_000)
 	before := h.state.stateDB.GetBalance(h.caller)
 

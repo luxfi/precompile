@@ -135,6 +135,7 @@ func TestBlueMeterValueArmsGrowMoreStateThanTheyCharge(t *testing.T) {
 	// decorator around it is refused fail-closed — correctly.)
 	arms := []arm{
 		{"swap (phase A order)", GasNativeOrder, 10, func(h *settleHarness) (blueMWrites, error) {
+			blueEActivateMarket(h)
 			h.fundCallerNative(1_000_000)
 			return blueMMeasure(t, h, SelectorSwap, h.crossCalldata(), false)
 		}},
