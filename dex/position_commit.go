@@ -59,9 +59,10 @@ var (
 	// ErrLPNoPosition is returned when a withdraw/collect names no position for the
 	// caller (nothing committed to withdraw).
 	ErrLPNoPosition = errors.New("dex: no committed position for caller's (pool,salt,range)")
-	// ErrLPBadCollectInput / ErrLPCollectBadAmount guard the collectPosition calldata.
-	ErrLPBadCollectInput  = errors.New("dex: collectPosition input too short")
-	ErrLPCollectBadAmount = errors.New("dex: collectPosition claim amount out of range")
+	// ErrLPBadCollectInput guards the collectPosition calldata width. There is no
+	// amount sentinel beside it: the amount is the uint64 inside the claim object,
+	// so a value the pot cannot hold is unrepresentable rather than rejected.
+	ErrLPBadCollectInput = errors.New("dex: collectPosition input malformed")
 	// ErrLPCommitWhileClosing forbids topping up a position whose withdraw is in flight
 	// (Closing). The LP must let the D->C collect settle, or commit to a fresh
 	// salt/range — re-arming a Closing record back to Open is the lifecycle hole FIX-3

@@ -746,67 +746,51 @@ func TestBlueECollectPositionRefusesAReentrantClaim(t *testing.T) {
 	}
 	defer exitCustodyKV(db)
 
-	claim := make([]byte, 128)
-	claim[31] = 0x01                                    // outputID
-	new(big.Int).SetUint64(500).FillBytes(claim[64:96]) // amount
-	claim[127] = 0x02                                   // positionID
-	_, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999, prependSelector(SelectorCollectPosition, claim), 5_000_000, false)
+	input := EncodeCollectPositionInput(ids.ID{0x01}, [32]byte{}, [32]byte{0x02},
+		encodeClaim(h.caller, [32]byte{}, 500))
+	_, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999, prependSelector(SelectorCollectPosition, input), 5_000_000, false)
 	if !errors.Is(err, ErrCustodyReentrant) {
 		t.Fatalf("a collect made while the custody guard is held = %v, want ErrCustodyReentrant", err)
 	}
 }
 
-// TestBlueECollectPositionAmountDomain: the claimed amount is a uint256 word but the
-// pot is uint64. Anything that does not fit, and anything non-positive, is refused —
-// a silent truncation would credit the low 64 bits of an arbitrarily large claim.
-func TestBlueECollectPositionAmountDomain(t *testing.T) {
+// TestBlueECollectPositionWidthIsExact sweeps the collectPosition calldata width. The
+// layout is FIXED — claimID(32) | asset(32) | positionID(32) | claim(60) — so every
+// other length is refused on len.
+//
+// The amount is no longer among the refusals because it is no longer in the calldata:
+// it is the uint64 inside the claim object, which the caller cannot widen. A word that
+// does not fit a pot is unrepresentable rather than rejected, which is the stronger
+// property; that the object must authenticate is settle_import_test.go's subject.
+//
+// Each length is driven twice, the second time over poisoned spare capacity: calldata
+// is a two-index slice of EVM memory the caller filled with MSTORE, so a bound checked
+// against cap rather than len reads bytes the caller chose. A fixture built by append
+// leaves that region zeroed and passes either way.
+func TestBlueECollectPositionWidthIsExact(t *testing.T) {
 	h := newSettleHarness(t)
 
-	build := func(amount *big.Int) []byte {
-		c := make([]byte, 128)
-		c[31] = 0x01
-		amount.FillBytes(c[64:96])
-		c[127] = 0x02
-		return c
-	}
-
-	for _, tc := range []struct {
-		name   string
-		amount *big.Int
-	}{
-		{"zero", big.NewInt(0)},
-		{"one past uint64", new(big.Int).Lsh(big.NewInt(1), 64)},
-		{"a full word", new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))},
-	} {
+	for _, n := range []int{0, 1, 31, 32, 95, 96, 127, 128, collectPositionInputLen - 1, collectPositionInputLen + 1} {
+		body := bytes.Repeat([]byte{0x44}, n)
 		_, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
-			prependSelector(SelectorCollectPosition, build(tc.amount)), 5_000_000, false)
-		if !errors.Is(err, ErrLPCollectBadAmount) {
-			t.Fatalf("collect amount %s (%s) = %v, want ErrLPCollectBadAmount", tc.name, tc.amount, err)
-		}
-	}
-
-	// The top of the uint64 domain is INSIDE the accepted set: the refusals above are
-	// a real boundary, not a blanket. It fails later (no such object), never on range.
-	max64 := new(big.Int).SetUint64(^uint64(0))
-	_, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
-		prependSelector(SelectorCollectPosition, build(max64)), 5_000_000, false)
-	if errors.Is(err, ErrLPCollectBadAmount) {
-		t.Fatal("the largest representable uint64 amount was refused as out of range")
-	}
-
-	// Short claim calldata across the whole span below the fixed 128-byte layout.
-	for _, n := range []int{0, 1, 31, 32, 95, 96, 127} {
-		_, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
-			prependSelector(SelectorCollectPosition, bytes.Repeat([]byte{0x44}, n)), 5_000_000, false)
+			prependSelector(SelectorCollectPosition, body), 5_000_000, false)
 		if !errors.Is(err, ErrLPBadCollectInput) {
 			t.Fatalf("collect with %d argument bytes = %v, want ErrLPBadCollectInput", n, err)
 		}
-		poisoned := blueEPoisoned(bytes.Repeat([]byte{0x44}, n), 256)
 		_, _, err = h.c.Run(h.state, h.caller, poolManagerAddr9999,
-			prependSelector(SelectorCollectPosition, poisoned), 5_000_000, false)
+			prependSelector(SelectorCollectPosition, blueEPoisoned(body, 256)), 5_000_000, false)
 		if !errors.Is(err, ErrLPBadCollectInput) {
 			t.Fatalf("collect with %d argument bytes over poisoned capacity = %v, want ErrLPBadCollectInput", n, err)
 		}
+	}
+
+	// The exact width is INSIDE the accepted set: the refusals above are a real
+	// boundary, not a blanket. It fails later (no such claim), never on length.
+	exact := EncodeCollectPositionInput(ids.ID{0x01}, [32]byte{}, [32]byte{0x02},
+		encodeClaim(h.caller, [32]byte{}, 1))
+	if _, _, err := h.c.Run(h.state, h.caller, poolManagerAddr9999,
+		prependSelector(SelectorCollectPosition, exact), 5_000_000, false); errors.Is(err, ErrLPBadCollectInput) {
+		t.Fatal("the canonical width was refused as malformed")
 	}
 }
 
