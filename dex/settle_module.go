@@ -12,8 +12,8 @@ import (
 	"github.com/luxfi/precompile/precompileconfig"
 )
 
-// 0x9999 settlement governance (setHaltGlobal/Market/Asset, seedSeamReserve,
-// creditPositionFee) is gated to the per-NETWORK DEX GOVERNANCE CONTROLLER, resolved
+// 0x9999 settlement governance (setHaltGlobal/Market/Asset, seedSeamReserve) is
+// gated to the per-NETWORK DEX GOVERNANCE CONTROLLER, resolved
 // at RUNTIME from contract.AtomicState.GovernanceController() (the SAME runtime seam
 // networkID/cChainID/dChainID flow through) — see governanceController in halt9999.go.
 //
@@ -53,7 +53,7 @@ var settleConfigKey = "dexSettleConfig"
 // originCaller, caller) — self is the caller's context, not the target). Under
 // DELEGATECALL the token's msg.sender would become the delegating contract, breaking
 // the conservation invariant (realHolding == settleVault + makerLockedVault +
-// seamReserve + committedPositions) and stranding the caller's own funds. Pinning
+// custody) and stranding the caller's own funds. Pinning
 // addr == 0x9999 at the top of Run rejects exactly DELEGATECALL while CALL and CALLCODE
 // (both bind self = 0x9999) pass.
 var ErrSettleWrongContext = errors.New("dex: 0x9999 must be entered with self == 0x9999 (CALL/CALLCODE); DELEGATECALL from a delegating contract is rejected")
@@ -80,21 +80,13 @@ var (
 	SelectorSetHaltMarket uint32 // setHaltMarket(bytes32,bool)
 	SelectorSetHaltAsset  uint32 // setHaltAsset(bytes32,bool)
 
-	// SelectorCollectPosition is the LP rail's D->C collect/withdraw money path:
-	// collectPosition(bytes32 outputID, address asset, uint256 amount, bytes32
-	// positionID) consumes a D->C railLP object ONCE and credits the caller out of the
-	// committedPositions pot, bounded by the named position record's backing. It is the
-	// SOLE C-credit path for an LP (collect, decrease, burn, cancel all return funds
-	// through here). Distinct selector, same orthogonal money-path discipline.
+	// SelectorCollectPosition is a position's D->C money path: collectPosition(bytes32
+	// claimID, address asset, uint256 amount, bytes32 positionID) consumes a D->C claim
+	// ONCE and credits its beneficiary out of custody, then applies the collect to the
+	// named C-side position record. It is the SOLE C-credit path for an LP (collect,
+	// decrease, burn and cancel all return funds through here).
 	SelectorCollectPosition uint32 // collectPosition(bytes32,address,uint256,bytes32)
 
-	// SelectorReclaimIntent is the SWAP rail's deadline-reclaim liveness path:
-	// reclaimIntent(bytes32 intentID) refunds the remaining locked principal of a
-	// stranded swap intent (one D never settled) from seamReserve to the original
-	// locker, once the intent's deadline has passed. It is the swap-rail analog of the
-	// LP collect path's exit guarantee — so locked swap input "can always exit" exactly
-	// like deposit/withdraw, never stranded by a non-settling D.
-	SelectorReclaimIntent uint32 // reclaimIntent(bytes32)
 )
 
 // SettleModule registers the 0x9999 precompile as ALWAYS-ON: it is active on every
@@ -131,9 +123,7 @@ func init() {
 	SelectorSetHaltMarket = keccak4("setHaltMarket(bytes32,bool)")
 	SelectorSetHaltAsset = keccak4("setHaltAsset(bytes32,bool)")
 	SelectorCollectPosition = keccak4("collectPosition(bytes32,address,uint256,bytes32)")
-	SelectorReclaimIntent = keccak4("reclaimIntent(bytes32)")
 	SelectorSeedSeamReserve = keccak4("seedSeamReserve(address,uint256)")
-	SelectorCreditPositionFee = keccak4("creditPositionFee(bytes32,address,uint256)")
 
 	// No governance authority is set here: it is NOT a hardcoded key. The settlement
 	// governance authority is the per-network DEX governance controller, resolved at
@@ -221,9 +211,9 @@ func (s *SettleContract) Run(
 		// THE money path — SETTLE-ONLY. 0x9999 NEVER matches on C. Every swap routes to the
 		// native C<->D atomic seam (SettleSwap, settle9999.go), keyed on the hookData phase:
 		//
-		//   - UNTAGGED / opaque / DI01 hookData => PHASE A (INTENT): lock the taker's input on
+		//   - UNTAGGED / opaque / DI01 hookData => PHASE A (ORDER): lock the taker's input on
 		//     C and write a C->D atomic object. D imports it and matches under ITS OWN
-		//     consensus. Phase A returns the intent id — NOT a fill; no output is credited here.
+		//     consensus. Phase A returns the order id — NOT a fill; no output is credited here.
 		//   - DS01-tagged hookData => PHASE B (SETTLEMENT): consume a real D->C atomic object
 		//     ONCE and credit the output. This is the ONLY path that credits C, and the credit
 		//     is the RECORDED object's amount — never a caller-supplied fill value.
@@ -248,18 +238,10 @@ func (s *SettleContract) Run(
 		return s.runSettleModifyLiquidity(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// LP D->C collect/withdraw money path (position_commit.go): consume a D->C atomic
-	// object ONCE and credit the caller out of committedPositions. The SOLE C-credit
+	// claim ONCE and credit its beneficiary out of custody. The SOLE C-credit
 	// path for an LP — collect/decrease/burn/cancel all return funds through here.
 	case SelectorCollectPosition:
 		return s.runSettleCollectPosition(accessibleState, caller, data, suppliedGas, readOnly)
-
-	// SWAP-rail deadline reclaim (settle9999.go): refund a stranded swap intent's
-	// remaining locked principal to the locker once its deadline has passed and D never
-	// settled. The swap-rail analog of collectPosition's exit guarantee — locked swap
-	// input can always exit. NOT gated by the swap halt (funds must exit even when
-	// halted), exactly like deposit/withdraw.
-	case SelectorReclaimIntent:
-		return s.runSettleReclaimIntent(accessibleState, caller, data, suppliedGas, readOnly)
 
 	// donate is explicitly UNSUPPORTED in the receipt model (settle_views9999.go):
 	// LP fee growth is D-authoritative, so a safe C-only donate cannot exist.
@@ -294,13 +276,12 @@ func (s *SettleContract) Run(
 	case SelectorSetHaltAsset:
 		return s.runSetHaltScoped(accessibleState, caller, data, suppliedGas, readOnly, SetHaltAsset)
 
-	// Operator funding of the settlement pots (governance-controller-gated). The swap
-	// rail's seamReserve counterparty seed (FIX-4 liveness: a market's first matched
-	// swap settles without manual state-poking) and the LP rail's per-owner fee credit.
+	// Operator funding of the settlement pots (governance-controller-gated): the swap
+	// custody counterparty seed (FIX-4 liveness — a market's first matched swap settles
+	// without manual state-poking). It is the ONLY way value enters custody other than
+	// a C->D export, which is what makes the custody identity in native_state.go hold.
 	case SelectorSeedSeamReserve:
 		return s.runSeedSeamReserve(accessibleState, caller, data, suppliedGas, readOnly)
-	case SelectorCreditPositionFee:
-		return s.runCreditPositionFee(accessibleState, caller, data, suppliedGas, readOnly)
 
 	default:
 		return nil, suppliedGas, errors.New("dex: unknown 0x9999 selector")

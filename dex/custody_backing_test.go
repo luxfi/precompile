@@ -15,30 +15,29 @@ import (
 // custody_backing_test.go pins the one question every native funding path asks:
 // how much native did THIS call deliver?
 //
-// 0x9999 holds one native balance backing three pots — settleVault (depositor
-// claims), seamReserve (swap-rail input locks) and committedPositions (LP
-// commits). The precompile cannot read msg.value, so it answers by difference:
-// delivered = balance(0x9999) - Σ pots. Subtract fewer pots than exist and the
-// difference reports somebody else's locked funds as value this caller carried,
-// which is a claim over the whole seam.
+// 0x9999 holds one native balance backing two pots — settleVault (depositor
+// claims) and custody (value C holds because D owns it: the operator seed plus
+// everything exported to D and not yet imported back). The precompile cannot read
+// msg.value, so it answers by difference: delivered = balance(0x9999) - Σ pots.
+// Subtract fewer pots than exist and the difference reports somebody else's locked
+// funds as value this caller carried, which is a claim over the whole rail.
 
 var backingStranger = common.HexToAddress("0x00000000000000000000000000000000000000BA")
 
-// backingPots is the three-pot decomposition the invariant names, so a test can
+// backingPots is the non-depositor decomposition the invariant names, so a test can
 // exercise each independently and a new pot cannot be added without appearing here.
 var backingPots = []struct {
 	name string
 	lock func(stateKV, [32]byte, uint64)
 }{
-	{"seamReserve", recordSeamLock},
-	{"committedPositions", recordCommittedLock},
+	{"custody", recordCustodyIn},
 }
 
-// TestDepositCannotClaimAnotherPot is the theft. Value locked in the seam or LP
-// pot raises the vault's real balance; a deposit that measures itself against
-// settleVault alone reads that value as its own delivery and mints a claim over
-// it, which withdraw then pays out — draining the backing for every open intent
-// and every committed position.
+// TestDepositCannotClaimAnotherPot is the theft. Value held in custody raises the
+// vault's real balance; a deposit that measures itself against settleVault alone
+// reads that value as its own delivery and mints a claim over it, which withdraw
+// then pays out — draining the backing for every claim D has yet to import and
+// every position committed through the rail.
 func TestDepositCannotClaimAnotherPot(t *testing.T) {
 	for _, pot := range backingPots {
 		t.Run(pot.name, func(t *testing.T) {
@@ -79,9 +78,9 @@ func TestDepositCreditsOnlyWhatThisCallDelivered(t *testing.T) {
 	db := zzmpDB(h)
 	aid := h.inAssetID()
 
-	// 1_000 already locked in the seam, then this call carries 300.
+	// 1_000 already held in custody, then this call carries 300.
 	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(1_000))
-	recordSeamLock(db, aid, 1_000)
+	recordCustodyIn(db, aid, 1_000)
 	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(300))
 
 	if got := deliveredNative(db, aid); got.Int64() != 300 {
@@ -118,8 +117,8 @@ func TestDeliveredNativeIsTheOneAnswer(t *testing.T) {
 	aid := h.inAssetID()
 
 	h.state.stateDB.AddBalance(poolManagerAddr9999, uint256.NewInt(900))
-	recordSeamLock(db, aid, 200)
-	recordCommittedLock(db, aid, 300)
+	recordCustodyIn(db, aid, 200)
+	recordCustodyIn(db, aid, 300)
 	storeSettleVault(db, aid, big.NewInt(400))
 
 	if got := deliveredNative(db, aid); got.Sign() != 0 {

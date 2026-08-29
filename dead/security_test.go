@@ -36,7 +36,7 @@ type mockAccessibleState struct {
 	readOnly bool
 }
 
-func (m *mockAccessibleState) GetStateDB() contract.StateDB    { return m.stateDB }
+func (m *mockAccessibleState) GetStateDB() contract.StateDB { return m.stateDB }
 func (m *mockAccessibleState) GetBlockContext() contract.BlockContext {
 	return mockBlockContext{}
 }

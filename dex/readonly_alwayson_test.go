@@ -281,8 +281,7 @@ func TestSettleRefusesMalformedInput(t *testing.T) {
 
 	selectors := []uint32{
 		SelectorSetHaltGlobal, SelectorSetHaltMarket, SelectorSetHaltAsset,
-		SelectorCollectPosition, SelectorReclaimIntent, SelectorSeedSeamReserve,
-		SelectorCreditPositionFee,
+		SelectorCollectPosition, SelectorSeedSeamReserve,
 	}
 
 	t.Run("input shorter than a selector", func(t *testing.T) {
@@ -384,13 +383,11 @@ func TestSettleRefusesStateWritesInReadOnly(t *testing.T) {
 	arg[31] = 1
 
 	for name, sel := range map[string]uint32{
-		"setHaltGlobal":     SelectorSetHaltGlobal,
-		"setHaltMarket":     SelectorSetHaltMarket,
-		"setHaltAsset":      SelectorSetHaltAsset,
-		"seedSeamReserve":   SelectorSeedSeamReserve,
-		"creditPositionFee": SelectorCreditPositionFee,
-		"collectPosition":   SelectorCollectPosition,
-		"reclaimIntent":     SelectorReclaimIntent,
+		"setHaltGlobal":   SelectorSetHaltGlobal,
+		"setHaltMarket":   SelectorSetHaltMarket,
+		"setHaltAsset":    SelectorSetHaltAsset,
+		"seedSeamReserve": SelectorSeedSeamReserve,
+		"collectPosition": SelectorCollectPosition,
 	} {
 		require.NotPanicsf(t, func() {
 			_, _, err := h.c.Run(h.state, testGovernance, addr,

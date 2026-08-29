@@ -42,10 +42,19 @@ func c1MarketKey() PoolKey {
 	}
 }
 
-// TestDecomplect_NoReceiptNoSettle is THE negative invariant: a PHASE B settlement (DS01)
-// that names a D->C object which does NOT exist in shared memory MUST revert and credit
-// NOTHING — even with the output vault fully funded. This is the structural "0x9999 cannot
-// fabricate a fill" guarantee: absent a real D-committed atomic object, there is no credit.
+// TestDecomplect_NoReceiptNoSettle is THE negative invariant, unchanged in substance
+// and relocated in enforcement: a PHASE B settlement naming a D->C object that does
+// NOT exist in shared memory must never result in an accepted credit — even with the
+// output vault fully funded. "0x9999 cannot fabricate a fill."
+//
+// WHERE IT IS PROVEN NOW. Execution can no longer consult shared memory (that read is
+// what made a settled swap unsyncable — see settle_import.go), so a phantom object
+// with WELL-FORMED bytes does execute. What it cannot do is survive: it necessarily
+// DECLARES the bytes it used, and that declaration provably disagrees with shared
+// memory, so every validator — including the producer, which verifies its own block
+// before proposing it — rejects the block. The forger buys a rejected block, never
+// value. This test pins both halves: an ill-formed object still fails closed at
+// execution with nothing moved, and a well-formed forgery is provably rejectable.
 func TestDecomplect_NoReceiptNoSettle(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
@@ -59,11 +68,36 @@ func TestDecomplect_NoReceiptNoSettle(t *testing.T) {
 	callerOutBefore := h.tokenBal(h.outToken(), h.caller)
 	vaultOutBefore := h.tokenBal(h.outToken(), poolManagerAddr9999)
 
-	// settlementCalldata seeds a standing per-taker intent so we get PAST the per-taker cap
-	// and reach the object lookup (step 1 of ImportSettlement) — which must fail closed.
+	// (1) NO object bytes at all: fails closed at execution, nothing moves. The
+	// harness builder reads the recorded object, which for a phantom is empty, so the
+	// fixed-width body gate refuses it.
 	_, err := h.runSwap(t, h.settlementCalldata(phantom, 500), false)
-	if !errors.Is(err, ErrNativeNoSettlement) {
-		t.Fatalf("Phase-B settle with NO D->C object must revert ErrNativeNoSettlement, got: %v", err)
+	if !errors.Is(err, ErrSettleBodyMalformed) && !errors.Is(err, ErrImportObjectMalformed) {
+		t.Fatalf("Phase-B settle with NO object bytes must fail closed, got: %v", err)
+	}
+
+	// (2) FABRICATED well-formed bytes for the same phantom, in a FRESH harness so the
+	// balance assertions above stay clean. This executes — it must, because execution
+	// is now a pure function of the block — but it declares the forgery, and the
+	// declaration cannot authenticate against shared memory, so the block dies.
+	forgeH := newSettleHarness(t)
+	forgeH.registerMarket(t)
+	forgeH.fundVaultOut(1_000_000)
+	forged := encodeClaim(forgeH.caller, forgeH.outAssetID(), 500)
+	forgedCalldata := buildSwapCalldata(forgeH.key, forgeH.params,
+		EncodeSettlementHookData(phantom, forged))
+	if _, ferr := forgeH.runSwap(t, forgedCalldata, false); ferr != nil {
+		t.Fatalf("execution must bind the carried bytes without consulting shared memory: %v", ferr)
+	}
+	imports := DecodeSettleImports(forgeH.state.stateDB.Logs())
+	if len(imports) != 1 {
+		t.Fatalf("a forged settlement must still DECLARE what it consumed; got %d declarations", len(imports))
+	}
+	// The host's Verify check: shared memory holds nothing at this key, so the block is
+	// rejected. Absence is itself the disproof — nothing the forgery credited is ever
+	// accepted, which is the ship rule, relocated.
+	if vals, gerr := forgeH.cSM.Get(forgeH.dChainID, [][]byte{phantom[:]}); gerr == nil && len(vals) == 1 && len(vals[0]) > 0 {
+		t.Fatal("the phantom object must NOT be in shared memory — the test premise is broken")
 	}
 
 	// No output token moved out of the vault; the caller was credited nothing.
@@ -75,11 +109,11 @@ func TestDecomplect_NoReceiptNoSettle(t *testing.T) {
 	}
 }
 
-// TestDecomplect_UntaggedSwapIsIntentNotFill proves the positive half: a PLAIN swap (empty
-// hookData — no DI01/DS01 tag) is treated as a PHASE A INTENT. It LOCKS the taker's input and
-// returns a 32-byte intent id; it does NOT match, does NOT credit any output. There is no
+// TestDecomplect_UntaggedSwapIsOrderNotFill proves the positive half: a PLAIN swap (empty
+// hookData — no DI01/DS02 tag) is treated as a PHASE A ORDER. It LOCKS the taker's input and
+// returns a 32-byte order id; it does NOT match, does NOT credit any output. There is no
 // synchronous in-trie fill. (Before the decomplect this routed to the embedded sync matcher.)
-func TestDecomplect_UntaggedSwapIsIntentNotFill(t *testing.T) {
+func TestDecomplect_UntaggedSwapIsOrderNotFill(t *testing.T) {
 	h := newSettleHarness(t)
 	h.registerMarket(t)
 	h.fundCallerNative(1000)
@@ -88,23 +122,23 @@ func TestDecomplect_UntaggedSwapIsIntentNotFill(t *testing.T) {
 	callerNativeBefore := h.state.stateDB.GetBalance(h.caller).ToBig()
 	callerOutBefore := h.tokenBal(h.outToken(), h.caller)
 
-	// Empty hookData: the common plain-swap case. Post-decomplect this is a Phase A intent.
+	// Empty hookData: the common plain-swap case. Post-decomplect this is a Phase A order.
 	out, _, err := runWithEVMSnapshot(h.c, h.state, h.caller, poolManagerAddr9999,
 		prependSelector(SelectorSwap, buildSwapCalldata(h.key, h.params, nil)), 5_000_000, false)
 	if err != nil {
-		t.Fatalf("a plain (empty-hookData) swap must create a Phase A intent, got err: %v", err)
+		t.Fatalf("a plain (empty-hookData) swap must create a Phase A order, got err: %v", err)
 	}
 	if len(out) != 32 {
-		t.Fatalf("Phase A intent must return a 32-byte intent id, got %d bytes", len(out))
+		t.Fatalf("Phase A order must return a 32-byte order id, got %d bytes", len(out))
 	}
 	// Input was LOCKED (debited) — |AmountSpecified| = 100 in the standard harness params.
 	callerNativeAfter := h.state.stateDB.GetBalance(h.caller).ToBig()
 	if new(big.Int).Sub(callerNativeBefore, callerNativeAfter).Sign() <= 0 {
-		t.Fatal("a Phase A intent must LOCK (debit) the taker's input")
+		t.Fatal("a Phase A order must LOCK (debit) the taker's input")
 	}
-	// NO output credited — an intent is not a fill.
+	// NO output credited — an order is not a fill.
 	if got := h.tokenBal(h.outToken(), h.caller); got.Cmp(callerOutBefore) != 0 {
-		t.Fatalf("an intent must NOT credit output; credited %s", new(big.Int).Sub(got, callerOutBefore))
+		t.Fatalf("an order must NOT credit output; credited %s", new(big.Int).Sub(got, callerOutBefore))
 	}
 }
 
@@ -225,7 +259,7 @@ func TestDecomplect_DAOControllerCannotMintOrMoveUserFunds(t *testing.T) {
 	controller := h.operator() // == the runtime-resolved DEX governance controller
 
 	native := [32]byte{}
-	seamBefore := loadSeamReserve(newPoolStateAdapter(h.state), native).Uint64()
+	seamBefore := loadCustody(newPoolStateAdapter(h.state), native).Uint64()
 
 	// (a) Controller calls seedSeamReserve(native, 1_000_000) but the host frame delivers NO
 	// msg.value. A mint would inflate seamReserve; the observed-delta discipline yields 0
@@ -239,7 +273,7 @@ func TestDecomplect_DAOControllerCannotMintOrMoveUserFunds(t *testing.T) {
 	if !errors.Is(err, ErrSeedUndelivered) {
 		t.Fatalf("expected ErrSeedUndelivered (no mint), got: %v", err)
 	}
-	if got := loadSeamReserve(newPoolStateAdapter(h.state), native).Uint64(); got != seamBefore {
+	if got := loadCustody(newPoolStateAdapter(h.state), native).Uint64(); got != seamBefore {
 		t.Fatalf("seam reserve changed on an undelivered seed: %d -> %d (mint)", seamBefore, got)
 	}
 
@@ -254,21 +288,22 @@ func TestDecomplect_DAOControllerCannotMintOrMoveUserFunds(t *testing.T) {
 		t.Fatalf("depositor deposit: %v", derr)
 	}
 	// (i) fabricated object: no privileged path to mint a settlement object.
-	credited, ierr := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: [32]byte{0xAB}, Asset: native, AssetAddr: common.Address{}, Amount: 500, Recipient: controller,
+	credited, ierr := h.c.atomicImport(h.state, Claim{
+		ID: [32]byte{0xAB}, Asset: native, Beneficiary: controller,
 	})
 	if ierr == nil || credited != 0 {
 		t.Fatalf("controller credited itself from a fabricated settlement object: credited=%d err=%v", credited, ierr)
 	}
-	// (ii) a REAL D->C object exists, but seamReserve[native] is empty (only the depositor pot
+	// (ii) a REAL D->C object exists, but custody[native] is empty (only the depositor pot
 	// holds native). The credit must revert UNBACKED — it cannot draw the depositor pot.
 	realObj := [32]byte{0xCD, 0xEF}
 	h.putDtoCObject(t, controller, realObj, native, 500)
-	credited2, ierr2 := h.c.atomicImport(h.state, SettlementClaim{
-		OutputID: realObj, Asset: native, AssetAddr: common.Address{}, Amount: 500, Recipient: controller,
+	credited2, ierr2 := h.c.atomicImport(h.state, Claim{
+		ID: realObj, Asset: native, Beneficiary: controller,
+		Object: encodeClaim(controller, native, 500),
 	})
-	if ierr2 != ErrNativeSettleUnbacked {
-		t.Fatalf("controller raided the depositor pot via a real object with empty seam: credited=%d err=%v (must be ErrNativeSettleUnbacked)", credited2, ierr2)
+	if ierr2 != ErrCustodyUnbacked {
+		t.Fatalf("controller raided the depositor pot via a real object with empty seam: credited=%d err=%v (must be ErrCustodyUnbacked)", credited2, ierr2)
 	}
 	if loadDepositorClaim(newPoolStateAdapter(h.state), depositor, native).Int64() != 1000 {
 		t.Fatal("depositor claim moved after controller's raid attempt (do-not-ship)")

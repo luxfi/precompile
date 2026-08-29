@@ -3,8 +3,8 @@ package pq
 import (
 	"crypto/sha256"
 
-	"github.com/luxfi/precompile/examples"
 	rt "github.com/luxfi/precompile/corona"
+	"github.com/luxfi/precompile/examples"
 )
 
 // CoronaDemo exercises the Corona lattice threshold precompile (0x0200..0B).
@@ -16,9 +16,9 @@ func CoronaDemo() []examples.Result {
 	hash := sha256.Sum256([]byte("Lux precompile Corona demo"))
 
 	input := make([]byte, 0, 4+4+32)
-	input = append(input, examples.Uint32BE(2)...)  // threshold
-	input = append(input, examples.Uint32BE(3)...)  // total parties
-	input = append(input, hash[:]...)                // message hash
+	input = append(input, examples.Uint32BE(2)...) // threshold
+	input = append(input, examples.Uint32BE(3)...) // total parties
+	input = append(input, hash[:]...)              // message hash
 
 	// This will fail with "invalid input length" since we don't have a real
 	// Corona signature, but it exercises the precompile dispatch and gas calc

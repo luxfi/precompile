@@ -49,8 +49,8 @@ func CGGMP21Demo() []examples.Result {
 
 	// Input: threshold(4) + totalSigners(4) + pubkey(65) + hash(32) + sig(65)
 	input := make([]byte, 0, 4+4+65+32+65)
-	input = append(input, examples.Uint32BE(2)...)  // threshold = 2
-	input = append(input, examples.Uint32BE(3)...)  // total signers = 3
+	input = append(input, examples.Uint32BE(2)...) // threshold = 2
+	input = append(input, examples.Uint32BE(3)...) // total signers = 3
 	input = append(input, pubKey...)
 	input = append(input, hash[:]...)
 	input = append(input, sig...)
@@ -75,11 +75,11 @@ func FROSTDemo() []examples.Result {
 
 	// Construct minimal input that will reach the verification path
 	input := make([]byte, 0, frost.MinInputSize)
-	input = append(input, examples.Uint32BE(2)...)  // threshold
-	input = append(input, examples.Uint32BE(3)...)  // total signers
-	input = append(input, make([]byte, 32)...)       // pubkey (zeros = will fail verify)
-	input = append(input, hash[:]...)                // message hash
-	input = append(input, make([]byte, 64)...)       // signature (zeros)
+	input = append(input, examples.Uint32BE(2)...) // threshold
+	input = append(input, examples.Uint32BE(3)...) // total signers
+	input = append(input, make([]byte, 32)...)     // pubkey (zeros = will fail verify)
+	input = append(input, hash[:]...)              // message hash
+	input = append(input, make([]byte, 64)...)     // signature (zeros)
 
 	r := examples.CallPrecompileResult(
 		"FROST Schnorr Threshold (parse)",

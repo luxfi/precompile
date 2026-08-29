@@ -20,7 +20,7 @@ func MLDSADemo() []examples.Result {
 	// Input format: mode(1) + pubkey + msglen(32) + sig + msg
 	input := make([]byte, 0, 1+len(pubBytes)+32+len(sigBytes)+len(msg))
 	input = append(input, mldsa.ModeMLDSA65) // mode byte
-	input = append(input, pubBytes...)        // public key
+	input = append(input, pubBytes...)       // public key
 	input = append(input, examples.Uint256(uint64(len(msg)))...)
 	input = append(input, sigBytes...)
 	input = append(input, msg...)

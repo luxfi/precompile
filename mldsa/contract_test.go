@@ -484,3 +484,37 @@ func BenchmarkMLDSAVerify_AllModes(b *testing.B) {
 		})
 	}
 }
+
+// TestBatchVerify_HugeMessageLenIsRejectedNotPanicked is the consensus-halt
+// regression.
+//
+// The message length is an attacker-chosen 256-bit word. Narrowing it to int
+// makes any value with bit 63 set NEGATIVE, and a negative length SATISFIES
+// `offset+msgLen > len(input)` — the sum is smaller than the length, not larger —
+// so the bounds check waves it through and the slice expression panics on a
+// negative bound. The panic is unrecovered and happens inside block verification,
+// which means one transaction to this address halts every validator that verifies
+// the block carrying it. The precompile is genesis-active at
+// 0x0000000000000000000000000000000000012202, so there is no upgrade gate in
+// front of it.
+//
+// Rejecting is the whole assertion: what must never happen is a panic.
+func TestBatchVerify_HugeMessageLenIsRejectedNotPanicked(t *testing.T) {
+	pk, sig, msg := createTestSignature(t, mldsa.MLDSA65, []byte("halt"))
+	input := createBatchInput(ModeMLDSA65, []struct{ pk, sig, msg []byte }{{pk, sig, msg}})
+
+	// Overwrite the entry's message-length word with 2^63 — the smallest value
+	// whose int64 reading is negative. Layout: [op|mode|count(2)] then pk, then
+	// the 32-byte length.
+	lenAt := 4 + len(pk)
+	for i := lenAt; i < lenAt+32; i++ {
+		input[i] = 0
+	}
+	input[lenAt+24] = 0x80 // big-endian: sets bit 63 of the low 64 bits
+
+	gas := MLDSAVerifyPrecompile.RequiredGas(input)
+	require.NotPanics(t, func() {
+		_, _, err := MLDSAVerifyPrecompile.Run(nil, common.Address{}, ContractMLDSAVerifyAddress, input, gas, false)
+		require.Error(t, err, "a message length larger than the input must be rejected")
+	}, "a crafted message length must not panic: this runs during block verification on every validator")
+}

@@ -193,7 +193,7 @@ func TestBlueEStateViewReceiptStatusTracksTheConsumedSet(t *testing.T) {
 	if ask(consumed) || ask(neighbour) {
 		t.Fatal("an unconsumed settlement object already reports consumed")
 	}
-	markSettlementConsumed(db, consumed, 7)
+	markClaimConsumed(db, consumed, 7)
 	if !ask(consumed) {
 		t.Fatal("a consumed settlement object reports NOT consumed — the replay guard is invisible to the view")
 	}
