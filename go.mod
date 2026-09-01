@@ -13,10 +13,10 @@ require (
 	github.com/luxfi/chains v1.7.7
 	github.com/luxfi/corona v0.10.4
 	github.com/luxfi/crypto v1.20.2
-	github.com/luxfi/database v1.21.1
+	github.com/luxfi/database v1.21.5
 	github.com/luxfi/dex v1.14.2
 	github.com/luxfi/fhe v1.11.1
-	github.com/luxfi/geth v1.20.1
+	github.com/luxfi/geth v1.20.2
 	github.com/luxfi/gpu v1.1.2
 	github.com/luxfi/lattice/v7 v7.1.4
 	github.com/luxfi/magnetar v1.2.3
@@ -146,9 +146,9 @@ require (
 	github.com/luxfi/cache v1.3.1 // indirect
 	github.com/luxfi/compress v0.1.1 // indirect
 	github.com/luxfi/concurrent v0.1.1 // indirect
-	github.com/luxfi/consensus v1.36.2 // indirect
+	github.com/luxfi/consensus v1.36.81 // indirect
 	github.com/luxfi/constants v1.6.2 // indirect
-	github.com/luxfi/container v0.2.1 // indirect
+	github.com/luxfi/container v0.2.2 // indirect
 	github.com/luxfi/crypto/ipa v1.2.4 // indirect
 	github.com/luxfi/ids v1.3.2
 	github.com/luxfi/log v1.4.3 // indirect
@@ -157,12 +157,12 @@ require (
 	github.com/luxfi/metric v1.8.1 // indirect
 	github.com/luxfi/mock v0.1.1 // indirect
 	github.com/luxfi/p2p v1.22.1 // indirect
-	github.com/luxfi/pq v1.1.0 // indirect
+	github.com/luxfi/pq v1.1.2 // indirect
 	github.com/luxfi/sampler v1.1.0 // indirect
 	github.com/luxfi/utils v1.3.1 // indirect
 	github.com/luxfi/validators v1.3.1 // indirect
 	github.com/luxfi/version v1.0.1 // indirect
-	github.com/luxfi/vm v1.3.1
+	github.com/luxfi/vm v1.3.16
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mimoo/StrobeGo v0.0.0-20220103164710-9a04d6ca976b // indirect
