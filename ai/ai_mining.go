@@ -130,6 +130,12 @@ var precompileAddr = [20]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x
 // spentSetPrefix is the storage key prefix for spent work IDs
 var spentSetPrefix = [4]byte{'s', 'p', 'n', 't'}
 
+// sovereignSetPrefix is the storage key prefix for authorized sovereign mining signers
+var sovereignSetPrefix = [4]byte{'s', 'o', 'v', 'r'}
+
+// HanzoOrgAuthorityDeviceID is the canonical authority device measurement for Hanzo Org cloud compute.
+var HanzoOrgAuthorityDeviceID = blake3.Sum256([]byte("hanzo-org-sovereign-ai-compute"))
+
 // VerifyMLDSA verifies an ML-DSA signature (quantum-safe, FIPS 204)
 // Automatically detects security level from public key size
 // Gas cost: 3,000
@@ -302,6 +308,53 @@ func makeSpentKey(workId [32]byte) [32]byte {
 	var key [32]byte
 	h.Digest().Read(key[:])
 	return key
+}
+
+// makeSovereignKey creates the storage key for sovereign signer authorization lookup.
+func makeSovereignKey(deviceId [32]byte) [32]byte {
+	h := blake3.New()
+	h.Write(sovereignSetPrefix[:])
+	h.Write(deviceId[:])
+
+	var key [32]byte
+	h.Digest().Read(key[:])
+	return key
+}
+
+// IsSovereignAuthorized reports whether pubkey represents an authorized Hanzo Org
+// or sovereign compute signer. Initially, only the Hanzo organization is permitted
+// to mine AI without confidential compute (hardware TEE quotes).
+func IsSovereignAuthorized(stateDB StateDB, pubkey []byte) bool {
+	devId := blake3.Sum256(pubkey)
+	if devId == HanzoOrgAuthorityDeviceID {
+		return true
+	}
+	if stateDB == nil {
+		return false
+	}
+	key := makeSovereignKey(devId)
+	value := stateDB.GetState(precompileAddr, key)
+	for _, b := range value {
+		if b != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// AuthorizeSovereign marks a device ID as authorized for sovereign AI mining in state.
+func AuthorizeSovereign(stateDB StateDB, deviceId [32]byte) error {
+	key := makeSovereignKey(deviceId)
+	value := [32]byte{1}
+	stateDB.SetState(precompileAddr, key, value)
+	return nil
+}
+
+// DeauthorizeSovereign revokes sovereign authorization for a device ID.
+func DeauthorizeSovereign(stateDB StateDB, deviceId [32]byte) error {
+	key := makeSovereignKey(deviceId)
+	stateDB.SetState(precompileAddr, key, [32]byte{})
+	return nil
 }
 
 // ComputeWorkId computes work ID: BLAKE3(deviceId || nonce || chainId)

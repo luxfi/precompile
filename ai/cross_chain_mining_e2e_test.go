@@ -301,3 +301,119 @@ func TestVerifyAndMintData_ForgeRejected(t *testing.T) {
 		t.Fatalf("self-rooted data quote: got %v, want ErrTEESignatureInvalid", err)
 	}
 }
+
+// TestVerifyAndMintWork_SovereignHanzoOrg tests first-party sovereign compute mining.
+// Initially, only the Hanzo organization is permitted to mine AI without confidential compute
+// (hardware TEE quotes).
+func TestVerifyAndMintWork_SovereignHanzoOrg(t *testing.T) {
+	const chainId = uint64(420420)
+	db := newCCDB()
+	acc := ccAcc{s: db}
+	pub, sk := genMLDSA(t)
+	dev := blake3.Sum256(pub)
+
+	// Authorize key in stateDB as an authorized sovereign compute node
+	adapter := &stateDBAdapter{db, ContractAddress}
+	if err := AuthorizeSovereign(adapter, dev); err != nil {
+		t.Fatalf("AuthorizeSovereign: %v", err)
+	}
+
+	var nonce [32]byte
+	nonce[31] = 0x01
+	// PrivacySovereign (4), 60 compute minutes, NO TEE quote (nil)
+	proof := BuildWorkProof(dev, nonce, uint64(testAttestTime), PrivacySovereign, 60, nil)
+	sig := signMLDSA(t, sk, proof)
+	cd := tripleCalldata(SelectorVerifyAndMintWork, [][]byte{proof, pub, sig}, chainId)
+
+	ret, _, err := AIMiningPrecompile.verifyAndMintWork(acc, cd[4:], AIMiningPrecompile.RequiredGas(cd), false, nil)
+	if err != nil {
+		t.Fatalf("sovereign work mint failed: %v", err)
+	}
+
+	// Calculate expected reward with 1.50x multiplier (15000 basis points)
+	expected, err := CalculateReward(proof, chainId)
+	if err != nil {
+		t.Fatalf("CalculateReward: %v", err)
+	}
+	reward := new(big.Int).SetBytes(ret)
+	if reward.Cmp(expected) != 0 {
+		t.Fatalf("reward mismatch: got %s, want %s", reward, expected)
+	}
+
+	// Double-spend rejection
+	if _, _, err := AIMiningPrecompile.verifyAndMintWork(acc, cd[4:], AIMiningPrecompile.RequiredGas(cd), false, nil); err != ErrWorkAlreadySpent {
+		t.Fatalf("expected double-spend rejection, got %v", err)
+	}
+
+	// Revoke authorization -> future claims fail
+	if err := DeauthorizeSovereign(adapter, dev); err != nil {
+		t.Fatalf("DeauthorizeSovereign: %v", err)
+	}
+	var nonce2 [32]byte
+	nonce2[31] = 0x02
+	proof2 := BuildWorkProof(dev, nonce2, uint64(testAttestTime), PrivacySovereign, 60, nil)
+	sig2 := signMLDSA(t, sk, proof2)
+	cd2 := tripleCalldata(SelectorVerifyAndMintWork, [][]byte{proof2, pub, sig2}, chainId)
+	if _, _, err := AIMiningPrecompile.verifyAndMintWork(acc, cd2[4:], AIMiningPrecompile.RequiredGas(cd2), false, nil); err != ErrUnauthorized {
+		t.Fatalf("revoked sovereign key should fail with ErrUnauthorized, got %v", err)
+	}
+}
+
+// TestVerifyAndMintWork_SovereignUnauthorizedRejected proves that an unauthorized miner
+// cannot bypass hardware TEE attestation simply by asserting PrivacySovereign.
+func TestVerifyAndMintWork_SovereignUnauthorizedRejected(t *testing.T) {
+	const chainId = uint64(420420)
+	acc := ccAcc{s: newCCDB()}
+	pub, sk := genMLDSA(t)
+	dev := blake3.Sum256(pub)
+
+	var nonce [32]byte
+	nonce[31] = 0x01
+	// PrivacySovereign (4), no TEE quote, unauthorized key
+	proof := BuildWorkProof(dev, nonce, uint64(testAttestTime), PrivacySovereign, 60, nil)
+	sig := signMLDSA(t, sk, proof)
+	cd := tripleCalldata(SelectorVerifyAndMintWork, [][]byte{proof, pub, sig}, chainId)
+
+	if _, _, err := AIMiningPrecompile.verifyAndMintWork(acc, cd[4:], AIMiningPrecompile.RequiredGas(cd), false, nil); err != ErrUnauthorized {
+		t.Fatalf("unauthorized sovereign claim must be rejected with ErrUnauthorized, got %v", err)
+	}
+}
+
+// TestVerifyAndMintData_SovereignHanzoOrg tests sovereign data contributions without TEE quote.
+func TestVerifyAndMintData_SovereignHanzoOrg(t *testing.T) {
+	const chainId = uint64(420420)
+	db := newCCDB()
+	acc := ccAcc{s: db}
+	pub, sk := genMLDSA(t)
+	dev := blake3.Sum256(pub)
+
+	// Authorize key in stateDB
+	adapter := &stateDBAdapter{db, ContractAddress}
+	if err := AuthorizeSovereign(adapter, dev); err != nil {
+		t.Fatalf("AuthorizeSovereign: %v", err)
+	}
+
+	desc := make([]byte, DataContributionSize)
+	desc[31] = 0xEE
+	binary.BigEndian.PutUint64(desc[32:40], 5000)
+	binary.BigEndian.PutUint16(desc[40:42], PrivacySovereign) // sovereign
+	sig := signMLDSA(t, sk, desc)
+	cd := tripleCalldata(SelectorVerifyAndMintData, [][]byte{desc, pub, sig}, chainId)
+
+	ret, _, err := AIMiningPrecompile.verifyAndMintData(acc, cd[4:], AIMiningPrecompile.RequiredGas(cd), false, nil)
+	if err != nil {
+		t.Fatalf("sovereign data mint failed: %v", err)
+	}
+	if new(big.Int).SetBytes(ret).Sign() <= 0 {
+		t.Fatal("sovereign data reward must be positive")
+	}
+
+	// Unauthorized attempt fails
+	unauthPub, unauthSK := genMLDSA(t)
+	unauthSig := signMLDSA(t, unauthSK, desc)
+	unauthCD := tripleCalldata(SelectorVerifyAndMintData, [][]byte{desc, unauthPub, unauthSig}, chainId)
+	if _, _, err := AIMiningPrecompile.verifyAndMintData(acc, unauthCD[4:], AIMiningPrecompile.RequiredGas(unauthCD), false, nil); err != ErrUnauthorized {
+		t.Fatalf("unauthorized sovereign data must be rejected with ErrUnauthorized, got %v", err)
+	}
+}
+
