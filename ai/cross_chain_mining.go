@@ -239,13 +239,32 @@ func (c *AIMiningContract) verifyAndMintWork(
 	if !valid {
 		return nil, remaining, fmt.Errorf("ml-dsa attestation invalid")
 	}
-	// 2. A TEE quote binds that key to a real, embedded-root-certified device.
-	if len(workProof) <= WorkProofTEEQuoteOffset {
-		return nil, remaining, ErrMissingAttestation
+
+	if len(workProof) < WorkProofMinSize {
+		return nil, remaining, ErrInvalidWorkProof
 	}
-	if err := verifyDeviceBinding(pubkey, workProof[WorkProofTEEQuoteOffset:], roots); err != nil {
-		return nil, remaining, err
+	privacyLevel := binary.BigEndian.Uint16(workProof[WorkProofPrivacyOffset:WorkProofComputeMinsOffset])
+
+	stateDB := accessibleState.GetStateDB()
+	dbAdapter := &stateDBAdapter{stateDB, ContractAddress}
+
+	// 2. Hardware TEE / Sovereign Attestation Trust Gate:
+	// Initially, only the Hanzo organization (PrivacySovereign with authorized key)
+	// is permitted to mine AI without confidential compute (hardware TEE quote).
+	// Untrusted third-party miners MUST provide a valid hardware TEE attestation quote.
+	if privacyLevel == PrivacySovereign {
+		if !IsSovereignAuthorized(dbAdapter, pubkey) {
+			return nil, remaining, ErrUnauthorized
+		}
+	} else {
+		if len(workProof) <= WorkProofTEEQuoteOffset {
+			return nil, remaining, ErrMissingAttestation
+		}
+		if err := verifyDeviceBinding(pubkey, workProof[WorkProofTEEQuoteOffset:], roots); err != nil {
+			return nil, remaining, err
+		}
 	}
+
 	// 3. The work proof's own deviceID must equal the attested key identity, so
 	//    the settled workId is scoped to the chain-trusted device, not a value
 	//    the attacker grinds freely.
@@ -253,8 +272,7 @@ func (c *AIMiningContract) verifyAndMintWork(
 		return nil, remaining, ErrDeviceKeyMismatch
 	}
 
-	stateDB := accessibleState.GetStateDB()
-	reward, err := mintWork(&stateDBAdapter{stateDB, ContractAddress}, workProof, chainId)
+	reward, err := mintWork(dbAdapter, workProof, chainId)
 	if err != nil {
 		return nil, remaining, err
 	}
@@ -300,17 +318,33 @@ func (c *AIMiningContract) verifyAndMintData(
 	if !valid {
 		return nil, remaining, fmt.Errorf("ml-dsa attestation invalid")
 	}
-	// 2. A TEE quote (appended after the 42-byte descriptor) binds that key to a
-	//    real, embedded-root-certified device (the scrub service's enclave).
-	if len(descriptor) <= DataContributionSize {
-		return nil, remaining, ErrMissingAttestation
+	if len(descriptor) < DataContributionSize {
+		return nil, remaining, ErrInvalidWorkProof
 	}
-	if err := verifyDeviceBinding(pubkey, descriptor[DataContributionSize:], roots); err != nil {
-		return nil, remaining, err
-	}
+	privacyLevel := binary.BigEndian.Uint16(descriptor[40:42])
 
 	stateDB := accessibleState.GetStateDB()
-	reward, err := mintData(&stateDBAdapter{stateDB, ContractAddress}, descriptor, chainId)
+	dbAdapter := &stateDBAdapter{stateDB, ContractAddress}
+
+	// 2. Hardware TEE / Sovereign Attestation Trust Gate:
+	// Initially, only the Hanzo organization is permitted to contribute data without
+	// a hardware TEE enclave quote.
+	if privacyLevel == PrivacySovereign {
+		if !IsSovereignAuthorized(dbAdapter, pubkey) {
+			return nil, remaining, ErrUnauthorized
+		}
+	} else {
+		// A TEE quote (appended after the 42-byte descriptor) binds that key to a
+		// real, embedded-root-certified device (the scrub service's enclave).
+		if len(descriptor) <= DataContributionSize {
+			return nil, remaining, ErrMissingAttestation
+		}
+		if err := verifyDeviceBinding(pubkey, descriptor[DataContributionSize:], roots); err != nil {
+			return nil, remaining, err
+		}
+	}
+
+	reward, err := mintData(dbAdapter, descriptor, chainId)
 	if err != nil {
 		return nil, remaining, err
 	}
