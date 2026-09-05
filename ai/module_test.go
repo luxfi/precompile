@@ -223,30 +223,39 @@ func TestRunIsSpentAndMarkSpent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, byte(0), ret[31])
 
-	// MarkSpent
+	// markSpent is CLOSED to every external caller. The selector let any address
+	// burn any workId — and workId = BLAKE3(deviceId‖nonce‖chainId) is
+	// computable offline — so a caller could mark a claim spent before its owner
+	// ever presented it.
 	mkInput := make([]byte, 4+32)
 	binary.BigEndian.PutUint32(mkInput[:4], SelectorMarkSpent)
 	copy(mkInput[4:], workId[:])
-	ret, _, err = c.Run(state, common.Address{}, ContractAddress, mkInput, 100000, false)
-	require.NoError(t, err)
-	require.Equal(t, byte(1), ret[31])
+	for _, tc := range []struct {
+		name     string
+		gas      uint64
+		readOnly bool
+	}{
+		{"write", 100000, false},
+		{"read-only", 100000, true},
+		{"low gas", 100, false},
+	} {
+		_, _, err = c.Run(state, common.Address{}, ContractAddress, mkInput, tc.gas, tc.readOnly)
+		require.ErrorIs(t, err, ErrUnauthorized, tc.name)
+	}
 
-	// IsSpent again
+	// A refused call must not have written state: the work is still unspent.
+	ret, _, err = c.Run(state, common.Address{}, ContractAddress, isInput, 100000, false)
+	require.NoError(t, err)
+	require.Equal(t, byte(0), ret[31])
+
+	// The spent set is still reachable on the path that ADMITS a claim, which is
+	// the only safe ordering: verify, reward, then spend.
+	require.NoError(t, MarkSpent(&stateDBAdapter{state.GetStateDB(), ContractAddress}, workId))
 	ret, _, err = c.Run(state, common.Address{}, ContractAddress, isInput, 100000, false)
 	require.NoError(t, err)
 	require.Equal(t, byte(1), ret[31])
 
-	// Double mark
-	_, _, err = c.Run(state, common.Address{}, ContractAddress, mkInput, 100000, false)
-	require.Error(t, err)
-
-	// Read-only mark
-	_, _, err = c.Run(state, common.Address{}, ContractAddress, mkInput, 100000, true)
-	require.Error(t, err)
-
-	// Gas edge cases
-	_, _, err = c.Run(state, common.Address{}, ContractAddress, mkInput, 100, false)
-	require.Error(t, err)
+	// Gas edge case on the read path.
 	_, _, err = c.Run(state, common.Address{}, ContractAddress, isInput, 10, false)
 	require.Error(t, err)
 
