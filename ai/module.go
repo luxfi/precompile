@@ -247,37 +247,31 @@ func (c *AIMiningContract) runIsSpent(
 	return result, suppliedGas - GasIsSpent, nil
 }
 
+// runMarkSpent is CLOSED.
+//
+// The spent set is the double-spend guard, and this selector let ANY address
+// burn ANY workId. workId = BLAKE3(deviceId‖nonce‖chainId) is computable
+// offline, so a caller could mark a claim spent before its owner presented it:
+// the reward is denied, and where a missing claim is read as a missing
+// attestation, the denial becomes a forced slash. The Solidity interface has
+// always documented "only callable by authorized contracts"; no such check was
+// ever implemented, and ErrUnauthorized sat declared and unused.
+//
+// Nothing legitimate is lost. The atomic paths (verifyAndMintWork /
+// verifyAndMintData) call MarkSpent internally as the last step of admitting a
+// claim — verify, reward, then spend — which is the only safe ordering. An
+// externally callable mutator on the guard cannot be made safe without an
+// authority to check against, and this precompile carries none, so it fails
+// closed rather than inventing one.
 func (c *AIMiningContract) runMarkSpent(
 	accessibleState contract.AccessibleState,
 	input []byte,
 	suppliedGas uint64,
 	readOnly bool,
 ) ([]byte, uint64, error) {
-	if readOnly {
-		return nil, suppliedGas, fmt.Errorf("cannot write in read-only mode")
-	}
-
-	if suppliedGas < GasMarkSpent {
-		return nil, 0, fmt.Errorf("out of gas")
-	}
-
-	if len(input) < 32 {
-		return nil, suppliedGas - GasMarkSpent, fmt.Errorf("input too short")
-	}
-
-	var workId [32]byte
-	copy(workId[:], input[:32])
-
-	stateDB := accessibleState.GetStateDB()
-	err := MarkSpent(&stateDBAdapter{stateDB, ContractAddress}, workId)
-	if err != nil {
-		return nil, suppliedGas - GasMarkSpent, err
-	}
-
-	result := make([]byte, 32)
-	result[31] = 1
-	return result, suppliedGas - GasMarkSpent, nil
+	return nil, suppliedGas, ErrUnauthorized
 }
+
 
 func (c *AIMiningContract) runComputeWorkId(
 	input []byte,
