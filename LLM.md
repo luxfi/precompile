@@ -38,7 +38,7 @@ All crypto-heavy precompiles have GPU fast paths via `github.com/luxfi/accel` an
 > The DEX has ONE money path: **D-Chain (dexvm) matches · C-Chain `0x9999` SETTLES · C never matches.**
 > - `0x9999` (`SettleModule`, AlwaysOn) is SETTLE-ONLY. `swap()` routes to `SettleSwap`
 >   (native C↔D atomic seam): untagged/DI01 hookData ⇒ **Phase A intent** (lock input, write a
->   C→D atomic object, return an intent id — no fill); DS01 hookData ⇒ **Phase B settlement**
+>   C→D atomic object, return an intent id — no fill); DS02 hookData ⇒ **Phase B settlement**
 >   (consume a real D→C atomic object ONCE, credit the RECORDED amount). No BLS cert/receipt in
 >   the value path. **No-receipt-no-settle**: absent a real D-committed object, Phase B reverts
 >   `ErrNativeNoSettlement` (`TestDecomplect_NoReceiptNoSettle`).

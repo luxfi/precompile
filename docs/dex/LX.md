@@ -134,35 +134,27 @@ ws://api.lux.exchange/ws
 
 ---
 
-## Layer C: Operations Layer (HFT/Colo)
+## Layer C: Operations Layer
 
-### Colocation
+### Access
 
-- **Location**: Same rack as validator nodes
-- **Latency**: <100μs to matching engine
-- **Connectivity**: Direct fiber, dedicated NICs
-- **Sessions**: Authenticated FIX sessions per account
+There is one class of participant. The venue offers no colocation, no enrolled
+tier and no privileged connectivity, and nothing about how an order is handled
+depends on who sent it — matching ranks by price and then by arrival, and no
+account identifier reaches that decision.
+
+Rate limits are flat and identical for every caller: 100 requests per second per
+client address on JSON-RPC, and 100 messages per minute per WebSocket
+connection. Both are constants fixed when the server is built.
 
 ### Risk Controls
 
 | Control | Description |
 |---------|-------------|
-| Pre-trade margin | Orders validated against available margin |
-| Position limits | Per-market and per-account limits |
-| Rate limits | Orders/second per session |
+| Available balance | An order is rejected if the account cannot cover it (`ErrInsufficientAvailable`); funds are locked at entry and settlement spends from the lock |
+| Rate limits | Flat per caller, see above |
 | Kill switch | Emergency session termination |
-| Self-trade prevention | STP modes: cancel-newest, cancel-oldest |
-
-### Permissionless vs Enrolled
-
-| Feature | Permissionless | Enrolled (Colo) |
-|---------|---------------|-----------------|
-| Order placement | Yes | Yes |
-| FIX access | No | Yes |
-| Colo connectivity | No | Yes |
-| HFT packed ABI | Yes | Yes |
-| Market making | Yes | Yes (rebates) |
-| KYC required | No | Optional |
+| Self-trade prevention | A resting order whose account matches the incoming order is skipped rather than traded with |
 
 **HFT Packed ABI** (ILXBookHFT.sol):
 - 64-byte packed order encoding
