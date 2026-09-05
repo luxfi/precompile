@@ -157,11 +157,24 @@ interface IAIMiningPrecompile {
     // ============ State-Changing Functions ============
 
     /**
-     * @notice Mark work as spent after claiming reward
+     * @notice Mark work as spent. CLOSED — this always reverts.
      * @param workId The work ID to mark as spent
      *
-     * @dev Only callable by authorized contracts (AI token, mining contracts)
-     *      Reverts if already spent
+     * @dev The selector is retained so a caller gets an explicit refusal rather
+     *      than "unknown selector", but it is callable by no one.
+     *
+     *      It was an unauthenticated mutator on the double-spend guard: this
+     *      interface documented an authorization the implementation never had,
+     *      so any address could mark any workId spent. Because
+     *      workId = BLAKE3(deviceId||nonce||chainId) is computable offline, a
+     *      caller could burn a claim before its owner ever presented it —
+     *      denying the reward and, where a missing claim reads as a missing
+     *      attestation, forcing a slash.
+     *
+     *      Spending is not a separate step. verifyAndMintWork / verifyAndMintData
+     *      mark the work spent internally as the last action of admitting a
+     *      claim — verify, reward, then spend — which is the only ordering that
+     *      is safe against a check-then-act race. Use those.
      */
     function markSpent(bytes32 workId) external;
 }
