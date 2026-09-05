@@ -124,6 +124,13 @@ func mintData(stateDB StateDB, descriptor []byte, chainId uint64) (*big.Int, err
 	dataSize := binary.BigEndian.Uint64(descriptor[32:40])
 	privacyLevel := binary.BigEndian.Uint16(descriptor[40:42])
 
+	// dataSize is written by the attested device and multiplies the reward, so
+	// it is bounded before it is used. Attestation proves the device is real,
+	// not that its self-reported size is honest.
+	if dataSize > MaxDataSize {
+		return nil, ErrClaimTooLarge
+	}
+
 	multiplier, ok := privacyMultipliers[privacyLevel]
 	if !ok {
 		return nil, ErrInvalidPrivacyLevel
