@@ -100,7 +100,7 @@ func NewGraphQLPrecompile(client GChainClient) *GraphQLPrecompile {
 			MaxCacheSize:    1000,
 			DefaultCacheTTL: 10 * time.Second,
 			QueryTimeout:    5 * time.Second,
-			GChainEndpoint:  "http://localhost:9650/ext/bc/G/graphql",
+			GChainEndpoint:  "http://localhost:9650/v1/bc/G/graphql",
 		},
 	}
 }
