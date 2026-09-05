@@ -72,7 +72,7 @@ var (
 // the bytes AFTER a recognized tag, and ONLY for a recognized tag. Empty hookData =>
 // order with a nil body (the common case: a plain V4 swap). An explicit DI01 tag =>
 // order with the post-tag body (which decodeOrderDeadline parses as an optional
-// deadline). A DS01 tag => settlement with the post-tag body. Any OTHER non-empty,
+// deadline). A DS02 tag => settlement with the post-tag body. Any OTHER non-empty,
 // non-tagged blob (a hook contract's opaque bytes, including a legacy/foreign tag) =>
 // order with a NIL body: Phase A ignores opaque hook data, so it never accidentally
 // settles AND its arbitrary bytes are never mis-parsed as a deadline (the body is only
