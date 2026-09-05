@@ -91,6 +91,26 @@ var (
 	ErrUnauthorized         = errors.New("unauthorized caller")
 	ErrMissingAttestation   = errors.New("work proof missing TEE attestation quote")
 	ErrDeviceKeyMismatch    = errors.New("attested device identity does not match signing key")
+	ErrClaimTooLarge        = errors.New("claim magnitude exceeds the per-claim bound")
+)
+
+// Per-claim magnitude bounds.
+//
+// The device binding establishes that a REAL, embedded-root-certified device
+// signed the claim. It does not establish that the claim is TRUE: an attested
+// device still writes its own computeMinutes and dataSize, and the reward
+// schedule multiplies them by baseRewardPerMinute. Unbounded, a single
+// data claim at the sovereign multiplier settles 1e18 * (2^64-1) * 1.5 / 1e4
+// = 2.767e19 AI, so one compromised or lying device is an unbounded mint.
+//
+// These are a ceiling on how wrong one claim can be, not a substitute for the
+// binding above. They are generous for honest work and fatal for a fabricated
+// one.
+const (
+	// MaxComputeMinutes bounds one compute claim at 31 days of minutes.
+	MaxComputeMinutes uint32 = 44640
+	// MaxDataSize bounds one data-contribution claim at 1 TiB.
+	MaxDataSize uint64 = 1 << 40
 )
 
 // DataContributionSize is the fixed size of a data-contribution descriptor:
@@ -179,6 +199,9 @@ func CalculateReward(workProof []byte, chainId uint64) (*big.Int, error) {
 
 	// Extract compute minutes (big-endian uint32)
 	computeMinutes := binary.BigEndian.Uint32(workProof[WorkProofComputeMinsOffset:WorkProofTEEQuoteOffset])
+	if computeMinutes > MaxComputeMinutes {
+		return nil, ErrClaimTooLarge
+	}
 
 	// Get multiplier for privacy level
 	multiplier, ok := privacyMultipliers[privacyLevel]

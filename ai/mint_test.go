@@ -455,8 +455,9 @@ func TestVerifyDeviceBinding_RefusesAnotherDevicesQuote(t *testing.T) {
 // Every selector is driven, so a writer added later without a guard is caught here rather
 // than in production.
 func TestRun_ReadOnlyRefusesEveryStateWriter(t *testing.T) {
+	// SelectorMarkSpent is deliberately absent: it no longer writes state under
+	// any caller. It is asserted separately below, against a stricter rule.
 	writers := map[uint32][]byte{
-		SelectorMarkSpent:         make([]byte, 32),
 		SelectorVerifyAndMintWork: make([]byte, 128),
 		SelectorVerifyAndMintData: make([]byte, 128),
 	}
@@ -485,6 +486,14 @@ func TestRun_ReadOnlyRefusesEveryStateWriter(t *testing.T) {
 		// the body.
 		require.NotErrorIsf(t, run(sel, body, false), errReadOnlySentinel, "selector %#x", sel)
 	}
+
+	// markSpent is closed to every caller, in and out of a static context — a
+	// stricter rule than the read-only guard above. It let any address burn any
+	// workId, and workId = BLAKE3(deviceId‖nonce‖chainId) is computable offline,
+	// so a caller could spend a claim its owner had not yet made.
+	mk := make([]byte, 32)
+	require.ErrorIs(t, run(SelectorMarkSpent, mk, true), ErrUnauthorized)
+	require.ErrorIs(t, run(SelectorMarkSpent, mk, false), ErrUnauthorized)
 
 	for sel, body := range readers {
 		err := run(sel, body, true)

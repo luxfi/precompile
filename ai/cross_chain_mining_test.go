@@ -101,3 +101,54 @@ func TestParseTriple(t *testing.T) {
 		t.Fatal("expected truncated parseTriple to error")
 	}
 }
+
+// makeDataDescriptor builds the 42-byte contribution header: dataHash(32) |
+// dataSize(8) | privacyLevel(2).
+func makeDataDescriptor(size uint64, privacy uint16) []byte {
+	d := make([]byte, DataContributionSize)
+	d[31] = 0xCC
+	binary.BigEndian.PutUint64(d[32:40], size)
+	binary.BigEndian.PutUint16(d[40:42], privacy)
+	return d
+}
+
+// A magnitude bound is what stops one attested-but-lying device from settling
+// an unbounded reward. The device binding establishes that a real,
+// embedded-root-certified device signed the claim; it does NOT establish that
+// the size that device wrote is honest. Unbounded, a single sovereign-privacy
+// data claim settles 1e18 * (2^64-1) * 1.5 / 1e4 = 2.767e19 AI in one call.
+func TestClaimMagnitudeIsBounded(t *testing.T) {
+	chainId := uint64(200202)
+
+	t.Run("compute minutes above the bound are refused", func(t *testing.T) {
+		if _, err := CalculateReward(makeWorkProof(PrivacySovereign, MaxComputeMinutes+1), chainId); err != ErrClaimTooLarge {
+			t.Fatalf("got %v, want ErrClaimTooLarge", err)
+		}
+		// The uint32 maximum was the real exposure, not an off-by-one.
+		if _, err := CalculateReward(makeWorkProof(PrivacySovereign, ^uint32(0)), chainId); err != ErrClaimTooLarge {
+			t.Fatalf("max uint32: got %v, want ErrClaimTooLarge", err)
+		}
+	})
+
+	t.Run("compute minutes at the bound are admitted", func(t *testing.T) {
+		if _, err := CalculateReward(makeWorkProof(PrivacySovereign, MaxComputeMinutes), chainId); err != nil {
+			t.Fatalf("boundary claim refused: %v", err)
+		}
+	})
+
+	t.Run("data size above the bound is refused", func(t *testing.T) {
+		if _, err := mintData(NewMockStateDB(), makeDataDescriptor(MaxDataSize+1, PrivacySovereign), chainId); err != ErrClaimTooLarge {
+			t.Fatalf("got %v, want ErrClaimTooLarge", err)
+		}
+		// The uint64 maximum is the 2.767e19 AI claim.
+		if _, err := mintData(NewMockStateDB(), makeDataDescriptor(^uint64(0), PrivacySovereign), chainId); err != ErrClaimTooLarge {
+			t.Fatalf("max uint64: got %v, want ErrClaimTooLarge", err)
+		}
+	})
+
+	t.Run("data size at the bound is admitted", func(t *testing.T) {
+		if _, err := mintData(NewMockStateDB(), makeDataDescriptor(MaxDataSize, PrivacySovereign), chainId); err != nil {
+			t.Fatalf("boundary claim refused: %v", err)
+		}
+	})
+}
