@@ -139,10 +139,19 @@ func attestedQuote(t *testing.T, tc *teeChain, pub []byte) (env []byte, dev [32]
 	return teeEnvelope(teeSig, receipt), dev
 }
 
+// settlementChainID is where mined AI work settles: the C-Chain, whose id is
+// 96369 on mainnet. It is an EVM chain id because the mint happens in the EVM;
+// the A-Chain produces the work and is not an EVM, so it has no such number to
+// lend. The id is part of every work id, which is what stops the same attested
+// work being minted on two chains — so a number invented for a test is one that
+// can collide with a real network, and the collision shows up only as work that
+// mints twice.
+const settlementChainID = uint64(96369)
+
 // --- happy path (generated PKI injected through the roots seam) -------------
 
 func TestVerifyAndMintWork_E2E(t *testing.T) {
-	const chainId = uint64(420420) // Beluga
+	const chainId = settlementChainID
 	tc := newTEEChain(t, caNotAfter)
 	pub, sk := genMLDSA(t)
 
@@ -199,7 +208,7 @@ func TestVerifyAndMintWork_E2E(t *testing.T) {
 }
 
 func TestVerifyAndMintData_E2E(t *testing.T) {
-	const chainId = uint64(420420)
+	const chainId = settlementChainID
 	tc := newTEEChain(t, caNotAfter)
 	pub, sk := genMLDSA(t)
 	env, _ := attestedQuote(t, tc, pub)
@@ -235,7 +244,7 @@ func TestVerifyAndMintData_E2E(t *testing.T) {
 // quote vouching for the key, the mint is rejected. The CRITICAL bug was that
 // this calldata used to mint unlimited reward.
 func TestVerifyAndMintWork_ForgeRejected(t *testing.T) {
-	const chainId = uint64(420420)
+	const chainId = settlementChainID
 	acc := ccAcc{s: newCCDB()}
 
 	// (a) attacker key, no TEE quote at all -> rejected.
@@ -267,7 +276,7 @@ func TestVerifyAndMintWork_ForgeRejected(t *testing.T) {
 // TestVerifyAndMintData_ForgeRejected mirrors the work case for data
 // contributions through the production entry point.
 func TestVerifyAndMintData_ForgeRejected(t *testing.T) {
-	const chainId = uint64(420420)
+	const chainId = settlementChainID
 	acc := ccAcc{s: newCCDB()}
 	pub, sk := genMLDSA(t)
 
