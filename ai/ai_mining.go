@@ -1,9 +1,9 @@
 // Copyright (C) 2025, Lux Industries Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-// Package ai implements the AI Mining precompile for EVM at address 0x0300.
-// This precompile is shared by Hanzo, Lux, and Zoo EVMs for efficient
-// AI mining reward calculation and cryptographic verification.
+// Package ai implements the AI Mining precompile for EVM at address 0x0300:
+// reward calculation for attested AI work, and the cryptographic verification
+// that work was really done by the signer who claims it.
 //
 // GPU Acceleration:
 // When batch size >= gpu.Threshold() and GPU is available, operations
