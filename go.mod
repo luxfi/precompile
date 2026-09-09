@@ -1,6 +1,6 @@
 module github.com/luxfi/precompile
 
-go 1.26.4
+go 1.26.8
 
 require (
 	filippo.io/edwards25519 v1.2.0

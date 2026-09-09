@@ -1,6 +1,6 @@
 module github.com/luxfi/precompile/e2e/clob
 
-go 1.26.4
+go 1.26.8
 
 require (
 	github.com/holiman/uint256 v1.3.2
