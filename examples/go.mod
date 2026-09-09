@@ -1,6 +1,6 @@
 module github.com/luxfi/precompile/examples
 
-go 1.26.1
+go 1.26.8
 
 require (
 	github.com/ChainSafe/go-schnorrkel v1.1.0
