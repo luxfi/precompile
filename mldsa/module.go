@@ -11,7 +11,7 @@ import (
 
 var _ contract.Configurator = &configurator{}
 
-const ConfigKey = "mldsaVerify"
+const ConfigKey = "mldsaConfig"
 
 type configurator struct{}
 

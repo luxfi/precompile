@@ -16,7 +16,7 @@ type configurator struct{}
 func init() {
 	// Register FROST precompile module
 	if err := modules.RegisterModule(modules.Module{
-		ConfigKey:    "frostVerify",
+		ConfigKey:    "frostConfig",
 		Address:      ContractFROSTVerifyAddress,
 		Contract:     FROSTVerifyPrecompile,
 		Configurator: &configurator{},
@@ -45,7 +45,7 @@ type Config struct {
 }
 
 func (c *Config) Key() string {
-	return "frostVerify"
+	return "frostConfig"
 }
 
 func (c *Config) Timestamp() *uint64 {

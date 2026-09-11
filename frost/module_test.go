@@ -26,7 +26,7 @@ func (t *testChainCfg) IsDurango(uint64) bool { return true }
 
 func TestConfigLifecycle(t *testing.T) {
 	cfg := &Config{}
-	require.Equal(t, "frostVerify", cfg.Key())
+	require.Equal(t, "frostConfig", cfg.Key())
 	require.Nil(t, cfg.Timestamp())
 	require.False(t, cfg.IsDisabled())
 	require.NoError(t, cfg.Verify(&testChainCfg{}))
@@ -45,7 +45,7 @@ func TestConfigurator(t *testing.T) {
 	c := &configurator{}
 	cfg := c.MakeConfig()
 	require.NotNil(t, cfg)
-	require.Equal(t, "frostVerify", cfg.Key())
+	require.Equal(t, "frostConfig", cfg.Key())
 	require.NoError(t, c.Configure(&testChainCfg{}, cfg, nil, nil))
 }
 
@@ -64,14 +64,14 @@ func TestConfigurator(t *testing.T) {
 func TestModuleRegistration(t *testing.T) {
 	byAddr, ok := modules.GetPrecompileModuleByAddress(ContractFROSTVerifyAddress)
 	require.True(t, ok, "the FROST module must be registered at its address")
-	byKey, ok := modules.GetPrecompileModule("frostVerify")
+	byKey, ok := modules.GetPrecompileModule("frostConfig")
 	require.True(t, ok, "the FROST module must be registered under its config key")
 	require.Equal(t, byAddr, byKey, "address and key must name the same module")
 	require.Equal(t, FROSTVerifyPrecompile, byAddr.Contract)
-	require.Equal(t, "frostVerify", byAddr.ConfigKey)
+	require.Equal(t, "frostConfig", byAddr.ConfigKey)
 
 	require.Error(t, modules.RegisterModule(modules.Module{
-		ConfigKey:    "frostVerify",
+		ConfigKey:    "frostConfig",
 		Address:      common.HexToAddress("0x0800000000000000000000000000000000000042"),
 		Contract:     FROSTVerifyPrecompile,
 		Configurator: &configurator{},

@@ -16,7 +16,7 @@ type configurator struct{}
 func init() {
 	// Register CGGMP21 precompile module
 	if err := modules.RegisterModule(modules.Module{
-		ConfigKey:    "cggmp21Verify",
+		ConfigKey:    "cggmp21Config",
 		Address:      ContractCGGMP21VerifyAddress,
 		Contract:     CGGMP21VerifyPrecompile,
 		Configurator: &configurator{},
@@ -45,7 +45,7 @@ type Config struct {
 }
 
 func (c *Config) Key() string {
-	return "cggmp21Verify"
+	return "cggmp21Config"
 }
 
 func (c *Config) Timestamp() *uint64 {

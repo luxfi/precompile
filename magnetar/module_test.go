@@ -33,7 +33,7 @@ func (t *testChainCfg) IsDurango(uint64) bool { return true }
 func TestConfigLifecycle(t *testing.T) {
 	cfg := &Config{}
 	require.Equal(t, ConfigKey, cfg.Key())
-	require.Equal(t, "magnetarVerify", cfg.Key())
+	require.Equal(t, "magnetarConfig", cfg.Key())
 	require.Nil(t, cfg.Timestamp())
 	require.False(t, cfg.IsDisabled())
 	require.NoError(t, cfg.Verify(&testChainCfg{}))

@@ -24,7 +24,7 @@ func (t *testChainCfg) IsDurango(uint64) bool { return true }
 
 func TestConfigLifecycle(t *testing.T) {
 	cfg := &Config{}
-	require.Equal(t, "coronaThreshold", cfg.Key())
+	require.Equal(t, "coronaConfig", cfg.Key())
 	require.Nil(t, cfg.Timestamp())
 	require.False(t, cfg.IsDisabled())
 	require.NoError(t, cfg.Verify(&testChainCfg{}))
@@ -43,7 +43,7 @@ func TestConfigurator(t *testing.T) {
 	c := &configurator{}
 	cfg := c.MakeConfig()
 	require.NotNil(t, cfg)
-	require.Equal(t, "coronaThreshold", cfg.Key())
+	require.Equal(t, "coronaConfig", cfg.Key())
 	require.NoError(t, c.Configure(&testChainCfg{}, cfg, nil, nil))
 }
 
