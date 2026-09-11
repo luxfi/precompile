@@ -11,7 +11,7 @@ import (
 
 var _ contract.Configurator = &configurator{}
 
-const ConfigKey = "starkfriVerify"
+const ConfigKey = "starkfriConfig"
 
 type configurator struct{}
 

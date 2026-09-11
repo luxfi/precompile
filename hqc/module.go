@@ -11,7 +11,7 @@ import (
 
 var _ contract.Configurator = &configurator{}
 
-const ConfigKey = "hqcEncapsulate"
+const ConfigKey = "hqcConfig"
 
 type configurator struct{}
 

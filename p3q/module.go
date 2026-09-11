@@ -12,10 +12,10 @@ import (
 var _ contract.Configurator = &configurator{}
 
 // ConfigKey is the globally unique JSON config key for this
-// precompile. Distinct from "pulsarVerify" (slot 0x012204) so a
+// precompile. Distinct from "pulsarConfig" (slot 0x012204) so a
 // chain config can independently enable/disable the LP-218 rollup-
 // commit verifier.
-const ConfigKey = "p3qVerify"
+const ConfigKey = "p3qConfig"
 
 type configurator struct{}
 

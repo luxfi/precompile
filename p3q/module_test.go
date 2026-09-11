@@ -31,7 +31,7 @@ func (*chainCfg) IsDurango(uint64) bool { return true }
 func TestConfigLifecycle(t *testing.T) {
 	cfg := &Config{}
 	require.Equal(t, ConfigKey, cfg.Key())
-	require.Equal(t, "p3qVerify", cfg.Key(),
+	require.Equal(t, "p3qConfig", cfg.Key(),
 		"the config key is chain-config-visible; renaming it silently disables the precompile")
 	require.Nil(t, cfg.Timestamp(), "unset is nil, not zero")
 	require.False(t, cfg.IsDisabled())

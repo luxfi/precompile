@@ -16,7 +16,7 @@ type configurator struct{}
 func init() {
 	// Register Corona threshold precompile module
 	if err := modules.RegisterModule(modules.Module{
-		ConfigKey:    "coronaThreshold",
+		ConfigKey:    "coronaConfig",
 		Address:      ContractCoronaThresholdAddress,
 		Contract:     CoronaThresholdPrecompile,
 		Configurator: &configurator{},
@@ -45,7 +45,7 @@ type Config struct {
 }
 
 func (c *Config) Key() string {
-	return "coronaThreshold"
+	return "coronaConfig"
 }
 
 func (c *Config) Timestamp() *uint64 {

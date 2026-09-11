@@ -26,7 +26,7 @@ func (t *testChainCfg) IsDurango(uint64) bool { return true }
 
 func TestConfigLifecycle(t *testing.T) {
 	cfg := &Config{}
-	require.Equal(t, "cggmp21Verify", cfg.Key())
+	require.Equal(t, "cggmp21Config", cfg.Key())
 	require.Nil(t, cfg.Timestamp())
 	require.False(t, cfg.IsDisabled())
 	require.NoError(t, cfg.Verify(&testChainCfg{}))
@@ -45,7 +45,7 @@ func TestConfigurator(t *testing.T) {
 	c := &configurator{}
 	cfg := c.MakeConfig()
 	require.NotNil(t, cfg)
-	require.Equal(t, "cggmp21Verify", cfg.Key())
+	require.Equal(t, "cggmp21Config", cfg.Key())
 	require.NoError(t, c.Configure(&testChainCfg{}, cfg, nil, nil))
 }
 
@@ -64,14 +64,14 @@ func TestConfigurator(t *testing.T) {
 func TestModuleRegistration(t *testing.T) {
 	byAddr, ok := modules.GetPrecompileModuleByAddress(ContractCGGMP21VerifyAddress)
 	require.True(t, ok, "the CGGMP21 module must be registered at its address")
-	byKey, ok := modules.GetPrecompileModule("cggmp21Verify")
+	byKey, ok := modules.GetPrecompileModule("cggmp21Config")
 	require.True(t, ok, "the CGGMP21 module must be registered under its config key")
 	require.Equal(t, byAddr, byKey, "address and key must name the same module")
 	require.Equal(t, CGGMP21VerifyPrecompile, byAddr.Contract)
-	require.Equal(t, "cggmp21Verify", byAddr.ConfigKey)
+	require.Equal(t, "cggmp21Config", byAddr.ConfigKey)
 
 	require.Error(t, modules.RegisterModule(modules.Module{
-		ConfigKey:    "cggmp21Verify",
+		ConfigKey:    "cggmp21Config",
 		Address:      common.HexToAddress("0x0800000000000000000000000000000000000043"),
 		Contract:     CGGMP21VerifyPrecompile,
 		Configurator: &configurator{},

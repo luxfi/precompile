@@ -386,7 +386,7 @@ func TestParity_ModuleWiring(t *testing.T) {
 		Contract:     SR25519VerifyPrecompile,
 		Configurator: &configurator{},
 	}
-	require.Equal(t, "sr25519Verify", entry.ConfigKey)
+	require.Equal(t, "sr25519Config", entry.ConfigKey)
 	require.Equal(t,
 		common.HexToAddress("0x0A00000000000000000000000000000000000001"),
 		ContractAddress)

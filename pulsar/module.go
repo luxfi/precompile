@@ -11,7 +11,7 @@ import (
 
 var _ contract.Configurator = &configurator{}
 
-const ConfigKey = "pulsarVerify"
+const ConfigKey = "pulsarConfig"
 
 type configurator struct{}
 
